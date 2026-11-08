@@ -68,7 +68,8 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   Reversal: the appliance needs hotplug.
 - Prescribed: "pure-Rust userland" means every file in the product image is
   Rust-owned or one of these named exceptions: the Linux kernel, musl (both
-  retained by laputa LAP-51), and Helium together with what it statically
+  retained by laputa LAP-51); Mesa, ALSA, and NSS with their own library
+  closures (owner 2026-11-08); and Helium together with what it statically
   bundles (its HarfBuzz, FreeType, Skia, zlib, libwayland-client, and
   bundled Fontconfig). Every shared library Helium loads at runtime is part
   of the userland, not part of the exception. R0's census is the only
@@ -370,16 +371,16 @@ M1 to M3.
 
 ### M4R: pure-Rust userland
 
-Runs alongside M4. The Helium archive ships these system libraries.
-`copy_system_closure` (`scripts/stage-runtime.py`) stages the `SYSTEM_SEEDS`
-list in addition to the browser's `DT_NEEDED`, so being shipped does not prove
-a library loads. NSS (`libsoftokn3`,
-`libfreebl3`, `libnssckbi`), GTK3 and its closure (glib, pango, cairo, atk,
-libffi through `use_system_libffi=true`, libdbus per CHB-4), Mesa
-(`libEGL`, `libGLESv2`, `libgbm`, `libgallium-*`, `libwayland-egl`),
-`libxkbcommon` (`use_xkbcommon=true`), and ALSA (`use_alsa=true`). R0's traced run
-settles which ones actually load; removing those that do is most of the work,
-and most of it happens in chromium-build.
+Runs alongside M4. The Helium archive ships these system libraries:
+NSS (`libsoftokn3`, `libfreebl3`, `libnssckbi`), GTK3 and its closure (glib,
+pango, cairo, atk, libffi through `use_system_libffi=true`, libdbus per
+CHB-4), Mesa (`libEGL`, `libGLESv2`, `libgbm`, `libgallium-*`,
+`libwayland-egl`), `libxkbcommon` (`use_xkbcommon=true`), and ALSA
+(`use_alsa=true`). `copy_system_closure` (`scripts/stage-runtime.py`) stages
+the `SYSTEM_SEEDS` list in addition to the browser's `DT_NEEDED`, so being
+shipped does not prove a library loads. Mesa, ALSA, and NSS are named
+exceptions and GTK is being removed in chromium-build. The expected
+remaining gaps are `libxkbcommon` and whatever outlives GTK.
 
 - **R0 Closure census.** Owns `guest/audit/`, `docs/userland.md`. Prereq: P1.
   Walk the image and attribute every file to one of: Rust-owned (crate and
@@ -398,28 +399,34 @@ and most of it happens in chromium-build.
   diagnostic image keeps busybox for debugging. Acceptance: R0 on the
   product image shows gaps only inside the Helium runtime closure; T0's
   proof and B1 pass.
-- **R2 Appliance Helium profile. Cross-repo (chromium-build).** Prereq: R0
-  on the Helium image. Add a `helium-wayland-appliance` GN profile. GTK is
-  already gone: owner 2026-11-08 removed it from every Helium Linux build,
-  handed to the chromium-build arm64 work. R2 checks that glib, atk, and
-  libdbus did not stay behind through `use_glib` or `use_atk`. The profile
-  presents through software output on `wl_shm` with no Mesa, EGL, or gbm in
-  the archive. The guest has a 2D virtio-gpu only, and Tinyland has only
-  `wl_shm`. It also disables audio (`use_alsa=false`). Owner 2026-11-08: file
-  chooser, print, audio, and GPU rasterization are accepted losses. T2's
-  census must confirm nothing else breaks. Acceptance: chromium-build's
-  five Helium checks pass on the new profile, including the renderer
-  sandbox; R0 shows none of the removed libraries; B1 and D2 pass on it.
-- **R3 Remaining providers.** Prereq: R2. For each gap R0 still reports
-  (expected: NSS and `libxkbcommon`), either ship a Rust provider with the
-  exact C ABI Helium calls, or record a named exception with its reason
-  and the condition that would remove it. Candidates: a `libxkbcommon` C ABI
-  over kbvm, limited to the symbols Helium imports (kbvm has no C ABI
-  today), and zlib-rs as `libz.so.1` if any dynamic zlib consumer remains.
-  NSS has no Rust drop-in; expect it to stay an exception unless Helium's
-  `use_nss_certs` path can be removed. Acceptance: R0 reports zero gaps. The
-  `docs/userland.md` exception list matches Decisions plus R3's recorded
-  exceptions.
+- **R2 GTK leftovers.** Prereq: R0 on a GTK-free Helium archive. Owner
+  2026-11-08 removed GTK from every Helium Linux build, handed to the
+  chromium-build arm64 work. File chooser, print, audio, and GPU
+  rasterization are accepted losses. R2 reports what survived through
+  Chromium's own `use_glib`, `use_atk`, and `use_system_libffi` (glib, atk,
+  at-spi, libdbus, libffi). It does not change those settings without an
+  owner decision. Acceptance: R0's gap list for the archive contains only
+  `libxkbcommon` and the leftovers R2 named, each with the GN argument that
+  brings it in.
+- **R3 libxkbcommon on kbvm. Cross-repo (laputa-systems/kbvm).** Prereq:
+  R0. The fork matches upstream `mahkoh/kbvm` today, and its `libxkbcommon`
+  directory is upstream C, kept as a test oracle. Add a crate to the fork's
+  workspace that builds `libxkbcommon.so.0` with the C ABI, limited to the
+  symbols Helium imports (from `nm -D` on the browser plus R0's dlopen
+  trace). Under Wayland that is mainly keymap-from-string, state update, and
+  keysym and UTF-8 lookup, plus compose if Helium imports it. Point
+  `guest/tinyland`'s `kbvm` dependency at the same pinned fork revision, so
+  the compositor that serializes the keymap and Helium, which parses it,
+  share one implementation. Acceptance: the fork's tests plus a differential
+  suite against the oracle submodule for every exported symbol; Helium in B1
+  maps the kbvm library, and the fixture records correct text for shifted
+  keys, modifiers, key repeat, and a dead-key compose; R0 reports no
+  `libxkbcommon` gap.
+- **R4 Remaining gaps.** Prereq: R2, R3. For each gap still reported, ship a
+  Rust provider with the exact C ABI (zlib-rs as `libz.so.1` if a dynamic
+  zlib consumer remains), or bring the owner a named exception with its
+  reason. Acceptance: R0 reports zero gaps, and the `docs/userland.md`
+  exception list matches Decisions.
 
 ### M5: hardening and measurement
 
