@@ -88,6 +88,12 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   per-profile identity, never from constants baked into the build. Lean
   changes apply to the linux/arm64 Helium build only; amd64's resolved GN
   args stay unchanged.
+- Owner 2026-11-08: the persona starts honest. It claims arm64 Linux, the
+  WebGL vendor and renderer strings stay the real llvmpipe ones, and the
+  absence of Widevine stays honest unless L6 finds that real arm64 Linux
+  Chrome has it. Reversal: L6's measurements show the honest persona is
+  what gets sites to reject or challenge access, and the owner picks a
+  replacement.
 - Prescribed: `guest/` is Linux-only and builds separately from the host
   crates, for `aarch64-unknown-linux-musl` on the shared
   `nightly-2026-09-15` toolchain.
@@ -492,6 +498,18 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
   per-profile disk. Acceptance: two sessions on one host, with their summed
   RSS and disk use measured against separate full images; no session can
   write to the base.
+- **L6 Honest persona baseline.** Owns `docs/persona.md`. Prereq: L1, L3.
+  Find out whether Google's Chrome 156 for arm64 Linux ships Widevine. If
+  it does, record the gap. Inside the appliance, capture the
+  page-observable surfaces Shadowdriver's identity layer covers, plus
+  audio, media devices, WebGL strings, fonts, and EME key systems. Check
+  them for internal consistency (UA platform, Client Hints, CPU count,
+  screen, and timezone all agree). Then record pass, challenge, or block on
+  a fixed set of public fingerprint and bot-detection test pages, using
+  X4's outcome categories. Acceptance: `docs/persona.md` lists every
+  surface with its value and source, no inconsistency stays unexplained,
+  and the test-page results are recorded with their dates as the baseline
+  any later persona change must beat.
 
 ### M5: hardening and measurement
 
