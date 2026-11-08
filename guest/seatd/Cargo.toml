@@ -1,0 +1,20 @@
+[package]
+name = "seatd"
+version = "0.9.3"
+edition = "2021"
+
+[dependencies]
+libc = "=0.2.182"
+rustix = { version = "=0.38.44", features = ["net", "fs"] }
+
+[[test]]
+name = "adversarial"
+path = "harness/adversarial.rs"
+
+[[test]]
+name = "differential"
+path = "harness/differential.rs"
+
+[[test]]
+name = "storm"
+path = "harness/storm.rs"

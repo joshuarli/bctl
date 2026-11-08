@@ -1,0 +1,50 @@
+#!/bin/sh
+MODE="${1:-smoke}"
+FAULT="${TINYLAND_FAULT:-none}"
+if [ "$MODE" = wayland-pixels ]; then
+  case "$FAULT" in
+    blank)
+      printf '\033]11;#000000\007\033]10;#000000\007\033[?25l\033[2J\033[H'
+      ;;
+    missing-marker)
+      printf 'TERMINAL_WITHOUT_MAGENTA\n'
+      ;;
+    *)
+      printf '\033[48;5;201m LAPUTA_MARKER \033[0m\n'
+      ;;
+  esac
+  echo WAYLAND_PIXELS_MAPPED > /dev/console
+  sleep 120
+  exit 0
+fi
+case "$FAULT" in
+  blank)
+    printf '\033]11;#000000\007\033]10;#000000\007\033[?25l\033[2J\033[H'
+    ;;
+  missing-marker)
+    printf 'TERMINAL_WITHOUT_MAGENTA\n'
+    ;;
+  frozen)
+    printf 'PROMPT_READY\n'
+    ;;
+  *)
+    printf 'PROMPT_READY\n'
+    ;;
+esac
+echo GUEST_PROMPT_READY > /dev/console
+if read -r line; then
+  echo "GUEST_GOT_LINE: $line" > /dev/console
+  if [ "$line" = laputa ]; then
+    case "$FAULT" in
+      blank|missing-marker|frozen) ;;
+      *) printf '\033[48;5;201m POST_INPUT_MARKER \033[0m\n' ;;
+    esac
+    echo GUEST_TEXT_OK > /dev/console
+    sleep 120
+    exit 0
+  fi
+  echo GUEST_TEXT_MISMATCH > /dev/console
+else
+  echo GUEST_READ_FAILED > /dev/console
+fi
+exit 1

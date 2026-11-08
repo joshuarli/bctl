@@ -1,0 +1,51 @@
+#!/bin/sh
+mount -o remount,rw /
+mkdir -p /dev/pts /dev/shm /tmp
+chown 0:0 /tmp
+chmod 1777 /tmp
+mount -t devpts none /dev/pts
+export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
+modprobe evdev
+mdev -s
+export XDG_RUNTIME_DIR=/tmp
+MODE="${TINYLAND_MODE:-drm-proof}"
+export TINYLAND_FAULT="${TINYLAND_FAULT:-none}"
+echo "TINYLAND_BOOT mode=$MODE fault=$TINYLAND_FAULT" > /dev/console
+if [ "$MODE" = seat ]; then
+  /usr/local/bin/seat-proof 2>&1 | tee /dev/ttyS1 > /dev/console
+  echo TINYLAND_POWERING_OFF > /dev/console
+  poweroff -f
+fi
+if [ "$MODE" = drm-proof ]; then
+  set -- /usr/local/bin/tinyland --"$MODE" --width 1024 --height 768 --socket wayland-0
+else
+  set -- /usr/local/bin/tinyland --"$MODE" --width 1024 --height 768 --socket wayland-0 -- foot /usr/local/bin/guest-test "$MODE"
+fi
+if [ "$TINYLAND_FAULT" = atomic-unsupported ]; then
+  set -- strace -qq -e trace=ioctl -e inject=ioctl:error=ENOSYS:when=3 -o /dev/ttyS1 "$@"
+fi
+run_compositor() {
+  "$@" &
+  COMPOSITOR=$!
+  echo "$COMPOSITOR" > /tmp/compositor.pid
+  wait "$COMPOSITOR"
+  RESULT=$?
+  echo "TINYLAND_EXIT rc=$RESULT"
+}
+: > /tmp/compositor.pid
+run_compositor "$@" 2>&1 | tee /dev/ttyS1 > /dev/console &
+if [ "$TINYLAND_FAULT" = early-crash ]; then
+  for _ in $(seq 1 50); do
+    if [ -S /tmp/wayland-0 ] && [ -s /tmp/compositor.pid ]; then break; fi
+    sleep 0.1
+  done
+  kill -KILL "$(cat /tmp/compositor.pid)"
+  echo 'TINYLAND_FAULT_INJECTED signal=KILL' > /dev/console
+fi
+if [ "$MODE" = drm-proof ]; then
+  sleep 4
+  echo TINYLAND_READY > /dev/console
+fi
+sleep 120
+echo TINYLAND_POWERING_OFF > /dev/console
+poweroff -f

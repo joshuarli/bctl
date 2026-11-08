@@ -1,0 +1,73 @@
+#!/bin/sh
+# Seat-mediated unprivileged session proof.
+#
+# seatd runs as root and mediates DRM/input. tinyland and foot run as the
+# unprivileged user tiny, which must not be able to open seat devices
+# directly. The broker path must succeed where direct open is denied.
+set -u
+
+console() {
+  printf '%s\n' "$1" > /dev/console
+}
+
+fail() {
+  console "TINYLAND_SEAT_PROOF_FAILED $1"
+  exit 1
+}
+
+wait_path() {
+  path="$1"
+  what="$2"
+  for _ in $(seq 1 20); do
+    if [ -e "$path" ]; then return 0; fi
+    sleep 1
+  done
+  fail "missing $what at $path"
+}
+
+console "TINYLAND_SEAT_PROOF_START"
+mdev -s
+wait_path /dev/dri/card0 "drm device"
+if ! ls /dev/input/event* >/dev/null 2>&1; then
+  fail "no evdev devices"
+fi
+
+printf 'tiny:x:1000:1000:tiny:/tmp:/bin/sh\n' >> /etc/passwd
+printf 'tiny:x:1000:\n' >> /etc/group
+sed -i 's/^seat:x:101:$/seat:x:101:tiny/' /etc/group
+printf 'tiny:!:19769:0:99999:7:::\n' >> /etc/shadow
+id tiny
+mkdir -p /run
+chmod 666 /dev/console
+
+SEATD_VTBOUND=0 seatd -g seat &
+SEATD_PID=$!
+wait_path /run/seatd.sock "seatd socket"
+console "TINYLAND_SEATD_READY"
+
+if su tiny -s /bin/sh -c ': <>/dev/dri/card0' 2>/dev/null; then
+  kill "$SEATD_PID" 2>/dev/null
+  fail "direct DRM open unexpectedly succeeded for tiny"
+fi
+console "TINYLAND_DIRECT_DENIED"
+
+mkdir -p /tmp/seat-run
+chown tiny /tmp/seat-run
+chmod 700 /tmp/seat-run
+cat > /tmp/seat-run/run.sh <<'EOF'
+#!/bin/sh
+export XDG_RUNTIME_DIR=/tmp/seat-run
+export LIBSEAT_BACKEND=seatd
+export SEATD_SOCK=/run/seatd.sock
+export TINYLAND_XKB_ROOT=/usr/share/X11/xkb
+exec /usr/local/bin/tinyland --seat --smoke --width 1024 --height 768 --socket wayland-0 -- foot /usr/local/bin/guest-test smoke
+EOF
+chmod 755 /tmp/seat-run/run.sh
+chown tiny /tmp/seat-run/run.sh
+
+su tiny -s /bin/sh -c '/tmp/seat-run/run.sh'
+RESULT=$?
+console "TINYLAND_SEAT_PROOF_EXIT rc=$RESULT"
+kill "$SEATD_PID" 2>/dev/null
+wait 2>/dev/null
+exit "$RESULT"
