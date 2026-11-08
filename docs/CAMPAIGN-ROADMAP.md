@@ -80,6 +80,14 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   apply to the appliance, because Helium statically bundles its own
   shaping, raster, and discovery. LAP-52 also rules out reproducing the
   `Fc*` ABI. They stay laputa's track for Ghostty and Play.
+- Prescribed: the lean appliance (M4L) removes only machinery web content
+  cannot observe: crash reporting, the DevTools frontend, D-Bus, and
+  background services. Any surface a page can observe, such as audio and
+  video devices, print, WebGL strings, fonts, or EME key systems, is either
+  kept or faked to a persona. Persona values come from Shadowdriver's
+  per-profile identity, never from constants baked into the build. Lean
+  changes apply to the linux/arm64 Helium build only; amd64's resolved GN
+  args stay unchanged.
 - Prescribed: `guest/` is Linux-only and builds separately from the host
   crates, for `aarch64-unknown-linux-musl` on the shared
   `nightly-2026-09-15` toolchain.
@@ -428,6 +436,62 @@ remaining gaps are `libxkbcommon` and whatever outlives GTK.
   zlib consumer remains), or bring the owner a named exception with its
   reason. Acceptance: R0 reports zero gaps, and the `docs/userland.md`
   exception list matches Decisions.
+
+### M4L: lean appliance Helium (cross-repo, chromium-build, linux/arm64)
+
+The release profile already sets `is_official_build`, `symbol_level=0`, PGO,
+ThinLTO, `enable_widevine=false`, and `enable_remoting=false`, and Helium
+already carries `helium-no-dbus.patch` and `helium-no-devtools-frontend.patch`.
+The headless Chromium profile's `config/patches/headless-no-*.patch` set
+(crashpad, printing, v4l2, rankers, domain reliability, and others) is a
+tested catalog to port from. Every L item reports its measured delta against
+L0; keep a change only if it moves a number by more than the run-to-run spread.
+
+- **L0 Lean baseline.** Owns `docs/performance.md` (Helium section). Prereq:
+  the arm64 archive. Record archive bytes by component (browser binary,
+  `.pak` resources, locales, fonts, `lib/` by library), cold launch to first
+  frame, idle browser RSS on `about:blank` and on the B1 fixture, and the
+  process count. Use the H1 method and the `perf-gate-ready` rule.
+- **L1 Audio off, faked.** Prereq: L0. This is the owner's handoff of
+  2026-11-08. Set `use_alsa=false`, so no `libasound` and no backend ship.
+  Chromium's fake audio manager reports output parameters and an
+  `enumerateDevices()` list taken from a command-line switch. A patch gated
+  behind a new GN arg, enabled only on arm64, adds that. The defaults are
+  measured from a real Linux Chrome 156 on PipeWire or Pulse. Labels never
+  reveal the fake backend, and a configured input device captures silence.
+  Acceptance: the five package checks; no `libasound` or `libpulse` in the
+  audit; a fixture where `<video>` with audio plays to `ended` in real time to
+  within 5%, `AudioContext` reaches `running`, and `sampleRate`,
+  `baseLatency`, `outputLatency`, `maxChannelCount`, and the device
+  kinds and counts match the switch exactly and the defaults without it; an
+  empty amd64 `gn args --list --short` diff.
+- **L2 Media persona in Shadowdriver. Cross-repo (shadowdriver).** Prereq:
+  L1. The per-profile identity carries an audio persona (sample rate, frames
+  per buffer, channel layout, input and output device counts), and launch
+  options render it as L1's switch. Shadowdriver's launch-args fixture
+  (`tests/fixtures/chromium_launch_args.json`) pins the result. bctl passes
+  the persona through `bctl.toml` `[browsers.*]` and records it in the run
+  receipt. Video devices join this persona in L3. Acceptance: the fixture
+  test; L1's fixture passes for two different personas from one binary.
+- **L3 Web-invisible removals.** Prereq: L0. Port from the headless catalog:
+  crashpad, the rankers, domain reliability, and remaining background
+  services. Also `enable_printing=false`, an accepted loss, with
+  `window.print()` still present as a no-op. And v4l2 off, with video-input
+  devices faked through L1's mechanism and L2's persona. Each removal is its
+  own commit with its L0 delta. Acceptance: the five package checks and B1
+  pass after each removal, and `window.print` still exists.
+- **L4 Resource trim.** Prereq: L0. Ship only the locales the supported
+  personas use. Drop `.pak` resources the browser never loads under the
+  appliance's flags, judged from a traced run, not by name. Keep fonts
+  persona-complete, not minimal: a short font list is itself a fingerprint.
+  Acceptance: archive bytes reduced; B1 and D2 pass; the locale fixture for
+  each supported persona renders the browser's own UI strings.
+- **L5 Shared base image.** Owns `images/`, `crates/runtime-smolvm/`.
+  Prereq: R1, H1. Ship the appliance as one read-only base, such as erofs,
+  shared by every session, plus a small writable layer per session and the
+  per-profile disk. Acceptance: two sessions on one host, with their summed
+  RSS and disk use measured against separate full images; no session can
+  write to the base.
 
 ### M5: hardening and measurement
 
