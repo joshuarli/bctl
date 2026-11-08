@@ -6,8 +6,9 @@ Goal: `bctl` (browserctl) runs chromium-build's Helium browser headed inside
 a SmolVM Linux arm64 guest on an Apple Silicon Mac. It shows each browser live
 in a local dashboard and accepts real keyboard and pointer input there. It
 runs Grab crawls and Shadowdriver programs against those browsers as named
-jobs, and it hands control to a human and back when a site needs a login. The
-first useful release closes when M3 below holds end to end.
+jobs, and it hands control to a human and back when a site needs a login. The first
+useful release closes when M3 below holds end to end. Along the way the guest
+proves a pure-Rust userland (M4R) whose crates port back into laputa.
 
 Baseline 2026-11-08: the repo has no commits. Facts below were checked against
 the sibling repos on that date; see **Baseline**.
@@ -56,12 +57,27 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   renderer sandbox stays on. An image whose renderers lack `NoNewPrivs=1` and
   `Seccomp=2` fails qualification (the same check as chromium-build's
   `helium_test_fast.py:150-152`).
-- Owner 2026-11-08: bctl owns its Wayland stack. `tinyland` and `seatd-rs`
-  were copied from laputa `3aa94e30` into `guest/tinyland` and `guest/seatd`
-  and are developed here as a fork; nothing syncs them with laputa in either
-  direction. `mdevd-rs` stays behind, because the SmolVM guest's device set
-  is fixed and devtmpfs plus ownership set by the guest init covers it.
+- Owner 2026-11-08: bctl owns its Wayland stack and is the proving ground for
+  a pure-Rust userland that is later ported back into laputa. `tinyland` and
+  `seatd-rs` were copied from laputa `3aa94e30` into `guest/tinyland` and
+  `guest/seatd`. They keep laputa's names and markers. What ports back is a
+  crate's source and its tests, so bctl-specific glue lives in
+  `guest/appliance`, never inside those crates. Harnesses belong to their
+  host project. `mdevd-rs` stays behind, because the SmolVM guest's device
+  set is fixed and devtmpfs plus ownership set by the guest init covers it.
   Reversal: the appliance needs hotplug.
+- Prescribed: "pure-Rust userland" means every file in the product image is
+  Rust-owned or one of these named exceptions: the Linux kernel, musl (both
+  retained by laputa LAP-51), and Chromium together with what it statically
+  bundles (its HarfBuzz, FreeType, Skia, zlib, libwayland-client, and
+  bundled Fontconfig). Every shared library Chromium loads at runtime is part
+  of the userland, not part of the exception. R0's census is the only
+  evidence for the claim. PID 1 is libkrun's `krun-init` (Rust), followed by
+  SmolVM's static musl agent (Rust). Neither needs replacing.
+- Prescribed: laputa's text forks (rust-fontconfig, HarfRust, Swash) do not
+  apply to the appliance, because Chromium statically bundles its own
+  shaping, raster, and discovery. LAP-52 also rules out reproducing the
+  `Fc*` ABI. They stay laputa's track for Ghostty and Play.
 - Prescribed: `guest/` is Linux-only and builds separately from the host
   crates, for `aarch64-unknown-linux-musl` on the shared
   `nightly-2026-09-15` toolchain.
@@ -315,17 +331,13 @@ T0 and T1 have no bctl prereq and may start at any time, in parallel with
 M1 to M3.
 
 - **T0 Decouple from laputa.** Owns `guest/tinyland/`, `guest/seatd/`.
-  No prereq. Rename the `laputa-seat-enabled`/`-disabled` markers
-  (`tinyland/src/server.rs:888`, `:1069`) and the `laputa` handshake in
-  `tinyland/guest/test-app:37` and `seatd/harness/vm-guest-test.sh:4`,
-  together with whatever reads them. Retarget `.cargo/config.toml` from
-  `x86_64-unknown-linux-musl` to `aarch64-unknown-linux-musl`. Replace the
+  No prereq. Keep laputa's names and markers. Add an
+  `aarch64-unknown-linux-musl` section to `.cargo/config.toml`. Replace the
   QEMU/KVM Alpine x86_64 proof harnesses with one SmolVM arm64 harness under
-  `guest/harness/`, then delete the QEMU scripts and the laputa integration
-  docs. Acceptance: `rg -i laputa guest` is empty; both crates' test suites
-  pass in a Linux arm64 guest; the existing proof (foot renders real pixels,
-  keyboard input changes them, unprivileged with direct device opens denied)
-  passes on SmolVM.
+  `guest/harness/`, then delete the QEMU scripts; laputa keeps its own.
+  Acceptance: both crates' test suites pass in a Linux arm64 guest; the
+  existing proof (foot renders real pixels, keyboard input changes them,
+  unprivileged with direct device opens denied) passes on SmolVM.
 - **T1 Pure-Rust seat.** Owns `guest/`. Prereq: T0. Replace the C libseat
   FFI in `tinyland/src/seat.rs` (its only `unsafe` module, linked
   dynamically) with a native seatd protocol client. Share the protocol types
@@ -348,9 +360,57 @@ M1 to M3.
   `<select>`; and one primary toplevel plus transient surfaces, with extra
   toplevels handled deterministically. Keep T0's proof green. Acceptance:
   B1 and D2 acceptance on a `helium-tinyland` image.
-- **T4 Default switch.** Owns `images/`. Prereq: T3. `helium-tinyland` becomes
-  the default image. The Sway image stays as a diagnostic image. Acceptance:
-  the full acceptance suite passes on both images.
+- **T4 Default switch.** Owns `images/`. Prereq: T3, R1. `helium-tinyland`
+  becomes the default image. The Sway image stays as a diagnostic image.
+  Acceptance: the full acceptance suite passes on both images.
+
+### M4R: pure-Rust userland
+
+Runs alongside M4. Helium currently stages these system libraries
+(`scripts/stage-runtime.py` `SYSTEM_SEEDS` and GN profile): NSS (`libsoftokn3`,
+`libfreebl3`, `libnssckbi`), GTK3 and its closure (glib, pango, cairo, atk,
+libffi through `use_system_libffi=true`, libdbus per CHB-4), Mesa
+(`libEGL`, `libGLESv2`, `libgbm`, `libgallium-*`, `libwayland-egl`),
+`libxkbcommon` (`use_xkbcommon=true`), and ALSA (`use_alsa=true`). Removing
+these is most of the work. Most of it happens in chromium-build, not here.
+
+- **R0 Closure census.** Owns `guest/audit/`, `docs/userland.md`. Prereq: P1.
+  Walk the image and attribute every file to one of: Rust-owned (crate and
+  source), an exception from the Decisions list, or a gap. For ELF files,
+  record `DT_NEEDED`, the interpreter, and whether the file is static; also
+  record what Chromium `dlopen`s, from a traced run of the B1 fixture.
+  Reuse chromium-build's recursive ELF audit (`scripts/linux_runtime.py`)
+  rather than writing a second one. Acceptance: running the census on any
+  image lists every gap with its bytes and its consumer; an unattributed
+  file fails the run.
+- **R1 Scratch rootfs.** Owns `images/`, `guest/appliance/`. Prereq: R0, T1.
+  The product image has no Alpine base, busybox, or shell. It contains
+  `krun-init`, the SmolVM agent, `guest/seatd`, `tinyland`, a Rust
+  `bctl-guest` that supervises seatd, then tinyland, then the browser, and
+  reports readiness, plus the Helium archive, its fonts, and musl. The Sway
+  diagnostic image keeps busybox for debugging. Acceptance: R0 on the
+  product image shows gaps only inside the Helium runtime closure; T0's
+  proof and B1 pass.
+- **R2 Appliance Chromium profile. Cross-repo (chromium-build).** Prereq: R0
+  on the Helium image. Add a `helium-wayland-appliance` GN profile. It
+  disables GTK (dropping glib, pango, cairo, atk, libffi, and libdbus) and
+  presents through software output on `wl_shm` with no Mesa, EGL, or gbm in
+  the archive. The guest has a 2D virtio-gpu only, and Tinyland has only
+  `wl_shm`. It also disables audio (`use_alsa=false`). File chooser, print,
+  and GPU rasterization are expected losses for an automation appliance, and
+  T2's census must confirm nothing else breaks. Acceptance: chromium-build's
+  five Helium checks pass on the new profile, including the renderer
+  sandbox; R0 shows none of the removed libraries; B1 and D2 pass on it.
+- **R3 Remaining providers.** Prereq: R2. For each gap R0 still reports
+  (expected: NSS and `libxkbcommon`), either ship a Rust provider with the
+  exact C ABI Chromium calls, or record a named exception with its reason
+  and the condition that would remove it. Candidates: a `libxkbcommon` C ABI
+  over kbvm, limited to the symbols Chromium imports (kbvm has no C ABI
+  today), and zlib-rs as `libz.so.1` if any dynamic zlib consumer remains.
+  NSS has no Rust drop-in; expect it to stay an exception unless Chromium's
+  `use_nss_certs` path can be removed. Acceptance: R0 reports zero gaps. The
+  `docs/userland.md` exception list matches Decisions plus R3's recorded
+  exceptions.
 
 ### M5: hardening and measurement
 
@@ -413,6 +473,11 @@ M1 to M3.
   input on a view-only runtime is refused, not dropped silently.
 - A8 Tinyland: the same suite passes on `helium-tinyland` and on the Sway
   diagnostic image.
+- A9 Pure-Rust userland: R0's census of the default image reports no gap, and
+  every exception is named in `docs/userland.md` with its reason. Failure: an
+  unattributed file, or a C library outside the named exceptions.
+- A10 Port-back: `guest/tinyland` and `guest/seatd` contain no bctl-specific
+  code, and their test suites pass without bctl's host crates.
 
 ## Needs environment
 
