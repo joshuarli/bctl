@@ -187,7 +187,11 @@ Checked 2026-11-08, read-only, nothing built or run.
 - **P0 Display-capable runtime.** Owns `runtime/UPSTREAM.lock`,
   `runtime/build.py`, `runtime/README.md`. No prereq. Port niceforge's
   `build_smolvm_host.py` (pin checks, arm64 and ABI checks, hypervisor
-  entitlement signing) with libkrun features `blk,net,gpu,input`. Output goes
+  entitlement signing) with libkrun features `blk,net,gpu,input`. Start from
+  the unpatched upstream pins. Niceforge carries 20 SmolVM patches
+  (`third_party/UPSTREAM.lock` `patches=`), mostly for its CI execution
+  authority and checkpoint ledger. Adopt one only when a bctl acceptance
+  check fails without it, and name that check in the commit body. Output goes
   to `.work/runtime/<lock-digest>/`. Acceptance: the build succeeds from
   clean; `nm` on the built libkrun shows `krun_add_display` and
   `krun_add_input_device`; a second build with an unchanged lock does no
@@ -395,11 +399,10 @@ and most of it happens in chromium-build.
   product image shows gaps only inside the Helium runtime closure; T0's
   proof and B1 pass.
 - **R2 Appliance Helium profile. Cross-repo (chromium-build).** Prereq: R0
-  on the Helium image. Add a `helium-wayland-appliance` GN profile. It
-  sets `use_gtk=false` and stops staging `libgtk-3.so.0` and its closure
-  (glib, pango, cairo, atk, libffi, libdbus). That holds whether or not R0
-  sees GTK load: the only GTK consumer chromium-build names is the file
-  chooser (`TODO.md:8`), and jobs set upload files through CDP. The profile
+  on the Helium image. Add a `helium-wayland-appliance` GN profile. GTK is
+  already gone: owner 2026-11-08 removed it from every Helium Linux build,
+  handed to the chromium-build arm64 work. R2 checks that glib, atk, and
+  libdbus did not stay behind through `use_glib` or `use_atk`. The profile
   presents through software output on `wl_shm` with no Mesa, EGL, or gbm in
   the archive. The guest has a 2D virtio-gpu only, and Tinyland has only
   `wl_shm`. It also disables audio (`use_alsa=false`). Owner 2026-11-08: file
