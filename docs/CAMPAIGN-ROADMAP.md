@@ -67,15 +67,17 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   Port `scripts/build_smolvm_host.py` rather than parameterizing niceforge's
   copy: the two products upgrade on different schedules. Reversal: a third
   consumer appears, at which point extract a shared runtime-build repo.
-- Prescribed: jobs run on the host in v1 and attach to the guest browser
-  through a forwarded CDP endpoint (`control_url`). Shadowdriver's attach path
-  already launches nothing and never terminates an attached browser
-  (`src/crawler.rs:358-386`, `:610`), Grab already takes `--control-url`
-  (`grab/src/grab/cli.py:128`), and Python wheels are macOS-only
-  (`py/pyproject.toml:18`), so in-guest jobs would first need Linux wheel
-  packaging. Consequence: `exec` jobs have the user's host authority, the same
-  as running the script by hand. Reversal: X3 moves jobs into the guest once
-  Linux wheels exist.
+- Prescribed: CDP is the only automation boundary. The guest is a browser
+  appliance (agent, compositor, Chromium) and runs no automation code. Grab,
+  Shadowdriver, and `exec` jobs are CDP clients outside the VM, attaching
+  through `control_url`. Shadowdriver's attach path launches nothing and never
+  terminates an attached browser (`src/crawler.rs:358-386`, `:610`), and Grab
+  takes `--control-url` (`grab/src/grab/cli.py:128`). Run output and Grab's
+  resume state therefore live on the host. A job is unchanged between a local
+  and a remote session; only the CDP URL differs. Consequence: `exec` jobs
+  have the user's host authority, the same as running the script by hand.
+  When CDP round trips to a remote host cost too much, the job runs on that
+  host beside its VMs, never inside a guest.
 - Prescribed: concepts are Session (a running or stopped browser environment),
   Profile (persistent browser identity and storage), Job (a reusable workload
   definition), Run (one execution, with attempts, logs, artifacts), and Image
@@ -327,7 +329,8 @@ Checked 2026-11-08, read-only, nothing built or run.
   log, artifact, and disk bounds. Time gates follow the `perf-gate-ready`
   rule.
 - **H2 Authority.** Prereq: M3. Put CDP behind the gateway with a per-run
-  capability. Restrict guest egress to the public internet by default, with an
+  capability; the gateway rewrites `/json/version`'s `webSocketDebuggerUrl`
+  so `control_url` attachment works unchanged. Restrict guest egress to the public internet by default, with an
   explicit allow for private ranges. Confirm no host home, SSH agent, or
   keychain reaches the guest. Acceptance: tests that a job without the
   capability cannot attach, and that the guest cannot reach a loopback-bound
@@ -347,9 +350,10 @@ Checked 2026-11-08, read-only, nothing built or run.
 - **X2 Alternative backends.** A unikernel-style or other VMM backend
   (Unikraft-style library OS, Firecracker/Cloud Hypervisor on Linux) must beat
   SmolVM on H1's measures while passing the full acceptance suite unchanged.
-- **X3 In-guest jobs and remote contexts.** Linux wheels for Shadowdriver, jobs
-  inside the guest, then a remote `bctl` context on a Linux KVM host using the
-  amd64 Helium artifact, with the same API and ownership model.
+- **X3 Remote contexts.** A remote `bctl` daemon on a Linux KVM host using the
+  amd64 Helium artifact, with the same API and ownership model. Jobs reach its
+  sessions through its gateway's CDP endpoint, or run on that host when H1's
+  round-trip measurements say the distance costs too much.
 - **X4 Site access evidence.** Run outcome categories feed a per-site record of
   which configuration (profile warmth, egress, flags) passed or was
   challenged, with sample counts and dates. This measures task completion,
