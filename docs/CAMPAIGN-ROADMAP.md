@@ -68,7 +68,8 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   Reversal: the appliance needs hotplug.
 - Prescribed: "pure-Rust userland" means every file in the product image is
   Rust-owned or one of these named exceptions: the Linux kernel, musl (both
-  retained by laputa LAP-51); Mesa, ALSA, and NSS with their own library
+  retained by laputa LAP-51); Mesa, ALSA, and Mozilla NSS (Network Security
+  Services, not skarnet nsss) with their own library
   closures (owner 2026-11-08); and Helium together with what it statically
   bundles (its HarfBuzz, FreeType, Skia, zlib, libwayland-client, and
   bundled Fontconfig). Every shared library Helium loads at runtime is part
