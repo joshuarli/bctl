@@ -24,7 +24,7 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   it. Within the boundary below, proceed without approval; park anything that
   needs authority outside it.
 - Hard stops park the item: an irreversible or outside-the-machine action,
-  disabling the Chromium sandbox, substituting a different browser for the
+  disabling the browser sandbox, substituting a different browser for the
   product image, or a loop that cannot check anything.
 - Items marked **cross-repo** change a sibling repository. They commit there,
   follow that repo's conventions, and keep its existing behavior unchanged
@@ -53,7 +53,7 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   reference image `ref-alpine-chromium` (Alpine aarch64 `chromium` APK). It is
   test scaffolding. It is never the default and never selected implicitly. A
   run on it records `image=ref-alpine-chromium` in its receipt.
-- Prescribed: headed Chromium on a virtual display, never `--headless`. The
+- Prescribed: headed Helium on a virtual display, never `--headless`. The
   renderer sandbox stays on. An image whose renderers lack `NoNewPrivs=1` and
   `Seccomp=2` fails qualification (the same check as chromium-build's
   `helium_test_fast.py:150-152`).
@@ -68,14 +68,14 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   Reversal: the appliance needs hotplug.
 - Prescribed: "pure-Rust userland" means every file in the product image is
   Rust-owned or one of these named exceptions: the Linux kernel, musl (both
-  retained by laputa LAP-51), and Chromium together with what it statically
+  retained by laputa LAP-51), and Helium together with what it statically
   bundles (its HarfBuzz, FreeType, Skia, zlib, libwayland-client, and
-  bundled Fontconfig). Every shared library Chromium loads at runtime is part
+  bundled Fontconfig). Every shared library Helium loads at runtime is part
   of the userland, not part of the exception. R0's census is the only
   evidence for the claim. PID 1 is libkrun's `krun-init` (Rust), followed by
   SmolVM's static musl agent (Rust). Neither needs replacing.
 - Prescribed: laputa's text forks (rust-fontconfig, HarfRust, Swash) do not
-  apply to the appliance, because Chromium statically bundles its own
+  apply to the appliance, because Helium statically bundles its own
   shaping, raster, and discovery. LAP-52 also rules out reproducing the
   `Fc*` ABI. They stay laputa's track for Ghostty and Play.
 - Prescribed: `guest/` is Linux-only and builds separately from the host
@@ -94,7 +94,7 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   copy: the two products upgrade on different schedules. Reversal: a third
   consumer appears, at which point extract a shared runtime-build repo.
 - Prescribed: CDP is the only automation boundary. The guest is a browser
-  appliance (agent, compositor, Chromium) and runs no automation code. Grab,
+  appliance (agent, compositor, Helium) and runs no automation code. Grab,
   Shadowdriver, and `exec` jobs are CDP clients outside the VM, attaching
   through `control_url`. Shadowdriver's attach path launches nothing and never
   terminates an attached browser (`src/crawler.rs:358-386`, `:610`), and Grab
@@ -122,7 +122,7 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   an Origin match. CDP is forwarded to loopback only. In v1 any local process
   of the same user can reach it; H2 puts it behind the gateway.
 - Delegated: profile storage. Prefer a per-profile SmolVM disk (`--storage`)
-  over a host directory volume. Pick the host volume only if a Chromium profile
+  over a host directory volume. Pick the host volume only if a browser profile
   on it survives P3's acceptance (login cookie persists across `down`/`up`, no
   SQLite lock errors in `chrome_debug.log` over 20 restarts).
 - Delegated: guest base. Prefer an Alpine aarch64 rootfs carrying SmolVM's
@@ -366,19 +366,22 @@ M1 to M3.
 
 ### M4R: pure-Rust userland
 
-Runs alongside M4. Helium currently stages these system libraries
-(`scripts/stage-runtime.py` `SYSTEM_SEEDS` and GN profile): NSS (`libsoftokn3`,
+Runs alongside M4. The Helium archive ships these system libraries.
+`copy_system_closure` (`scripts/stage-runtime.py`) stages the `SYSTEM_SEEDS`
+list in addition to the browser's `DT_NEEDED`, so being shipped does not prove
+a library loads. NSS (`libsoftokn3`,
 `libfreebl3`, `libnssckbi`), GTK3 and its closure (glib, pango, cairo, atk,
 libffi through `use_system_libffi=true`, libdbus per CHB-4), Mesa
 (`libEGL`, `libGLESv2`, `libgbm`, `libgallium-*`, `libwayland-egl`),
-`libxkbcommon` (`use_xkbcommon=true`), and ALSA (`use_alsa=true`). Removing
-these is most of the work. Most of it happens in chromium-build, not here.
+`libxkbcommon` (`use_xkbcommon=true`), and ALSA (`use_alsa=true`). R0's traced run
+settles which ones actually load; removing those that do is most of the work,
+and most of it happens in chromium-build.
 
 - **R0 Closure census.** Owns `guest/audit/`, `docs/userland.md`. Prereq: P1.
   Walk the image and attribute every file to one of: Rust-owned (crate and
   source), an exception from the Decisions list, or a gap. For ELF files,
   record `DT_NEEDED`, the interpreter, and whether the file is static; also
-  record what Chromium `dlopen`s, from a traced run of the B1 fixture.
+  record what Helium `dlopen`s, from a traced run of the B1 fixture.
   Reuse chromium-build's recursive ELF audit (`scripts/linux_runtime.py`)
   rather than writing a second one. Acceptance: running the census on any
   image lists every gap with its bytes and its consumer; an unattributed
@@ -391,23 +394,26 @@ these is most of the work. Most of it happens in chromium-build, not here.
   diagnostic image keeps busybox for debugging. Acceptance: R0 on the
   product image shows gaps only inside the Helium runtime closure; T0's
   proof and B1 pass.
-- **R2 Appliance Chromium profile. Cross-repo (chromium-build).** Prereq: R0
+- **R2 Appliance Helium profile. Cross-repo (chromium-build).** Prereq: R0
   on the Helium image. Add a `helium-wayland-appliance` GN profile. It
-  disables GTK (dropping glib, pango, cairo, atk, libffi, and libdbus) and
+  sets `use_gtk=false` and stops staging `libgtk-3.so.0` and its closure
+  (glib, pango, cairo, atk, libffi, libdbus). That holds whether or not R0
+  sees GTK load: the only GTK consumer chromium-build names is the file
+  chooser (`TODO.md:8`), and jobs set upload files through CDP. The profile
   presents through software output on `wl_shm` with no Mesa, EGL, or gbm in
   the archive. The guest has a 2D virtio-gpu only, and Tinyland has only
-  `wl_shm`. It also disables audio (`use_alsa=false`). File chooser, print,
-  and GPU rasterization are expected losses for an automation appliance, and
-  T2's census must confirm nothing else breaks. Acceptance: chromium-build's
+  `wl_shm`. It also disables audio (`use_alsa=false`). Owner 2026-11-08: file
+  chooser, print, audio, and GPU rasterization are accepted losses. T2's
+  census must confirm nothing else breaks. Acceptance: chromium-build's
   five Helium checks pass on the new profile, including the renderer
   sandbox; R0 shows none of the removed libraries; B1 and D2 pass on it.
 - **R3 Remaining providers.** Prereq: R2. For each gap R0 still reports
   (expected: NSS and `libxkbcommon`), either ship a Rust provider with the
-  exact C ABI Chromium calls, or record a named exception with its reason
+  exact C ABI Helium calls, or record a named exception with its reason
   and the condition that would remove it. Candidates: a `libxkbcommon` C ABI
-  over kbvm, limited to the symbols Chromium imports (kbvm has no C ABI
+  over kbvm, limited to the symbols Helium imports (kbvm has no C ABI
   today), and zlib-rs as `libz.so.1` if any dynamic zlib consumer remains.
-  NSS has no Rust drop-in; expect it to stay an exception unless Chromium's
+  NSS has no Rust drop-in; expect it to stay an exception unless Helium's
   `use_nss_certs` path can be removed. Acceptance: R0 reports zero gaps. The
   `docs/userland.md` exception list matches Decisions plus R3's recorded
   exceptions.
@@ -428,7 +434,7 @@ these is most of the work. Most of it happens in chromium-build, not here.
   keychain reaches the guest. Acceptance: tests that a job without the
   capability cannot attach, and that the guest cannot reach a loopback-bound
   host service or an RFC 1918 address unless allowed.
-- **H3 Failure injection.** Prereq: H1. Cover killing Chromium, the
+- **H3 Failure injection.** Prereq: H1. Cover killing the browser, the
   compositor, the VM, and the daemon; filling the disk; and dropping the
   viewer, each during a run. Every case ends in a named state with no leaked
   VM, port, or lease. Add retained-failure expiry and storage GC.
@@ -463,7 +469,7 @@ these is most of the work. Most of it happens in chromium-build, not here.
 - A3 Ownership: daemon restart never duplicates or orphans a session, and an
   unknown-outcome attempt is never silently retried.
 - A4 Profiles: one writable session per profile; login state survives
-  `down`/`up`. Failure: two Chromium processes on one profile.
+  `down`/`up`. Failure: two browser processes on one profile.
 - A5 Jobs: `bctl grab` and `bctl run` produce categorized outcomes and
   verified Grab mirrors; interrupted crawls resume from Grab's own state.
 - A6 Takeover: `NeedsInteraction` to manual login to `Running` in the same
