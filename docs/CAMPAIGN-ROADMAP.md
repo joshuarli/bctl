@@ -12,8 +12,9 @@ first useful release closes when M3 below holds end to end.
 Baseline 2026-11-08: the repo has no commits. Facts below were checked against
 the sibling repos on that date; see **Baseline**.
 
-Accepted: none.
-Next: P0 and P1 (parallel).
+Accepted: none. `guest/tinyland` and `guest/seatd` are vendored and pass
+`cargo check --locked --target aarch64-unknown-linux-musl --all-targets`.
+Next: P0, P1, and T0 (parallel).
 Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
@@ -55,6 +56,15 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   renderer sandbox stays on. An image whose renderers lack `NoNewPrivs=1` and
   `Seccomp=2` fails qualification (the same check as chromium-build's
   `helium_test_fast.py:150-152`).
+- Owner 2026-11-08: bctl owns its Wayland stack. `tinyland` and `seatd-rs`
+  were copied from laputa `3aa94e30` into `guest/tinyland` and `guest/seatd`
+  and are developed here as a fork; nothing syncs them with laputa in either
+  direction. `mdevd-rs` stays behind, because the SmolVM guest's device set
+  is fixed and devtmpfs plus ownership set by the guest init covers it.
+  Reversal: the appliance needs hotplug.
+- Prescribed: `guest/` is Linux-only and builds separately from the host
+  crates, for `aarch64-unknown-linux-musl` on the shared
+  `nightly-2026-09-15` toolchain.
 - Prescribed: bctl drives a pinned `smolvm` executable through a typed process
   adapter. It does not link SmolVM or libkrun. The display and input path is
   SmolVM's own: virtio-gpu scanout to host framebuffer to RFB and WebSocket
@@ -141,7 +151,8 @@ Checked 2026-11-08, read-only, nothing built or run.
   (`cloner::progress` lines). Cancellation is SIGINT/SIGTERM only. On a
   challenge it tells the user to rerun `--single --headful`
   (`cloner.py:1912-1916`). It has no interactive-login pause.
-- **Tinyland (laputa `3aa94e30`).** A single-fullscreen kiosk. Output is DRM
+- **Tinyland (`guest/tinyland`, copied from laputa `3aa94e30`).** A
+  single-fullscreen kiosk. Output is DRM
   only (`/dev/dri/card0`, atomic with legacy fallback), which suits a
   virtio-gpu scanout. Globals: wl_compositor 4, wl_subcompositor, wl_shm,
   wl_output 2, wl_seat 5 keyboard-only, wl_data_device_manager 3, xdg_wm_base.
@@ -298,24 +309,46 @@ Checked 2026-11-08, read-only, nothing built or run.
   the guest while the first holds the lease; the takeover and resume flow of
   J3 driven entirely from the dashboard.
 
-### M4: Tinyland as the appliance compositor (cross-repo, laputa)
+### M4: Tinyland as the appliance compositor
 
-- **T0 Protocol census.** Owns `docs/compositor-contract.md`. Prereq: P2.
-  Run the Helium image under Sway with `WAYLAND_DEBUG=1` through the B1
-  fixture and a menu/select/dialog fixture. Record each global and request
-  Chromium binds and uses, and which buffer path it presents through (wl_shm
-  or linux-dmabuf). That settles the minimum Tinyland gap from the Baseline
-  list. Acceptance: the contract lists required protocols with the evidence
-  line for each.
-- **T1 Tinyland browser support. Cross-repo.** Prereq: T0. Implement only
-  what T0 requires. The known minimum is wl_pointer with cursor surfaces and
-  absolute motion, buttons, axis, and drag; real xdg_positioner placement and
-  xdg_popup grab and dismissal for menus and `<select>`; and one primary
-  toplevel plus transient surfaces, with extra toplevels handled
-  deterministically. Keep Tinyland's existing qualification green.
-  Acceptance: Tinyland's own gates, plus B1 and D2 acceptance on a
-  `helium-tinyland` image.
-- **T2 Default switch.** Owns `images/`. Prereq: T1. `helium-tinyland` becomes
+T0 and T1 have no bctl prereq and may start at any time, in parallel with
+M1 to M3.
+
+- **T0 Decouple from laputa.** Owns `guest/tinyland/`, `guest/seatd/`.
+  No prereq. Rename the `laputa-seat-enabled`/`-disabled` markers
+  (`tinyland/src/server.rs:888`, `:1069`) and the `laputa` handshake in
+  `tinyland/guest/test-app:37` and `seatd/harness/vm-guest-test.sh:4`,
+  together with whatever reads them. Retarget `.cargo/config.toml` from
+  `x86_64-unknown-linux-musl` to `aarch64-unknown-linux-musl`. Replace the
+  QEMU/KVM Alpine x86_64 proof harnesses with one SmolVM arm64 harness under
+  `guest/harness/`, then delete the QEMU scripts and the laputa integration
+  docs. Acceptance: `rg -i laputa guest` is empty; both crates' test suites
+  pass in a Linux arm64 guest; the existing proof (foot renders real pixels,
+  keyboard input changes them, unprivileged with direct device opens denied)
+  passes on SmolVM.
+- **T1 Pure-Rust seat.** Owns `guest/`. Prereq: T0. Replace the C libseat
+  FFI in `tinyland/src/seat.rs` (its only `unsafe` module, linked
+  dynamically) with a native seatd protocol client. Share the protocol types
+  with `guest/seatd` through one crate, and make `guest/` a single Cargo
+  workspace. Ship `seatd` from `guest/seatd` in the appliance image instead
+  of Alpine's C seatd. Acceptance: the tinyland binary is static (no ELF
+  interpreter, no `DT_NEEDED`); T0's proof passes against the vendored
+  seatd; seatd's differential and adversarial suites stay green.
+- **T2 Protocol census.** Owns `docs/compositor-contract.md`. Prereq: P1
+  (rerun on P2 when it exists). Run Chromium under Sway with
+  `WAYLAND_DEBUG=1` through the B1 fixture and a menu/select/dialog fixture.
+  Record each global and request Chromium binds and uses, and which buffer
+  path it presents through (wl_shm or linux-dmabuf). That settles the minimum
+  Tinyland gap from the Baseline list. Acceptance: the contract lists
+  required protocols with the evidence line for each.
+- **T3 Tinyland browser support.** Owns `guest/tinyland/`. Prereq: T1, T2.
+  Implement only what T2 requires. The known minimum is wl_pointer with
+  cursor surfaces and absolute motion, buttons, axis, and drag; real
+  xdg_positioner placement and xdg_popup grab and dismissal for menus and
+  `<select>`; and one primary toplevel plus transient surfaces, with extra
+  toplevels handled deterministically. Keep T0's proof green. Acceptance:
+  B1 and D2 acceptance on a `helium-tinyland` image.
+- **T4 Default switch.** Owns `images/`. Prereq: T3. `helium-tinyland` becomes
   the default image. The Sway image stays as a diagnostic image. Acceptance:
   the full acceptance suite passes on both images.
 
