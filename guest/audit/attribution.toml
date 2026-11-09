@@ -1,0 +1,98 @@
+exclude = ["/.dockerenv", "/dev/*", "/proc/*", "/sys/*"]
+
+[[rule]]
+class = "exception"
+name = "musl"
+reason = "retained by laputa LAP-51"
+paths = ["*/ld-musl-*.so.1", "*/libc.musl-*.so.1"]
+packages = ["musl"]
+
+[[rule]]
+class = "exception"
+name = "mesa"
+reason = "named exception with its library closure (owner 2026-11-08)"
+paths = ["*/libEGL.so*", "*/libGLESv2.so*", "*/libgbm.so*", "*/libgallium-*.so", "*/libwayland-egl.so*", "*/libEGL_mesa.so*", "*/libGLX_mesa.so*"]
+packages = ["mesa", "mesa-dri-gallium", "mesa-egl", "mesa-gbm", "mesa-gles", "wayland-libs-egl", "llvm20-libs", "spirv-tools", "libdrm", "libxshmfence", "libelf", "libpciaccess", "hwdata-pci"]
+
+[[rule]]
+class = "exception"
+name = "alsa"
+reason = "named exception (use_alsa=true)"
+paths = ["*/libasound.so*"]
+packages = ["alsa-lib"]
+
+[[rule]]
+class = "exception"
+name = "nss"
+reason = "Mozilla Network Security Services, named exception"
+paths = ["*/libsoftokn3.so", "*/libfreebl3.so", "*/libfreeblpriv3.so", "*/libnssckbi.so", "*/libnss3.so", "*/libnssutil3.so", "*/libsmime3.so", "*/libnspr4.so", "*/libplc4.so", "*/libplds4.so"]
+packages = ["nss", "nspr", "sqlite-libs"]
+
+[[rule]]
+class = "exception"
+name = "browser"
+reason = "stand-in for Helium and what it statically bundles (Alpine chromium APK)"
+packages = ["chromium"]
+
+[[rule]]
+class = "gap"
+name = "alpine-base"
+reason = "Alpine base system and package manager; R1 removes the base"
+paths = ["/etc/apk/*", "/lib/apk/*", "/etc/passwd*", "/etc/group*", "/etc/shadow*", "/etc/resolv.conf", "/usr/local/bin/bctl-guest"]
+packages = ["alpine-baselayout", "alpine-baselayout-data", "alpine-keys", "alpine-release", "apk-tools", "libapk2", "ca-certificates-bundle", "ssl_client", "scanelf", "pkgconf", "musl-utils"]
+
+[[rule]]
+class = "gap"
+name = "shell-and-tooling"
+reason = "busybox and shell tooling; the diagnostic image keeps them, the product image drops them"
+packages = ["busybox", "busybox-binsh", "socat", "su-exec", "file", "libmagic", "xdg-utils", "xset", "xprop", "ncurses-terminfo-base", "libncursesw", "readline", "libeconf", "mkfontscale", "libfontenc"]
+
+[[rule]]
+class = "gap"
+name = "sway-stack"
+reason = "C compositor, seat, and input stack; replaced by tinyland, guest/seatd, and kbvm"
+packages = ["sway", "swaybar", "swaynag", "sway-wallpapers", "wlroots", "seatd", "libseat", "libinput-libs", "libevdev", "mtdev", "libelogind", "libudev-zero", "basu", "libdisplay-info", "wayland-libs-server", "pixman", "xcb-util-renderutil", "xcb-util-wm", "vulkan-loader", "libcap2"]
+
+[[rule]]
+class = "gap"
+name = "libxkbcommon"
+reason = "C libxkbcommon; R3 replaces it with a kbvm-backed library"
+packages = ["libxkbcommon", "xkeyboard-config"]
+
+[[rule]]
+class = "gap"
+name = "gtk-stack"
+reason = "GTK3 and its closure; owner removed GTK from Helium builds (R2)"
+packages = ["gtk+3.0", "gdk-pixbuf", "gtk-update-icon-cache", "hicolor-icon-theme", "shared-mime-info", "pango", "cairo", "cairo-gobject", "libatk-1.0", "libatk-bridge-2.0", "at-spi2-core", "at-spi2-core-libs", "gobject-introspection", "libepoxy", "fribidi", "graphite2", "libxft", "libx11", "libxau", "libxcb", "libxcomposite", "libxcursor", "libxdamage", "libxdmcp", "libxext", "libxfixes", "libxi", "libxinerama", "libxrandr", "libxrender", "libxtst", "libice", "libsm", "libxt", "libxmu"]
+
+[[rule]]
+class = "gap"
+name = "glib-and-system-libs"
+reason = "glib and the basic C libraries beneath it; R2 reports what survives in Helium"
+paths = ["/usr/share/glib-2.0/*", "/usr/lib/gtk-3.0/*", "/usr/lib/gdk-pixbuf-2.0/*", "/usr/share/icons/*", "/usr/share/mime/*"]
+packages = ["glib", "libffi", "libintl", "libmount", "libblkid", "libuuid", "pcre2", "dbus-libs", "libbz2", "libexpat", "libgcc", "libstdc++", "libgomp", "libbsd", "libmd", "json-c", "cjson"]
+
+[[rule]]
+class = "gap"
+name = "chromium-system-libs"
+reason = "libraries the Alpine chromium APK links from the system; Helium bundles its own copies or the library is a real gap"
+paths = ["/var/cache/fontconfig/*", "/usr/share/fonts/*"]
+packages = ["freetype", "harfbuzz", "harfbuzz-subset", "fontconfig", "font-dejavu", "font-opensans", "libpng", "libjpeg-turbo", "libwebp", "libwebpdemux", "libwebpmux", "libsharpyuv", "libxml2", "libxslt", "zlib", "zstd-libs", "xz-libs", "brotli-libs", "minizip", "icu-data-full", "libjxl", "lcms2", "openh264", "libdeflate", "tiff", "giflib", "libhwy", "crc32c", "double-conversion", "simdutf", "imath", "abseil-cpp-raw-logging-internal", "abseil-cpp-strings", "abseil-cpp-strings-internal", "wayland-libs-client", "wayland-libs-cursor", "encodings"]
+
+[[rule]]
+class = "gap"
+name = "media-codecs"
+reason = "codec and container libraries the Alpine chromium APK links through system ffmpeg"
+packages = ["ffmpeg-libavcodec", "ffmpeg-libavformat", "ffmpeg-libavutil", "ffmpeg-libswresample", "aom-libs", "libdav1d", "libvpx", "opus", "x264-libs", "x265-libs", "rav1e-libs", "libSvtAv1Enc", "libtheora", "libvorbis", "libogg", "libflac", "lame-libs", "mpg123-libs", "libopenmpt", "libsndfile", "libbluray", "libsrt", "librist", "libzmq", "xvidcore", "soxr", "speexdsp", "libva", "libvdpau", "openexr-libopenexr", "openexr-libopenexrcore", "openexr-libiex", "openexr-libilmthread"]
+
+[[rule]]
+class = "gap"
+name = "tls-and-crypto-libs"
+reason = "TLS and crypto libraries pulled in by ffmpeg, cups, and avahi"
+packages = ["gnutls", "libssh", "p11-kit", "libtasn1", "nettle", "gmp", "libidn2", "libunistring", "mbedtls", "libcrypto3", "libssl3", "avahi-libs", "cups-libs", "numactl"]
+
+[[rule]]
+class = "gap"
+name = "pipewire-stack"
+reason = "PipeWire, PulseAudio and libcamera stack the Alpine chromium APK links for audio capture"
+packages = ["libcamera", "libcamera-ipa", "libpisp", "tdb-libs", "yaml", "libasyncns", "libltdl", "orc", "pipewire-libs", "libpulse", "webrtc-audio-processing-2", "roc-toolkit-libs", "lilv-libs", "serd-libs", "sord-libs", "sratom", "zix-libs", "libunwind", "libuv", "libsodium"]
