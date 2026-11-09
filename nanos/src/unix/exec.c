@@ -455,6 +455,8 @@ static void exec_elf_finish(buffer ex, fsfile f, process kp,
                                    ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
                                          0, 0, 0, 0));
     assert(proc->vm->heap_map != INVALID_ADDRESS);
+    fsfile_reserve(f);
+    proc->vm->image = f;
     exec_debug("entry %p, brk %p (offset 0x%lx)\n", entry, proc->vm->brk, brk_offset);
 
     /* XXX temporarily disable because it breaks ftrace. Will need to 
@@ -798,6 +800,16 @@ static sysreturn exec_copy_args(exec_args args, sstring path, char *const *argv,
     return exec_copy_strings(args, envp, true, limit);
 }
 
+static void exec_name_reexec_of_self(process p, fsfile f, buffer exe)
+{
+    process_lock(p);
+    if (p->vm && (p->vm->image == f) && p->exe) {
+        buffer_clear(exe);
+        buffer_write(exe, buffer_ref(p->exe, 0), buffer_length(p->exe));
+    }
+    process_unlock(p);
+}
+
 static sysreturn exec_resolve(int dirfd, sstring path, int flags, fsfile *fp, buffer exe)
 {
     process p = current->p;
@@ -874,6 +886,8 @@ static sysreturn exec_resolve(int dirfd, sstring path, int flags, fsfile *fp, bu
         else if (!is_regular(n) || !fsf || !(file_meta_perms(p, n) & ACCESS_PERM_EXEC))
             rv = -EACCES;
         filesystem_put_node(lookup_fs, n);
+        if (rv == 0)
+            exec_name_reexec_of_self(p, fsf, exe);
         if (rv && fsf) {
             fsfile_release(fsf);
             fsf = 0;

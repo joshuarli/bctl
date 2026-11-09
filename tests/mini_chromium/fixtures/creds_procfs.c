@@ -665,6 +665,29 @@ static int role_nnp(void)
 	return prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1 && self_field_is("NoNewPrivs", "1") ? 0 : 1;
 }
 
+static int role_exe_link(const char *want)
+{
+	char link[sizeof self] = "";
+	ssize_t n = readlink("/proc/self/exe", link, sizeof link - 1);
+	if (n <= 0)
+		return 2;
+	link[n] = 0;
+	return strcmp(link, want) ? 3 : 0;
+}
+
+static void check_reexec_proc_self_exe(void)
+{
+	pid_t pid = fork();
+	if (pid == 0) {
+		char *argv[] = { "/proc/self/exe", "--role=exe-link", self, 0 };
+		execv("/proc/self/exe", argv);
+		_exit(9);
+	}
+	int status = 0;
+	waitpid(pid, &status, 0);
+	record("reexec_proc_self_exe", WIFEXITED(status) && WEXITSTATUS(status) == 0, "status=0x%x", status);
+}
+
 int main(int argc, char **argv)
 {
 	ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
@@ -674,6 +697,8 @@ int main(int argc, char **argv)
 		snprintf(self, sizeof self, "%s", argv[0]);
 	if (argc > 1 && !strcmp(argv[1], "--role=nnp"))
 		return role_nnp();
+	if (argc > 2 && !strcmp(argv[1], "--role=exe-link"))
+		return role_exe_link(argv[2]);
 	signal(SIGALRM, deadline);
 	if (geteuid() == 0) {
 		run_check("root_drop", check_root_drop);
@@ -687,6 +712,7 @@ int main(int argc, char **argv)
 	run_check("task_nlink", check_task_nlink);
 	run_check("fd_listing", check_fd_listing);
 	run_check("memfd_reopen", check_memfd_reopen);
+	run_check("reexec_proc_self_exe", check_reexec_proc_self_exe);
 	char line[96];
 	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS",
 		passed, failed);
