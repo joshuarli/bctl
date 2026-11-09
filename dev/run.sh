@@ -98,18 +98,36 @@ fi
 manifest=$image.manifest
 program=''
 [ -f "$manifest" ] && program=$(sed -n 's/^program:\///p' "$manifest")
-binary_sha=''
+binary_sha='' host=''
 if [ -n "$program" ]; then
 	host=$(sed -n "s/^ *$program:(contents:(host:\([^)]*\)))/\1/p" "$manifest" | head -n 1)
 	[ -n "$host" ] && [ -f "$host" ] && binary_sha=$(sha256sum "$host" | cut -d' ' -f1)
 fi
+
+symbolize() {
+	elf=${kernel%.img}.elf
+	offset=$(sed -n 's/^kernel load offset \([0-9a-f]*\)$/\1/p' "$log" | head -n 1)
+	awk '/^ *rip: / { print $2 } /^frame trace:/ { f = 1; next } /^kernel load offset/ { f = 0 } f && /^[0-9a-f]+: / { print $2 }' "$log" | while read -r addr; do
+		case $addr in
+		ffff*)
+			[ -n "$offset" ] && [ -f "$elf" ] || { printf '0x%s kernel (no load offset or kernel.elf)\n' "$addr"; continue; }
+			printf '0x%s %s\n' "$addr" "$(addr2line -f -i -p -e "$elf" "$(printf '0x%x' $((0x$addr - 0x$offset)))")"
+			;;
+		*)
+			[ -n "$host" ] && [ -f "$host" ] || { printf '0x%s user (no program binary)\n' "$addr"; continue; }
+			printf '0x%s %s\n' "$addr" "$(addr2line -f -i -p -e "$host" "0x$addr")"
+			;;
+		esac
+	done
+}
+if [ "$verdict" = CRASH ]; then symbolize >"$dir/frames.txt"; else : >"$dir/frames.txt"; fi
 dirty=false
 [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ] || dirty=true
 reproduce=''
 [ -f "$image.reproduce" ] && reproduce="dev/bootstrap.sh && dev/build.sh && make -s -C tests/mini_chromium && $(cat "$image.reproduce") && dev/run.sh --smp $smp --mem $mem --timeout $timeout --exit $want_exit$(sed 's/^/ --expect-test /' "$expected" | tr '\n' ' ' | sed 's/ $//;s/^/ /;s/^ $//') $image"
 
 printf '%s\n' "$tests" | sed -n 's/^MINI_CHROMIUM_TEST name=\([^ ]*\) status=\([^ ]*\)\(.*\)$/\1\t\2\t\3/p' |
-	jaq -R -s '[split("\n")[] | select(length > 0) | split("\t") | {name: .[0], status: .[1], detail: (.[2] | ltrimstr(" "))}]' >"$dir/tests.json"
+	jaq -R -s '[split("\n")[] | select(length > 0) | split("\t") | {name: .[0], status: .[1], detail: (.[2] | ltrimstr(" ") | ltrimstr("detail="))}]' >"$dir/tests.json"
 jaq -n \
 	--arg verdict "$verdict" --arg detail "$detail" \
 	--arg hydrogen "$(git -C "$ROOT" rev-parse HEAD)" --argjson dirty "$dirty" \
@@ -119,12 +137,13 @@ jaq -n \
 	--arg gcc "$HOST_GCC_VERSION" --arg qemu "$HOST_QEMU_VERSION" --arg llvm "$LLVM_RELEASE" --arg musl "$MUSL_VERSION" \
 	--arg qemu_cmd "$qemu_cmd" --argjson qemu_exit "$rc" --argjson guest_exit "$guest_code" \
 	--arg elapsed "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }')" \
-	--arg reproduce "$reproduce" --slurpfile tests "$dir/tests.json" \
+	--arg reproduce "$reproduce" --slurpfile tests "$dir/tests.json" --rawfile frames "$dir/frames.txt" \
 	'{verdict: $verdict, detail: $detail, hydrogen: $hydrogen, dirty: $dirty,
 	  kernel_sha256: $kernel_sha256, image_sha256: $image_sha256, program: $program, binary_sha256: $binary_sha256,
 	  toolchain: {gcc: $gcc, qemu: $qemu, llvm: $llvm, musl: $musl},
 	  qemu: {command: $qemu_cmd, exit: $qemu_exit, guest_exit: $guest_exit},
-	  elapsed_seconds: ($elapsed | tonumber), reproduce: $reproduce, tests: $tests[0]}' >"$dir/result.json"
+	  elapsed_seconds: ($elapsed | tonumber), reproduce: $reproduce, tests: $tests[0],
+	  frames: ($frames | split("\n") | map(select(length > 0)))}' >"$dir/result.json"
 rm -f "$dir/tests.json"
 
 printf 'RUN verdict=%s%s dir=%s\n' "$verdict" "${detail:+ detail=$detail}" "$dir"

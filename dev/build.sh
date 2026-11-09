@@ -2,17 +2,24 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
+src=$NANOS kconfig=''
 case ${1:-} in
 --clean) rm -rf "$NANOS_OUT" ;;
+--debug)
+	src=$NANOS_DEBUG kconfig=no-kaslr
+	mkdir -p "$src"
+	tar -C "$NANOS" --exclude=./output -cf - . | tar -C "$src" -xf -
+	;;
 '') ;;
-*) die "usage: dev/build.sh [--clean]" ;;
+*) die "usage: dev/build.sh [--clean | --debug]" ;;
 esac
 
 ensure_work
-make -C "$NANOS" -j"$(nproc)" kernel tools >"$WORK/tmp/build.log" 2>&1 || { tail -n 30 "$WORK/tmp/build.log" >&2; die "build failed; full log in $WORK/tmp/build.log"; }
+make -C "$src" -j"$(nproc)" kernel tools ${kconfig:+KCONFIG=$kconfig} >"$WORK/tmp/build.log" 2>&1 || { tail -n 30 "$WORK/tmp/build.log" >&2; die "build failed; full log in $WORK/tmp/build.log"; }
 
-bin=$NANOS_OUT/platform/pc/bin
-for f in "$bin/kernel.img" "$bin/kernel.elf" "$NANOS_OUT/platform/pc/boot/boot.img" "$NANOS_OUT/tools/bin/mkfs"; do
+out=$src/output
+bin=$out/platform/pc/bin
+for f in "$bin/kernel.img" "$bin/kernel.elf" "$out/platform/pc/boot/boot.img" "$out/tools/bin/mkfs"; do
 	[ -f "$f" ] || die "missing build product $f"
 done
-sha256sum "$bin/kernel.img" "$bin/kernel.elf" "$NANOS_OUT/platform/pc/boot/boot.img"
+sha256sum "$bin/kernel.img" "$bin/kernel.elf" "$out/platform/pc/boot/boot.img"

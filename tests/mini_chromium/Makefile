@@ -5,7 +5,7 @@ SYSROOT:=	$(ROOT)/.work/sysroot
 OUT:=		$(ROOT)/.work/build/mini_chromium
 CFLAGS:=	--sysroot=$(SYSROOT) -O2 -g -Wall -Wextra -Werror
 
-STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result
+STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result meminfo
 DYNAMIC_FIXTURES:=	hello_stdio
 
 all: $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES))

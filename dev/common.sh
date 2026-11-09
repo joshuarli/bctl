@@ -7,6 +7,7 @@ SYSROOT=$WORK/sysroot
 GOROOT=$TOOLCHAIN/go
 NANOS=$ROOT/nanos
 NANOS_OUT=$NANOS/output
+NANOS_DEBUG=$WORK/build/nanos-debug
 TMPDIR=$WORK/tmp
 export TMPDIR
 

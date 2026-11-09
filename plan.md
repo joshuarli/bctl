@@ -11,16 +11,21 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** G0.2 (see `git log`).
+- **Last accepted revision:** G0.5 (see `git log`).
 - **Accepted:** G0.1 (fork at `nanos/`, pinned vendoring, bootstrap/doctor/build;
   byte-identical clean rebuilds). G0.2 (`dev/image.sh`, `dev/run.sh`,
-  `dev/test.sh harness` in 42 s: static hello passes on 1 and 2 vCPUs; crash,
-  missing record, duplicate record and hang give CRASH, FAIL, FAIL and TIMEOUT;
-  musl stdio fixtures are known-red on the console `writev` bug).
+  `dev/test.sh harness`: every false-pass channel rejected; musl stdio
+  fixtures known-red on the console `writev` bug). G0.5 (`dev/build.sh
+  --debug`, `dev/debug.sh`, crash symbolization, `dev/test.sh metrics`).
   **Red:** none. **Parked:** none.
-- **Next slice:** `G0.5` (no kernel change), then `G0.3`, the first kernel change.
+- **Not yet run:** G0.4 needs G0.3 first: most upstream runtime tests print
+  through stdio and hang on the `writev` bug, so a baseline taken now would
+  measure only that bug.
+- **Next slice:** the native side of the probe (`tests/mini_chromium`
+  process, memory and IPC checks run with `--native`), then **stop for the
+  owner** before G0.3, the first kernel change (owner decision 7).
 - **Lanes:** `H` running in `.work/wt/h` (branch `lane/h`).
-- **Gate matrix:** G0 NOT RUN (2/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Gate matrix:** G0 NOT RUN (3/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -37,8 +42,8 @@ only when every slice in it is accepted on `main`.
   architectural blocker in a gate's prerequisite (park everything that
   depends on it, keep independent slices and documentation going).
 - Parity first: every gate works end to end before any optimization. Product
-  performance (boot time, RSS, fork/IPC latency) is measured and logged, not
-  gated, until slice `P.1`.
+  performance (boot time, RSS, fork/IPC latency) is measured and logged, never
+  gated (owner decision 6).
 - Fix egregious problems you meet in their own commit, at these thresholds: a
   harness boot of the static hello fixture taking over 5 s; an incremental
   `dev/build.sh` over 60 s after a one-file change; any guest test over 10×
@@ -104,6 +109,13 @@ only when every slice in it is accepted on `main`.
 5. **Pushing.** After each accepted slice, push hydrogen `main` to `origin`
    (`git@github.com:joshuarli/hydrogen`). No other push target, no force
    push, no new remote repositories. `upstream` is fetch-only.
+6. **Performance gates are waived.** Only feature completeness counts.
+   Measurements are still taken and reported, but they never gate a slice and
+   `perf-gate-ready` is not consulted.
+7. **Kernel changes as late as possible.** Do the work that needs no change
+   under `nanos/src` or `nanos/klib` first (harness, debug workflow, Chromium
+   contract, the native side of the probe). Stop for the owner before the
+   first kernel change.
 
 ### Prescribed
 
@@ -263,6 +275,8 @@ Upstream checkout in `.work/src/nanos` at `e4b9c9e`.
 | Sandbox syscalls at `e4b9c9e` | `clone` without `CLONE_THREAD` returns `-ENOSYS` (`nanos/src/unix/thread.c:58`); `execve`/`fork`/`seccomp`/`unshare` unregistered; `wait4`, `setuid`, `setgid`, `setgroups`, `capset` are `syscall_ignore`; `prctl` returns 0 for every option it doesn't know; no `/proc/self/status` |
 | Existing reusable pieces | `memfd_create` and seals (`nanos/klib/shmem.c:12`, `F_ADD_SEALS` in `syscall.c`), `pledge`/`unveil`/`sandbox` klibs (`nanos/klib/`), the `strace` klib, `NO_KASLR` (`nanos/src/kernel/init.c:86`) |
 | Native oracle | unprivileged `unshare -Urpn` works on the host; seccomp present |
+| Metrics (`dev/test.sh metrics`) | `kernel.img` 1,789,960 B; `kernel.elf` 12,714,736 B; static hello image 15,256,576 B; guest with 1 GiB after boot: MemTotal 1,044,792 KiB, MemFree 982,408 KiB (≈61 MiB used); boot to exit of static hello median 0.24–0.29 s over 10 boots (min 0.22, max 0.50) |
+| Debug kernel | `dev/build.sh --debug` builds from a synced copy at `.work/build/nanos-debug` with `KCONFIG=no-kaslr`; it stays `-O3` because `nanos/kernel.mk:25` hard-codes it, and changing that is a kernel-build change. Overriding `OUTDIR` breaks the vdso headers, hence the copy. GDB loads `kernel.elf` at `KERNEL_BASE - START` (`0xffffffff7fe00000`), verified against `kas_kern_offset`. Kernel-frame symbolization (`addr - kernel load offset`) is implemented but not yet exercised by a kernel fault |
 
 Loop: a kernel slice's inner loop is an incremental build (~6 s) plus
 one or more guest boots (~1 s each). The full upstream runtime suite is
@@ -362,7 +376,7 @@ corroboration, never as proof.
 
 | ID | Slice | Acceptance |
 | --- | --- | --- |
-| P.1 | Benchmark report in `docs/campaign-report.md`: cold-boot latency (median and p95 over 20 boots), kernel and image size, guest RSS (idle, probe, Helium), `fork`+`exec`+`wait` latency, and Unix-socket round trip and fd-passing throughput, each against **Baseline** and the native host. Follow `benchmark-checklist`. Time-based numbers count only between `perf-gate-ready` and `perf-gate-ready -1`; if the host stays busy, report "perf gate deferred: host busy". Optimize (PCID, COW fast paths) only where a number is more than 3× the native host and the fix is local. | the report table exists, each number with its method and spread |
+| P.1 | Benchmark report in `docs/campaign-report.md`: cold-boot latency (median and p95 over 20 boots), kernel and image size, guest RSS (idle, probe, Helium), `fork`+`exec`+`wait` latency, and Unix-socket round trip and fd-passing throughput, each against **Baseline** and the native host, with method and spread. Measurements only; nothing gates on them (owner decision 6). | the report table exists |
 
 ### Close
 
