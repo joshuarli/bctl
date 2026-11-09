@@ -24,7 +24,10 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   G2.3 (AF_UNIX `shutdown`, `EPOLLRDHUP`/`EPOLLHUP`, `SIGPIPE` on stream
   sockets and pipes as Linux does, `MSG_DONTWAIT`/`MSG_NOSIGNAL`/`MSG_TRUNC`,
   `membarrier` private expedited; `ipc_xproc` 20/20 on 1 and 2 vCPUs).
-  Probe on Nanos: 24/55, raw 5/6 (only seccomp left); upstream 64 pass.
+  G3.1 (credentials and capabilities, a `prctl` table, a dynamic procfs on
+  `/proc`, and an `mmap` bad-fd lock leak; `creds_procfs` 20/20 on 1 and 2
+  vCPUs). Probe on Nanos: 29/55, raw 5/6 (only seccomp left); upstream 64
+  pass.
   **Red:** none.
   **Parked:** G2.1 (SCM data and Unix-socket credentials). Work on it was
   stopped twice by an automated safety check, so it waits for the owner;
@@ -33,9 +36,12 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   G3.2 (seccomp-BPF) is parked for the same reason: its lane brief was
   stopped by the same automated check. The probe's seccomp checks and the
   raw probe's last check wait with it.
-- **Running lane:** G3.1 credentials, `prctl`, procfs (`.work/wt/g3.1`).
-- **Next:** integrate G3.1; then G3.3 user namespaces and chroot, G3.3 user namespaces and chroot, by
-  `nanos/docs/sandbox-design.md` §5. G2.1 stays parked for the owner.
+- **Running lane:** none.
+- **Next:** G3.3 user namespaces and chroot, by
+  `nanos/docs/sandbox-design.md` §5. G2.1 and G3.2 stay parked for the owner.
+  The headless switch is staged in `.work/wt/agent-a96d4fa7dc419bc95`
+  (uncommitted) until chromium-build produces a headless archive; its last
+  build failed at the final `helium` link with `LLVM ERROR: out of memory`.
 - **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 NOT RUN (G2.2, G2.3 accepted; G2.1 parked) · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
