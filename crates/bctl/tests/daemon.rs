@@ -4,7 +4,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Home, assert_ok, status_of};
+use common::{Home, assert_ok, image, status_of};
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
@@ -17,7 +17,7 @@ fn the_daemon_owns_sessions_across_restarts() {
         let (home_path, c) = (home.path.clone(), c.clone());
         thread::spawn(move || {
             Command::new(env!("CARGO_BIN_EXE_bctl"))
-                .args(["up", &c, "--profile", "pc", "--image", "ref-alpine-chromium"])
+                .args(["up", &c, "--profile", "pc", "--image", &image()])
                 .env("BCTL_HOME", home_path)
                 .output()
                 .unwrap()
@@ -41,7 +41,7 @@ fn the_daemon_owns_sessions_across_restarts() {
             let home_path = home.path.clone();
             thread::spawn(move || {
                 Command::new(env!("CARGO_BIN_EXE_bctl"))
-                    .args(["up", &name, "--profile", profile, "--image", "ref-alpine-chromium"])
+                    .args(["up", &name, "--profile", profile, "--image", &image()])
                     .env("BCTL_HOME", home_path)
                     .output()
                     .unwrap()
@@ -61,9 +61,9 @@ fn the_daemon_owns_sessions_across_restarts() {
     assert_ok(&home.up(&a, "pa"));
     assert_eq!(status_of(&home.json(&["status"]), &a).generation, 1, "a repeated up must not restart the session");
 
-    let busy = home.json(&["up", &format!("{p}-d"), "--profile", "pa", "--image", "ref-alpine-chromium"]);
+    let busy = home.json(&["up", &format!("{p}-d"), "--profile", "pa", "--image", &image()]);
     assert_eq!(busy.error.map(|e| e.code).as_deref(), Some("PROFILE_BUSY"));
-    let conflict = home.json(&["up", &a, "--profile", "pb", "--image", "ref-alpine-chromium"]);
+    let conflict = home.json(&["up", &a, "--profile", "pb", "--image", &image()]);
     assert_eq!(conflict.error.map(|e| e.code).as_deref(), Some("CONFLICT"));
 
     let daemon = home.daemon_pid();

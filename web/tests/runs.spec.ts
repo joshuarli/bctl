@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
 const workspace = resolve(import.meta.dirname, "../..");
+const image = process.env.BCTL_TEST_IMAGE ?? "ref-alpine-chromium";
 const bctlBinary = resolve(workspace, "target/debug/bctl");
 const home = resolve(workspace, `.work/tmp/bctl-d2-${process.pid}`);
 const session = `d2-${process.pid}`;
@@ -65,9 +66,9 @@ test.beforeAll(async () => {
   mkdirSync(resolve(home, "runtime"), { recursive: true });
   mkdirSync(resolve(home, "images"), { recursive: true });
   symlinkSync(resolve(workspace, ".work/runtime/smolvm"), resolve(home, "runtime/smolvm"));
-  symlinkSync(resolve(workspace, ".work/images/ref-alpine-chromium.tar"), resolve(home, "images/ref-alpine-chromium.tar"));
+  symlinkSync(resolve(workspace, `.work/images/${image}.tar`), resolve(home, `images/${image}.tar`));
   origin = new URL(bctl("serve").trim()).origin;
-  bctl("up", session, "--profile", session, "--image", "ref-alpine-chromium", "--allow-private", hostRange);
+  bctl("up", session, "--profile", session, "--image", image, "--allow-private", hostRange);
 });
 
 test.afterAll(async () => {

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 
 const workspace = resolve(import.meta.dirname, "../..");
+const image = process.env.BCTL_TEST_IMAGE ?? "ref-alpine-chromium";
 const bctlBinary = resolve(workspace, "target/debug/bctl");
 const home = resolve(workspace, `.work/tmp/bctl-d1-${process.pid}`);
 const session = `d1${process.pid}`;
@@ -25,8 +26,8 @@ test.beforeAll(async () => {
   mkdirSync(resolve(home, "runtime"), { recursive: true });
   mkdirSync(resolve(home, "images"), { recursive: true });
   symlinkSync(resolve(workspace, ".work/runtime/smolvm"), resolve(home, "runtime/smolvm"));
-  symlinkSync(resolve(workspace, ".work/images/ref-alpine-chromium.tar"), resolve(home, "images/ref-alpine-chromium.tar"));
-  bctl("up", session, "--image", "ref-alpine-chromium");
+  symlinkSync(resolve(workspace, `.work/images/${image}.tar`), resolve(home, `images/${image}.tar`));
+  bctl("up", session, "--image", image);
   guest = await chromium.connectOverCDP(bctl("cdp-url", session).trim());
   const context = guest.contexts()[0];
   if (!context) throw new Error("guest browser has no context");

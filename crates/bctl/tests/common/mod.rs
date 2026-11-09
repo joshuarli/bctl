@@ -38,6 +38,11 @@ pub struct Machine {
     pub name: String,
 }
 
+/// The image every VM test boots: `BCTL_TEST_IMAGE`, or ref-alpine-chromium.
+pub fn image() -> String {
+    std::env::var("BCTL_TEST_IMAGE").unwrap_or_else(|_| "ref-alpine-chromium".to_string())
+}
+
 pub struct Home {
     pub path: PathBuf,
     tag: String,
@@ -50,7 +55,8 @@ impl Home {
         std::fs::create_dir_all(path.join("runtime")).unwrap();
         std::fs::create_dir_all(path.join("images")).unwrap();
         std::os::unix::fs::symlink(workspace.join(".work/runtime/smolvm"), path.join("runtime/smolvm")).unwrap();
-        std::os::unix::fs::symlink(workspace.join(".work/images/ref-alpine-chromium.tar"), path.join("images/ref-alpine-chromium.tar")).unwrap();
+        let image = format!("{}.tar", image());
+        std::os::unix::fs::symlink(workspace.join(".work/images").join(&image), path.join("images").join(&image)).unwrap();
         Home { path, tag: tag.to_string() }
     }
 
@@ -66,7 +72,7 @@ impl Home {
     }
 
     pub fn up(&self, session: &str, profile: &str) -> Output {
-        self.bctl(&["up", session, "--profile", profile, "--image", "ref-alpine-chromium"])
+        self.bctl(&["up", session, "--profile", profile, "--image", &image()])
     }
 
     pub fn cdp_url(&self, session: &str) -> String {
@@ -251,7 +257,7 @@ fn serve(mut stream: TcpStream, port: u16, site: fn(&str, u16) -> String, reques
 
 /// Starts a session whose guest may reach the fixture server.
 pub fn up_with_fixtures(home: &Home, session: &str, profile: &str) {
-    assert_ok(&home.bctl(&["up", session, "--profile", profile, "--image", "ref-alpine-chromium", "--allow-private", HOST_RANGE]));
+    assert_ok(&home.bctl(&["up", session, "--profile", profile, "--image", &image(), "--allow-private", HOST_RANGE]));
 }
 
 pub fn http(port: u16, host: &str, request_line: &str, extra: &str) -> (u16, String) {

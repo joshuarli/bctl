@@ -9,11 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Home, assert_ok, status_of};
+use common::{Home, assert_ok, image, status_of};
 use miniserde::{Deserialize, json};
 use shadowdriver::crawler::{ChromiumSessionOptions, CrawlerSession, TabOptions};
 
-const IMAGE: &str = "ref-alpine-chromium";
 /// SmolVM's default guest link: the gateway, 100.96.0.1, is the host's loopback.
 const HOST_RANGE: &str = "100.96.0.0/30";
 const HOST_FROM_GUEST: &str = "100.96.0.1";
@@ -126,7 +125,7 @@ fn wait_state(home: &Home, id: i64, state: &str, timeout: Duration) -> Run {
 }
 
 fn up_with_host_access(home: &Home, session: &str) -> Output {
-    home.bctl(&["up", session, "--profile", session, "--image", IMAGE, "--allow-private", HOST_RANGE])
+    home.bctl(&["up", session, "--profile", session, "--image", &image(), "--allow-private", HOST_RANGE])
 }
 
 fn process_alive(pid: &str) -> bool {
@@ -356,7 +355,7 @@ fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_
     assert!(browser_answers(&operator_url), "the session's browser did not outlive the run");
     assert!(done.browser_version.starts_with("Chrome/"), "{}", done.browser_version);
     assert!(done.image_digest.starts_with("sha256:") && done.input_digest.starts_with("sha256:"));
-    assert_eq!((done.image.as_str(), done.profile.as_str()), (IMAGE, session.as_str()));
+    assert_eq!((done.image.as_str(), done.profile.as_str()), (image().as_str(), session.as_str()));
     assert!(config_field(&done.config, &["grab", "urls"]).is_some_and(|urls| json::to_string(urls).contains(&seed)));
     let log = logs(&home, grab.id);
     assert!(log.contains("Grab needs challenge at") && log.contains("verifying"), "{log}");
@@ -371,10 +370,11 @@ fn a_crawl_interrupted_by_a_daemon_kill_or_paused_continues_from_grab_state_on_r
     let fixture = Fixture::start(chain_site);
     assert_ok(&up_with_host_access(&home, &session));
     let seed = fixture.guest_url("/chain/0.html");
+    let image = image();
     let config = write_config(
         &home,
         &format!(
-            "version = 1\n[browsers.default]\nimage = \"{IMAGE}\"\n\
+            "version = 1\n[browsers.default]\nimage = \"{image}\"\n\
              [jobs.chain]\nkind = \"grab\"\nbrowser = \"default\"\nprofile = \"{session}\"\nurls = [\"{seed}\"]\njobs = 1\nrobots = false\n"
         ),
     );
@@ -433,12 +433,13 @@ fn a_crawl_interrupted_by_a_daemon_kill_or_paused_continues_from_grab_state_on_r
 fn exec_runs_end_with_categorized_outcomes_and_never_outlive_cancel_timeout_or_a_daemon_kill() {
     let home = Home::new("j3-e");
     let session = format!("{}-exec", home.prefix());
+    let image = image();
     let config = write_config(
         &home,
         &format!(
             r#"version = 1
 [browsers.small]
-image = "{IMAGE}"
+image = "{image}"
 viewport = [1024, 768]
 cpus = 1
 memory_mib = 2048
