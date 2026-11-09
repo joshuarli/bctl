@@ -156,6 +156,21 @@ run; a Grab that has not stopped 60 seconds later is sent `SIGTERM`.
 A crawl Grab reports as succeeded counts as a success only after `grab verify`
 replays every mirror it wrote.
 
+### In the dashboard
+
+A session's page lists its runs. A run's page shows its inputs, resolved
+config, progress, attempts, outcome, a log tail that follows the run, and its
+output files. Files are downloads only: they are served as an opaque
+attachment under a `sandbox` policy, never as a page on the dashboard origin.
+
+When a run is `needs-interaction`, the page embeds the session's live view.
+"Take control" acquires the session's input lease, so only that viewer's
+keyboard and pointer reach the browser, and new CDP attachments are refused
+until it is released. Grab leaves no tab open at a login wall, so open the
+named URL in the browser yourself. "Resume automation" releases the lease and
+sends `resume`, as `bctl resume` does. If another viewer holds the lease, it
+refuses.
+
 ### States and outcomes
 
 A run's state is its current attempt's: `starting`, `running`,
