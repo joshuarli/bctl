@@ -1,5 +1,6 @@
 typedef struct user_namespace *user_namespace;
 typedef struct fs_struct *fs_struct;
+typedef struct net_namespace *net_namespace;
 struct creds;
 
 #define USER_NS_LEVEL_MAX       32
@@ -48,6 +49,13 @@ struct fs_struct {
     buffer root_path;
 };
 
+struct net_namespace {
+    struct refcount refcount;
+    closure_struct(thunk, free);
+    user_namespace user_ns;
+    u32 inum;
+};
+
 enum namespace_kind {
     NAMESPACE_USER,
     NAMESPACE_PID,
@@ -71,6 +79,12 @@ boolean user_ns_setgroups_ok(user_namespace ns);
 u32 namespace_inum(process p, enum namespace_kind kind);
 const char *namespace_kind_name(enum namespace_kind kind);
 user_namespace process_user_ns(process p);
+
+net_namespace net_ns_init(void);
+net_namespace net_ns_create(user_namespace owner);
+void net_ns_reserve(net_namespace ns);
+void net_ns_release(net_namespace ns);
+boolean process_in_initial_net_ns(process p);
 
 fs_struct fs_struct_create(filesystem root_fs, filesystem cwd_fs, tuple root, inode cwd);
 fs_struct fs_struct_copy(fs_struct src);

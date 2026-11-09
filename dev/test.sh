@@ -71,9 +71,11 @@ suite_harness() {
 		case_verdict scm_rights "$smp" 60 PASS '' "$FIXTURES/scm_rights"
 		case_verdict crashpad_cmsg "$smp" 60 PASS '' "$FIXTURES/crashpad_cmsg"
 		case_verdict session_signal "$smp" 30 PASS '' "$FIXTURES/session_signal"
+		case_verdict netns "$smp" 60 PASS '' "$FIXTURES/netns"
 	done
 	fixture_native userns unshare -Ur
 	fixture_native session_signal env
+	fixture_native netns env
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
 	case_verdict duplicate_result 1 20 'FAIL detail=duplicate-record' '' "$FIXTURES/duplicate_result"
@@ -139,7 +141,7 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no PID or network namespaces yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium 'no PID namespaces yet' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw ''
 }
 

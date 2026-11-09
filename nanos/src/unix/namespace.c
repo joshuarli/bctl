@@ -1,6 +1,7 @@
 #include <unix_internal.h>
 
 static struct user_namespace init_ns;
+static struct net_namespace initial_net_ns;
 static u32 init_inums[NAMESPACE_KIND_COUNT];
 static struct spinlock inum_lock;
 static u32 next_inum;
@@ -85,8 +86,15 @@ void namespace_init(void)
     init_ns.setgroups_allowed = true;
 
     init_inums[NAMESPACE_USER] = init_ns.inum;
-    for (int kind = NAMESPACE_PID; kind < NAMESPACE_KIND_COUNT; kind++)
-        init_inums[kind] = namespace_alloc_inum();
+    zero(&initial_net_ns, sizeof(initial_net_ns));
+    init_refcount(&initial_net_ns.refcount, 1, 0);
+    initial_net_ns.user_ns = &init_ns;
+    initial_net_ns.inum = namespace_alloc_inum();
+    init_inums[NAMESPACE_NET] = initial_net_ns.inum;
+    for (int kind = NAMESPACE_PID; kind < NAMESPACE_KIND_COUNT; kind++) {
+        if (kind != NAMESPACE_NET)
+            init_inums[kind] = namespace_alloc_inum();
+    }
 }
 
 static struct id_map *user_ns_id_map(user_namespace ns, boolean group)
@@ -177,12 +185,64 @@ boolean user_ns_setgroups_ok(user_namespace ns)
 
 u32 namespace_inum(process p, enum namespace_kind kind)
 {
-    if (kind != NAMESPACE_USER)
+    u32 inum;
+    switch (kind) {
+    case NAMESPACE_USER:
+        process_lock(p);
+        inum = p->creds.user_ns->inum;
+        process_unlock(p);
+        return inum;
+    case NAMESPACE_NET:
+        process_lock(p);
+        inum = p->net_ns->inum;
+        process_unlock(p);
+        return inum;
+    default:
         return init_inums[kind];
+    }
+}
+
+closure_func_basic(thunk, void, net_ns_free)
+{
+    net_namespace ns = struct_from_closure(net_namespace, free);
+    user_ns_release(ns->user_ns);
+    deallocate(heap_locked(get_kernel_heaps()), ns, sizeof(struct net_namespace));
+}
+
+net_namespace net_ns_init(void)
+{
+    return &initial_net_ns;
+}
+
+net_namespace net_ns_create(user_namespace owner)
+{
+    net_namespace ns = allocate(heap_locked(get_kernel_heaps()), sizeof(struct net_namespace));
+    if (ns == INVALID_ADDRESS)
+        return ns;
+    zero(ns, sizeof(*ns));
+    init_refcount(&ns->refcount, 1, init_closure_func(&ns->free, thunk, net_ns_free));
+    user_ns_reserve(owner);
+    ns->user_ns = owner;
+    ns->inum = namespace_alloc_inum();
+    return ns;
+}
+
+void net_ns_reserve(net_namespace ns)
+{
+    refcount_reserve(&ns->refcount);
+}
+
+void net_ns_release(net_namespace ns)
+{
+    refcount_release(&ns->refcount);
+}
+
+boolean process_in_initial_net_ns(process p)
+{
     process_lock(p);
-    u32 inum = p->creds.user_ns->inum;
+    boolean initial = p->net_ns == &initial_net_ns;
     process_unlock(p);
-    return inum;
+    return initial;
 }
 
 user_namespace process_user_ns(process p)

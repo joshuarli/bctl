@@ -737,6 +737,8 @@ closure_func_basic(thunk, void, process_free)
         fdtable_release(p->fdtable);
     if (p->fs)
         fs_struct_release(p->fs);
+    if (p->net_ns)
+        net_ns_release(p->net_ns);
     deallocate_rbtree(p->threads, 0);
     deallocate_notify_set(p->signalfds);
     destroy_heap((heap)p->posix_timer_ids);
@@ -803,6 +805,8 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->fs = fs_struct_create(fs, fs, fs_root, fs->get_inode(fs, fs_root));
     assert(p->fs != INVALID_ADDRESS);
     process_fs_mirror(p);
+    p->net_ns = net_ns_init();
+    net_ns_reserve(p->net_ns);
     p->process_root = root;
 
     u64 id;
@@ -1139,6 +1143,26 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
         c->creds.cap_permitted = c->creds.cap_effective = CAP_FULL_SET;
         c->creds.cap_inheritable = 0;
         c->creds.cap_ambient = 0;
+    }
+
+    process_lock(parent);
+    net_namespace parent_net = parent->net_ns;
+    net_ns_reserve(parent_net);
+    process_unlock(parent);
+    net_ns_release(c->net_ns);
+    c->net_ns = parent_net;
+    if (flags & CLONE_NEWNET) {
+        if (!ns_capable_creds(&c->creds, c->creds.user_ns, CAP_SYS_ADMIN)) {
+            process_release(c);
+            return -EPERM;
+        }
+        net_namespace ns = net_ns_create(c->creds.user_ns);
+        if (ns == INVALID_ADDRESS) {
+            process_release(c);
+            return -ENOMEM;
+        }
+        net_ns_release(c->net_ns);
+        c->net_ns = ns;
     }
 
     spin_lock(&processes_lock);

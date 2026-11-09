@@ -47,7 +47,7 @@ sysreturn arch_prctl(int code, unsigned long addr)
 #endif
 
 #define CLONE_UNSUPPORTED_NAMESPACES    (CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | \
-                                         CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNET)
+                                         CLONE_NEWIPC | CLONE_NEWPID)
 
 static sysreturn clone_validate(u64 flags)
 {
@@ -59,7 +59,7 @@ static sysreturn clone_validate(u64 flags)
         return -EINVAL;
     if ((flags & CLONE_SIGHAND) && !(flags & CLONE_VM))
         return -EINVAL;
-    if ((flags & CLONE_THREAD) && (flags & (CLONE_NEWUSER | CLONE_NEWPID)))
+    if ((flags & CLONE_THREAD) && (flags & (CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET)))
         return -EINVAL;
     if ((flags & CLONE_PARENT) && process_is_init(current->p))
         return -EINVAL;

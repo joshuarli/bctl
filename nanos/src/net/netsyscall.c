@@ -187,9 +187,13 @@ static void netsock_check_loop(void)
     }
 }
 
+static boolean sock_is_isolated(struct sock *sock);
+
 static netsock get_netsock(struct sock *sock)
 {
     if ((sock->domain != AF_INET) && (sock->domain != AF_INET6))
+        return 0;
+    if (sock_is_isolated(sock))
         return 0;
     return (netsock)sock;
 }
@@ -1472,6 +1476,329 @@ static int allocate_udp_sock(process p, int af, struct udp_pcb *pcb, u32 flags)
     return fd;
 }
 
+typedef struct isolated_sock {
+    struct sock sock;
+    boolean bound;
+    boolean listening;
+    struct sockaddr_storage local;
+    closure_struct(file_io, read);
+    closure_struct(file_io, write);
+    closure_struct(fdesc_events, events);
+    closure_struct(fdesc_close, close);
+} *isolated_sock;
+
+#define ISOLATED_EPHEMERAL_FIRST    32768
+#define ISOLATED_EPHEMERAL_COUNT    28232
+
+static u32 isolated_next_port;
+
+static socklen_t isolated_addr_len(int domain)
+{
+    return (domain == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+}
+
+closure_function(1, 1, sysreturn, isolated_wait_bh,
+                 io_completion, completion,
+                 u64 bqflags)
+{
+    if (bqflags & BLOCKQ_ACTION_NULLIFY) {
+        apply(bound(completion), -ERESTARTSYS);
+        closure_finish();
+        return -ERESTARTSYS;
+    }
+    return blockq_block_required((unix_context)context_from_closure(closure_self()), bqflags);
+}
+
+static sysreturn isolated_wait(isolated_sock s, boolean nonblock, context ctx, boolean in_bh,
+                               io_completion completion)
+{
+    if (nonblock || (s->sock.f.flags & SOCK_NONBLOCK))
+        return io_complete(completion, -EAGAIN);
+    blockq_action ba = closure_from_context(ctx, isolated_wait_bh, completion);
+    if (ba == INVALID_ADDRESS)
+        return io_complete(completion, -ENOMEM);
+    return blockq_check(s->sock.rxbq, ba, in_bh);
+}
+
+static sysreturn isolated_receive(isolated_sock s, int flags, context ctx, boolean in_bh,
+                                  io_completion completion)
+{
+    if (s->sock.type == SOCK_STREAM)
+        return io_complete(completion, -ENOTCONN);
+    return isolated_wait(s, (flags & MSG_DONTWAIT) != 0, ctx, in_bh, completion);
+}
+
+static sysreturn isolated_send_unaddressed(isolated_sock s)
+{
+    return (s->sock.type == SOCK_STREAM) ? -EPIPE : -EDESTADDRREQ;
+}
+
+closure_func_basic(file_io, sysreturn, isolated_read,
+                   void *dest, u64 length, u64 offset, context ctx, boolean bh, io_completion completion)
+{
+    isolated_sock s = struct_from_field(closure_self(), isolated_sock, read);
+    return isolated_receive(s, 0, ctx, bh, completion);
+}
+
+closure_func_basic(file_io, sysreturn, isolated_write,
+                   void *src, u64 length, u64 offset, context ctx, boolean bh, io_completion completion)
+{
+    isolated_sock s = struct_from_field(closure_self(), isolated_sock, write);
+    return io_complete(completion, isolated_send_unaddressed(s));
+}
+
+closure_func_basic(fdesc_events, u32, isolated_events,
+                   thread t)
+{
+    isolated_sock s = struct_from_field(closure_self(), isolated_sock, events);
+    if (s->sock.type != SOCK_STREAM)
+        return EPOLLOUT;
+    return s->listening ? 0 : (EPOLLOUT | EPOLLHUP);
+}
+
+closure_func_basic(fdesc_close, sysreturn, isolated_close,
+                   context ctx, io_completion completion)
+{
+    isolated_sock s = struct_from_field(closure_self(), isolated_sock, close);
+    socket_deinit(&s->sock);
+    deallocate(s->sock.h, s, sizeof(*s));
+    return io_complete(completion, 0);
+}
+
+static sysreturn isolated_bind(struct sock *sock, struct sockaddr *addr, socklen_t addrlen)
+{
+    isolated_sock s = (isolated_sock)sock;
+    socklen_t len = isolated_addr_len(sock->domain);
+    struct sockaddr_storage sa;
+    sysreturn rv = 0;
+    if (addrlen < len) {
+        rv = -EINVAL;
+        goto out;
+    }
+    if (!copy_from_user(addr, &sa, len)) {
+        rv = -EFAULT;
+        goto out;
+    }
+    if (((struct sockaddr *)&sa)->family != sock->domain) {
+        rv = -EAFNOSUPPORT;
+        goto out;
+    }
+    if ((sock->domain == AF_INET6) && !ip6addr_is_any((struct sockaddr_in6 *)&sa)) {
+        rv = -EADDRNOTAVAIL;
+        goto out;
+    }
+    u16 *port = (sock->domain == AF_INET) ? &((struct sockaddr_in *)&sa)->port :
+                &((struct sockaddr_in6 *)&sa)->port;
+    spin_lock(&sock->f.lock);
+    if (s->bound) {
+        rv = -EINVAL;
+    } else {
+        if (*port == 0)
+            *port = htons(ISOLATED_EPHEMERAL_FIRST +
+                          fetch_and_add_32(&isolated_next_port, 1) % ISOLATED_EPHEMERAL_COUNT);
+        runtime_memcpy(&s->local, &sa, len);
+        s->bound = true;
+    }
+    spin_unlock(&sock->f.lock);
+  out:
+    socket_release(sock);
+    return rv;
+}
+
+static sysreturn isolated_listen(struct sock *sock, int backlog)
+{
+    isolated_sock s = (isolated_sock)sock;
+    sysreturn rv = 0;
+    if (sock->type != SOCK_STREAM) {
+        rv = -EOPNOTSUPP;
+    } else {
+        spin_lock(&sock->f.lock);
+        s->listening = true;
+        spin_unlock(&sock->f.lock);
+        fdesc_notify_events(&sock->f);
+    }
+    socket_release(sock);
+    return rv;
+}
+
+static sysreturn isolated_connect(struct sock *sock, struct sockaddr *addr, socklen_t addrlen)
+{
+    socket_release(sock);
+    return -ENETUNREACH;
+}
+
+static sysreturn isolated_accept4(struct sock *sock, struct sockaddr *addr, socklen_t *addrlen,
+                                  int flags, context ctx, boolean in_bh, io_completion completion)
+{
+    isolated_sock s = (isolated_sock)sock;
+    if (sock->type != SOCK_STREAM)
+        return io_complete(completion, -EOPNOTSUPP);
+    if (!s->listening || (flags & ~SOCK_FLAGS_MASK))
+        return io_complete(completion, -EINVAL);
+    return isolated_wait(s, false, ctx, in_bh, completion);
+}
+
+static sysreturn isolated_getsockname(struct sock *sock, struct sockaddr *addr, socklen_t *addrlen)
+{
+    isolated_sock s = (isolated_sock)sock;
+    struct sockaddr_storage sa;
+    socklen_t len = isolated_addr_len(sock->domain);
+    spin_lock(&sock->f.lock);
+    if (s->bound) {
+        runtime_memcpy(&sa, &s->local, len);
+    } else {
+        zero(&sa, sizeof(sa));
+        ((struct sockaddr *)&sa)->family = sock->domain;
+    }
+    spin_unlock(&sock->f.lock);
+    sysreturn rv = 0;
+    context ctx = get_current_context(current_cpu());
+    if (!context_set_err(ctx)) {
+        runtime_memcpy(addr, &sa, MIN(len, *addrlen));
+        *addrlen = len;
+        context_clear_err(ctx);
+    } else {
+        rv = -EFAULT;
+    }
+    socket_release(sock);
+    return rv;
+}
+
+static sysreturn isolated_getsockopt(struct sock *sock, int level, int optname, void *optval,
+                                     socklen_t *optlen)
+{
+    isolated_sock s = (isolated_sock)sock;
+    int val;
+    sysreturn rv;
+    if (level != SOL_SOCKET) {
+        rv = -ENOPROTOOPT;
+        goto out;
+    }
+    switch (optname) {
+    case SO_TYPE:
+        val = sock->type;
+        break;
+    case SO_DOMAIN:
+        val = sock->domain;
+        break;
+    case SO_PROTOCOL:
+        val = (sock->type == SOCK_STREAM) ? IP_PROTO_TCP : IP_PROTO_UDP;
+        break;
+    case SO_ERROR:
+        val = 0;
+        break;
+    case SO_ACCEPTCONN:
+        val = s->listening;
+        break;
+    default:
+        rv = -ENOPROTOOPT;
+        goto out;
+    }
+    rv = sockopt_copy_to_user(optval, optlen, &val, sizeof(val));
+  out:
+    socket_release(sock);
+    return rv;
+}
+
+static sysreturn isolated_setsockopt(struct sock *sock, int level, int optname, void *optval,
+                                     socklen_t optlen)
+{
+    sysreturn rv = 0;
+    int val;
+    if (level != SOL_SOCKET)
+        rv = -ENOPROTOOPT;
+    else if (optlen < sizeof(val))
+        rv = -EINVAL;
+    else if (!copy_from_user(optval, &val, sizeof(val)))
+        rv = -EFAULT;
+    socket_release(sock);
+    return rv;
+}
+
+static sysreturn isolated_sendto(struct sock *sock, void *buf, u64 len, int flags,
+                                 struct sockaddr *dest_addr, socklen_t addrlen, context ctx,
+                                 boolean in_bh, io_completion completion)
+{
+    isolated_sock s = (isolated_sock)sock;
+    sysreturn rv = (dest_addr && addrlen) ? -ENETUNREACH : isolated_send_unaddressed(s);
+    return io_complete(completion, rv);
+}
+
+static sysreturn isolated_sendmsg(struct sock *sock, const struct msghdr *msg, int flags,
+                                  boolean in_bh, io_completion completion)
+{
+    isolated_sock s = (isolated_sock)sock;
+    void *name;
+    socklen_t namelen;
+    sysreturn rv;
+    if (!get_user_value(&msg->msg_name, &name) || !get_user_value(&msg->msg_namelen, &namelen))
+        rv = -EFAULT;
+    else
+        rv = (name && namelen) ? -ENETUNREACH : isolated_send_unaddressed(s);
+    return io_complete(completion, rv);
+}
+
+static sysreturn isolated_recvfrom(struct sock *sock, void *buf, u64 len, int flags,
+                                   struct sockaddr *src_addr, socklen_t *addrlen, context ctx,
+                                   boolean in_bh, io_completion completion)
+{
+    return isolated_receive((isolated_sock)sock, flags, ctx, in_bh, completion);
+}
+
+static sysreturn isolated_recvmsg(struct sock *sock, struct msghdr *msg, int flags, boolean in_bh,
+                                  io_completion completion)
+{
+    return isolated_receive((isolated_sock)sock, flags, get_current_context(current_cpu()), in_bh,
+                            completion);
+}
+
+static sysreturn isolated_shutdown(struct sock *sock, int how)
+{
+    socket_release(sock);
+    return -ENOTCONN;
+}
+
+static boolean sock_is_isolated(struct sock *sock)
+{
+    return sock->connect == isolated_connect;
+}
+
+static sysreturn isolated_inet_open(int domain, int type, u32 flags)
+{
+    heap h = heap_locked(get_kernel_heaps());
+    isolated_sock s = allocate(h, sizeof(*s));
+    if (s == INVALID_ADDRESS)
+        return -ENOMEM;
+    if (socket_init(h, domain, type, flags, &s->sock) < 0) {
+        deallocate(h, s, sizeof(*s));
+        return -ENOMEM;
+    }
+    s->bound = false;
+    s->listening = false;
+    s->sock.f.read = init_closure_func(&s->read, file_io, isolated_read);
+    s->sock.f.write = init_closure_func(&s->write, file_io, isolated_write);
+    s->sock.f.events = init_closure_func(&s->events, fdesc_events, isolated_events);
+    s->sock.f.close = init_closure_func(&s->close, fdesc_close, isolated_close);
+    s->sock.bind = isolated_bind;
+    s->sock.listen = isolated_listen;
+    s->sock.connect = isolated_connect;
+    s->sock.accept4 = isolated_accept4;
+    s->sock.getsockname = isolated_getsockname;
+    s->sock.getsockopt = isolated_getsockopt;
+    s->sock.setsockopt = isolated_setsockopt;
+    s->sock.sendto = isolated_sendto;
+    s->sock.sendmsg = isolated_sendmsg;
+    s->sock.recvfrom = isolated_recvfrom;
+    s->sock.recvmsg = isolated_recvmsg;
+    s->sock.shutdown = isolated_shutdown;
+    s->sock.fd = allocate_fd(current->p, s, fd_flags_from_open_flags(s->sock.f.flags));
+    if (s->sock.fd == INVALID_PHYSICAL) {
+        apply(s->sock.f.close, 0, io_completion_ignore);
+        return -ENFILE;
+    }
+    return s->sock.fd;
+}
+
 sysreturn socket(int domain, int type, int protocol)
 {
     switch (domain) {
@@ -1487,8 +1814,12 @@ sysreturn socket(int domain, int type, int protocol)
     case AF_UNIX:
         return unixsock_open(type, protocol);
     case AF_NETLINK:
+        if (!process_in_initial_net_ns(current->p))
+            return -EAFNOSUPPORT;
         return netlink_open(type, protocol);
     case AF_VSOCK:
+        if (!process_in_initial_net_ns(current->p))
+            return -EAFNOSUPPORT;
         return vsock_open(type, protocol);
     default:
         msg_warn("socket domain %d not supported", domain);
@@ -1507,6 +1838,11 @@ sysreturn socket(int domain, int type, int protocol)
         msg_warn("%s: unhandled flags 0x%x", func_ss, flags);
 
     type &= SOCK_TYPE_MASK;
+    if (!process_in_initial_net_ns(current->p)) {
+        if ((type != SOCK_STREAM) && (type != SOCK_DGRAM))
+            return -EINVAL;
+        return isolated_inet_open(domain, type, (nonblock ? SOCK_NONBLOCK : 0) | cloexec);
+    }
     if (type == SOCK_STREAM) {
         /* In case of AF_INET6, listen to IPv4 and IPv6 (dual-stack)
          * connections. */
@@ -2440,7 +2776,9 @@ sysreturn getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
     struct sock *sock = resolve_socket(current->p, sockfd);
     sysreturn rv = 0;
     netsock s = get_netsock(sock);
-    if (!s) {
+    if (sock_is_isolated(sock)) {
+        rv = -ENOTCONN;
+    } else if (!s) {
         rv = -EOPNOTSUPP;
     } else {
         netsock_lock(s);

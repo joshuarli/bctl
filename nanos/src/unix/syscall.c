@@ -1373,22 +1373,10 @@ sysreturn chroot(const char *path)
     return 0;
 }
 
-sysreturn unshare(int flags)
+static sysreturn unshare_user_ns(process p)
 {
-    process p = current->p;
-    if (flags == 0)
-        return 0;
-    if (flags & (CLONE_NEWPID | CLONE_NEWNET))
-        return -ENOSYS;
-    if (flags & ~CLONE_NEWUSER)
-        return -EINVAL;
     if (process_is_chrooted(p))
         return -EPERM;
-    spin_lock(&p->threads_lock);
-    int nthreads = rbtree_get_count(p->threads);
-    spin_unlock(&p->threads_lock);
-    if (nthreads != 1)
-        return -EINVAL;
     fs_struct fsp = p->fs;
     if (fsp->refcount.c > 1)
         return -EINVAL;
@@ -1409,6 +1397,54 @@ sysreturn unshare(int flags)
     c->cap_inheritable = 0;
     c->cap_ambient = 0;
     process_unlock(p);
+    return 0;
+}
+
+static sysreturn unshare_net_ns(process p)
+{
+    user_namespace owner = process_user_ns(p);
+    sysreturn rv = 0;
+    if (!ns_capable(p, owner, CAP_SYS_ADMIN)) {
+        rv = -EPERM;
+        goto out;
+    }
+    net_namespace ns = net_ns_create(owner);
+    if (ns == INVALID_ADDRESS) {
+        rv = -ENOMEM;
+        goto out;
+    }
+    process_lock(p);
+    net_namespace old = p->net_ns;
+    p->net_ns = ns;
+    process_unlock(p);
+    net_ns_release(old);
+  out:
+    user_ns_release(owner);
+    return rv;
+}
+
+sysreturn unshare(int flags)
+{
+    process p = current->p;
+    if (flags == 0)
+        return 0;
+    if (flags & CLONE_NEWPID)
+        return -ENOSYS;
+    if (flags & ~(CLONE_NEWUSER | CLONE_NEWNET))
+        return -EINVAL;
+    spin_lock(&p->threads_lock);
+    int nthreads = rbtree_get_count(p->threads);
+    spin_unlock(&p->threads_lock);
+    if (nthreads != 1)
+        return -EINVAL;
+    sysreturn rv;
+    if (flags & CLONE_NEWUSER) {
+        rv = unshare_user_ns(p);
+        if (rv)
+            return rv;
+    }
+    if (flags & CLONE_NEWNET)
+        return unshare_net_ns(p);
     return 0;
 }
 

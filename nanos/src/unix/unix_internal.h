@@ -654,6 +654,7 @@ typedef struct process {
     int               pdeathsig;
     struct creds      creds;
     fs_struct         fs;
+    net_namespace     net_ns;
     process_vm        vm;
     fdtable           fdtable;
     filesystem        root_fs;
