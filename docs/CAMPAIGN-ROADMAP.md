@@ -47,9 +47,11 @@ refusal of new/close under a person's lease. Its `2021087` clears Chromium's
 stale profile lock at start, which had stalled every second `up` of a profile.
 D2 (`8743285`, `BCTL_GRAB=… pnpm --dir web exec playwright test`, 6/6): run
 pages, bounded logs, download-only artifacts, and takeover and resume of a
-login-walled crawl through the live view. D2 open: authority shows the lease
-only (N6); the viewer sends `:` as `;` (noVNC or SmolVM key mapping,
-unexplained); the takeover test has fixed waits.
+login-walled crawl through the live view. D2 closed (`e7f651d`, dashboard
+suite 3/3 on `helium` and 1/1 on `ref-alpine-tinyland`): noVNC sends a shifted
+symbol without a Shift event, so SmolVM's VNC input now holds Shift around one
+(`smolvm-0003-vnc-shifted-keysyms.patch`), and the specs wait on conditions
+instead of fixed sleeps.
 N3 (`7a763bf`, `cargo test -p bctl --test snapshots -- --ignored`): bulk
 accessibility snapshots, refs scoped to generation, target, frame, and
 document, `STALE_REF`, both iframe kinds; a warm form snapshot costs 3 CDP
@@ -164,7 +166,9 @@ when it can, Chromium's blocklist leaves WebGL off on llvmpipe
 unbundled 65.3 MiB with libstdc++/libgcc_s/libgomp; ATK, AT-SPI, D-Bus, GLib
 6.2 MiB; X11/XCB 1.7 MiB). Helium imports 20 `xkb_*` symbols, all in kbvm's
 33. Helium segfaults at start when `$HOME` does not exist; the image has
-`/home/browser`. P2 open: the B1 stall; kbvm's cdylib links Alpine GCC's
+`/home/browser` (cause, `1efde7a`: Helium skips Crashpad's handler when its
+database path cannot be created, then stores through the null signal handler;
+chromium-build's `helium-crashpad-null-signal-handler.patch` is in r6). P2 open: the B1 stall; kbvm's cdylib links Alpine GCC's
 `crtbeginS.o`; T2's census needs a shell and a second Chromium, so it does
 not run on a scratch image; Chimera's recipe was not compared.
 chromium-build `e9809cb` closes the arm64 closure: FFmpeg, ANGLE and
@@ -198,12 +202,26 @@ moved to chromium-build `e9809cb`'s pure-musl closure (census: one gap,
 `libexpat`, 191 KiB; check-purity 0 impure across 27 ELF files), and
 `tinyland`, `seatd`, `bctl-guest`, and kbvm's `libxkbcommon.so.0` are linked by
 llvm-prebuilt-musl's LLVM (`llvm-musl-23.1.5-3afbb74`) with `std` rebuilt, so
-none carries a GCC-compiled object. The image refuses archives older than r5, which still stall. P2b open: WebAudio realtime threads may hit the same blocked-signal kill through
-`pthread_setschedparam` (not observed).
-Next: D2's acceptance on
-`ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
-exiting on its last tab).
-Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
+none carries a GCC-compiled object. The image refuses archives older than r5, which still stall. WebAudio
+(`cb0a98d`, `--test media`): audio worklets under load crash no renderer;
+musl answers `sched_setscheduler` with ENOSYS without a syscall, so realtime
+audio priority is never applied and the blocked-signal kill is not reached.
+H3 (`a3b3308`, `--test failures`, 8/8): a 1 s health watch ends a session as
+`failed` when the guest, browser or CDP dies or the last tab closes, runs end
+as `browser-crashed` or `job-error`, run output is capped at 256 MiB and all
+runs at 2 GiB. The `runs` login test's flake was Shadowdriver silently
+launching a host Chromium when the attached guest browser died; shadowdriver
+`d42c8f9` fails the attached pool instead, and `runs` passed 5/5 in a row.
+Why the guest browser died then is not known.
+chromium-build `5eda85c` and `4f0d95f` move both arches to
+`llvm-musl-23.1.5-dc0d9b9`, whose lld marks GNU_STACK itself.
+The shared runtime under `.work/runtime` had been the pause lane's build with
+a GCC-built guest agent (219 of 231 files impure); it is rebuilt from main
+(check-purity: 0 impure), and VM results before that rebuild ran on the
+impure agent.
+Next: X1's SmolVM capability without a `bctl up` switch; Helium r6 (Crashpad
+fix, `Helium/` DevTools product); H1 baselines on an idle host.
+Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 ## Charter
 
