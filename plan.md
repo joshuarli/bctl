@@ -11,10 +11,13 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** none. hydrogen `main` contains only this doc.
-- **Accepted:** none. **Red:** none. **Parked:** none.
-- **Next slice:** `G0.1`.
-- **Gate matrix:** G0 NOT RUN · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Last accepted revision:** `63b0309` (G0.1).
+- **Accepted:** G0.1 (fork imported at `nanos/`, vendored sources pinned,
+  `dev/{bootstrap,doctor,build}.sh`; fresh clone builds in 59 s and two clean
+  builds give byte-identical `kernel.img`, `kernel.elf` and `boot.img`).
+  **Red:** none. **Parked:** none.
+- **Next slice:** `G0.2`.
+- **Gate matrix:** G0 NOT RUN (1/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -244,7 +247,8 @@ Upstream checkout in `.work/src/nanos` at `e4b9c9e`.
 | Fact | Observation |
 | --- | --- |
 | Clean `make -j32 kernel` | 19.7 s wall; `kernel.img` 1.79 MB, `kernel.elf` 12.7 MB (with symbols) |
-| Incremental build (touch `src/unix/syscall.c`) | 5.5 s |
+| Incremental build (touch `src/unix/syscall.c`) | 5.5 s (`dev/build.sh`: 6.4 s) |
+| Fresh clone: `dev/bootstrap.sh && dev/doctor.sh && dev/build.sh` | 59 s, including the LLVM, Go and musl downloads and the musl sysroot build |
 | Static musl hello image | 15.3 MB; boot to exit under KVM 0.23–0.65 s (1 and 2 vCPUs) |
 | Upstream `make run` | exits 0 when QEMU fails to start (port 8080 busy) |
 | Upstream test manifests | dynamic ones hard-code glibc paths (`/lib64/ld-linux-x86-64.so.2`) and fail at `mkfs` |
