@@ -50,6 +50,7 @@ suite_harness() {
 		case_verdict exec_contract "$smp" 60 PASS '' --file "$FIXTURES/exec_contract_helper:/exec_contract_helper" \
 			--file "$SYSROOT/lib/ld-musl-x86_64.so.1:/lib/ld-musl-x86_64.so.1" "$FIXTURES/exec_contract"
 		case_verdict shmem_xproc "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/shmem_xproc"
+		case_verdict ipc_xproc "$smp" 60 PASS '' "$FIXTURES/ipc_xproc"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
@@ -116,7 +117,7 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no seccomp, namespaces, credentials, procfs, SCM data or membarrier yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium 'no seccomp, namespaces, credentials, procfs or SCM data yet' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw 'no seccomp yet'
 }
 
