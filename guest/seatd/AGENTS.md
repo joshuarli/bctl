@@ -7,7 +7,7 @@ Linux Rust implementation of the seatd foreground daemon (one seat, `seat0`). De
 ```sh
 cargo test --offline --locked
 cargo clippy --offline --locked --all-targets -- -D warnings
-bash harness/vm-qualification.sh transition|shutdown <guest-root> <kernel> <initramfs> <seatd-bin>
+sh ../harness/smolvm-proof.sh
 ```
 
 Musl targets use the `kache` wrapper and link with `mold`; see [validation](doc/validation.md).
@@ -26,5 +26,5 @@ Musl targets use the `kache` wrapper and link with `mold`; see [validation](doc/
 - Session transitions → `src/session.rs`
 - Devices, VT, effects → `src/device.rs`, `src/vt.rs`, `src/effect.rs`, `src/sys.rs`
 - Wire protocol → `src/wire.rs`, golden transcript → `harness/protocol.golden`
-- Guest qualification → `harness/VM.md`, raw guest client → `harness/vm-probe.c`
+- Guest qualification → laputa's x86_64 harness (kept in laputa); compositor proof → `../harness/smolvm-proof.sh`
 - Runtime contract, recovery, validation, behavior rules → `doc/runtime.md`, `doc/recovery.md`, `doc/validation.md`, `doc/behavior.md`

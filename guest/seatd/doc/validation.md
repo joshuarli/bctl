@@ -42,8 +42,8 @@ daemon before the C sources left this repo, and is frozen since. It
 checks client-visible behavior for the covered cases. It does not
 qualify device access, VT switching, or compositor integration, and it
 does not establish kernel behavior for DRM, evdev, or hidraw. A raw
-socket guest client speaks the same protocol without any C code; see
-[the VM recipe](../harness/VM.md).
+socket guest client spoke the same protocol without any C code in
+laputa's disposable x86_64 guest; that harness lives in laputa.
 
 ## Run the idle timing gate
 
@@ -127,11 +127,11 @@ Linux 6.6.142-0-virt, using virtual GPU and keyboard devices only:
   A competing DRM descriptor gained master while the seat was disabled and
   was refused master again after the original seat reacquired it.
 - N3: dwl 0.9 with wlroots 0.20 and foot rendered a magenta terminal marker.
-  QMP keyboard injection reached foot through libinput and Rust seatd.
+  Host keyboard injection reached foot through libinput and Rust seatd.
 
-The integrated harness reproduced all three modes. The compositor screenshot
-was also visually inspected. Commands and cached-guest preparation are in
-[the VM recipe](../harness/VM.md). No host DRM, input, or VT device was used.
+Laputa's integrated harness reproduced all three modes. The compositor
+screenshot was also visually inspected. That harness and its cached-guest
+preparation live in laputa. No host DRM, input, or VT device was used.
 This proof covers that guest configuration. Physical devices, hidraw revoke,
 and ARM hardware remain outside these results. Unit tests and raw protocol
 parity alone do not establish kernel device behavior. Since the upstream C
@@ -159,7 +159,7 @@ with warnings denied. Both retained C unit tests passed after
 a fresh oracle rebuild.
 
 Both musl release binaries built with `mold` and reported version `0.9.3`.
-The aarch64 binary ran through `qemu-aarch64` user-mode emulation.
+The aarch64 binary ran through user-mode emulation.
 This does not qualify ARM hardware, devices, or real VT behavior.
 
 | Target | Unstripped binary size |

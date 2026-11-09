@@ -1,5 +1,9 @@
 # Laputa integration
 
+> Laputa-specific history. This page records laputa's integration contract
+> and its own QEMU/KVM profiles. That harness lives in laputa; this
+> repository runs the SmolVM arm64 proof instead.
+
 Target: unprivileged tinyland session, seatd-mediated devices, Ghostty
 `1.4.1` in the Laputa image. `qemu-tinyland-ghostty` is the only graphical
 profile. No tiling, pointer, or desktop scope change; GPU use is limited to
@@ -58,7 +62,7 @@ exit `0` with `TINYLAND_SESSION_END` when primary client exits. Restart
 policy belongs to xinit.
 
 Proof operation: `foot /usr/local/bin/guest-test` fallback remains for
-`harness/run-proof.sh` only. `TINYLAND_SPAWN_FOOT ... (legacy fallback)`
+laputa's `harness/run-proof.sh` only. `TINYLAND_SPAWN_FOOT ... (legacy fallback)`
 marks it.
 
 Validation: `XDG_RUNTIME_DIR` must exist, be absolute directory, owned by
@@ -88,9 +92,10 @@ validated compatible output; multimonitor discovery is out of scope.
 ## Release packaging
 
 Musl binary is static; `readelf -d` shows no `NEEDED` beyond `ld-musl`.
-`libxkbcommon.a` via `-Lnative=.work/guest-root/usr/lib` and
-`XKB_CONFIG_ROOT=.work/guest-root/usr/share/X11/xkb` are proof-only build
-inputs. The seat build links libseat dynamically (static musl cannot
+In laputa's proof build, `libxkbcommon.a` via
+`-Lnative=.work/guest-root/usr/lib` and
+`XKB_CONFIG_ROOT=.work/guest-root/usr/share/X11/xkb` were proof-only build
+inputs. This repository no longer sets `XKB_CONFIG_ROOT`. The seat build links libseat dynamically (static musl cannot
 dlopen), so the binary carries `libseat.so.1`, `libelogind.so.0`,
 `libcap.so.2`, and `libgcc_s.so.1` atop the loader; XKB stays statically
 linked. Release uses the system `libseat` link path and installed XKB data

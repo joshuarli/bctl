@@ -1,5 +1,9 @@
 # Size / performance report (Phases 0-6 landed)
 
+> Laputa-specific history. This page measures laputa's own QEMU/KVM
+> profiles and harness. Those files live in laputa; this repository does
+> not run them.
+
 Measured 2026-10-30/31, Linux x86_64. `qemu-tinyland-ghostty` is the only
 graphical profile. Numbers cite the commands that produced them.
 
@@ -13,9 +17,9 @@ graphical profile. Numbers cite the commands that produced them.
 | PM artifact key | `fd64294d…766` | `3a028f58…74d` | `artifact.json` `key` |
 | DT_NEEDED | `libseat.so.1`, `libxkbcommon.so.0`, `libgcc_s.so`, `libc.so` (+RUNPATH `/usr/lib`) | `libseat.so.1`, `libc.so`, `libgcc_s.so` (+RUNPATH `/usr/lib`) | `readelf -d` on each payload binary |
 | Cargo locked crates | 80 (`xkbcommon 0.9.0`, no kbvm) | 95 (`kbvm 0.2.0`, no xkbcommon in default resolve) | `grep -c 'name = ' tinyland/Cargo.lock`; `cargo tree --locked \| grep -E 'xkbcommon|kbvm'` |
-| Harness release binary | — (not re-measured pre-change) | 4886088 bytes, NEEDED `libseat.so.1`, `libc.musl-x86_64.so.1`, `libgcc_s.so.1` (no libxkbcommon) | `target/x86_64-unknown-linux-musl/release/tinyland` after `harness/build-guest.sh` |
+| Harness release binary | — (not re-measured pre-change) | 4886088 bytes, NEEDED `libseat.so.1`, `libc.musl-x86_64.so.1`, `libgcc_s.so.1` (no libxkbcommon) | `target/x86_64-unknown-linux-musl/release/tinyland` after laputa's `harness/build-guest.sh` |
 | Unit tests | 42 passed (claimed) | 41 passed, 1 pre-existing seat segfault (`open_without_daemon_is_a_hard_error` segfaults in host `libseat_open_seat`; `seat.rs` untouched by this change) | test binary `--skip seat::tests::open_without_daemon_is_a_hard_error` → 41 ok; `input::` 5/5 ok; `--features oracle` differential 1/1 ok |
-| Guest proofs (KBVM) | — | `smoke`, `wayland-pixels`, `drm-proof`, `drm-parity`, `negative`, `audit` all OK | `bash harness/{smoke,wayland-pixels,drm-proof,drm-parity,negative-runtime}.sh`, `bash harness/audit.sh` (see Phase 1) |
+| Guest proofs (KBVM) | — | `smoke`, `wayland-pixels`, `drm-proof`, `drm-parity`, `negative`, `audit` all OK | laputa's `bash harness/{smoke,wayland-pixels,drm-proof,drm-parity,negative-runtime}.sh`, local `bash harness/audit.sh` (see Phase 1) |
 
 Regression assessment: the +900KB binary / +15 crates is the cost of
 replacing the shared C `libxkbcommon` with statically linked pure-Rust

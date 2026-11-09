@@ -1,5 +1,9 @@
 # OpenGL feasibility probe (Phase 3)
 
+> Laputa-specific history. This page probes laputa's own QEMU/KVM guest
+> profiles and harness. Those files live in laputa; this repository does
+> not run them.
+
 Measured 2026-10-30/31, Linux x86_64. Guest-executed where stated;
 otherwise host-executed against the exact packaged payloads with the
 container musl toolchain (same binaries the PM proof runs).
