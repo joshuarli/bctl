@@ -44,7 +44,7 @@ guest_timeout() {
 
 guest_net() {
 	case $1 in
-	netsock) echo 1 ;;
+	netsock | netlink) echo 1 ;;
 	*) echo 0 ;;
 	esac
 }
@@ -94,6 +94,7 @@ EOF
 
 build_tests() {
 	: >"$B/build.log"
+	for t in "$@"; do rm -f "$NANOS_OUT/test/runtime/bin/$t" "$NANOS_OUT/test/runtime/bin/$t.dbg"; done
 	make -k -j"$(nproc)" -C "$TESTDIR" CC="$B/cc" STRIP="$LLVM/bin/llvm-strip" GO="$GOROOT/bin/go" \
 		GO_ENV="CGO_ENABLED=0 GOOS=linux GOARCH=amd64" "$@" >>"$B/build.log" 2>&1 || :
 	for t in "$@"; do
