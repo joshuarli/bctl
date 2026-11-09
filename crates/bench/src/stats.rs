@@ -2,6 +2,7 @@
 pub enum Statistic {
     Median,
     P95,
+    Min,
 }
 
 impl Statistic {
@@ -9,6 +10,7 @@ impl Statistic {
         match self {
             Statistic::Median => "median",
             Statistic::P95 => "p95",
+            Statistic::Min => "min",
         }
     }
 
@@ -16,6 +18,7 @@ impl Statistic {
         match self {
             Statistic::Median => quantile(sorted, 0.5),
             Statistic::P95 => nearest_rank(sorted, 0.95),
+            Statistic::Min => sorted[0],
         }
     }
 }
@@ -48,5 +51,6 @@ mod tests {
         let hundred: Vec<f64> = (1..=100).map(f64::from).collect();
         assert_eq!(Statistic::P95.of(&hundred), 95.0);
         assert_eq!(Statistic::P95.of(&[7.0]), 7.0);
+        assert_eq!(Statistic::Min.of(&hundred), 1.0);
     }
 }

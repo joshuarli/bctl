@@ -11,7 +11,8 @@ numbers are targets, never measurements of bctl.
 ## Running a suite
 
 Prerequisites: `runtime/build.sh`, `images/build.sh ref-alpine-chromium`,
-`images/build.sh ref-alpine-tinyland`, Docker, and a release build:
+`images/build.sh ref-alpine-tinyland`, `images/build.sh helium`, Docker, and a
+release build:
 
 ```sh
 cargo build --release -p bctl -p bctl-bench
@@ -19,6 +20,7 @@ target/release/bctl-bench lifecycle   [--rounds N] [--quiet-wait SECS] [--out DI
 target/release/bctl-bench interaction [--rounds N] [--quiet-wait SECS] [--out DIR]
 target/release/bctl-bench browser     [--rounds N] [--iterations N] [--quiet-wait SECS] [--out DIR]
 target/release/bctl-bench resources   [--rounds N] [--quiet-wait SECS] [--out DIR]
+target/release/bctl-bench viewer      [--rounds N] [--quiet-wait SECS] [--out DIR]
 target/release/bctl-bench gate [RESULT.json...]
 target/release/bctl-bench serve
 ```
@@ -70,6 +72,7 @@ image:
 | `interaction` CDP | one sequential `Browser.getVersion` or `Runtime.evaluate` at a time on one WebSocket, 10 warm-up calls, blocks of 100 | client wall time |
 | `interaction` input | RFB pointer press or key tap written, until an incremental update repaints a probe pixel of a full-viewport color toggle; 400 ms between trials | client wall time |
 | `resources` | `ps` RSS and CPU time, `footprint` for the macOS physical footprint, `du` for disk | host tools |
+| `viewer` | RFB frame rate, draw-to-receive latency, and stream bandwidth on the direct VNC TCP port and the dashboard WebSocket: a page whose rAF loop increments a 16-bit black/white marker strip and records `performance.timeOrigin+performance.now()` per counter; three 10 s scenarios (`marker`, `fullscreen`, `scroll`) per path | page JS, RFB stream byte counts, CDP clock probes |
 
 Checks that the timed work happened: a lifecycle sample requires the session to
 be `ready`; a Speedometer run requires `iterationCount` scores; a fixture load
@@ -92,6 +95,22 @@ own toggle counter over CDP afterwards and reports it against the trials sent.
   guest reaches it at `100.96.0.1`, SmolVM's gateway to the host loopback,
   through `--allow-private 100.96.0.0/30`. Both paths add their own network
   stack to the fixture load time.
+- **Viewer.** The suite asks for Raw only. The VNC server is SmolVM's host-side
+  server (`third_party/smolvm/src/agent/vnc.rs`), not libkrun, and Raw is its
+  only pixel encoding; it also offers the DesktopSize, Cursor, and
+  ContinuousUpdates pseudo-encodings. The suite measures the RFB stream, not
+  noVNC's rendering in the dashboard. `gateway` counts the RFB payload through
+  the WebSocket with the input lease; `direct` is the VMM's VNC TCP port, and
+  both paths carry the same framebuffer. Latency needs the guest and host clock
+  offset, taken NTP-style from the minimum-RTT of 20 bracketed `Runtime.evaluate`
+  probes, with uncertainty half that RTT (0.11 ms in the latest run). Byte counts
+  are protocol payload: they exclude WebSocket framing and TCP/IP overhead.
+  `fps` is distinct counters decoded per one-second bucket, median over seconds
+  per round and then over rounds; `fps.worst_second` is the minimum bucket across
+  rounds. `missed` is the fraction of drawn counters between the first and last
+  marker the viewer saw that it never decoded, so a viewer that keeps up reports
+  0. The `fullscreen` and `scroll` scenarios repaint most of the viewport, so
+  their bandwidth sits near `fps × width × height × 4`.
 
 ## Conditions of the latest results
 
@@ -184,6 +203,38 @@ paired rounds (differences from -0.97 to +2.43 ms), so its cost is real but with
 the block-to-block spread. Medians of 6.7 to 7.7 ms are below one 60 Hz frame (16.7 ms). The toggle count
 confirms every trial moved the pixel it timed; why the pipeline presents inside a
 frame was not investigated.
+
+### Viewer (`helium`, 5 rounds, gateway and direct alternating, 10 s windows)
+
+30 of 30 windows retained clean samples; no window was discarded. The guest
+clock ran 231.6 ms from the host clock, and the minimum-RTT offset probe had an
+uncertainty of 0.11 ms. Latency has 3,033 to 3,599 samples per cell; fps,
+bandwidth, and missed have 5 (one per round). fps and bandwidth spreads are the
+per-round medians from minimum to maximum.
+
+| Scenario | Path | fps median (min to max) | Worst second | Latency p50 | Latency p95 | Bandwidth MB/s (min to max) | Missed |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| marker | direct | 59.5 (58.5 to 60.5) | 56 | 4.53 ms | 6.88 ms | 0.63 (0.62 to 0.64) | 0 |
+| marker | gateway | 61.0 (59.0 to 62.5) | 56 | 4.26 ms | 5.28 ms | 0.64 (0.62 to 0.67) | 0 |
+| fullscreen | direct | 70.5 (57 to 77) | 55 | 7.04 ms | 13.07 ms | 260 (219 to 286) | 0 |
+| fullscreen | gateway | 75.5 (61 to 76) | 55 | 7.70 ms | 13.28 ms | 281 (234 to 289) | 0 |
+| scroll | direct | 70.5 (67.5 to 72) | 54 | 8.36 ms | 9.64 ms | 259 (253 to 263) | 0 |
+| scroll | gateway | 72.5 (60.5 to 75.5) | 53 | 9.10 ms | 10.47 ms | 263 (236 to 277) | 0 |
+
+Conditions: Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434);
+SmolVM 1.34.0; guest `helium` (config `7c0feb90...`, tar 218,244,608 bytes) with
+Chrome 156.0.8078.79; one-minute load average 2.95 at the start, and
+`perf-gate-ready` admitted every window; tree `d1034e5` with the viewer suite
+uncommitted.
+
+The marker scenario changes only the strip, so its bandwidth is the strip's
+damage rectangles: about 0.63 MB/s at 60 fps. Fullscreen and scroll repaint most
+of the 1280x800 viewport, so their bandwidth is near `fps × 1280 × 800 × 4`
+(about 260 to 290 MB/s) and the frame rate itself ran at 57 to 77 fps. The two
+paths differ by less than the round-to-round spread in every cell; the viewer
+kept up everywhere (`missed` 0), so this window does not separate them. Latency
+grows from marker (4.3 to 4.5 ms) through fullscreen to scroll (8.4 to 9.1 ms at
+the median) as the amount of changed pixels grows.
 
 ### Browser (Speedometer 3.1, headed, `iterationCount=5`, 8 rounds, order rotated)
 
@@ -301,16 +352,20 @@ floors at 80 percent of the smallest run, memory and size limits 5 to 50 percent
 above the largest observation. The 50 percent spread between load windows seen
 above is inside those margins.
 
-21 of the 22 gates in the file pass on the latest results; the 22nd,
-`browser.speedometer.guest-tinyland.score`, is deferred (4 clean runs).
+51 of the 52 gates in the file pass on the latest results; the 52nd,
+`browser.speedometer.guest-tinyland.score`, is deferred (4 clean runs). The 30
+`viewer` gates were set from the clean 5-round result above: fps and
+`fps.worst_second` floors at 80 percent of the smallest round, latency p95
+limits 20 percent above the largest raw sample, bandwidth limits 50 percent
+above the largest round, and `missed` at 5 percent.
 Log, artifact, and profile-disk bounds are not set: the profile directory grew by
 94 MiB in 1 of 10 first-boot samples earlier in the session, which a bound has to
 allow for.
 
 ## Not covered yet
 
-- Viewer frame rate and bandwidth, and CDP round trip inside the guest, are not
-  measured. `direct` skips only the gateway.
+- CDP round trip inside the guest is not measured. `direct` skips only the
+  gateway.
 - JetStream and MotionMark: Speedometer only.
 - Helium: the suites take an image name and report the browser version, so P2
   reruns them unchanged on the arm64 Helium image.
