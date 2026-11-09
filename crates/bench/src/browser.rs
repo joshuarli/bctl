@@ -91,7 +91,7 @@ fn container_target(server_port: u16, notes: &mut Vec<String>) -> Fallible<Targe
     let flags = THROTTLE_FLAGS.join(" ");
     output_of(
         "docker",
-        &["run", "-d", "--rm", "--platform", "linux/arm64", "--name", &name, "-p", "127.0.0.1::9223", "--shm-size=1g", "--security-opt", "seccomp=unconfined", "-e", &format!("BENCH_CHROMIUM_FLAGS={flags}"), CONTAINER_IMAGE],
+        &["run", "-d", "--rm", "--platform", "linux/arm64", "--name", &name, "-p", "127.0.0.1::9223", "--shm-size=1g", "--cpus=2", "--memory=4g", "--security-opt", "seccomp=unconfined", "-e", &format!("BENCH_CHROMIUM_FLAGS={flags}"), CONTAINER_IMAGE],
     )?;
     let guard = Guard::Container(name.clone());
     let mapping = output_of("docker", &["port", &name, "9223/tcp"])?;
