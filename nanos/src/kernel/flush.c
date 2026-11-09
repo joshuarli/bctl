@@ -149,6 +149,62 @@ static void queue_flush_service(void)
     }
 }
 
+static void flush_entry_post(flush_entry f, thunk completion, boolean rendezvous)
+{
+    init_refcount(&f->ref, total_processors,
+                  init_closure_func(&f->finish, thunk, flush_complete));
+    f->wait = rendezvous;
+    if (rendezvous) {
+        f->joined = 1;
+        f->completion = 0;  /* the completion is invoked during the rendez-vous */
+    } else {
+        f->completion = completion; /* the completion is invoked asynchronously */
+    }
+
+    u64 flags = irq_disable_save();
+    spin_wlock(&flush_lock);
+
+    /* The service thunk doesn't always get a chance to run before
+     * running out of flush resources, so proactively service the list */
+    if (entries_count > ENTRIES_SERVICE_THRESHOLD)
+        service_list();
+
+    /* Set flush true on all previous entries to avoid wasted
+     * invalidations if this entry causes a flush */
+    if (f->flush) {
+        list_foreach(&entries, l) {
+            flush_entry ff = struct_from_list(l, flush_entry, l);
+            if (!ff->flush)
+                ff->flush = true;
+        }
+    }
+    list_push_back(&entries, &f->l);
+    entries_count++;
+    word prev_gen = fetch_and_add((word *)&inval_gen, 1);
+    f->gen = prev_gen + 1;
+    spin_wunlock(&flush_lock);
+
+    send_ipi(TARGET_EXCLUSIVE_BROADCAST, flush_ipi);
+    if (rendezvous) {
+        boolean full_flush = false;
+        while (((volatile flush_entry)f)->joined < total_processors) {
+            /* Another CPU might be waiting for us to join another rendezvous: to avoid
+             * deadlock, handle any flush entries older than the current entry. */
+            spin_rlock(&flush_lock);
+            full_flush = flush_gen_rlocked(prev_gen, current_cpu(), full_flush);
+            spin_runlock(&flush_lock);
+            kern_pause();
+        }
+        if (completion)
+            apply(completion);
+        f->wait = false;
+        if (full_flush)
+            flush_tlb(full_flush);
+    }
+    _flush_handler();
+    irq_restore(flags);
+}
+
 void page_invalidate_sync(flush_entry f, thunk completion, boolean rendezvous)
 {
     if (initialized) {
@@ -156,62 +212,19 @@ void page_invalidate_sync(flush_entry f, thunk completion, boolean rendezvous)
             assert(enqueue(free_flush_entries, f));
             return;
         }
-        init_refcount(&f->ref, total_processors,
-                      init_closure_func(&f->finish, thunk, flush_complete));
-        f->wait = rendezvous;
-        if (rendezvous) {
-            f->joined = 1;
-            f->completion = 0;  /* the completion is invoked during the rendez-vous */
-        } else {
-            f->completion = completion; /* the completion is invoked asynchronously */
-        }
-
-        u64 flags = irq_disable_save();
-        spin_wlock(&flush_lock);
-
-        /* The service thunk doesn't always get a chance to run before
-         * running out of flush resources, so proactively service the list */
-        if (entries_count > ENTRIES_SERVICE_THRESHOLD)
-            service_list();
-
-        /* Set flush true on all previous entries to avoid wasted
-         * invalidations if this entry causes a flush */
-        if (f->flush) {
-            list_foreach(&entries, l) {
-                flush_entry ff = struct_from_list(l, flush_entry, l);
-                if (!ff->flush)
-                    ff->flush = true;
-            }
-        }
-        list_push_back(&entries, &f->l);
-        entries_count++;
-        word prev_gen = fetch_and_add((word *)&inval_gen, 1);
-        f->gen = prev_gen + 1;
-        spin_wunlock(&flush_lock);
-
-        send_ipi(TARGET_EXCLUSIVE_BROADCAST, flush_ipi);
-        if (rendezvous) {
-            boolean full_flush = false;
-            while (((volatile flush_entry)f)->joined < total_processors) {
-                /* Another CPU might be waiting for us to join another rendezvous: to avoid
-                 * deadlock, handle any flush entries older than the current entry. */
-                spin_rlock(&flush_lock);
-                full_flush = flush_gen_rlocked(prev_gen, current_cpu(), full_flush);
-                spin_runlock(&flush_lock);
-                kern_pause();
-            }
-            apply(completion);
-            f->wait = false;
-            if (full_flush)
-                flush_tlb(full_flush);
-        }
-        _flush_handler();
-        irq_restore(flags);
+        flush_entry_post(f, completion, rendezvous);
     } else {
         flush_tlb(false);
         if (completion)
             async_apply(completion);
     }
+}
+
+void processors_rendezvous(void)
+{
+    flush_entry f = get_page_flush_entry();
+    if (f)
+        flush_entry_post(f, 0, true);
 }
 
 flush_entry get_page_flush_entry(void)

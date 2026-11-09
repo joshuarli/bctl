@@ -1835,6 +1835,7 @@ static process_vm process_vm_alloc(address_space as, u64 mmap_min_addr, boolean 
     vm->stack_map = vm->heap_map = 0;
     vm->brk = 0;
     vm->heap_base = 0;
+    vm->membarrier_private_expedited = false;
     vm->vdso_base = 0;
     vm->image = vm->interp = 0;
     init_refcount(&vm->refcount, 1, init_closure_func(&vm->free, thunk, process_vm_free));
@@ -2058,6 +2059,7 @@ process_vm mmap_process_fork(process_vm parent, sysreturn *rv)
     process_vm_lock(parent);
     child->vdso_base = parent->vdso_base;
     child->brk = parent->brk;
+    child->membarrier_private_expedited = parent->membarrier_private_expedited;
     child->heap_base = parent->heap_base;
     child->image = parent->image;
     if (child->image)

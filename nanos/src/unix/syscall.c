@@ -1132,6 +1132,31 @@ sysreturn getrandom(void *buf, u64 buflen, unsigned int flags)
     return buflen;
 }
 
+#define MEMBARRIER_CMD_QUERY                        0
+#define MEMBARRIER_CMD_PRIVATE_EXPEDITED            (1 << 3)
+#define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED   (1 << 4)
+
+static sysreturn membarrier(int cmd, unsigned int flags, int cpu_id)
+{
+    if (flags)
+        return -EINVAL;
+    process_vm vm = current->p->vm;
+    switch (cmd) {
+    case MEMBARRIER_CMD_QUERY:
+        return MEMBARRIER_CMD_PRIVATE_EXPEDITED | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED;
+    case MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED:
+        vm->membarrier_private_expedited = true;
+        return 0;
+    case MEMBARRIER_CMD_PRIVATE_EXPEDITED:
+        if (!vm->membarrier_private_expedited)
+            return -EPERM;
+        processors_rendezvous();
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
 static int try_write_dirent(void *dirp, boolean dirent64, string p,
         int *read_sofar, int *written_sofar, u64 *f_offset,
         unsigned int *count, filesystem fs, tuple n)
@@ -2539,6 +2564,7 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, getdents64, getdents64);
     register_syscall(map, mkdirat, mkdirat);
     register_syscall(map, getrandom, getrandom);
+    register_syscall(map, membarrier, membarrier);
     register_syscall(map, copy_file_range, copy_file_range);
     register_syscall(map, pipe2, pipe2);
     register_syscall(map, socketpair, socketpair);

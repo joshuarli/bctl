@@ -573,6 +573,7 @@ struct process_vm {
     u64               mmap_min_addr;
     fsfile            image;
     fsfile            interp;
+    boolean           membarrier_private_expedited;
 };
 
 struct fdtable {
