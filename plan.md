@@ -1,575 +1,470 @@
-# Coding Agent Campaign: Nanos Chromium Compatibility
-
-You are operating in `bctl`, on a **Linux x86-64 host with KVM**. Your assignment is to establish and develop a fully open-source, source-rebuildable fork of [NanoVMs Nanos](https://github.com/nanovms/nanos) capable of eventually running Chromium with its native Linux multiprocess sandbox enabled.
-
-This is an **implementation campaign**, not a request for a design document. Work autonomously, implement code, execute real guest tests, and commit verified changes.
-
-## Mission and constraints
-
-The final objective is a small, high-performance Chromium-compatible unikernel, supporting multiple MMU-isolated processes inside a single microVM.
-
-Before attempting full Chromium integration, develop a small **Chromium compatibility probe** that exercises the essential Linux process, memory, IPC and security mechanisms Chromium requires.
-
-The probe must prove actual behavior rather than simply checking whether syscall numbers exist.
-
-Hard constraints:
-
-- Host: Linux x86-64, QEMU/KVM. No macOS, HVF or arm64 work.
-- Kernel foundation: Nanos, maintained as an independent source fork.
-- Everything must build locally from public source.
-- No proprietary runtime, proprietary guest additions, or opaque Nanos kernel images.
-- No Chromium source build during the initial compatibility campaign.
-- No `--no-sandbox`, `--single-process`, or `--no-zygote` as a qualifying workaround.
-- No fake sandbox implementations or syscalls that silently report success.
-- Prefer reusing and extending existing Nanos code.
-- Keep the kernel small; do not turn it into a general Linux distribution.
-- Preserve Nanos's existing capabilities and regression tests.
-- Do not implement graphics, DRM/KMS, evdev, Wayland or seatd during this campaign.
-- Do not modify bctl's existing SmolVM appliance or its acceptance criteria.
-- Do not introduce Nix, systemd, Ansible, or heavy build orchestration.
-
-The browser's sandbox is non-negotiable. VM-level isolation does not substitute for MMU separation and syscall confinement between renderer and browser processes within the guest.
-
-### Required reading
-
-Inspect these existing project files before making changes:
-
-- `docs/research/unikernel-nanos.md`
-- `docs/research/unikernel-unikraft.md`
-- `docs/CAMPAIGN-ROADMAP.md`
-- `docs/image-contract.md`
-- `README.md`
-
-Review upstream Nanos's `README.md`, `CHARTER.md`, build system, x86-64 page tables, process structures, syscall dispatcher, ELF loader and existing tests.
-
-Study the Chromium Linux sandbox implementation, not just its high-level documentation:
-
-- https://github.com/chromium/chromium/tree/main/sandbox/linux
-- https://chromium.googlesource.com/chromium/src/+/main/docs/linux/sandboxing.md
-
-Pin all source revisions examined. Do not make implementation decisions based on an assumed syscall contract when the actual Chromium source can resolve it.
-
-## Repository architecture
-
-Use independent sibling repositories:
-
-```text
-workspace/
-├── bctl/
-│   ├── dev/nanos/
-│   │   ├── bootstrap.sh
-│   │   ├── doctor.sh
-│   │   ├── build.sh
-│   │   ├── image.sh
-│   │   ├── run.sh
-│   │   ├── debug.sh
-│   │   ├── test.sh
-│   │   └── toolchain.lock
-│   ├── tests/nanos/
-│   │   ├── mini_chromium.c
-│   │   ├── Makefile
-│   │   └── fixtures/
-│   └── docs/research/
-│       └── nanos-chromium-campaign.md
-└── nanos/
-    ├── src/
-    ├── test/
-    └── docs/chromium-compat.md
-```
-
-Adapt filenames to existing conventions where appropriate.
-
-`../nanos` is an independent Git repository, initially based on upstream release `0.1.56` (`aad473a`), unless a newer verified upstream commit supplies a materially better starting point. Pin the exact SHA and record why it was selected.
-
-Use a dedicated development branch, `chromium-compat`. Configure the public NanoVMs repository as `upstream`. Preserve a separate `origin` for a user-owned fork if one exists; do not create an external repository or push to an unspecified remote.
-
-Keep Nanos changes in Nanos. Keep browser qualification, execution harnesses and test fixtures in bctl.
-
-Record the exact Nanos commit consumed by each bctl test run. Never consume a floating branch implicitly.
-
-Commit both repositories in focused, independently reviewable increments.
-
----
-
-# G0 — Full Nanos development environment
-
-**This is a mandatory deliverable, not preliminary setup to be discarded.**
-
-Build a reproducible, maintainable Nanos kernel development environment on the Linux x86-64 host.
-
-### G0.1 Host toolchain
-
-Inspect the host and install or locally provision the minimal required toolchain, including:
-
-- GCC/binutils, make, NASM and required kernel build tools.
-- QEMU x86-64 with KVM support and `qemu-img`.
-- GDB, ELF inspection and symbolization tools.
-- Git, Python 3 and required Nanos image utilities.
-- Go, Ruby and `ent` where the upstream test/build workflow actually requires them.
-- A suitable C compiler and libc toolchain for the guest test programs.
-
-Do not assume a particular distribution or package manager. Detect the environment.
-
-Prefer isolated or pinned local dependencies where practical. Avoid broad global changes.
-
-Verify `/dev/kvm` access and that actual KVM acceleration works. Do not silently fall back to TCG.
-
-Record compiler and tooling versions, Nanos source revisions, external source dependencies, and build configuration in `toolchain.lock`.
-
-Nanos's build system fetches third-party dependencies. Identify all of them, record their exact commit SHAs, and ensure future bootstrap operations cannot silently change the effective source tree.
-
-The source fork is Apache-2.0. Build the Nanos kernel from source; do not rely on NanoVMs's separately licensed commercial binary distributions.
-
-### G0.2 Reproducible builds
-
-Implement a cohesive CLI surface using small POSIX shell scripts:
-
-```sh
-dev/nanos/bootstrap.sh
-dev/nanos/doctor.sh
-dev/nanos/build.sh
-dev/nanos/image.sh
-dev/nanos/run.sh
-dev/nanos/debug.sh
-dev/nanos/test.sh
-```
-
-Required behavior:
-
-- `bootstrap.sh` provisions/checks the environment and initializes the sibling fork.
-- `doctor.sh` diagnoses every missing prerequisite and prints an actionable report.
-- `build.sh` incrementally builds the source fork, including any necessary klibs and boot artifacts.
-- `image.sh` packages the specified test executable, its runtime libraries, and any supporting files.
-- `run.sh` boots the resulting image with QEMU/KVM, captures serial output, enforces a timeout, and reports actual guest success or failure.
-- `debug.sh` launches a debug kernel with a QEMU GDB stub and usable symbol files.
-- `test.sh` executes the selected regression suites and compatibility gates.
-
-Use Nanos's native Makefile tooling, including `make kernel` and its existing runtime tests. Wrap it rather than replacing the upstream build system.
-
-Avoid using `ops` as a black box. It may be used for image construction if necessary, but explicitly supply the source-built kernel and verify the resulting image identity.
-
-All scratch files, downloads, build products and logs should be under ignored `.work/` paths.
-
-### G0.3 Debugging and observability
-
-Provide:
-
-- Symbolized kernel backtraces.
-- Unstripped debug ELF artifacts.
-- Kernel page-fault diagnostics.
-- Deterministic panic reporting.
-- QEMU serial logs.
-- Guest syscall tracing where available.
-- A documented GDB attach workflow.
-- Debug builds with KASLR disabled when required.
-- Explicit QEMU and guest exit-status handling.
-
-The VM harness must not treat a successful QEMU launcher exit or an `ops` exit code of zero as proof that the guest passed. Require an explicit guest test-completion record and expected assertions.
-
-Preserve logs from failing tests.
-
-Make it possible to reproduce any reported failure with one command, from a clean checkout and pinned sources.
-
-### G0.4 Baseline validation
-
-Run and record:
-
-1. A completely source-built Nanos kernel booting on KVM.
-2. A static x86-64 hello-world executable.
-3. A dynamically linked executable with its loader and libraries.
-4. Existing Nanos process/thread, memory, filesystem, socket and futex regression tests, where supported.
-5. A GDB session reaching a kernel breakpoint.
-6. A second clean build producing equivalent artifacts from unchanged inputs.
-
-Record kernel boot latency, image size and idle guest memory as baseline metrics. Do not optimize yet.
-
-**G0 passes only when a fresh checkout can rebuild, boot, debug and test the custom Nanos kernel without opaque kernel binaries.**
-
----
-
-# G1 — Establish a genuine multiprocess architecture
-
-This is the decisive feasibility gate.
-
-Nanos is designed around a single application. Its existing `process` structures do not imply independent MMU address spaces.
-
-Investigate at least:
-
-```text
-src/unix/unix.c
-src/unix/unix_internal.h
-src/unix/thread.c
-src/unix/exec.c
-src/x86_64/page.c
-src/x86_64/page_machine.h
-src/kernel/
-```
-
-Understand the current virtual-memory model, its use of CR3, user mappings, page faults, scheduler transitions, global kernel state and process lifetime before implementing anything.
-
-Pay particular attention to assumptions that guest virtual addresses uniquely identify physical mappings across the whole VM.
-
-### G1.1 Architectural proof
-
-Implement the smallest possible modification supporting two independent user address spaces, with shared kernel mappings but separate user mappings.
-
-The first executable should:
-
-1. Start process A.
-2. Start process B.
-3. Map the same virtual address in each.
-4. Write distinct contents.
-5. Switch repeatedly between the two processes.
-6. Verify that each sees only its own contents.
-7. Verify that each cannot modify the other's private memory.
-
-Test with one vCPU, then at least two vCPUs to expose TLB and scheduler issues.
-
-Prove that user processes cannot read or write kernel memory.
-
-Do not advance if address-space isolation is merely simulated by distinct process structures or bookkeeping.
-
-### G1.2 Process lifecycle
-
-Once the architectural proof passes, implement the required Linux process semantics, initially for x86-64:
-
-- `clone()` creating a process without `CLONE_THREAD`.
-- `fork()` with correct parent/child execution state.
-- Copy-on-write private mappings.
-- `vfork()` or the semantics required by the selected Chromium version.
-- `execve()` of a normal Linux ELF, including its dynamic interpreter.
-- `wait4()` and child exit-status reporting.
-- Process IDs, parent relationships and cleanup.
-- Signal delivery and termination.
-- Correct file descriptor inheritance and close-on-exec.
-- Interaction with existing `pthread`/thread cloning behavior.
-
-Do not build a general-purpose process manager beyond what this scope demands.
-
-Reuse Nanos's existing ELF loader, filesystem, memory allocator, thread scheduler and POSIX structures.
-
-Explicitly model the ownership and lifetimes of address spaces, processes, threads, files and shared mappings. Avoid global mutable state that is valid only because the old kernel had one process.
-
-Test parent/child memory isolation, COW faults, `execve` replacement, zombie cleanup, inherited descriptors, exit races, concurrent process creation, and resource exhaustion.
-
-Every new syscall requires positive tests, negative tests, and relevant failure-path tests.
-
-**G1 passes when a normal Linux test binary can repeatedly fork, exec, communicate and wait on an MMU-isolated child, without corrupting other processes or the kernel.**
-
----
-
-# G2 — Chromium-style interprocess communication
-
-Build on the real multiprocess foundation.
-
-First inventory what Nanos already implements. For example, `memfd_create` and file sealing exist in Nanos's shared-memory code. Do not duplicate these implementations.
-
-Extend only missing semantics that our test fixture and selected Chromium release require.
-
-Relevant capabilities:
-
-- `socketpair(AF_UNIX, SOCK_STREAM)` and `SOCK_SEQPACKET` where required.
-- `sendmsg()`/`recvmsg()` with genuine `SCM_RIGHTS` file descriptor passing.
-- Proper descriptor reference counts and cleanup.
-- `SO_PEERCRED`, `SO_PASSCRED`, and credential messages.
-- `memfd_create()`, `ftruncate()`, shared `mmap()`, and sealing.
-- `eventfd`, `epoll`, pipes and related polling behavior.
-- Cross-process shared-memory mapping and visibility.
-- Futex operations, including the relevant robust and wakeup semantics.
-- Correct Unix socket shutdown, blocking and error behavior.
-
-Use the existing Nanos runtime tests as a foundation.
-
-The critical proof is cross-process transfer of a shared-memory FD:
-
-```text
-browser
-  creates memfd
-  writes a payload
-  sends FD over Unix socket
-       |
-       v
-renderer
-  receives the actual FD
-  maps the object
-  reads payload
-  modifies allowed shared region
-       |
-       v
-browser
-  observes the modification
-```
-
-Include denial/error tests for malformed control messages, invalid file descriptors, closed peers and permission violations.
-
-Verify that private memory remains private even while shared memory is intentionally shared.
-
-**G2 passes only when the communication takes place between real isolated processes.**
-
----
-
-# G3 — Implement an actual Linux-style renderer sandbox
-
-This gate must be fail-closed.
-
-The goal is not simply to satisfy Chromium's feature-detection code. It is to enforce the corresponding security properties.
-
-### G3.1 Credentials and privilege state
-
-Implement the required subset of user/group credentials:
-
-- Real/effective UID and GID semantics.
-- `setuid`, `setgid` and relevant related operations.
-- Inheritance and privilege transitions.
-- `PR_SET_NO_NEW_PRIVS` and `PR_GET_NO_NEW_PRIVS`.
-- Correct `execve` behavior under `no_new_privs`.
-
-Remove or replace any Nanos stubs that claim success without changing the required security state.
-
-For example, setting `NO_NEW_PRIVS` must affect real kernel state and read back correctly.
-
-### G3.2 Namespaces
-
-Determine the exact namespace operations used by the selected upstream Chromium zygote implementation.
-
-Implement the minimal correct subset of:
-
-- User namespaces.
-- PID namespaces.
-- Network namespaces.
-- Required mount or IPC namespace operations.
-- `clone()` namespace flags and `unshare()`.
-- Namespace inheritance and cleanup.
-- UID/GID mapping interfaces and relevant procfs state.
-
-Preserve actual namespace isolation. A process reporting a separate PID namespace while retaining unrestricted visibility or access to unrelated processes is not acceptable.
-
-If a namespace cannot be implemented correctly, return a real unsupported error and fail the gate.
-
-Do not substitute fake success based on the fact that the entire unikernel resides inside a microVM.
-
-### G3.3 seccomp-BPF
-
-Implement actual syscall filtering with the Linux-compatible classic BPF format and relevant `seccomp()`/`prctl()` interfaces.
-
-Requirements:
-
-- Validate filter programs and reject invalid instructions or control flow.
-- Enforce the actual filter against every applicable syscall entry.
-- Respect x86-64 syscall architecture and argument semantics.
-- Support the actions required by Chromium's pinned policy, including allow, errno, trap and process/thread termination as applicable.
-- Correctly handle policy inheritance and the installation constraints enforced by `no_new_privs`.
-- Prevent bypass through alternative syscall entry paths.
-- Reject unsupported flags or actions rather than silently ignoring them.
-
-Before writing a generic interpreter, inspect Nanos's existing syscall hooks, `pledge` implementation and any BPF-related infrastructure to identify reusable mechanisms.
-
-Keep the implementation focused, safe and testable.
-
-### G3.4 Security acceptance tests
-
-The probe must independently verify:
-
-- Renderer and browser have separate address spaces.
-- Renderer cannot read or overwrite browser-private memory.
-- Renderer cannot ptrace or otherwise alter a more privileged process.
-- Renderer cannot access prohibited network destinations.
-- Renderer cannot escape its filesystem/namespace restrictions.
-- Seccomp denies a deliberately prohibited syscall.
-- Allowed syscalls continue to function.
-- Malformed BPF policies are rejected.
-- NNP and seccomp state survives the relevant process transitions.
-- `/proc/self/status` reports factual `NoNewPrivs`, `Seccomp`, UID/GID and process state.
-
-A report containing `NoNewPrivs: 1` and `Seccomp: 2` is useful corroboration, but it is insufficient without enforcement tests.
-
-**G3 passes only when negative tests prove the relevant security boundaries actually hold.**
-
----
-
-# G4 — The miniature Chromium executable
-
-Create one small C executable:
-
-`tests/nanos/mini_chromium.c`
-
-It must compile for normal Linux and for the Nanos guest, using the same test logic.
-
-It should emulate the important architecture of Chromium without including Chromium itself.
-
-The executable should support role selection through command-line arguments so it can `execve` itself as different processes.
-
-Suggested structure:
-
-```text
-mini_chromium --role=browser
-    |
-    | clone/fork
-    v
-mini_chromium --role=zygote
-    |
-    | create sandboxed child
-    v
-mini_chromium --role=renderer
-    |
-    | restricted syscalls
-    | shared memory
-    | Unix IPC
-    v
-report results to browser
-```
-
-The browser role creates resources, launches children, sends work, waits for responses and verifies that sandboxed processes cannot perform prohibited operations.
-
-The zygote role exercises Chromium-relevant process initialization and namespace setup.
-
-The renderer role installs the required restrictions, receives shared-memory descriptors, performs work, communicates the result, and runs deliberate security-negative tests.
-
-Use real syscalls and libc behavior. Avoid a fake protocol that simply prints success.
-
-### Exact acceptance contract
-
-The executable must verify, at minimum:
-
-| Category | Required proof |
-|---|---|
-| Processes | `clone`/`fork`, `execve`, `wait4`, PID identity |
-| Memory | Per-process VM, COW, shared mappings, `mprotect` |
-| IPC | Unix socket, FD passing, peer credentials |
-| Synchronization | Threads, futexes, epoll/eventfd |
-| Sandbox | Namespaces, credentials, NNP, seccomp |
-| Isolation | Invalid memory access and privileged syscalls denied |
-| Lifecycle | Exit, signals, resource cleanup and repeated launch |
-
-Build the probe once for native Linux as the reference oracle and once for the Nanos appliance.
-
-Use libc-linked builds representative of a normal Linux workload, not only a freestanding raw-syscall executable. Maintain an optional raw-syscall variant to isolate kernel bugs from libc behavior.
-
-Use an explicit, machine-readable result protocol:
-
-```text
-MINI_CHROMIUM_TEST name=process_fork status=PASS
-MINI_CHROMIUM_TEST name=vm_isolation status=PASS
-MINI_CHROMIUM_TEST name=scm_rights status=PASS
-MINI_CHROMIUM_TEST name=seccomp_enforcement status=PASS
-MINI_CHROMIUM_RESULT status=PASS passed=... failed=0
-```
-
-The harness must reject missing records, duplicate terminal records, crashes, timeouts and unexpected skips.
-
-Store structured JSON results in ignored `.work/` directories.
-
-For each run record the exact source SHAs, binary digest, kernel digest, host toolchain, QEMU settings, elapsed time and observed results.
-
-Run at least 50 repeated cold-boot executions after all tests pass, with additional concurrent-process stress testing.
-
-A passing fixture is a necessary compatibility proof, **not a guarantee of full Chromium compatibility**. It must be treated as evidence that the core architectural prerequisites are ready for browser integration.
-
----
-
-# G5 — Validate a prebuilt Chromium binary
-
-Do not rebuild Chromium.
-
-After G1–G4 pass, try an existing x86-64 Linux Chromium binary:
-
-1. Prefer a version-pinned, already-built Chromium or Helium artifact from `chromium-build` if available.
-2. Otherwise use a version-pinned distribution Chromium package with its complete runtime dependency closure.
-3. Package the binary and libraries with the custom Nanos kernel.
-4. Run in headless mode initially, with the actual sandbox enabled.
-5. Capture startup logs, syscall failures, process state and sandbox status.
-
-The minimum browser validation is:
-
-- A live browser process with separate zygote/renderer processes.
-- Successful CDP `/json/version`.
-- Navigate to a local HTTP fixture.
-- Evaluate JavaScript or retrieve page DOM through CDP.
-- Confirm renderer `NoNewPrivs: 1` and `Seccomp: 2`.
-- Verify actual sandbox confinement.
-- Exit cleanly and release all guest resources.
-
-Do not proceed to a full custom Chromium compilation until this test exposes a specific need that cannot be solved with the prebuilt binary or a narrow kernel compatibility change.
-
-If Chromium fails, diagnose the earliest causal failure using tracing and implement the smallest correct kernel fix with a standalone regression test.
-
-Do not patch Chromium merely to conceal unsupported kernel semantics.
-
-No graphics work is included in G5. A later campaign will introduce headed Chromium, DRM/KMS, input and the bctl compositor integration.
-
----
-
-# Engineering discipline
-
-## Correctness
-
-- No silently stubbed security syscalls.
-- No uncontrolled kernel-global mutable process state.
-- No use-after-free or reference-counting shortcuts in process and FD lifetimes.
-- Explicit locking and cleanup rules.
-- Tests for resource exhaustion and malformed userspace inputs.
-- Never treat an unsupported feature as implemented merely because the syscall returns zero.
-- Keep existing Nanos semantics unchanged unless the new process architecture requires a justified modification.
-
-## Minimality
-
-Do not implement Linux interfaces just because they exist.
-
-Every new kernel feature must have a named consumer, a test demonstrating its requirement, and an explanation of why existing Nanos facilities are insufficient.
-
-Avoid new general-purpose abstractions unless shared functionality clearly justifies them.
-
-Do not rewrite Nanos in Rust. Extend its existing C architecture appropriately.
-
-## Testing
-
-For every feature:
-
-1. Establish a baseline on normal Linux.
-2. Demonstrate the failing behavior on the pinned Nanos baseline.
-3. Implement the Nanos kernel change.
-4. Re-run the same fixture.
-5. Run affected existing Nanos tests.
-6. Add failure-path and isolation tests.
-7. Commit with proof in the commit message or accompanying report.
-
-Use timeouts and preserve logs. Never retry indefinitely or silently downgrade a failed condition.
-
-Maintain a gate matrix with `PASS`, `FAIL`, `BLOCKED` or `NOT RUN`. No optimistic statuses.
-
-## Scope and execution
-
-Implement G0 first, completely. Then advance sequentially.
-
-G1 is an explicit architectural checkpoint. If it reveals that Nanos's global page-table assumptions require broad redesign, write down the concrete dependency graph and smallest possible redesign before continuing.
-
-Do not abandon the campaign merely because a feature is absent upstream—that is the reason this fork exists.
-
-However, stop a dependent implementation when the preceding gate has a proven hard blocker that cannot be resolved within the current architecture. Preserve all verified work instead of adding untested speculative layers.
-
-You may continue independent tests, code archaeology and documentation without compromising those gates.
-
-Commit successful work in small increments to each local repository. Do not push externally without an existing authorized destination.
-
----
-
-# Final deliverables
-
-At completion, provide:
-
-1. A working Linux x86-64 Nanos source-development environment.
-2. An independent Nanos fork with verified kernel compatibility changes.
-3. A reproducible KVM boot, image-building and GDB debugging workflow.
-4. The standalone `mini_chromium` compatibility executable.
-5. A native Linux reference run and actual Nanos guest runs.
-6. Negative tests establishing real process, memory and sandbox isolation.
-7. The upstream regression test results.
-8. A structured gate status report and exact code revisions.
-9. A compact benchmark report containing cold-boot latency, kernel/image size, guest RSS, process creation and IPC measurements.
-10. `docs/research/nanos-chromium-campaign.md`, documenting architecture, implementation, measured evidence, unresolved failures and the next minimal step toward an unmodified Chromium binary.
-
-Prioritize correct, reusable kernel primitives over optimizing microbenchmarks.
-
-Success is not that the probe compiles, nor that syscall probes print plausible values. Success is a **small, independently rebuildable Nanos fork that actually executes a Chromium-shaped multiprocess application with enforceable security boundaries**.
-
-Begin by establishing the source-built Nanos environment and reproducing the G1 process-isolation failure. Implement the first architectural fix, validate it on KVM, and continue through the gates as far as proven results permit.
+# Hydrogen: Nanos with a real multiprocess Linux sandbox
+
+Hydrogen is a proof-of-concept monorepo. It holds a source fork of
+[NanoVMs Nanos](https://github.com/nanovms/nanos) and the harness and probes
+showing that the fork can host a Chromium-shaped multiprocess application,
+with MMU-isolated processes and an enforced renderer sandbox, inside one KVM
+microVM on Linux x86-64. The end proof is the patched Helium 0.20.3.1 binary
+(Chromium 156.0.8078.79) running headless with its sandbox on. If this works,
+bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
+
+## Status
+
+- **Goal:** gates G0–G5 below, then the optimization pass and close.
+- **Last accepted revision:** none. hydrogen `main` contains only this doc.
+- **Accepted:** none. **Red:** none. **Parked:** none.
+- **Next slice:** `G0.1`.
+- **Gate matrix:** G0 NOT RUN · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+
+Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
+only when every slice in it is accepted on `main`.
+
+## Charter
+
+- Decide and keep going. Record a decision in **Decisions** only when a later
+  slice depends on it. Otherwise the commit body carries it.
+- Run unattended inside the grant in **Execution boundary**. A plan does not
+  supply missing permission. Park any item that needs authority outside the
+  grant, and continue with independent items.
+- Hard stops. Each one parks the affected item: an action outside the grant;
+  a boundary this doc forbids; a loop that cannot check anything; a proven
+  architectural blocker in a gate's prerequisite (park everything that
+  depends on it, keep independent slices and documentation going).
+- Parity first: every gate works end to end before any optimization. Product
+  performance (boot time, RSS, fork/IPC latency) is measured and logged, not
+  gated, until slice `P.1`.
+- Fix egregious problems you meet in their own commit, at these thresholds: a
+  harness boot of the static hello fixture taking over 5 s; an incremental
+  `dev/build.sh` over 60 s after a one-file change; any guest test over 10×
+  its native-host wall time when the cause is the kernel or the harness; a
+  kernel panic or hang from user input in code you did not otherwise touch.
+  Record anything smaller in the slice's commit body and leave it.
+- Failing item rule: find the cause before retrying (`root-cause`). Never
+  retry the same change unchanged. Three attempts per slice; then park it on a
+  branch `park/<slice-id>` with the cause, the evidence and a retry
+  condition, and rewrite **Status**.
+- One writer by default. Parallel lanes only for the pairs named in
+  **Sequence**, each in a worktree at `.work/wt/<lane>`, following
+  the `orchestrate` skill's worktree lifecycle.
+  Never `/tmp`, and never `$TMPDIR` outside `.work/tmp`.
+- After each accepted slice, run the
+  parent steering checkpoint from the `orchestrate` skill's campaign reference
+  and rewrite **Status** in place. Never append checkpoints, logs or
+  handoffs to this doc. Git history is the log.
+- Every commit is a Conventional Commit whose scope is the workstream
+  (`nanos`, `dev`, `probe`, `helium`, `docs`). The slice ID goes in the body
+  with the acceptance command and its observed result. Code comments never
+  cite this doc, a gate or a slice.
+- No silently stubbed security syscalls. An unsupported operation returns a
+  real Linux error (`ENOSYS`, `EINVAL`, `EPERM`, `EOPNOTSUPP` as Linux would),
+  never 0. A feature that cannot be made correct makes its gate `FAIL`.
+- Each kernel feature has a named consumer (the probe check or Chromium call
+  site that needs it, by `file:line` in `docs/chromium-contract.md`), positive,
+  negative and failure-path tests, and a commit body explaining why the
+  existing Nanos facility was insufficient.
+- Process lifetime rules: no kernel-global mutable state that is correct only
+  because there used to be one process; explicit refcounts and locking for
+  address spaces, processes, threads, file descriptions and shared mappings;
+  no use-after-free shortcuts. Rule for every new cross-process path: the
+  kernel never dereferences a user pointer belonging to a process other than
+  the one whose page table is loaded.
+- Keep the kernel small. Extend Nanos's existing C structures (`process`,
+  `thread`, `vmap`, `fdesc`, the ELF loader, the scheduler); do not add a
+  general process manager or rewrite anything in another language.
+
+## Decisions
+
+### Owner (2026-11-09)
+
+1. **One monorepo.** Everything lives in hydrogen (`~/d/hydrogen`), including
+   the Nanos fork. bctl is read-only context: never build, run or write
+   anything in `~/d/bctl`.
+2. **musl only.** Guest programs, the native reference oracle, upstream
+   regression tests and the browser all use musl. glibc is out of scope: no
+   glibc sysroot, container or loader.
+3. **The browser is the patched Helium.** The Chromium sandbox contract is
+   read from the patched Helium 0.20.3.1 source tree that produced the
+   accepted `helium-0.20.3.1-linux-x86_64-musl.tar.xz`: Chromium
+   156.0.8078.79 + Helium core `2f81b9cafa38a95071e20de3f9cd6b0aca6d3c65` +
+   helium-linux `83027a19267e526f08e25a3af1a30b45ee7e3e2e` + chromium-build's
+   patches. G5 runs that artifact. Vanilla Chromium and Alpine `chromium` are
+   not used.
+4. **Helium source preparation is authorized.** The executor may run
+   `~/d/chromium-build/chromium-build --product helium --profile helium-wayland-release`
+   `image`, `fetch` and `prepare` (never `build` or any later step) with
+   `HELIUM_WORK=hydrogen-helium-0.20.3.1-src-amd64`. That means about 3.2 GB of
+   locked downloads into `~/d/chromium-build/.work` plus that Docker volume.
+   It must not edit chromium-build's tracked files.
+5. **Pushing.** After each accepted slice, push hydrogen `main` to `origin`
+   (`git@github.com:joshuarli/hydrogen`). No other push target, no force
+   push, no new remote repositories. `upstream` is fetch-only.
+
+### Prescribed
+
+- **Nanos base: upstream master `e4b9c9e65cd51ef29e5021835419a1d9a7733f20`**
+  (2026-11-08), 25 commits after release 0.1.56 (`aad473a`). It is preferred
+  over 0.1.56 because it contains fixes this campaign needs: PROT_NONE
+  mmap/mprotect (`9fe2ab36`), manifest-provided uid/gid credentials
+  (`ab823eb4`, the starting point for G3.1) and virtio used-ring ordering
+  (`f04f9ea3`). It builds clean on this host (see **Baseline**). Reverse to
+  0.1.56 only if G0.4 shows a regression on master that 0.1.56 lacks.
+- **Fork layout: subtree-merged with full history.** Add remote `upstream` =
+  `https://github.com/nanovms/nanos.git`. Import with
+  `git merge -s ours --no-commit --allow-unrelated-histories e4b9c9e && git read-tree --prefix=nanos/ -u e4b9c9e && git commit`.
+  `git subtree` is not installed here. Keeping the history preserves upstream
+  SHAs and the Apache-2.0 attribution, and later syncs are
+  `git merge -X subtree=nanos upstream/master`. The draft's separate
+  `chromium-compat` branch is superseded: hydrogen `main` is the
+  integration branch, and a run records the hydrogen commit SHA plus whether
+  the tree was dirty.
+- **Repository layout** (the draft's bctl paths, renamed for hydrogen):
+
+  ```text
+  hydrogen/
+  ├── nanos/                       the fork (src/, test/, docs/chromium-compat.md)
+  ├── dev/                         bootstrap.sh doctor.sh build.sh image.sh run.sh debug.sh test.sh toolchain.lock
+  ├── tests/mini_chromium/         mini_chromium.c, mini_chromium_raw.c, Makefile, fixtures/
+  ├── tests/helium/                guest_init.c, CDP driver, HTTP fixture
+  ├── docs/chromium-contract.md    the syscall contract, cited from the Helium tree
+  └── docs/campaign-report.md      the final report (deliverable 10)
+  ```
+
+  Kernel regression tests go in `nanos/test/runtime/` following upstream's
+  convention (a `.c` file, a `.manifest`, and an entry in
+  `nanos/test/runtime/Makefile` and the top-level `RUNTIME_TESTS`).
+- **Kernel toolchain: the host's GCC 15.2.0 and binutils (Alpine), with
+  NASM.** Upstream supports it and it builds clean. The pinned LLVM can't
+  build the kernel yet: lld rejects the UEFI loader's `R_X86_64_PC32`
+  relocations against `IMAGE_BASE`/`efi_main`. `doctor.sh` fails unless the
+  exact versions in `toolchain.lock` are present. Porting the kernel to the
+  pinned LLVM is not in scope.
+- **Guest toolchain: `llvm-musl-23.1.5-c4f9b08`** from
+  `laputa-systems/llvm-prebuilt-musl`, asset
+  `clang+llvm-23.1.5-x86_64-linux-musl.tar.xz` (sha256
+  `8039dfa9e5b2ee53b04c1dcf94d65bd76c27842b0d4128c5a7bc6ba21d345fec`),
+  unpacked to `.work/toolchain/`. The guest sysroot (headers, `libc.so`,
+  `ld-musl-x86_64.so.1`) is musl 1.2.6, built by `bootstrap.sh` from the
+  release tarball (sha256
+  `d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a`) with
+  that clang into `.work/sysroot`. Static links use the package's bundled
+  musl 1.2.6 `libc.a`. The same binaries are the native oracle, run directly
+  on this host (Alpine edge, musl 1.2.6).
+- **Vendored kernel dependencies are pinned by commit.** Change
+  `nanos/Makefile:56-58` and `cmd_vendor` (`nanos/rules.mk:168`) to fetch
+  and check out exactly these commits, and fail if `HEAD` differs:
+  acpica `e01cc6b3d12b5f73f44d46fa15a7f569c793b328` (tag `R09_30_21`), lwip
+  `e27f9b7af7e5b025a5b8803899f12b1d35f7d968` (`STABLE-2_1_x` head on
+  2026-11-09), mbedtls `f93c44d01d716315dfebadcb799760b548e76822` (default
+  branch head on 2026-11-09).
+- **Go for upstream Go tests** (`fst`, `hwg`, `webg`): a go.dev release
+  tarball unpacked under `.work/toolchain/go`. Its version and sha256 go in
+  `toolchain.lock`. Go binaries are static and do not touch libc. Install Ruby
+  or `ent` only if a selected upstream suite fails without it, and record why
+  in `toolchain.lock`.
+- **The harness owns QEMU.** `run.sh` invokes `qemu-system-x86_64` directly,
+  with `-enable-kvm -cpu host`, `-device isa-debug-exit`, `-no-reboot` and
+  user networking without fixed host ports. It never goes through
+  `make run`, because `nanos/platform/pc/Makefile:351` maps QEMU's failure
+  exit 1 to 0, and its fixed `hostfwd=tcp::8080` collides on this host. It
+  enforces its own deadline and treats a deadline kill as `TIMEOUT`, because
+  Alpine's BusyBox `timeout` returns the child's status and QEMU exits 0 on
+  SIGTERM. A guest passes only when all of these hold: QEMU exit `(code<<1)|1`
+  with the expected code, the fixture's expected records present exactly once,
+  a terminal record present exactly once, and no `*** signal` or panic text on
+  serial. If `/dev/kvm` acceleration is unavailable, the run fails. It never
+  falls back to TCG.
+- **Result protocol and storage.** Fixtures print
+  `MINI_CHROMIUM_TEST name=<n> status=PASS|FAIL [detail=…]` and one
+  `MINI_CHROMIUM_RESULT status=… passed=N failed=M`. Each run writes
+  `.work/runs/<utc>-<id>/{serial.log,result.json}`. `result.json` holds the
+  hydrogen SHA and dirty flag, the kernel and image sha256, the fixture binary
+  sha256, the toolchain versions, the QEMU command line, the elapsed time and
+  the parsed records, and a `reproduce` field: one command that rebuilds and
+  reruns the exact case from a clean clone at that SHA. Failing runs are kept. Passing runs older than the last
+  20 may be pruned.
+- **Address-space design bounds for G1.** Each process gets its own top-level
+  page table. Kernel mappings are shared by pre-populating every kernel-half
+  PML4 entry at boot, so later kernel mappings show up in every address space
+  without copying. CR3 switches on context switch only when the address space
+  changes. TLB shootdown targets only the CPUs that have the address space
+  loaded. PCID is an optimization and waits for `P.1`. If Nanos places kernel
+  data in the lower half or depends on one global user `vmap` set, the G1.1
+  design note gives the dependency graph and the smallest relocation, and the
+  slice carries it out.
+- **The futex key is not the virtual address.** Private futexes key on
+  (address space, uaddr). Shared futexes key on (backing object, offset), so
+  cross-process `MAP_SHARED` waits and wakes meet. Any other kernel table
+  keyed by a user virtual address gets the same treatment.
+- **The `prctl` contract changes.** Unknown options return `-EINVAL`, as on
+  Linux, instead of the current blanket 0 (`nanos/src/unix/syscall.c:2304`).
+  `setuid`, `setgid`, `setgroups` and `capset` stop being `syscall_ignore`
+  (`nanos/src/unix/syscall.c:2460-2464`), and so does `wait4`
+  (`nanos/src/x86_64/unix_machine.c:260`). Existing Nanos programs that relied
+  on the silent success will now see real results. That is intended; list it
+  in the final report.
+- **The sandbox layer is the namespace sandbox.** Chromium 156 prefers its
+  unprivileged-user-namespace sandbox when the kernel offers user namespaces,
+  and falls back to the setuid `chrome-sandbox` helper otherwise. Implement
+  user namespaces. The setuid path, and file mode bits as security state, are
+  non-goals. Slice H confirms which path the Helium tree takes; if it says
+  otherwise, H's report reverses this decision before G3.3 starts.
+
+### Delegated (decide within the bound, record in the commit body)
+
+- **Reproducible build check (G0.1).** Two clean builds of the same commit at
+  the same absolute path must produce a byte-identical `kernel.img`. If they
+  differ, find the nondeterministic input (embedded time, path, ordering) and
+  remove it with at most two changes. If one remains, document it in
+  `toolchain.lock` and compare the `.text`/`.rodata`/`.data` section hashes
+  instead.
+- **Upstream tests that won't build on musl.** Fix the test source to be
+  portable (header conflicts such as `statx_timestamp` in `filesystem.c`, or
+  `struct timespec` includes in `aio.c`), or point dynamic manifests at the
+  musl loader. Never weaken an assertion. A test that cannot be made portable
+  in 30 minutes is recorded as `NOT RUN (musl-incompatible: <reason>)` in
+  **Baseline**.
+- **Pre-existing upstream failures** that G0.4 finds: fix them if they meet
+  the egregious threshold or block a later slice. Otherwise record them in
+  **Baseline** and leave them.
+- **Mechanism details inside each gate** (data-structure layout, lock
+  choice, error-path order): use the smallest change that passes the slice's
+  tests and keeps `nanos/docs/chromium-compat.md` accurate.
+- **Contract surprises.** If the Helium tree needs a syscall or flag not
+  listed in `docs/chromium-contract.md`, add it there with its `file:line`
+  before implementing it. If it needs something this doc forbids (graphics,
+  setuid binaries, `--no-sandbox`), park the slice.
+
+## Baseline
+
+Measured on 2026-11-09 on this host: Alpine edge (3.25.0_alpha20260805),
+Linux 7.2.9, 32 CPUs, 60 GB, `/dev/kvm` usable by `josh`, QEMU 11.1.2,
+GCC 15.2.0, NASM, GDB, `strace`, Docker. There is no Go, no `ops`, no glibc.
+Upstream checkout in `.work/src/nanos` at `e4b9c9e`.
+
+| Fact | Observation |
+| --- | --- |
+| Clean `make -j32 kernel` | 19.7 s wall; `kernel.img` 1.79 MB, `kernel.elf` 12.7 MB (with symbols) |
+| Incremental build (touch `src/unix/syscall.c`) | 5.5 s |
+| Static musl hello image | 15.3 MB; boot to exit under KVM 0.23–0.65 s (1 and 2 vCPUs) |
+| Upstream `make run` | exits 0 when QEMU fails to start (port 8080 busy) |
+| Upstream test manifests | dynamic ones hard-code glibc paths (`/lib64/ld-linux-x86-64.so.2`) and fail at `mkfs` |
+| **Known red: console `writev`** | writes only the last iovec and returns its length: `writev(1, {"WV1 ","WV2\n"})` prints `WV2`, returns 4. musl stdio flushes through `writev`, so every `printf` on stdout is lost while the program exits 0. Fixed in G0.3 |
+| `ioctl(1, TIOCGWINSZ)` | `ENOSYS`. musl treats it as "not a tty"; harmless |
+| `kernel.mk:117` | `gitversion.c` depends on `$(ROOTDIR)/.git/index`; breaks in worktrees and under `hydrogen/nanos/`. Fixed in G0.1 |
+| Pinned LLVM building the kernel | fails at lld (`R_X86_64_PC32` against `IMAGE_BASE`) |
+| Upstream runtime tests (partial, musl, pre-`writev` fix) | pass: `dup`, `epoll`, `eventfd`. Build fail on musl: `aio`, `filesystem`. No Go: `fst`. Timed out at 90 s: `fcntl`, `fs_full`, `futex`, `getdents`. `futexrobust` exit 29. The rest not run. These results are not trustworthy until the `writev` fix; G0.4 produces the real table here |
+| Sandbox syscalls at `e4b9c9e` | `clone` without `CLONE_THREAD` returns `-ENOSYS` (`nanos/src/unix/thread.c:58`); `execve`/`fork`/`seccomp`/`unshare` unregistered; `wait4`, `setuid`, `setgid`, `setgroups`, `capset` are `syscall_ignore`; `prctl` returns 0 for every option it doesn't know; no `/proc/self/status` |
+| Existing reusable pieces | `memfd_create` and seals (`nanos/klib/shmem.c:12`, `F_ADD_SEALS` in `syscall.c`), `pledge`/`unveil`/`sandbox` klibs (`nanos/klib/`), the `strace` klib, `NO_KASLR` (`nanos/src/kernel/init.c:86`) |
+| Native oracle | unprivileged `unshare -Urpn` works on the host; seccomp present |
+
+Loop: a kernel slice's inner loop is an incremental build (~6 s) plus
+one or more guest boots (~1 s each). The full upstream runtime suite is
+expected to take several minutes once hangs become failures under the
+harness's deadline. Run it only at the milestones named in **Sequence**.
+
+## Sequence
+
+Items run in order. "Owns" lists the files a slice may change. Two slices
+share a file only when they are serial. The acceptance command runs on
+`main` after integration, followed by the narrowest affected suite.
+
+**Parallel pairs:** `H` may run in a second lane alongside any G0 or G1 slice
+(it owns only `docs/chromium-contract.md` and `.work/`). No other pair runs in
+parallel: every kernel slice touches `nanos/src/unix/`.
+
+**Milestone suites** (`dev/test.sh upstream`, the full musl runtime suite
+under the harness on 1 and 2 vCPUs) run at the end of G0, G1, G2 and G3, and
+at the close. A milestone with a regression against **Baseline** blocks the
+next gate.
+
+### G0: development environment (P0, ground)
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| G0.1 | Import the fork at `e4b9c9e` as described in **Decisions**. Pin vendored deps. Make `gitversion.c` work when `nanos/.git` is absent (ask `git -C $(ROOTDIR) rev-parse --git-dir`, and fall back to a fixed string when outside git). Write `dev/toolchain.lock`, `dev/bootstrap.sh` (fetch and verify the LLVM tarball, build the musl 1.2.6 sysroot, vendor deps at their pinned SHAs, fetch Go), `dev/doctor.sh` (each missing prerequisite on its own line, with the command to fix it; checks KVM by booting a 1-instruction guest with `-enable-kvm`), and `dev/build.sh` (wraps `make -C nanos kernel` incrementally, keeps `kernel.elf` unstripped). | `nanos/Makefile`, `nanos/rules.mk`, `nanos/kernel.mk`, `dev/{bootstrap,doctor,build}.sh`, `dev/toolchain.lock` (ignore `.work/` through `.git/info/exclude`, not a tracked file) | — | From a fresh `git clone` of hydrogen into `.work/wt/clean`: `dev/bootstrap.sh && dev/doctor.sh && dev/build.sh` succeed; a second clean build gives an identical `kernel.img` (or identical section hashes, per **Decisions**); `doctor.sh` with `PATH` stripped of `nasm` names `nasm` and exits non-zero |
+| G0.2 | `dev/image.sh <binary> [--lib …] [--file …] [--arg …] [--env …] [--trace]` builds the manifest, resolves the musl `DT_NEEDED` closure from `.work/sysroot` or a given root, and calls the fork's `mkfs` with the source-built kernel and boot image. It prints the image's sha256. `dev/run.sh <image> --expect <spec> [--smp N] [--timeout S]` behaves as described in **Decisions**. Fixtures in `tests/mini_chromium/fixtures/`: static hello, dynamic hello, pthread hello, an expected-crash fixture. | `dev/{image,run}.sh`, `tests/mini_chromium/fixtures/`, `tests/mini_chromium/Makefile` | G0.1 | `dev/test.sh harness`: static hello passes; the crash fixture is reported as `CRASH`; a fixture that exits 0 without its terminal record is reported as `FAIL missing-record`; a fixture that sleeps forever is reported as `TIMEOUT` within its deadline; a fixture printing the terminal record twice is reported as `FAIL duplicate-record`; dynamic hello **fails** (the `writev` bug) |
+| G0.3 | Fix console `writev` (and any other `file_iov` path with the same last-iovec bug) in `nanos/src/unix/`. Add `nanos/test/runtime/writev_console.c` with multi-iovec, zero-length-first and partial cases. | `nanos/src/unix/` (the console or tty write path), `nanos/test/runtime/` | G0.2 | `dev/test.sh harness` all green, including dynamic and pthread hello printing via `printf`; `dev/test.sh runtime writev_console writev` passes |
+| G0.4 | Port the upstream runtime suite to musl and the harness. `dev/test.sh upstream` builds every `RUNTIME_TESTS` entry with the guest toolchain (static or musl-dynamic), runs each with its upstream expected exit code on 1 and 2 vCPUs, and prints a PASS/FAIL/TIMEOUT/NOT RUN table. Write that table into **Baseline**, replacing the partial row. Include the unit tests (`make -C nanos/test/unit`) if they build on musl. | `nanos/test/runtime/` (portability only), `nanos/test/unit/` (portability only), `dev/test.sh` | G0.3 | `dev/test.sh upstream` finishes in under 15 min, and its table matches **Baseline** |
+| G0.5 | `dev/debug.sh <image>` builds a debug kernel (`NO_KASLR`, `-O0` or `-Og`, symbols), boots with `-s -S`, and prints the GDB attach command. `dev/debug.sh --check` drives GDB in batch mode to a kernel breakpoint (`kernel_runtime_init` or the syscall entry) and prints a backtrace. Symbolization: `run.sh` passes kernel `*** signal`/fault frame addresses through `addr2line -e kernel.elf`. Syscall tracing: `image.sh --trace` turns on Nanos's existing `trace`/`debugsyscalls` manifest keys. Baseline metrics: boot latency (median of 10 cold boots of static hello), kernel and image size, guest memory after boot (Nanos's `/proc/meminfo` read by a fixture). Write them to **Baseline**. | `dev/debug.sh`, `dev/run.sh` | G0.4 | `dev/debug.sh --check` prints a frame inside the named kernel function; `dev/test.sh harness` shows a symbolized frame (function name and file) for the crash fixture; the metrics row exists |
+
+**G0 passes** when a fresh clone runs `dev/bootstrap.sh && dev/test.sh g0`
+(harness, upstream, debug check) green without any opaque kernel binary.
+Run the milestone suite.
+
+### H: Chromium contract (independent lane)
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| H | Prepare the patched Helium tree (owner decision 4). Copy the read-only subtrees into `.work/src/helium/`: `sandbox/linux`, `sandbox/policy/linux`, `content/zygote`, `content/common/zygote`, `content/browser/zygote_host`, `base/process`, `base/posix`, `ipc`, `mojo/core` (platform channel), `base/memory` (shared memory), `third_party/crashpad/crashpad/util/linux`. Write `docs/chromium-contract.md`: for each process role (browser, zygote, renderer), every syscall, flag, `prctl`/`seccomp` op, procfs path, socket type and cmsg Chromium uses, each with its `file:line` in the Helium tree; the renderer's seccomp policy (actions used, whether TSYNC is used, the SIGSYS trap handler contract); the namespace sandbox sequence (`clone` flags, `uid_map`/`gid_map`/`setgroups`, the chroot to `/proc/self/fdinfo` through `CLONE_FS`, capability drops); and how Chromium chooses between the namespace and setuid layers. Cross-check by running the Helium artifact natively on this host: `strace -f -e trace=process,%ipc,%network,prctl,seccomp,unshare,clone,clone3` with `--headless=new` and the sandbox on, saving the trace in `.work/`. | `docs/chromium-contract.md` | — | Every row cites a `file:line` in the Helium tree, or is marked `observed-only` with a strace line; the native strace shows the renderer reaching `Seccomp: 2`; the doc states the layer-1 sandbox choice and whether the namespace decision holds |
+
+### G1: multiprocess architecture (decisive gate)
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| G1.1 | Archaeology and the first architectural fix. Write `nanos/docs/chromium-compat.md`: how CR3 is set (`nanos/src/x86_64/page.c:115-125`), where user and kernel mappings live, what `process`/`thread`/`vmap` own, page-fault flow, scheduler transitions, and every global that assumes one process, as a dependency graph with the smallest redesign. Then implement per-process page tables (**Decisions**) and a minimal `fork` (`clone(SIGCHLD)` without `CLONE_VM`) that eagerly copies private mappings. Child exit tears down its address space. Add `nanos/test/runtime/vm_isolation.c`: parent and child map the same address, write different data, yield to each other for 10,000 rounds and check their own data; each tries to write the other's private data through every path it has (same VA, `/proc/self/mem` if present, `process_vm_writev` → expect `ENOSYS`/`EPERM`); reading and writing a kernel address faults with SIGSEGV. | `nanos/src/x86_64/page*.{c,h}`, `nanos/src/kernel/page*.{c,h}`, `nanos/src/unix/{unix.c,unix_internal.h,thread.c,mmap.c}`, scheduler files, `nanos/docs/chromium-compat.md`, `nanos/test/runtime/vm_isolation.*` | G0 | `dev/test.sh runtime vm_isolation --smp 1` and `--smp 2` pass 20 consecutive runs each; the same binary passes natively; a deliberately broken build (child shares the parent's CR3, built with `-DVM_ISOLATION_SELFTEST_BREAK`, never committed enabled) makes the test fail. This is how you check the test can detect sharing |
+| G1.2 | Copy-on-write `fork`, `vfork` and `clone(CLONE_VM\|CLONE_VFORK)` (musl's `posix_spawn` uses it), `wait4`/`waitid` with exit status, signal status and `WNOHANG`, real PIDs and PPIDs, zombies, reparenting to PID 1, `getppid`, and process cleanup. Fd tables are copied on fork and shared under `CLONE_FILES`. Add `nanos/test/runtime/process_lifecycle.c` with positive, negative (`ECHILD`, `EINVAL` flags) and failure-path (`ENOMEM`/`EAGAIN` from a process-count limit) cases. | as G1.1 plus `nanos/src/unix/{syscall.c,signal.c}`, `nanos/src/x86_64/unix_machine.c`, `nanos/test/runtime/process_lifecycle.*` | G1.1 | `dev/test.sh runtime process_lifecycle vm_isolation` on 1 and 2 vCPUs; a COW counter shows pages are shared until the first write (child RSS from `/proc/self/status` `VmRSS` grows only after writing) |
+| G1.3 | `execve`/`execveat` through the existing ELF loader, including `PT_INTERP` (musl's `ld-musl`), argv, envp and auxv; close-on-exec; the address space is replaced while the PID and the open fds without `O_CLOEXEC` are kept; `execve` from a multithreaded process kills the other threads. Add `nanos/test/runtime/exec.c`, which execs itself in a second role and a musl-dynamic helper, with `ENOENT`/`ENOEXEC`/`EFAULT`/`E2BIG` cases. | as G1.2 plus `nanos/src/unix/exec.c`, `nanos/test/runtime/exec.*` | G1.2 | `dev/test.sh runtime exec process_lifecycle` on 1 and 2 vCPUs |
+| G1.4 | Cross-process signals and lifecycle: `kill`/`tgkill` to other processes with permission checks, `SIGCHLD`, default actions killing a whole process, `exit_group` with threads in a child, exit races, and threads (`CLONE_THREAD`) inside forked children. Start `tests/mini_chromium/mini_chromium.c` with the role dispatcher, the result protocol and the process and memory checks so far. Add `tests/mini_chromium/mini_chromium_raw.c` (raw syscalls, no libc) for the same process checks. Stress: 1,000 fork/exec/wait cycles, 64 concurrent children, and process-limit exhaustion. | as G1.3, `tests/mini_chromium/` | G1.3 | `dev/test.sh probe --native` then `dev/test.sh probe` on 1, 2 and 4 vCPUs; checks `process_fork`, `process_exec`, `process_wait`, `pid_identity`, `vm_isolation`, `cow`, `signals`, `lifecycle_stress` all `PASS` on both; milestone suite with no regressions |
+
+**G1 passes** when the probe repeatedly forks, execs, communicates over a
+pipe with, and waits on, MMU-isolated children on 1, 2 and 4 vCPUs, and the
+milestone suite shows no regressions. If G1.1's design note shows the kernel
+cannot have per-process page tables without changing something this doc
+forbids, set G1 to `BLOCKED` with the dependency graph, park G1.2 onward and
+everything after G1, and finish H and the docs.
+
+### G2: Chromium-style IPC
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| G2.1 | Inventory first (list in `nanos/docs/chromium-compat.md` what already works across processes). Then: `SCM_RIGHTS` on `AF_UNIX` `SOCK_STREAM`, and `SOCK_SEQPACKET` if `docs/chromium-contract.md` lists it, with file-description refcounts held by in-flight messages and released on close, receive or truncation (`MSG_CTRUNC`); `SO_PEERCRED`, `SO_PASSCRED`, `SCM_CREDENTIALS` with kernel-checked credentials; the crashpad `setsockopt` that returns `ENOTSUP` today (`docs/research/unikernel-nanos.md` §3 in bctl). Negative cases: malformed `cmsg_len`, bad fd numbers (`EBADF`), too many fds (`EINVAL`/`ETOOMANYREFS`), a closed peer (`EPIPE`/`ECONNRESET`), fds dropped when the receiver's fd table is full. Add `nanos/test/runtime/scm_rights.c`. | `nanos/src/unix/socket.c`, `nanos/src/unix/unix_internal.h`, `nanos/test/runtime/scm_rights.*`, `tests/mini_chromium/` | G1 | `dev/test.sh runtime scm_rights unixsocket socketpair`; the probe's `scm_rights` and `peer_credentials` checks pass natively and on Nanos |
+| G2.2 | Cross-process shared memory: `memfd_create` plus `ftruncate` plus `MAP_SHARED` in two processes see the same pages; seals are enforced across processes (`F_SEAL_WRITE` denies a writable map in the receiver); private mappings stay private alongside them; shared futexes wait and wake across processes (**Decisions**); robust futex lists on exit. This is the browser→renderer proof of the draft: memfd, payload, fd sent, renderer maps it, reads, writes an allowed region, browser sees the write. | `nanos/klib/shmem.c`, `nanos/src/unix/{mmap.c,futex.c}`, `nanos/src/kernel/pagecache*`, `nanos/test/runtime/shmem_xproc.*`, `tests/mini_chromium/` | G2.1 | `dev/test.sh runtime shmem_xproc shmem futex futexrobust` on 1 and 2 vCPUs; the probe's `shared_memory_fd`, `seal_enforcement`, `private_stays_private` and `futex_xproc` checks pass on both |
+| G2.3 | `eventfd`, `epoll`, pipes and poll across processes: readiness from another process's write, `EPOLLHUP`/`EPOLLRDHUP` on peer exit, `shutdown(SHUT_WR)`, blocking and `EAGAIN`, `SIGPIPE`/`EPIPE`. | `nanos/src/unix/{poll.c,pipe.c,eventfd.c,socket.c}`, `nanos/test/runtime/`, `tests/mini_chromium/` | G2.2 | the probe's `epoll_eventfd`, `pipe_xproc` and `socket_shutdown` checks pass on both; milestone suite with no regressions |
+
+**G2 passes** when every IPC check passes between real isolated processes.
+
+### G3: renderer sandbox (fail-closed)
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| G3.1 | Credentials: per-process real, effective and saved UID/GID and supplementary groups, starting from the manifest `uid`/`gid` (`ab823eb4`); `setuid`, `setgid`, `setresuid`, `setresgid`, `setgroups` and `getres*` with Linux permission rules; `capget`/`capset` with a real per-process capability set (root holds all, a user holds none, a user namespace grants caps inside it); `PR_SET/GET_NO_NEW_PRIVS` as real state, inherited on fork and kept across exec; `PR_SET_DUMPABLE`/`PR_GET_DUMPABLE`; unknown `prctl` options return `EINVAL`; `/proc/self/status` and `/proc/<pid>/status` with factual `Pid`, `PPid`, `Uid`, `Gid`, `NoNewPrivs`, `Seccomp`, `Seccomp_filters` and `VmRSS`. | `nanos/src/unix/{syscall.c,special.c,unix.c,unix_internal.h}`, `nanos/test/runtime/creds.*`, `tests/mini_chromium/` | G2 | `dev/test.sh runtime creds`; the probe's `credentials`, `nnp_state` and `proc_status` checks pass natively and on Nanos, including denial cases (unprivileged `setuid(0)` gives `EPERM`; NNP cannot be cleared) |
+| G3.2 | seccomp-BPF: `seccomp(SECCOMP_SET_MODE_STRICT\|SECCOMP_SET_MODE_FILTER)`, `prctl(PR_SET_SECCOMP)`, and `SECCOMP_GET_ACTION_AVAIL` if the contract uses it; a classic-BPF validator (Linux's rules: forward jumps only, in bounds, ends in `RET`, loads aligned within `seccomp_data`, at most 4,096 instructions) and an interpreter; enforced at the one syscall dispatch point before handler lookup, so unregistered syscalls are filtered too, and the vsyscall emulation path and any `int 0x80` path go through the same check (or are disabled for filtered tasks); `arch` = `AUDIT_ARCH_X86_64` and x32-bit rejection as in Chromium's policy; actions `ALLOW`, `ERRNO`, `TRAP` (SIGSYS with `si_syscall`, `si_arch` and `si_call_addr` set, as Chromium's trap handler expects), `KILL_THREAD`, `KILL_PROCESS`, plus `TRACE`/`LOG`/`USER_NOTIF` only if the contract uses them (otherwise `EINVAL`); `SECCOMP_FILTER_FLAG_TSYNC` if the contract uses it; filters stack and are inherited on fork, clone and exec; installing requires NNP or `CAP_SYS_ADMIN`; unknown flags give `EINVAL`. Reuse the `pledge` klib's dispatch hook if one exists; don't duplicate it. | `nanos/src/unix/seccomp.c` (new), `nanos/src/unix/syscall.c`, `nanos/src/x86_64/` syscall entry, `nanos/test/runtime/seccomp.*`, `tests/mini_chromium/` | G3.1 | `dev/test.sh runtime seccomp`: a corpus of invalid programs (backward jump, out-of-bounds jump, no `RET`, misaligned load, too long) each gets `EINVAL`; a denied syscall gets the expected errno, SIGSYS or kill; allowed syscalls keep working; filters survive fork and exec; installing without NNP and without the capability gives `EACCES`; the probe's `seccomp_enforcement`, `seccomp_trap`, `bpf_rejects_malformed` and `seccomp_inherit` checks pass natively and on Nanos |
+| G3.3 | User namespaces: `clone(CLONE_NEWUSER)` and `unshare(CLONE_NEWUSER)`, one-time writes to `/proc/<pid>/uid_map` and `gid_map`, `/proc/<pid>/setgroups` `deny`, capabilities scoped to the namespace, credentials mapped through it, `CLONE_FS` and `chroot` with a per-process root and cwd (for Chromium's chroot to `/proc/self/fdinfo`), `setns` only if the contract uses it. | `nanos/src/unix/` (namespace and fs-root code), `nanos/test/runtime/userns.*`, `tests/mini_chromium/` | G3.2 | `dev/test.sh runtime userns`; the probe's `userns_map`, `userns_caps_scoped` and `fs_restricted` checks pass natively and on Nanos: after the chroot the renderer cannot open any path outside it; a second write to `uid_map` gives `EPERM` |
+| G3.4 | PID and network namespaces: `CLONE_NEWPID` (the first child is PID 1 inside; `getpid` and `/proc` show only its namespace; `kill` and `ptrace` cannot reach outside processes; PID 1's death kills the namespace) and `CLONE_NEWNET` (a new namespace has no interfaces except a down loopback, so `connect` to any IP destination fails with `ENETUNREACH`; abstract `AF_UNIX` names are per netns; filesystem `AF_UNIX` sockets still work). `ptrace` stays `ENOSYS` unless the contract needs it; if it does, implement only `PTRACE_TRACEME`/`ATTACH` permission denial semantics and the ops the contract uses, under the Yama-like rule Chromium assumes. | `nanos/src/unix/` (pid and net namespace code), `nanos/src/net/` (netns gate only), `nanos/test/runtime/pidns_netns.*`, `tests/mini_chromium/` | G3.3 | `dev/test.sh runtime pidns_netns`; the probe's `pidns_isolation`, `netns_denied`, `ptrace_denied` and `kill_outside_denied` checks pass natively and on Nanos; milestone suite with no regressions |
+
+**G3 passes** when every negative check in the probe holds on Nanos.
+`NoNewPrivs: 1` and `Seccomp: 2` in `/proc/<pid>/status` count only as
+corroboration, never as proof.
+
+### G4: the miniature Chromium
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| G4.1 | Complete `mini_chromium`. `--role=browser` creates the memfd, the socketpairs and the eventfd, forks and execs `--role=zygote`, sends work, collects results and runs its own checks. `--role=zygote` performs the namespace setup in the order the Helium tree does (from `docs/chromium-contract.md`), then forks and execs `--role=renderer`. `--role=renderer` installs NNP and a seccomp policy shaped like the renderer's (the same actions, a TRAP handler, an errno-denied `socket(AF_INET)`), receives the memfd, does the work and runs every negative check: reading browser-private memory, `ptrace` of the browser, `kill` outside its pid namespace, a network connect, opening a path outside the chroot, a forbidden syscall, a malformed filter. Cover the full table in **Acceptance**. The harness rejects missing records, duplicate terminal records, crashes, timeouts and unexpected skips, and writes `result.json` (**Decisions**). | `tests/mini_chromium/`, `dev/test.sh` | G3 | `dev/test.sh probe --native` and `dev/test.sh probe` (1, 2, 4 vCPUs) report `MINI_CHROMIUM_RESULT status=PASS failed=0` with every required check named; `mini_chromium_raw` passes its process, memory and seccomp subset on both |
+| G4.2 | Repetition and stress: `dev/test.sh probe --repeat 50` (50 cold boots, all must pass) and `--stress` (8 concurrent renderers × 100 launch/exit cycles in one boot, then a check that the process count and the guest's free memory return to their starting values). | `dev/test.sh`, `tests/mini_chromium/` | G4.1 | both commands pass; record the wall time and per-boot median in `docs/campaign-report.md` |
+
+### G5: the prebuilt Helium binary
+
+| ID | Slice | Owns | Prereq | Acceptance |
+| --- | --- | --- | --- | --- |
+| G5.1 | Package `~/d/chromium-build/.work/artifacts/helium-0.20.3.1/helium-0.20.3.1-linux-x86_64-musl.tar.xz` (verify sha256 `6853af22b60345c92e0cbe69181aebd8af3fa79842c7f0135d20c9656c5918c6`; copy it, never modify it in place) with its runtime closure from Alpine 3.24.2 (`~/d/chromium-build/config/helium.packages.amd64.lock`; pinned `.apk` files under `.work/dl/`). `tests/helium/guest_init.c` is the Nanos program: it starts Helium with `--headless=new --remote-debugging-port=9222 --user-data-dir=/profile` and the sandbox on (no `--no-sandbox`, `--single-process` or `--no-zygote`), then reports each process's role from `/proc/<pid>/cmdline` and its `/proc/<pid>/status`. | `tests/helium/`, `dev/image.sh` (rootfs input) | G4 | `dev/test.sh helium boot` reaches a live browser process plus separate zygote and renderer processes on serial, or stops with the earliest causal failure written in the slice's commit body |
+| G5.2+ | One slice per causal failure Helium hits, with the root cause found by tracing (`--trace`, guest `strace` klib, Helium's `--enable-logging=stderr --v=1`): the smallest kernel fix plus a standalone regression test in `nanos/test/runtime/`. Never patch Helium to hide unsupported kernel semantics. | the kernel area at fault, `nanos/test/runtime/` | G5.1 | that test, plus `dev/test.sh probe` and `dev/test.sh helium boot` progressing past the failure |
+| G5.N | Full validation over CDP from the host (QEMU user network, dynamically chosen forwarded port): `/json/version`; navigate to an HTTP fixture served by the host harness; `Runtime.evaluate` returns the fixture's computed value; `DOM.getDocument` contains its marker; `guest_init` reports `NoNewPrivs: 1` and `Seccomp: 2` for every renderer; a sandbox confinement check, where the fixture page triggers a renderer-side operation the policy forbids and the browser keeps running while the denied action does not occur; `Browser.close`, and then `guest_init` sees every child reaped and guest free memory back to within 5% of its pre-launch value before it exits with code 0. | `tests/helium/` | G5.1… | `dev/test.sh helium` passes 5 consecutive cold boots |
+
+### P: optimization and polish (only after G5, or after G4 if G5 is parked)
+
+| ID | Slice | Acceptance |
+| --- | --- | --- |
+| P.1 | Benchmark report in `docs/campaign-report.md`: cold-boot latency (median and p95 over 20 boots), kernel and image size, guest RSS (idle, probe, Helium), `fork`+`exec`+`wait` latency, and Unix-socket round trip and fd-passing throughput, each against **Baseline** and the native host. Follow `benchmark-checklist`. Time-based numbers count only between `perf-gate-ready` and `perf-gate-ready -1`; if the host stays busy, report "perf gate deferred: host busy". Optimize (PCID, COW fast paths) only where a number is more than 3× the native host and the fix is local. | the report table exists, each number with its method and spread |
+
+### Close
+
+| ID | Slice | Acceptance |
+| --- | --- | --- |
+| C.1 | Dead code: remove harness paths, fixtures and kernel code that no gate test reaches (`dead-code-archaeology`: prove liveness with `rg` for callers plus a passing `dev/test.sh all` after removal). Delete `-DVM_ISOLATION_SELFTEST_BREAK` only if a cheaper detection proof replaces it. | `dev/test.sh all` green |
+| C.2 | Run `ultrareview` over the campaign diff (`git diff e4b9c9e..HEAD -- nanos` and all of hydrogen's own files). Fix every P1 and P2 finding with a test. | `dev/test.sh all` green after the fixes |
+| C.3 | Write `docs/campaign-report.md` (architecture, implementation, measured evidence, gate matrix with revisions, unresolved failures, the next minimal step toward full Helium qualification, the contract changes list). Also update `nanos/docs/chromium-compat.md`. Rewrite **Status** to its final state. | the report exists, cites run IDs from `.work/runs/` by their hydrogen SHAs, and its gate matrix matches **Status** |
+
+## Acceptance
+
+`dev/test.sh all` = `g0` + `upstream` + every new `runtime` test + `probe
+--native` + `probe` (1, 2, 4 vCPUs) + `probe --repeat 50` + `probe --stress`
++ `helium`. A run counts only with the guest-side records; QEMU's or the
+launcher's exit status alone never counts.
+
+| Deliverable | Proof |
+| --- | --- |
+| 1. Source development environment | fresh clone → `dev/bootstrap.sh && dev/doctor.sh && dev/test.sh g0` green; doctor names each missing tool |
+| 2. Fork with verified kernel changes | `nanos/` on `main`; each kernel change has its `nanos/test/runtime/` test in `dev/test.sh all` |
+| 3. KVM boot, image and GDB workflow | `dev/test.sh harness`, `dev/debug.sh --check` |
+| 4. `mini_chromium` | `tests/mini_chromium/` builds the same source natively and for the guest, plus the raw variant |
+| 5. Native reference and guest runs | `dev/test.sh probe --native` and `dev/test.sh probe` with identical check sets |
+| 6. Negative isolation tests | the probe's Isolation and Sandbox rows below, each `PASS` on Nanos and natively |
+| 7. Upstream regression results | `dev/test.sh upstream` table in **Baseline** with no regression at close |
+| 8. Gate report and revisions | **Status** gate matrix; `docs/campaign-report.md` with hydrogen SHAs |
+| 9. Benchmark report | `P.1` |
+| 10. Campaign report | `docs/campaign-report.md` (`C.3`) |
+
+The probe's required checks: each row must have at least one named `PASS`
+record, on Nanos and natively.
+
+| Category | Proof |
+| --- | --- |
+| Processes | `clone`/`fork`, `vfork`/`posix_spawn`, `execve` with an interpreter, `wait4` status, PID and PPID identity |
+| Memory | per-process address spaces, COW, cross-process `MAP_SHARED` memfd, `mprotect` denial (a write to a `PROT_READ` page gives SIGSEGV) |
+| IPC | Unix stream (and seqpacket if contracted), `SCM_RIGHTS` with refcount cleanup, `SO_PEERCRED`/`SCM_CREDENTIALS` |
+| Synchronization | threads in child processes, cross-process futex, epoll plus eventfd across processes |
+| Sandbox | user, pid and net namespaces, uid/gid maps, credentials, NNP, seccomp filter install, inheritance and actions |
+| Isolation | reading or writing browser memory fails, `ptrace` denied, `kill` outside the namespace denied, network denied, paths outside the chroot denied, a forbidden syscall denied, malformed BPF rejected, a kernel address faults |
+| Lifecycle | exit status, signals, zombie reaping, repeated launch, resources back to their starting level |
+
+## Needs environment
+
+None. Every proof runs on this host. A second host and real hardware are not
+required for any gate.
+
+## Execution boundary and non-goals
+
+**Authorized:** create and edit files in `~/d/hydrogen` (tracked files and
+`.work/`); commit there and push `main` to `origin` after each accepted slice;
+add and fetch the `upstream` remote; download pinned public sources and
+release artifacts into `.work/dl/` (verify the sha256 on first fetch and
+record it in `toolchain.lock`); run QEMU/KVM guests; run Docker only for
+owner decision 4; read `~/d/bctl`, `~/d/chromium-build` and
+`~/d/laputa-systems/llvm-prebuilt-musl`; run the Helium artifact natively on
+this host for the H cross-check.
+
+**Forbidden:** any write, build or run in `~/d/bctl`; editing tracked files
+in `~/d/chromium-build` or `~/d/laputa-systems`; chromium-build `build` or
+any step after `prepare`; building Chromium or Helium from source; pushing to
+any target other than hydrogen `origin main`; force pushes; creating remote
+repositories; `sudo`, or installing host packages with `apk` (provision
+everything locally under `.work/`; if a host package is truly required, park
+the slice and name it); `/tmp` and `$TMPDIR` outside `.work/tmp`;
+`--no-sandbox`, `--single-process` or `--no-zygote` in any qualifying run;
+fake sandbox state or syscalls that report success without effect; Nix,
+systemd, Ansible or other heavy orchestration; `ops` (`mkfs` from the fork
+builds images); glibc in any form.
+
+**Non-goals:** graphics, DRM/KMS, evdev, Wayland, seatd and virtio-gpu/input;
+aarch64, macOS and HVF; the setuid `chrome-sandbox` layer and filesystem
+mode-bit security; general process management beyond what the probe and
+Helium require; a kernel build with LLVM; PCID and other performance work
+before `P.1`; bctl integration.
+
+**Contract changes to report to the owner** (in `docs/campaign-report.md`):
+`prctl` unknown options now return `EINVAL`; `setuid`, `setgid`,
+`setgroups`, `capset` and `wait4` stop being silent no-ops; `clone` without
+`CLONE_THREAD`, plus `fork`, `vfork`, `execve`, `seccomp` and `unshare`, go
+from `ENOSYS` to implemented; `/proc/<pid>/status` and the namespace procfs
+files are new; vendored dependency fetching now checks out exact commits;
+the Nanos `make run` exit-code behaviour is unchanged, but hydrogen never
+relies on it.
+
+## Reference
+
+- Required reading for the executor, read-only: `~/d/bctl/docs/research/unikernel-nanos.md`
+  (the 0.1.56 gap analysis; its aarch64/macOS details do not apply here),
+  `~/d/bctl/docs/research/unikernel-unikraft.md`,
+  `~/d/bctl/docs/CAMPAIGN-ROADMAP.md`, `~/d/bctl/docs/image-contract.md`
+  (its renderer `NoNewPrivs: 1` / `Seccomp: 2` definition of "sandbox ok"),
+  and upstream's `nanos/README.md` and `nanos/CHARTER.md`.
+- Pinned sources: Nanos `e4b9c9e65cd51ef29e5021835419a1d9a7733f20`; Chromium
+  tag `156.0.8078.79` = `a21ce95c24ce3964416f09ae1862f53f319eb4d0`; Helium core
+  `2f81b9c…`, helium-linux `83027a1…` (`~/d/chromium-build/config/helium.inputs.lock`);
+  chromium-build's patches that touch the sandbox:
+  `config/patches/musl-seccomp-clone-detached.patch`,
+  `musl-seccomp-membarrier.patch`, `musl-sandbox-cmsg-sign-compare.patch`,
+  `musl-gpu-sandbox-broker-tsync.patch`, `musl-gpu-pwritev2-sandbox.patch`,
+  `musl-gpu-sched-affinity-errno.patch`, and Helium's `no-sandbox-settls.patch`
+  (see `config/helium.patch-disposition.json`).
+- Nanos code map at `e4b9c9e` (paths relative to `nanos/` after import):
+  CR3 load `src/x86_64/page.c:115-125`; process creation refusal
+  `src/unix/thread.c:58`; syscall registration `src/unix/syscall.c:2460-2465`
+  and `src/x86_64/unix_machine.c:260`; `prctl` `src/unix/syscall.c:2304`;
+  `writev` `src/unix/syscall.c:288` → `iov_internal` (`:140`); process struct
+  `src/unix/unix_internal.h:518`; special files `src/unix/special.c`;
+  `memfd_create` `klib/shmem.c:12`; KASLR `src/kernel/init.c:80-86`;
+  `gitversion.c` rule `kernel.mk:117`; vendored deps `Makefile:56-58`,
+  `rules.mk:168`; QEMU flags `platform/pc/Makefile:250-357`; upstream test list
+  `Makefile:101-146`.
