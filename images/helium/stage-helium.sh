@@ -32,6 +32,10 @@ actual = digest.hexdigest()
 fields = archive.with_name(archive.name + ".sha256").read_text().split()
 if fields[:2] != [actual, archive.name]:
     refuse(f"the .sha256 sidecar {fields[:2]} does not bind digest {actual} and this archive name")
+import re
+revision = re.fullmatch(r"helium-[0-9.]+-r([0-9]+)-linux-aarch64-musl\.tar\.xz", archive.name)
+if revision is None or int(revision.group(1)) < 5:
+    refuse("archives before r5 lack chromium-build 4275db8's musl sandbox fixes, and their renderers die with SIGSYS under load")
 report = json.loads(archive.with_name(archive.name + ".acceptance.json").read_text())
 expected = {"product": "helium", "architecture": "arm64", "archive": archive.name, "archive_sha256": actual}
 for key, value in expected.items():
