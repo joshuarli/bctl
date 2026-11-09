@@ -433,7 +433,7 @@ impl Daemon {
         let endpoints = Endpoints { vnc_port: free_port().map_err(internal)? };
         let machine = self.store().begin_start(name, endpoints).map_err(store_failure)?;
         self.observe(name, |o| *o = Observed::default());
-        let profile_dir = match self.ensure_profile_dir(&profile) {
+        let profile_dir = match self.ensure_profile_dir(&profile).and_then(|dir| clear_stale_browser_lock(&dir).map(|()| dir)) {
             Ok(path) => path,
             Err(error) => {
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
@@ -864,6 +864,21 @@ pub(crate) fn now_ms() -> i64 {
 
 fn automation_cdp_url(daemon: &Arc<Daemon>, session: &SessionName) -> std::io::Result<String> {
     gateway::mint_cdp_url(daemon, session)
+}
+
+/// Chromium marks a profile in use with `Singleton*` links naming the guest's hostname, which is the machine
+/// name, so a lock left by a removed generation reads as another computer holding the profile. A session that
+/// has begun starting holds its profile exclusively, so any lock there is stale.
+fn clear_stale_browser_lock(profile_dir: &std::path::Path) -> Result<(), String> {
+    for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+        let path = profile_dir.join(name);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot remove the stale browser lock {}: {error}", path.display())),
+        }
+    }
+    Ok(())
 }
 
 fn free_port() -> std::io::Result<u16> {
