@@ -1411,34 +1411,351 @@ static void check_mojo_probes(void)
 	errno = 0;
 	int eventfd_einval = syscall(SYS_eventfd2, 0, ~0) < 0 && errno == EINVAL;
 	struct stat st;
-	int nlink = !stat("/proc/self/task/", &st) && st.st_nlink == 3;
+	int nlink = 0;
+	for (int i = 0; i < 100 && !nlink; i++) {
+		nlink = !stat("/proc/self/task/", &st) && st.st_nlink == 3;
+		if (!nlink) {
+			struct timespec ts = { 0, 1000 * 1000 };
+			nanosleep(&ts, 0);
+		}
+	}
 	record("mojo_probes", memfd_einval && eventfd_einval, "memfd=%d eventfd2=%d", memfd_einval, eventfd_einval);
 	record("proc_self_task", nlink, "nlink=%lu", (unsigned long)st.st_nlink);
 }
 
+
+#define MFD_NOEXEC_SEAL_FLAG 0x0008U
+#define MEMBARRIER_CMD_PRIVATE_EXPEDITED 8
+#define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED 16
+#define PR_SET_PTRACER_FLAG 0x59616d61
+
+static void check_prctl_contract(void)
+{
+	char name[16] = "";
+	int set_name = !prctl(PR_SET_NAME, "mc-browser", 0, 0, 0);
+	int get_name = !prctl(PR_GET_NAME, name, 0, 0, 0) && !strcmp(name, "mc-browser");
+	int ptracer = !prctl(PR_SET_PTRACER_FLAG, 0, 0, 0, 0);
+	pid_t pid = fork();
+	if (pid < 0) {
+		fork_failed(__func__);
+		return;
+	}
+	if (pid == 0) {
+		int before = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+		int set = prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+		int after = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+		errno = 0;
+		int bad = prctl(PR_SET_DUMPABLE, 7, 0, 0, 0) < 0 && errno == EINVAL;
+		_exit(before == 1 && set == 0 && after == 0 && bad ? 0 : 1);
+	}
+	int status = 0;
+	wait_exit(pid, &status);
+	errno = 0;
+	int unknown = prctl(0x7fff1234, 0, 0, 0, 0) < 0 && errno == EINVAL;
+	prctl(PR_SET_NAME, "mini_chromium", 0, 0, 0);
+	record("prctl_contract", set_name && get_name && ptracer && exited_with(status, 0) && unknown,
+		"name=%d ptracer=%d dumpable_status=0x%x unknown_einval=%d", get_name, ptracer, status, unknown);
+}
+
+static void check_memfd_contract(void)
+{
+	errno = 0;
+	int noexec = memfd_create("mc-noexec", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL_FLAG);
+	int noexec_ok = noexec >= 0 || errno == EINVAL;
+	if (noexec >= 0)
+		close(noexec);
+	int fd = memfd_create("mc-seals", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	if (fd < 0 || ftruncate(fd, 4096) || write(fd, "sealed-data", 11) != 11) {
+		record("memfd_contract", 0, "setup errno=%d", errno);
+		return;
+	}
+	int added = !fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW);
+	int seals = fcntl(fd, F_GET_SEALS);
+	int seal_seal = !fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL);
+	errno = 0;
+	int locked = fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) < 0 && errno == EPERM;
+	char path[64];
+	snprintf(path, sizeof path, "/proc/self/fd/%d", fd);
+	int ro = open(path, O_RDONLY | O_CLOEXEC);
+	char buf[16] = "";
+	int same = ro >= 0 && pread(ro, buf, 11, 0) == 11 && !memcmp(buf, "sealed-data", 11);
+	errno = 0;
+	void *w = ro >= 0 ? mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, ro, 0) : MAP_FAILED;
+	int write_map_denied = w == MAP_FAILED && errno == EACCES;
+	void *r = ro >= 0 ? mmap(0, 4096, PROT_READ, MAP_SHARED, ro, 0) : MAP_FAILED;
+	int read_map = r != MAP_FAILED && !memcmp(r, "sealed-data", 11);
+	if (w != MAP_FAILED)
+		munmap(w, 4096);
+	if (r != MAP_FAILED)
+		munmap(r, 4096);
+	if (ro >= 0)
+		close(ro);
+	close(fd);
+	int ok = noexec_ok && added && seals == (F_SEAL_SHRINK | F_SEAL_GROW) && seal_seal && locked && same && write_map_denied && read_map;
+	record("memfd_contract", ok, "noexec=%d seals=0x%x seal_seal=%d locked=%d reopen=%d write_map_denied=%d read_map=%d",
+		noexec_ok, seals, seal_seal, locked, same, write_map_denied, read_map);
+}
+
+static void check_scm_rights_bulk(void)
+{
+	enum { count = 64 };
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv)) {
+		record("scm_rights_bulk", 0, "socketpair errno=%d", errno);
+		return;
+	}
+	int fds[count];
+	for (int i = 0; i < count; i++)
+		fds[i] = eventfd((unsigned)i + 1, EFD_CLOEXEC | EFD_NONBLOCK);
+	char control[CMSG_SPACE(sizeof(int) * count)];
+	memset(control, 0, sizeof control);
+	struct iovec iov = { "b", 1 };
+	struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+	struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+	cm->cmsg_level = SOL_SOCKET;
+	cm->cmsg_type = SCM_RIGHTS;
+	cm->cmsg_len = CMSG_LEN(sizeof(int) * count);
+	memcpy(CMSG_DATA(cm), fds, sizeof fds);
+	int sent = sendmsg(sv[0], &msg, MSG_NOSIGNAL) == 1 && sendmsg(sv[0], &msg, MSG_NOSIGNAL) == 1;
+	int got[count], ngot = 0;
+	char b;
+	char big[CMSG_SPACE(sizeof(int) * count)];
+	struct iovec iov1 = { &b, 1 };
+	struct msghdr msg1 = { .msg_iov = &iov1, .msg_iovlen = 1, .msg_control = big, .msg_controllen = sizeof big };
+	ssize_t n = recvmsg(sv[1], &msg1, MSG_CMSG_CLOEXEC | MSG_DONTWAIT);
+	for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg1); c; c = CMSG_NXTHDR(&msg1, c))
+		if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+			int k = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+			for (int i = 0; i < k && ngot < count; i++)
+				memcpy(&got[ngot++], CMSG_DATA(c) + sizeof(int) * (size_t)i, sizeof(int));
+		}
+	int values_ok = n == 1 && !(msg1.msg_flags & MSG_CTRUNC) && ngot == count;
+	for (int i = 0; values_ok && i < count; i++) {
+		uint64_t v = 0;
+		values_ok = read(got[i], &v, sizeof v) == sizeof v && v == (uint64_t)i + 1;
+	}
+	for (int i = 0; i < ngot; i++)
+		close(got[i]);
+	char small[CMSG_SPACE(sizeof(int) * 4)];
+	struct iovec iov2 = { &b, 1 };
+	struct msghdr msg2 = { .msg_iov = &iov2, .msg_iovlen = 1, .msg_control = small, .msg_controllen = sizeof small };
+	int ctrunc = recvmsg(sv[1], &msg2, MSG_CMSG_CLOEXEC | MSG_DONTWAIT) == 1 && (msg2.msg_flags & MSG_CTRUNC);
+	int truncated_fds = 0;
+	for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg2); c; c = CMSG_NXTHDR(&msg2, c))
+		if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+			int k = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+			for (int i = 0; i < k; i++) {
+				int f;
+				memcpy(&f, CMSG_DATA(c) + sizeof(int) * (size_t)i, sizeof f);
+				close(f);
+				truncated_fds++;
+			}
+		}
+	for (int i = 0; i < count; i++)
+		close(fds[i]);
+	close(sv[0]);
+	close(sv[1]);
+	record("scm_rights_bulk", sent && values_ok && ctrunc && truncated_fds <= 4, "received=%d values=%d ctrunc=%d kept=%d", ngot,
+		values_ok, ctrunc, truncated_fds);
+}
+
+static void check_seqpacket(void)
+{
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
+		record("seqpacket", 0, "socketpair errno=%d", errno);
+		return;
+	}
+	int sent = send(sv[0], "first-message", 13, 0) == 13 && send(sv[0], "second", 6, 0) == 6;
+	char buf[8] = "";
+	struct iovec iov = { buf, 5 };
+	struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+	ssize_t n1 = recvmsg(sv[1], &msg, MSG_DONTWAIT);
+	int trunc = n1 == 5 && (msg.msg_flags & MSG_TRUNC) && !memcmp(buf, "first", 5);
+	char buf2[16] = "";
+	ssize_t n2 = recv(sv[1], buf2, sizeof buf2, MSG_DONTWAIT);
+	int boundary = n2 == 6 && !memcmp(buf2, "second", 6);
+	int zero = send(sv[0], "", 0, 0) == 0 && recv(sv[1], buf2, sizeof buf2, MSG_DONTWAIT) == 0;
+	shutdown(sv[0], SHUT_WR);
+	errno = 0;
+	ssize_t eof = recv(sv[1], buf2, sizeof buf2, MSG_DONTWAIT);
+	close(sv[0]);
+	close(sv[1]);
+	record("seqpacket", sent && trunc && boundary && zero && eof == 0, "trunc=%d boundary=%d zero_len=%d eof=%zd", trunc, boundary,
+		zero, eof);
+}
+
+static void check_socket_shutdown(void)
+{
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv)) {
+		record("socket_shutdown", 0, "socketpair errno=%d", errno);
+		return;
+	}
+	int ep = epoll_create1(EPOLL_CLOEXEC);
+	struct epoll_event ev = { .events = EPOLLIN | EPOLLRDHUP, .data.fd = sv[1] };
+	epoll_ctl(ep, EPOLL_CTL_ADD, sv[1], &ev);
+	shutdown(sv[0], SHUT_WR);
+	struct epoll_event out;
+	int n = epoll_wait(ep, &out, 1, 2000);
+	int rdhup = n == 1 && (out.events & EPOLLRDHUP);
+	char c;
+	int eof = recv(sv[1], &c, 1, MSG_DONTWAIT) == 0;
+	errno = 0;
+	int epipe = send(sv[0], "x", 1, MSG_NOSIGNAL) < 0 && errno == EPIPE;
+	close(ep);
+	close(sv[0]);
+	close(sv[1]);
+	record("socket_shutdown", rdhup && eof && epipe, "rdhup=%d eof=%d epipe=%d", rdhup, eof, epipe);
+}
+
+struct futex_pair {
+	uint32_t a;
+	uint32_t b;
+	int woke;
+};
+
+static void *futex_waiter(void *arg)
+{
+	struct futex_pair *f = arg;
+	struct timespec ts = { 5, 0 };
+	while (__atomic_load_n(&f->a, __ATOMIC_SEQ_CST) == 0)
+		if (futex(&f->a, 0 | 128, 0, &ts) < 0 && errno == ETIMEDOUT)
+			return 0;
+	__atomic_fetch_add(&f->woke, 1, __ATOMIC_SEQ_CST);
+	return 0;
+}
+
+static void check_futex_ops(void)
+{
+	struct futex_pair f = { 0, 0, 0 };
+	pthread_t t[2];
+	for (int i = 0; i < 2; i++)
+		pthread_create(&t[i], 0, futex_waiter, &f);
+	struct timespec pause_ts = { 0, 50 * 1000 * 1000 };
+	nanosleep(&pause_ts, 0);
+	long requeued = syscall(SYS_futex, &f.a, 4 | 128, 1, (void *)1, &f.b, 0);
+	__atomic_store_n(&f.a, 1, __ATOMIC_SEQ_CST);
+	__atomic_store_n(&f.b, 1, __ATOMIC_SEQ_CST);
+	long woke_b = syscall(SYS_futex, &f.b, 1 | 128, 10, 0, 0, 0);
+	long woke_a = syscall(SYS_futex, &f.a, 1 | 128, 10, 0, 0, 0);
+	for (int i = 0; i < 2; i++)
+		pthread_join(t[i], 0);
+	uint32_t word = 0, other = 5;
+	long wake_op = syscall(SYS_futex, &word, 5 | 128, 1, (void *)1, &other, (0 << 28) | (0 << 24) | (1 << 12) | 0);
+	errno = 0;
+	struct timespec zero = { 0, 0 };
+	long bitset = syscall(SYS_futex, &word, 9 | 128, 0, &zero, 0, 0xffffffff);
+	int bitset_ok = bitset < 0 && errno == ETIMEDOUT;
+	long wake_bitset = syscall(SYS_futex, &word, 10 | 128, 1, 0, 0, 0xffffffff);
+	int ok = requeued >= 0 && woke_a + woke_b + requeued >= 1 && f.woke == 2 && wake_op == 0 && other == 1 && bitset_ok &&
+		wake_bitset == 0;
+	record("futex_ops", ok, "cmp_requeue=%ld woke=%d wake_op=%ld other=%u bitset=%d", requeued, f.woke, wake_op, other, bitset_ok);
+}
+
+static void check_misc_syscalls(void)
+{
+	long reg = syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, 0, 0);
+	long bar = syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0);
+	struct utsname u;
+	int major = uname(&u) == 0 ? atoi(u.release) : 0;
+	struct rlimit rl;
+	int prlimit_ok = !prlimit(0, RLIMIT_DATA, 0, &rl);
+	unsigned char rnd[32] = { 0 };
+	long r = syscall(SYS_getrandom, rnd, sizeof rnd, 0);
+	int nonzero = 0;
+	for (size_t i = 0; i < sizeof rnd; i++)
+		nonzero |= rnd[i];
+	record("misc_syscalls", reg == 0 && bar == 0 && major >= 4 && prlimit_ok && r == (long)sizeof rnd && nonzero,
+		"membarrier=%ld,%ld uname_major=%d prlimit=%d getrandom=%ld", reg, bar, major, prlimit_ok, r);
+}
+
+static void check_robust_futex_xproc(void)
+{
+	pthread_mutex_t *m = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (m == MAP_FAILED) {
+		record("robust_futex_xproc", 0, "mmap errno=%d", errno);
+		return;
+	}
+	pthread_mutexattr_t a;
+	pthread_mutexattr_init(&a);
+	pthread_mutexattr_setpshared(&a, PTHREAD_PROCESS_SHARED);
+	pthread_mutexattr_setrobust(&a, PTHREAD_MUTEX_ROBUST);
+	pthread_mutex_init(m, &a);
+	pid_t pid = fork();
+	if (pid < 0) {
+		fork_failed(__func__);
+		return;
+	}
+	if (pid == 0) {
+		pthread_mutex_lock(m);
+		_exit(0);
+	}
+	int status = 0;
+	wait_exit(pid, &status);
+	int rc = pthread_mutex_lock(m);
+	int consistent = rc == EOWNERDEAD && !pthread_mutex_consistent(m) && !pthread_mutex_unlock(m);
+	munmap(m, 4096);
+	record("robust_futex_xproc", exited_with(status, 0) && consistent, "lock_rc=%d", rc);
+}
+
+static sigjmp_buf watchdog_jump;
+static volatile sig_atomic_t watchdog_armed;
+
+static void on_watchdog(int sig)
+{
+	(void)sig;
+	if (watchdog_armed)
+		siglongjmp(watchdog_jump, 1);
+}
+
+static void run_check(const char *name, void (*check)(void))
+{
+	struct sigaction sa = { .sa_handler = on_watchdog };
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGALRM, &sa, 0);
+	if (!sigsetjmp(watchdog_jump, 1)) {
+		watchdog_armed = 1;
+		alarm(20);
+		check();
+	} else {
+		record(name, 0, "watchdog=20s");
+	}
+	alarm(0);
+	watchdog_armed = 0;
+}
+
 static int role_browser(void)
 {
-	check_process_fork();
-	check_process_exec();
-	check_process_wait();
-	check_posix_spawn();
-	check_vm_isolation();
-	check_cow();
-	check_shared_anon();
-	check_mprotect_denied();
-	check_kernel_address();
-	check_signals();
-	check_threads_in_child();
-	check_futex_xproc();
-	check_epoll_eventfd();
-	check_process_limit();
-	check_scm_negative();
-	check_credentials();
-	check_seccomp_requires_nnp();
-	check_browser_renderer();
-	check_mojo_probes();
-	check_zygote_sandbox();
-	check_lifecycle_stress();
+	run_check("process_fork", check_process_fork);
+	run_check("process_exec", check_process_exec);
+	run_check("process_wait", check_process_wait);
+	run_check("posix_spawn", check_posix_spawn);
+	run_check("vm_isolation", check_vm_isolation);
+	run_check("cow", check_cow);
+	run_check("shared_anon", check_shared_anon);
+	run_check("mprotect_denied", check_mprotect_denied);
+	run_check("kernel_address", check_kernel_address);
+	run_check("signals", check_signals);
+	run_check("threads_in_child", check_threads_in_child);
+	run_check("futex_xproc", check_futex_xproc);
+	run_check("epoll_eventfd", check_epoll_eventfd);
+	run_check("process_limit", check_process_limit);
+	run_check("scm_negative", check_scm_negative);
+	run_check("credentials", check_credentials);
+	run_check("seccomp_requires_nnp", check_seccomp_requires_nnp);
+	run_check("browser_renderer", check_browser_renderer);
+	run_check("prctl_contract", check_prctl_contract);
+	run_check("memfd_contract", check_memfd_contract);
+	run_check("scm_rights_bulk", check_scm_rights_bulk);
+	run_check("seqpacket", check_seqpacket);
+	run_check("socket_shutdown", check_socket_shutdown);
+	run_check("futex_ops", check_futex_ops);
+	run_check("misc_syscalls", check_misc_syscalls);
+	run_check("robust_futex_xproc", check_robust_futex_xproc);
+	run_check("mojo_probes", check_mojo_probes);
+	run_check("zygote_sandbox", check_zygote_sandbox);
+	run_check("lifecycle_stress", check_lifecycle_stress);
 	char line[128];
 	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS",
 		passed, failed);
