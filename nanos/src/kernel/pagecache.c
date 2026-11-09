@@ -2162,7 +2162,8 @@ boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physic
 {
     pagecache_lock_node(pn);
     pagecache_page pp = page_lookup_nodelocked(pn, node_offset >> pn->pv->pc->page_order);
-    boolean cached = (pp != INVALID_ADDRESS) && (pp->phys == (phys & ~MASK(pn->pv->pc->page_order)));
+    boolean cached = (pp != INVALID_ADDRESS) && (page_state(pp) != PAGECACHE_PAGESTATE_FREE) &&
+                     (pp->phys == (phys & ~MASK(pn->pv->pc->page_order)));
     pagecache_unlock_node(pn);
     return cached;
 }
@@ -2209,7 +2210,8 @@ closure_function(6, 3, boolean, pagecache_unmap_page_nodelocked,
             e->pte_ptr = entry;
         }
         pagecache_page pp = page_lookup_nodelocked(bound(pn), pi);
-        assert(pp != INVALID_ADDRESS);
+        if ((pp == INVALID_ADDRESS) || (page_state(pp) == PAGECACHE_PAGESTATE_FREE))
+            pp = 0;
         e->pp = pp;
         e->npages = size >> PAGELOG;
         buffer_produce(unmap_entries, sizeof(*e));
@@ -2235,7 +2237,7 @@ closure_function(5, 0, void, pagecache_node_unmap_pages_complete,
         }
         pagecache pc = global_pagecache;
         pagecache_page pp = e->pp;
-        if (check_dirty && pte_is_dirty(old_pte)) {
+        if (check_dirty && pp && pte_is_dirty(old_pte)) {
             pagecache_lock_node(pn);
             boolean success = pagecache_set_dirty(pn, range_lshift(irangel(page_offset(pp),
                                                                            e->npages),
@@ -2260,7 +2262,7 @@ closure_function(5, 0, void, pagecache_node_unmap_pages_complete,
         if (check_dirty)
             pte_set(pte_ptr, 0);
         u64 phys = page_from_pte(old_pte);
-        if (phys == pp->phys) {
+        if (pp && (phys == pp->phys)) {
             /* shared or cow */
             if (e->npages > 1)
                 pagecache_lock_node(pn);
