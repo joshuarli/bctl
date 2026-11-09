@@ -108,8 +108,18 @@ wait. `TINYLAND_PRESENTED` marks completion. Client shm is copied at commit
 in `src/server.rs`, then the buffer is released, so scanout never depends
 on client-writable memory.
 
-Seat is keyboard-only with a US keymap (`src/input.rs`); globals and
-version handling are owned by `src/server.rs`. HUP, INT, TERM, and QUIT
+The seat has a keyboard with a US keymap and, when an evdev device has
+`BTN_LEFT` with absolute or relative axes, a pointer (`src/input.rs`).
+Absolute axes are scaled from the device range to the output, so the
+SmolVM VNC tablet lands on the pixel the viewer clicked. Pointer focus
+follows the topmost surface under the cursor except while a button is
+held, a press outside the open popups sends them `popup_done`, and
+`wl_pointer.set_cursor` surfaces are drawn at the hotspot for the focused
+client. Every toplevel is configured maximized at the output size; the
+newest mapped one is shown, activated, and holds keyboard focus, and
+when it closes the previous one is reactivated. Popups are placed by
+`src/positioner.rs` (flip, then slide, then resize) inside the output.
+Globals and version handling are owned by `src/server.rs`. HUP, INT, TERM, and QUIT
 shut down the loop and reap foot (`src/shutdown.rs`, `src/main.rs`).
 Normal sessions validate user-owned `XDG_RUNTIME_DIR`, emit
 `TINYLAND_COMPOSITOR_READY` after socket, keyboard, discovery, and spawn,

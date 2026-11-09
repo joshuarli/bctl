@@ -1,16 +1,16 @@
-use crate::input::{self, Keyboard, SeatData};
+use crate::input::{self, InputDevice, InputEvent, Keyboard, SeatData};
 use crate::output::DrmOutput;
 use crate::seat::Session;
 use crate::selection::SelectionState;
-use crate::shell::{ToplevelData, XdgSurfaceData};
+use crate::positioner::Positioner;
+use crate::shell::{PopupData, ToplevelData, XdgSurfaceData};
 use crate::shm::{self, ShmBufferData, ShmFormat, ShmPoolData};
 use crate::surface::{SurfaceData, SurfaceUpdate};
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::io::AsFd;
-use evdev::Device;
 use std::sync::Arc;
-use wayland_protocols::xdg::shell::server::xdg_wm_base;
+use wayland_protocols::xdg::shell::server::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_server::backend::{ClientData, ClientId, ObjectId};
 use wayland_server::protocol::{
     wl_buffer, wl_compositor, wl_data_device_manager, wl_output, wl_seat, wl_shm,
@@ -42,6 +42,10 @@ pub struct State {
     outputs: Vec<(ClientId, wl_output::WlOutput)>,
     regions: HashMap<ObjectId, Vec<(i32, i32, i32, i32)>>,
     selection: SelectionState,
+    positioners: HashMap<ObjectId, Positioner>,
+    popups: Vec<PopupData>,
+    pointer: PointerState,
+    has_pointer: bool,
     pending_present: bool,
     mapped_logged: bool,
     active_toplevel: Option<ObjectId>,
@@ -82,6 +86,10 @@ impl State {
         outputs: Vec::new(),
         regions: HashMap::new(),
         selection: SelectionState::default(),
+        positioners: HashMap::new(),
+        popups: Vec::new(),
+        pointer: PointerState::centered(out_size),
+        has_pointer: false,
         pending_present: false,
         mapped_logged: false,
         active_toplevel: None,
@@ -230,20 +238,25 @@ impl State {
             Some(surface) => (std::mem::take(&mut surface.pending), surface.pending_stacking.take()),
             None => return,
         };
+        let attaches = matches!(pending.buffer, Some(Some(_)));
         if let Some(top_id) = self.toplevel_for_surface(surf_id) {
             let top = &self.toplevels[&top_id];
-            if matches!(pending.buffer, Some(Some(_))) && (top.last_configure == 0 || top.acked_configure != top.last_configure) {
-                top.xdg_surface.post_error(3u32, "buffer committed before configure ack");
+            if attaches && !top.configures.acked() {
+                top.xdg_surface.post_error(xdg_surface::Error::UnconfiguredBuffer as u32, "buffer committed before configure ack");
                 return;
             }
-            if top.last_configure == 0 && !matches!(pending.buffer, Some(Some(_))) {
-                let serial = self.next_serial();
-                let top = self.toplevels.get_mut(&top_id).unwrap();
-                use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-                top.resource.configure(self.out_size.0 as i32, self.out_size.1 as i32,
-                    [State::Fullscreen, State::Activated].into_iter().flat_map(|state| (state as u32).to_ne_bytes()).collect());
-                top.xdg_surface.configure(serial);
-                top.last_configure = serial;
+            if !top.configures.started() && !attaches {
+                self.configure_toplevel(&top_id, true);
+            }
+        }
+        if let Some(index) = self.popup_index(surf_id) {
+            let popup = &self.popups[index];
+            if attaches && !popup.configures.acked() {
+                popup.xdg_surface.post_error(xdg_surface::Error::UnconfiguredBuffer as u32, "buffer committed before configure ack");
+                return;
+            }
+            if !popup.configures.started() && !attaches && !popup.dismissed {
+                self.configure_popup(index);
             }
         }
         let client_id = self.surface_client_id(surf_id);
@@ -347,14 +360,15 @@ impl State {
                 let top = self.toplevels.get_mut(&top_id).unwrap();
                 if top.mapped {
                     top.mapped = false;
-                    top.last_configure = 0;
-                    top.acked_configure = 0;
+                    top.configures.reset();
+                    top.activated = false;
                     self.toplevel_order.retain(|order| order != &top_id);
                     self.clear_focus(surf_id);
                 }
             }
             self.try_map(surf_id);
         }
+        self.update_popup_mapping(surf_id);
         self.pending_present = true;
     }
 
@@ -460,10 +474,7 @@ impl State {
         };
         let (has_buffer, acked_ok) = match (self.surfaces.get(surf_id), self.toplevels.get(&top_id))
         {
-            (Some(s), Some(t)) => (
-                s.pixels.is_some(),
-                t.acked_configure >= t.last_configure && t.last_configure > 0,
-            ),
+            (Some(s), Some(t)) => (s.pixels.is_some(), t.configures.acked()),
             _ => return,
         };
         if !has_buffer || !acked_ok {
@@ -489,6 +500,22 @@ impl State {
             self.mapped_logged = true;
             eprintln!("TINYLAND_SURFACE_MAPPED");
         }
+        eprintln!("TINYLAND_TOPLEVEL_MAPPED mapped={}", self.toplevels.values().filter(|top| top.mapped).count());
+    }
+
+    fn configure_toplevel(&mut self, top_id: &ObjectId, activated: bool) {
+        let serial = self.next_serial();
+        let (width, height) = self.out_size;
+        let Some(top) = self.toplevels.get_mut(top_id) else { return };
+        let mut states = vec![xdg_toplevel::State::Maximized];
+        if activated {
+            states.push(xdg_toplevel::State::Activated);
+        }
+        top.resource.configure(width as i32, height as i32,
+            states.into_iter().flat_map(|state| (state as u32).to_ne_bytes()).collect());
+        top.xdg_surface.configure(serial);
+        top.configures.send(serial);
+        top.activated = activated;
     }
 
     fn client_of_surface(&self, surf_id: &ObjectId) -> Option<ClientId> {
@@ -506,7 +533,17 @@ impl State {
         if self.active_toplevel.as_ref() == Some(&top_id) {
             return;
         }
+        let old_top = self.active_toplevel.clone();
         let old_surface = self.active_surface();
+        if let Some(old) = &old_surface {
+            self.dismiss_popups(old);
+        }
+        if let Some(old) = old_top.filter(|old| self.toplevels.get(old).is_some_and(|top| top.mapped && top.activated)) {
+            self.configure_toplevel(&old, false);
+        }
+        if self.toplevels.get(&top_id).is_some_and(|top| top.configures.started() && !top.activated) {
+            self.configure_toplevel(&top_id, true);
+        }
         let serial = self.next_serial();
         if let Some(old) = old_surface {
             for seat in &mut self.seats {
@@ -538,9 +575,11 @@ impl State {
             }
         }
         self.send_selection();
+        self.refocus_pointer();
     }
 
     fn deactivate_surface(&mut self, surf_id: &ObjectId) {
+        self.dismiss_popups(surf_id);
         let serial = self.next_serial();
         for seat in &mut self.seats {
             if seat.keyboard_focus.as_ref() == Some(surf_id) {
@@ -552,8 +591,11 @@ impl State {
                 seat.keyboard_focus = None;
             }
         }
-        let is_active = self.active_surface().as_ref() == Some(surf_id);
-        if !is_active {
+        let active_gone = self
+            .active_toplevel
+            .as_ref()
+            .is_some_and(|top| !self.toplevels.get(top).is_some_and(|top| top.mapped));
+        if !active_gone && self.active_surface().as_ref() != Some(surf_id) {
             return;
         }
         if let Some(top) = self
@@ -591,6 +633,7 @@ impl State {
             self.set_active(next);
         }
         self.send_selection();
+        self.refocus_pointer();
     }
 
     fn clear_focus(&mut self, id: &ObjectId) {
@@ -614,18 +657,33 @@ impl State {
         }
     }
 
+    fn visible_surfaces(&self) -> Vec<(ObjectId, (i32, i32))> {
+        let mut visible = Vec::new();
+        if let Some(surface) = self.active_surface() {
+            if let Some(origin) = self.surface_origin(&surface) {
+                visible.push((surface.clone(), origin));
+            }
+            for popup in self.live_popups_of(&surface) {
+                if let Some(origin) = self.surface_origin(&popup) {
+                    visible.push((popup, origin));
+                }
+            }
+        }
+        visible.extend(self.cursor_placement());
+        visible
+    }
+
     fn compose(&self) -> Vec<u8> {
         let (w, h) = self.out_size;
         let mut fb = vec![0; w as usize * h as usize * 4];
-        if let Some(surface) = self.active_surface() {
-            self.blit_surface(&surface, 0, 0, &mut fb);
+        for (surface, (x, y)) in self.visible_surfaces() {
+            self.blit_surface(&surface, x, y, &mut fb);
         }
         fb
     }
 
     fn presented(&mut self, time: u32) {
-        let Some(surface) = self.active_surface() else { return };
-        let mut stack = vec![surface];
+        let mut stack: Vec<ObjectId> = self.visible_surfaces().into_iter().map(|(surface, _)| surface).collect();
         while let Some(id) = stack.pop() {
             if let Some(surface) = self.surfaces.get_mut(&id) {
                 if surface.pixels.is_none() { continue; }
@@ -735,7 +793,7 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
 
     let mut output: Option<DrmOutput> = None;
     let mut drm_id: Option<i32> = None;
-    let mut inputs: Vec<(Option<i32>, Device)> = Vec::new();
+    let mut inputs: Vec<(Option<i32>, InputDevice)> = Vec::new();
     if let Some(broker) = broker.as_ref() {
         if let Err(error) = open_brokered_devices(
             broker, device, width, height,
@@ -752,10 +810,10 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
                 return 1;
             }
         }
-        match input::discover_keyboards() {
+        match input::discover_devices() {
             Ok(found) => inputs = found.into_iter().map(|dev| (None, dev)).collect(),
             Err(error) => {
-                eprintln!("keyboard discovery: {error}");
+                eprintln!("input discovery: {error}");
                 return 1;
             }
         }
@@ -806,6 +864,7 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
         Err(error) => { eprintln!("keyboard init: {error}"); return 1; }
     };
     let mut state = State::new(dh.clone(), (w, h), keyboard);
+    state.has_pointer = inputs.iter().any(|(_, device)| device.is_pointer());
 
     let mut app = match spawn_app(mode, runtime_dir.as_str(), sock_name.as_str(), command) {
         Ok(app) => app,
@@ -919,9 +978,16 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
         }
         lost.clear();
         for (position, (_, device)) in inputs.iter_mut().enumerate() {
-            match input::read_keys(device) {
-                Ok(keys) => {
-                    for (code, down) in keys {
+            match device.read() {
+                Ok(events) => {
+                    for event in events {
+                        let (code, down) = match event {
+                            InputEvent::Key { code, down } => (code, down),
+                            InputEvent::Pointer(frame) => {
+                                state.pointer_frame(frame);
+                                continue;
+                            }
+                        };
                         state.key(code, down);
 
                         // Grabbed keyboards hide the combo from the console,
@@ -1022,37 +1088,33 @@ fn open_brokered_devices(
     height: u32,
     output: &mut Option<DrmOutput>,
     drm_id: &mut Option<i32>,
-    inputs: &mut Vec<(Option<i32>, Device)>,
+    inputs: &mut Vec<(Option<i32>, InputDevice)>,
 ) -> Result<(), String> {
     let (fd, id) = broker.open_device(device)?;
     let origin = format!("seat:{}", device.display());
     *output = Some(DrmOutput::open_from_file(File::from(fd), width, height, Some(origin))?);
     *drm_id = Some(id);
-    for path in input::discover_keyboard_paths()? {
+    for path in input::discover_device_paths()? {
         let origin = format!("seat:{}", path.display());
         let (fd, id) = broker.open_device(&path)?;
         match input::device_from_fd(fd, &origin) {
-            Ok(dev) => inputs.push((Some(id), dev)),
-            Err(error) if error.contains("is not a keyboard") => {
-                broker.close_device(id, &origin)?;
-            }
+            Ok(Some(dev)) => inputs.push((Some(id), dev)),
+            Ok(None) => broker.close_device(id, &origin)?,
             Err(error) => {
                 let _ = broker.close_device(id, &origin);
                 return Err(error);
             }
         }
     }
-    if inputs.is_empty() {
-        return Err("no keyboard with alphabetic and enter keys".into());
-    }
-    Ok(())
+    input::require_keyboard(inputs.iter().map(|(_, device)| device))
+
 }
 
 fn disable_seat_devices(
     broker: &Session,
     output: &mut Option<DrmOutput>,
     drm_id: &mut Option<i32>,
-    inputs: &mut Vec<(Option<i32>, Device)>,
+    inputs: &mut Vec<(Option<i32>, InputDevice)>,
 ) -> Result<(), String> {
     *output = None;
     for (id, dev) in inputs.drain(..) {
@@ -1159,6 +1221,10 @@ fn spawn_app(mode: &str, runtime_dir: &str, socket_name: &str, command: &[std::f
 }
 
 mod dispatch_impl;
+mod pointer;
+mod popup;
+
+pub use pointer::PointerState;
 
 #[cfg(test)]
 mod tests;

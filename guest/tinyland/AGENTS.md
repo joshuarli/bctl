@@ -1,7 +1,8 @@
 # tinyland agents
 
-Minimal Rust Wayland kiosk: one fullscreen toplevel, software compose, DRM
-scanout, foot client, proven on SmolVM arm64.
+Minimal Rust Wayland kiosk: maximized toplevels stacked newest on top,
+positioned popups, keyboard and pointer, software compose, DRM scanout,
+proven on SmolVM arm64 with foot and Chromium.
 
 Commands: `cargo check --locked`, `cargo test --locked`, `make audit`,
 and `sh ../harness/smolvm-proof.sh` (also `make proof`).

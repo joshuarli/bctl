@@ -1,7 +1,9 @@
 # tinyland
 
-Minimal single-fullscreen Wayland kiosk that scans out real foot pixels
-through DRM and takes keyboard input. Proven on SmolVM arm64, where a
+Minimal Wayland kiosk that scans out real client pixels through DRM and
+takes keyboard and pointer input. Every toplevel fills the output and the
+newest one is shown and focused; `xdg_popup`s are placed by their
+positioner inside the output. Proven on SmolVM arm64, where a
 Linux arm64 guest runs the vendored Rust seatd, unprivileged tinyland, and
 foot. Tinyland's native seatd client replaces libseat.
 

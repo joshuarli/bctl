@@ -1,18 +1,19 @@
-use evdev::{Device, EventType, KeyCode};
+use evdev::{AbsoluteAxisCode, Device, EventType, KeyCode, RelativeAxisCode, SynchronizationCode};
 use std::fs::File;
 use std::io::Write;
-use wayland_server::protocol::{wl_keyboard, wl_seat};
+use wayland_server::protocol::{wl_keyboard, wl_pointer, wl_seat};
 
 #[derive(Debug)]
 pub struct SeatData {
     pub resource: wl_seat::WlSeat,
     pub keyboards: Vec<wl_keyboard::WlKeyboard>,
+    pub pointers: Vec<wl_pointer::WlPointer>,
     pub keyboard_focus: Option<wayland_server::backend::ObjectId>,
 }
 
 impl SeatData {
     pub fn new(resource: wl_seat::WlSeat) -> Self {
-        Self { resource, keyboards: Vec::new(), keyboard_focus: None }
+        Self { resource, keyboards: Vec::new(), pointers: Vec::new(), keyboard_focus: None }
     }
 }
 
@@ -103,39 +104,225 @@ impl Keyboard {
     }
 }
 
-pub fn open_keyboard(path: &std::path::Path) -> Result<Device, String> {
-    let mut device = Device::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    validate_keyboard(&device, path)?;
-    device.set_nonblocking(true).map_err(|e| format!("input nonblocking: {e}"))?;
-    device.grab().map_err(|e| format!("input grab: {e}"))?;
-    eprintln!("TINYLAND_KEYBOARD device={} name={:?}", path.display(), device.name());
-    Ok(device)
+pub const BTN_LEFT: u16 = 0x110;
+const BTN_TASK: u16 = 0x117;
+const BTN_MISC: u16 = 0x100;
+const BTN_GEAR_UP: u16 = 0x151;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AbsRange {
+    minimum: i32,
+    maximum: i32,
 }
 
-#[allow(dead_code)]
-pub fn device_from_fd(fd: std::os::fd::OwnedFd, origin: &str) -> Result<Device, String> {
-    let mut device = Device::from_fd(fd).map_err(|e| format!("input from {origin}: {e}"))?;
-    let keyboard = device.supported_keys().is_some_and(|keys|
-        [KeyCode::KEY_A, KeyCode::KEY_Z, KeyCode::KEY_ENTER].iter().all(|key| keys.contains(*key)));
-    if !keyboard {
-        return Err(format!("input {origin} is not a keyboard"));
+impl AbsRange {
+    fn new(minimum: i32, maximum: i32) -> Option<Self> {
+        (maximum > minimum).then_some(AbsRange { minimum, maximum })
+    }
+
+    fn normalize(&self, value: i32) -> f64 {
+        let clamped = value.clamp(self.minimum, self.maximum);
+        f64::from(clamped - self.minimum) / f64::from(self.maximum - self.minimum)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Motion {
+    Absolute { x: f64, y: f64 },
+    Relative { dx: f64, dy: f64 },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PointerFrame {
+    pub motion: Option<Motion>,
+    pub buttons: Vec<(u16, bool)>,
+    pub wheel: (i32, i32),
+}
+
+impl PointerFrame {
+    fn is_empty(&self) -> bool {
+        self.motion.is_none() && self.buttons.is_empty() && self.wheel == (0, 0)
+    }
+}
+
+#[derive(Debug)]
+enum Axes {
+    Absolute { x: AbsRange, y: AbsRange, position: (f64, f64) },
+    Relative,
+}
+
+#[derive(Debug)]
+pub struct PointerReader {
+    axes: Axes,
+    pending: PointerFrame,
+}
+
+impl PointerReader {
+    fn absolute(x: AbsRange, y: AbsRange, start: (i32, i32)) -> Self {
+        let position = (x.normalize(start.0), y.normalize(start.1));
+        PointerReader { axes: Axes::Absolute { x, y, position }, pending: PointerFrame::default() }
+    }
+
+    fn relative() -> Self {
+        PointerReader { axes: Axes::Relative, pending: PointerFrame::default() }
+    }
+
+    fn feed(&mut self, event: &evdev::InputEvent) -> Option<PointerFrame> {
+        match (event.event_type(), &mut self.axes) {
+            (EventType::ABSOLUTE, Axes::Absolute { x, y, position }) => {
+                if event.code() == AbsoluteAxisCode::ABS_X.0 {
+                    position.0 = x.normalize(event.value());
+                } else if event.code() == AbsoluteAxisCode::ABS_Y.0 {
+                    position.1 = y.normalize(event.value());
+                } else {
+                    return None;
+                }
+                self.pending.motion = Some(Motion::Absolute { x: position.0, y: position.1 });
+            }
+            (EventType::RELATIVE, axes) => {
+                let code = RelativeAxisCode(event.code());
+                let value = event.value();
+                let delta = match code {
+                    RelativeAxisCode::REL_X => (f64::from(value), 0.0),
+                    RelativeAxisCode::REL_Y => (0.0, f64::from(value)),
+                    RelativeAxisCode::REL_WHEEL => {
+                        self.pending.wheel.0 += value;
+                        return None;
+                    }
+                    RelativeAxisCode::REL_HWHEEL => {
+                        self.pending.wheel.1 += value;
+                        return None;
+                    }
+                    _ => return None,
+                };
+                if matches!(axes, Axes::Relative) {
+                    let (dx, dy) = match self.pending.motion {
+                        Some(Motion::Relative { dx, dy }) => (dx, dy),
+                        _ => (0.0, 0.0),
+                    };
+                    self.pending.motion = Some(Motion::Relative { dx: dx + delta.0, dy: dy + delta.1 });
+                }
+            }
+            (EventType::KEY, _) if (BTN_LEFT..=BTN_TASK).contains(&event.code()) && event.value() != 2 => {
+                self.pending.buttons.push((event.code(), event.value() != 0));
+            }
+            (EventType::SYNCHRONIZATION, _) if event.code() == SynchronizationCode::SYN_REPORT.0 => {
+                let frame = std::mem::take(&mut self.pending);
+                return (!frame.is_empty()).then_some(frame);
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InputEvent {
+    Key { code: u16, down: bool },
+    Pointer(PointerFrame),
+}
+
+fn is_button(code: u16) -> bool {
+    (BTN_MISC..=BTN_GEAR_UP).contains(&code)
+}
+
+pub struct InputDevice {
+    device: Device,
+    pointer: Option<PointerReader>,
+}
+
+impl std::os::fd::AsFd for InputDevice {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.device.as_fd()
+    }
+}
+
+impl InputDevice {
+    pub fn is_pointer(&self) -> bool {
+        self.pointer.is_some()
+    }
+
+    pub fn is_keyboard(&self) -> bool {
+        is_keyboard(&self.device)
+    }
+
+    fn translate(&mut self, events: impl Iterator<Item = evdev::InputEvent>) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        for event in events {
+            if event.event_type() == EventType::KEY && event.value() != 2 && !is_button(event.code()) {
+                out.push(InputEvent::Key { code: event.code(), down: event.value() != 0 });
+                continue;
+            }
+            if let Some(frame) = self.pointer.as_mut().and_then(|pointer| pointer.feed(&event)) {
+                out.push(InputEvent::Pointer(frame));
+            }
+        }
+        out
+    }
+
+    pub fn read(&mut self) -> Result<Vec<InputEvent>, std::io::Error> {
+        let events: Vec<evdev::InputEvent> = match self.device.fetch_events() {
+            Ok(events) => events.collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        Ok(self.translate(events.into_iter()))
+    }
+}
+
+fn is_keyboard(device: &Device) -> bool {
+    device.supported_keys().is_some_and(|keys|
+        [KeyCode::KEY_A, KeyCode::KEY_Z, KeyCode::KEY_ENTER].iter().all(|key| keys.contains(*key)))
+}
+
+fn pointer_reader(device: &Device, origin: &str) -> Result<Option<PointerReader>, String> {
+    if !device.supported_keys().is_some_and(|keys| keys.contains(KeyCode::BTN_LEFT)) {
+        return Ok(None);
+    }
+    let absolute = device.supported_absolute_axes().is_some_and(|axes|
+        axes.contains(AbsoluteAxisCode::ABS_X) && axes.contains(AbsoluteAxisCode::ABS_Y));
+    if absolute {
+        let mut x = None;
+        let mut y = None;
+        for (axis, info) in device.get_absinfo().map_err(|e| format!("input {origin} absinfo: {e}"))? {
+            let range = AbsRange::new(info.minimum(), info.maximum()).map(|range| (range, info.value()));
+            if axis == AbsoluteAxisCode::ABS_X { x = range; }
+            if axis == AbsoluteAxisCode::ABS_Y { y = range; }
+        }
+        let (Some((x, x_value)), Some((y, y_value))) = (x, y) else {
+            return Err(format!("input {origin} reports an empty absolute pointer range"));
+        };
+        return Ok(Some(PointerReader::absolute(x, y, (x_value, y_value))));
+    }
+    let relative = device.supported_relative_axes().is_some_and(|axes|
+        axes.contains(RelativeAxisCode::REL_X) && axes.contains(RelativeAxisCode::REL_Y));
+    Ok(relative.then(PointerReader::relative))
+}
+
+pub fn device_from_fd(fd: std::os::fd::OwnedFd, origin: &str) -> Result<Option<InputDevice>, String> {
+    let device = Device::from_fd(fd).map_err(|e| format!("input from {origin}: {e}"))?;
+    adopt(device, origin)
+}
+
+fn adopt(mut device: Device, origin: &str) -> Result<Option<InputDevice>, String> {
+    let keyboard = is_keyboard(&device);
+    let pointer = pointer_reader(&device, origin)?;
+    if !keyboard && pointer.is_none() {
+        return Ok(None);
     }
     device.set_nonblocking(true).map_err(|e| format!("input nonblocking: {e}"))?;
     device.grab().map_err(|e| format!("input grab: {e}"))?;
-    eprintln!("TINYLAND_KEYBOARD device={origin} name={:?}", device.name());
-    Ok(device)
-}
-
-fn validate_keyboard(device: &Device, path: &std::path::Path) -> Result<(), String> {
-    let keyboard = device.supported_keys().is_some_and(|keys|
-        [KeyCode::KEY_A, KeyCode::KEY_Z, KeyCode::KEY_ENTER].iter().all(|key| keys.contains(*key)));
-    if !keyboard {
-        return Err(format!("input {} is not a keyboard", path.display()));
+    if keyboard {
+        eprintln!("TINYLAND_KEYBOARD device={origin} name={:?}", device.name());
     }
-    Ok(())
+    if let Some(pointer) = &pointer {
+        let kind = match pointer.axes { Axes::Absolute { .. } => "absolute", Axes::Relative => "relative" };
+        eprintln!("TINYLAND_POINTER device={origin} kind={kind} name={:?}", device.name());
+    }
+    Ok(Some(InputDevice { device, pointer }))
 }
 
-pub fn discover_keyboard_paths() -> Result<Vec<std::path::PathBuf>, String> {
+pub fn discover_device_paths() -> Result<Vec<std::path::PathBuf>, String> {
     let mut entries = std::fs::read_dir("/dev/input")
         .map_err(|e| format!("read /dev/input: {e}"))?
         .collect::<Result<Vec<_>, _>>().map_err(|e| format!("read input entry: {e}"))?;
@@ -148,32 +335,23 @@ pub fn discover_keyboard_paths() -> Result<Vec<std::path::PathBuf>, String> {
     Ok(paths)
 }
 
-pub fn discover_keyboards() -> Result<Vec<Device>, String> {
-    let mut entries = std::fs::read_dir("/dev/input")
-        .map_err(|e| format!("read /dev/input: {e}"))?
-        .collect::<Result<Vec<_>, _>>().map_err(|e| format!("read input entry: {e}"))?;
-    entries.sort_by_key(|e| e.path());
+pub fn discover_devices() -> Result<Vec<InputDevice>, String> {
     let mut devices = Vec::new();
-    for entry in entries {
-        if !entry.file_name().as_encoded_bytes().starts_with(b"event") { continue; }
-        let path = entry.path();
-        let device = match open_keyboard(&path) {
-            Ok(device) => device,
-            Err(error) if error.contains("is not a keyboard") => continue,
-            Err(error) => return Err(error),
-        };
-        devices.push(device);
+    for path in discover_device_paths()? {
+        let device = Device::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        if let Some(device) = adopt(device, &path.display().to_string())? {
+            devices.push(device);
+        }
     }
-    if devices.is_empty() { return Err("no keyboard with alphabetic and enter keys".into()); }
+    require_keyboard(&devices)?;
     Ok(devices)
 }
 
-pub fn read_keys(device: &mut Device) -> Result<Vec<(u16, bool)>, std::io::Error> {
-    match device.fetch_events() {
-        Ok(events) => Ok(events.filter(|event| event.event_type() == EventType::KEY && event.value() != 2)
-            .map(|event| (event.code(), event.value() != 0)).collect()),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(Vec::new()),
-        Err(e) => Err(e),
+pub fn require_keyboard<'a>(devices: impl IntoIterator<Item = &'a InputDevice>) -> Result<(), String> {
+    if devices.into_iter().any(InputDevice::is_keyboard) {
+        Ok(())
+    } else {
+        Err("no keyboard with alphabetic and enter keys".into())
     }
 }
 
@@ -244,8 +422,77 @@ mod tests {
     }
 
     #[test]
-    fn seat_fd_without_keyboard_is_rejected() {
+    fn seat_fd_that_is_not_an_input_device_is_rejected() {
         let fd = rustix::fs::memfd_create("tinyland-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
         assert!(device_from_fd(fd, "test").is_err());
+    }
+
+    fn event(kind: EventType, code: u16, value: i32) -> evdev::InputEvent {
+        evdev::InputEvent::new(kind.0, code, value)
+    }
+
+    fn syn() -> evdev::InputEvent {
+        event(EventType::SYNCHRONIZATION, SynchronizationCode::SYN_REPORT.0, 0)
+    }
+
+    fn feed_all(reader: &mut PointerReader, events: &[evdev::InputEvent]) -> Vec<PointerFrame> {
+        events.iter().filter_map(|event| reader.feed(event)).collect()
+    }
+
+    #[test]
+    fn absolute_tablet_reports_normalized_position_once_per_report() {
+        let range = AbsRange::new(0, 32767).unwrap();
+        let mut reader = PointerReader::absolute(range, range, (0, 0));
+        let frames = feed_all(&mut reader, &[
+            event(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_X.0, 32767),
+            event(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_Y.0, 16383),
+            syn(),
+            event(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_Y.0, 0),
+            syn(),
+        ]);
+        assert_eq!(frames.len(), 2);
+        let Some(Motion::Absolute { x, y }) = frames[0].motion else { panic!("{frames:?}") };
+        assert_eq!(x, 1.0);
+        assert!((y - 0.5).abs() < 0.001);
+        assert_eq!(frames[1].motion, Some(Motion::Absolute { x: 1.0, y: 0.0 }));
+    }
+
+    #[test]
+    fn absolute_values_outside_the_range_are_clamped() {
+        let range = AbsRange::new(100, 200).unwrap();
+        let mut reader = PointerReader::absolute(range, range, (150, 150));
+        let frames = feed_all(&mut reader, &[event(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_X.0, 900), syn()]);
+        assert_eq!(frames[0].motion, Some(Motion::Absolute { x: 1.0, y: 0.5 }));
+        assert!(AbsRange::new(5, 5).is_none());
+    }
+
+    #[test]
+    fn relative_mouse_accumulates_deltas_buttons_and_wheel_within_a_report() {
+        let mut reader = PointerReader::relative();
+        let frames = feed_all(&mut reader, &[
+            event(EventType::RELATIVE, RelativeAxisCode::REL_X.0, 3),
+            event(EventType::RELATIVE, RelativeAxisCode::REL_X.0, 2),
+            event(EventType::RELATIVE, RelativeAxisCode::REL_Y.0, -4),
+            event(EventType::KEY, BTN_LEFT, 1),
+            event(EventType::RELATIVE, RelativeAxisCode::REL_WHEEL.0, -1),
+            syn(),
+            syn(),
+            event(EventType::KEY, BTN_LEFT, 0),
+            syn(),
+        ]);
+        assert_eq!(frames, vec![
+            PointerFrame { motion: Some(Motion::Relative { dx: 5.0, dy: -4.0 }), buttons: vec![(BTN_LEFT, true)], wheel: (-1, 0) },
+            PointerFrame { motion: None, buttons: vec![(BTN_LEFT, false)], wheel: (0, 0) },
+        ]);
+    }
+
+    #[test]
+    fn buttons_reach_the_pointer_and_never_the_keyboard() {
+        let mut reader = PointerReader::relative();
+        assert!(reader.feed(&event(EventType::KEY, 0x14a, 1)).is_none());
+        assert!(reader.feed(&syn()).is_none());
+        assert!(is_button(BTN_LEFT));
+        assert!(is_button(0x14a));
+        assert!(!is_button(KeyCode::KEY_A.code()));
     }
 }

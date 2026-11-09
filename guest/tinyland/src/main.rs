@@ -3,6 +3,7 @@ mod seat;
 mod selection;
 mod shutdown;
 mod output;
+mod positioner;
 mod server;
 mod shell;
 mod shm;

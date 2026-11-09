@@ -1,12 +1,13 @@
 use super::State;
 use crate::input::SeatData;
-use crate::shell::{ToplevelData, XdgSurfaceData};
+use crate::positioner::{Positioner, Rect};
+use crate::shell::{Configures, PopupData, ToplevelData, XdgSurfaceData};
 use crate::shm::{self, ShmBufferData, ShmFormat};
 use crate::surface::SurfaceData;
 use std::os::unix::io::OwnedFd;
 use wayland_protocols::xdg::shell::server::{xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_server::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_data_device_manager, wl_data_device, wl_data_source, wl_data_offer, wl_keyboard, wl_output, wl_region, wl_seat,
+    wl_buffer, wl_callback, wl_compositor, wl_data_device_manager, wl_data_device, wl_data_source, wl_data_offer, wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat,
     wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface,
 };
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
@@ -220,6 +221,8 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
             for seat in &mut state.seats {
                 if seat.keyboard_focus.as_ref() == Some(&id) { seat.keyboard_focus = None; }
             }
+            if state.pointer.focus.as_ref() == Some(&id) { state.pointer.focus = None; }
+            if state.pointer.cursor.as_ref().is_some_and(|cursor| cursor.surface.as_ref() == Some(&id)) { state.pointer.cursor = None; }
             for child in s.stacking {
                 if let Some(c) = state.surfaces.get_mut(&child) {
                     c.parent = None;
@@ -239,6 +242,9 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
         if state.active_surface().as_ref() == Some(&id) {
             state.deactivate_surface(&id);
         }
+        state.remove_popups_where(|popup| popup.surface == id);
+        state.dismiss_orphans();
+        state.refocus_pointer();
         state.pending_present = true;
     }
 }
@@ -675,7 +681,12 @@ impl GlobalDispatch<wl_seat::WlSeat, ()> for State {
             return;
         }
         let seat = data_init.init(resource, ());
-        seat.capabilities(wl_seat::Capability::Keyboard);
+        let capabilities = if state.has_pointer {
+            wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer
+        } else {
+            wl_seat::Capability::Keyboard
+        };
+        seat.capabilities(capabilities);
         if seat.version() >= 2 { seat.name("seat0".to_string()); }
         state.seats.push(SeatData::new(seat));
         let _ = client;
@@ -693,8 +704,18 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            wl_seat::Request::GetPointer { .. } | wl_seat::Request::GetTouch { .. } => {
-                resource.post_error(wl_seat::Error::MissingCapability as u32, "seat has keyboard capability only");
+            wl_seat::Request::GetPointer { id } => {
+                if !state.has_pointer {
+                    resource.post_error(wl_seat::Error::MissingCapability as u32, "seat has no pointer");
+                    return;
+                }
+                let pointer = data_init.init(id, ());
+                let Some(index) = state.seats.iter().position(|seat| seat.resource == *resource) else { return };
+                state.seats[index].pointers.push(pointer.clone());
+                state.enter_pointer(&pointer);
+            }
+            wl_seat::Request::GetTouch { .. } => {
+                resource.post_error(wl_seat::Error::MissingCapability as u32, "seat has no touch");
             }
             wl_seat::Request::GetKeyboard { id } => {
                 let kb = data_init.init(id, ());
@@ -737,6 +758,34 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
         _resource: &wl_seat::WlSeat,
         _data: &(),
     ) {
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for State {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        resource: &wl_pointer::WlPointer,
+        request: wl_pointer::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let wl_pointer::Request::SetCursor { serial, surface, hotspot_x, hotspot_y } = request {
+            state.set_cursor(resource, serial, surface.map(|surface| surface.id()), (hotspot_x, hotspot_y));
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: wayland_server::backend::ClientId,
+        resource: &wl_pointer::WlPointer,
+        _data: &(),
+    ) {
+        let id = resource.id();
+        for seat in &mut state.seats {
+            seat.pointers.retain(|pointer| pointer.id() != id);
+        }
     }
 }
 
@@ -932,7 +981,10 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            xdg_wm_base::Request::CreatePositioner { id } => { data_init.init(id, ()); }
+            xdg_wm_base::Request::CreatePositioner { id } => {
+                let positioner = data_init.init(id, ());
+                state.positioners.insert(positioner.id(), Positioner::default());
+            }
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
                 route_xdg_wm_base_get_surface(state, resource, id, surface, data_init);
             }
@@ -953,6 +1005,7 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for State {
 
 pub fn handle_get_xdg_surface(
     state: &mut State,
+    wm_base: &xdg_wm_base::XdgWmBase,
     id: New<xdg_surface::XdgSurface>,
     surface: wl_surface::WlSurface,
     data_init: &mut DataInit<'_, State>,
@@ -964,7 +1017,7 @@ pub fn handle_get_xdg_surface(
     }
     let xsurf = data_init.init(id, ());
     let xsurf_id = xsurf.id();
-    state.xdg_surfaces.insert(xsurf_id, XdgSurfaceData::new(surf_id.clone()));
+    state.xdg_surfaces.insert(xsurf_id, XdgSurfaceData::new(wm_base.clone(), surf_id.clone()));
     if let Some(s) = state.surfaces.get_mut(&surf_id) {
         s.has_role = true;
     }
@@ -1012,9 +1065,9 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
                 }
 
             }
-            xdg_surface::Request::GetPopup { id, parent, .. } => {
+            xdg_surface::Request::GetPopup { id, parent, positioner } => {
                 let xsurf_id = resource.id();
-                let surf_id = match state.xdg_surfaces.get(&xsurf_id) {
+                let (surf_id, wm_base) = match state.xdg_surfaces.get(&xsurf_id) {
                     Some(x) => {
                         if x.has_toplevel || x.has_popup {
                             resource.post_error(
@@ -1023,11 +1076,20 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
                             );
                             return;
                         }
-                        x.surface.clone()
+                        (x.surface.clone(), x.wm_base.clone())
                     }
                     None => return,
                 };
-                let _ = parent;
+                let Some(placement) = state.positioners.get(&positioner.id()).and_then(Positioner::complete) else {
+                    wm_base.post_error(xdg_wm_base::Error::InvalidPositioner as u32, "positioner needs a size and an anchor rectangle");
+                    return;
+                };
+                let parent_surface = parent
+                    .and_then(|parent| state.xdg_surfaces.get(&parent.id()).filter(|x| x.has_toplevel || x.has_popup).map(|x| x.surface.clone()));
+                let Some(parent_surface) = parent_surface else {
+                    wm_base.post_error(xdg_wm_base::Error::InvalidPopupParent as u32, "popup parent must be a toplevel or popup");
+                    return;
+                };
                 let popup = data_init.init(id, ());
                 if let Some(x) = state.xdg_surfaces.get_mut(&xsurf_id) {
                     x.has_popup = true;
@@ -1035,9 +1097,17 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
                 if let Some(s) = state.surfaces.get_mut(&surf_id) {
                     s.is_popup = true;
                 }
-                let serial = state.next_serial();
-                resource.configure(serial);
-                popup.popup_done();
+                state.popups.push(PopupData {
+                    resource: popup,
+                    xdg_surface: resource.clone(),
+                    surface: surf_id,
+                    parent: parent_surface,
+                    placement,
+                    geometry: Rect { x: 0, y: 0, width: 0, height: 0 },
+                    configures: Configures::default(),
+                    mapped: false,
+                    dismissed: false,
+                });
             }
             xdg_surface::Request::SetWindowGeometry { x: gx, y: gy, width, height } => {
                 let xsurf_id = resource.id();
@@ -1058,23 +1128,22 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
                     Some(x) => x.surface.clone(),
                     None => return,
                 };
-                let mut mapped_now = false;
-                for t in state.toplevels.values_mut() {
-                    if t.surface == surf_id {
-                        if serial == 0 || serial != t.last_configure || serial == t.acked_configure {
-                            resource.post_error(
-                                xdg_surface::Error::InvalidSerial as u32,
-                                "unknown configure serial".to_string(),
-                            );
-                            return;
-                        }
-                        t.acked_configure = t.acked_configure.max(serial);
-                        mapped_now = true;
-                    }
+                let configures = match state.toplevels.values_mut().find(|t| t.surface == surf_id) {
+                    Some(top) => Some(&mut top.configures),
+                    None => state.popups.iter_mut().find(|p| p.surface == surf_id).map(|p| &mut p.configures),
+                };
+                let Some(configures) = configures else {
+                    resource.post_error(xdg_surface::Error::NotConstructed as u32, "xdg_surface has no role".to_string());
+                    return;
+                };
+                if !configures.ack(serial) {
+                    resource.post_error(
+                        xdg_surface::Error::InvalidSerial as u32,
+                        "unknown configure serial".to_string(),
+                    );
+                    return;
                 }
-                if mapped_now {
-                    state.try_map(&surf_id);
-                }
+                state.try_map(&surf_id);
             }
             xdg_surface::Request::Destroy => {}
             _ => {}
@@ -1100,6 +1169,8 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
                 state.toplevel_order.retain(|order| order != &top_id);
             }
             state.clear_focus(&x.surface);
+            state.remove_popups_where(|popup| popup.surface == x.surface);
+            state.dismiss_orphans();
             state.pending_present = true;
         }
     }
@@ -1107,19 +1178,53 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
 
 impl Dispatch<xdg_positioner::XdgPositioner, ()> for State {
     fn request(
-        _state: &mut Self, _client: &Client, resource: &xdg_positioner::XdgPositioner,
+        state: &mut Self, _client: &Client, resource: &xdg_positioner::XdgPositioner,
         request: xdg_positioner::Request, _data: &(), _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        let invalid = |message: &str| resource.post_error(xdg_positioner::Error::InvalidInput as u32, message.to_string());
+        let Some(positioner) = state.positioners.get_mut(&resource.id()) else { return };
         match request {
-            xdg_positioner::Request::SetSize { width, height } if width <= 0 || height <= 0 => {
-                resource.post_error(xdg_positioner::Error::InvalidInput as u32, "positioner size must be positive");
+            xdg_positioner::Request::SetSize { width, height } => {
+                if width <= 0 || height <= 0 {
+                    invalid("positioner size must be positive");
+                    return;
+                }
+                positioner.size = Some((width, height));
             }
-            xdg_positioner::Request::SetAnchorRect { width, height, .. } if width <= 0 || height <= 0 => {
-                resource.post_error(xdg_positioner::Error::InvalidInput as u32, "anchor rectangle must be positive");
+            xdg_positioner::Request::SetAnchorRect { x, y, width, height } => {
+                if width < 0 || height < 0 {
+                    invalid("anchor rectangle must not be negative");
+                    return;
+                }
+                positioner.anchor_rect = Some(Rect { x, y, width, height });
             }
+            xdg_positioner::Request::SetAnchor { anchor } => match anchor {
+                wayland_server::WEnum::Value(anchor) => positioner.anchor = anchor,
+                wayland_server::WEnum::Unknown(_) => invalid("unknown anchor"),
+            },
+            xdg_positioner::Request::SetGravity { gravity } => match gravity {
+                wayland_server::WEnum::Value(gravity) => positioner.gravity = gravity,
+                wayland_server::WEnum::Unknown(_) => invalid("unknown gravity"),
+            },
+            xdg_positioner::Request::SetConstraintAdjustment { constraint_adjustment } => {
+                positioner.constraint_adjustment = match constraint_adjustment {
+                    wayland_server::WEnum::Value(adjustment) => adjustment,
+                    wayland_server::WEnum::Unknown(bits) => xdg_positioner::ConstraintAdjustment::from_bits_truncate(bits),
+                };
+            }
+            xdg_positioner::Request::SetOffset { x, y } => positioner.offset = (x, y),
             _ => {}
         }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: wayland_server::backend::ClientId,
+        resource: &xdg_positioner::XdgPositioner,
+        _data: &(),
+    ) {
+        state.positioners.remove(&resource.id());
     }
 }
 
@@ -1136,11 +1241,13 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for State {
     }
 
     fn destroyed(
-        _state: &mut Self,
+        state: &mut Self,
         _client: wayland_server::backend::ClientId,
-        _resource: &xdg_popup::XdgPopup,
+        resource: &xdg_popup::XdgPopup,
         _data: &(),
     ) {
+        let id = resource.id();
+        state.remove_popups_where(|popup| popup.resource.id() == id);
     }
 }
 
@@ -1169,6 +1276,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
         if let Some(top) = state.toplevels.remove(&resource.id()) {
             state.toplevel_order.retain(|order| order != &resource.id());
             state.clear_focus(&top.surface);
+            state.dismiss_orphans();
             state.pending_present = true;
         }
     }
@@ -1211,5 +1319,5 @@ pub fn route_xdg_wm_base_get_surface(
         );
         return;
     }
-    handle_get_xdg_surface(state, id, surface, data_init);
+    handle_get_xdg_surface(state, resource, id, surface, data_init);
 }
