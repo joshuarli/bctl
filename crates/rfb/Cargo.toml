@@ -1,0 +1,10 @@
+[package]
+name = "bctl-rfb"
+description = "Blocking RFB 3.8 client for SmolVM's display: Raw frames, keys, and an absolute pointer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
