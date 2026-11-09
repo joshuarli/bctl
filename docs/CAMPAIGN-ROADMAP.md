@@ -77,12 +77,14 @@ waiting for actionability.
 R1 (`94b122e`, B1 3/3 and T0 on `ref-scratch-chromium`, `FROM scratch` with
 a Rust `bctl-guest` supervising seatd, tinyland, and the browser and relaying
 CDP): census gaps are the browser's 141-library closure plus `libxkbcommon`
-(R3) and `xkb-data`, which tinyland reads at start. Decided: tinyland carries
-a built-in compiled keymap and reads xkb-data only when present, so the
-product image ships no xkb-data. `bctl-guest` exits non-zero when a
+(R3) and `xkb-data`. Tinyland now carries a built-in US keymap (`2698564`)
+and reads xkb-data only when present, but the browser's own libxkbcommon
+still needs the rules (without them it logs `Couldn't look up rules 'evdev'`
+and crashes when it connects), so xkb-data is part of the libxkbcommon gap
+and goes away with R3's kbvm-backed library. `bctl-guest` exits non-zero when a
 supervised child dies on its own. Mesa ships but is never loaded (its GBM
 backend is looked for only at `/usr/lib/gbm`); P2 decides with Helium.
-Next: H1 (running); the built-in keymap; D2's acceptance on
+Next: H1 (running); D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).
 Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
