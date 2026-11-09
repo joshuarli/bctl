@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream..."; }
+usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -154,6 +154,7 @@ for suite in "$@"; do
 	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;
 	upstream) suite_upstream ;;
+	g0) suite_harness; suite_upstream; "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	*) usage ;;
 	esac
