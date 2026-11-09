@@ -334,10 +334,10 @@ void deallocate_futices(process_vm vm)
     deallocate_table(vm->futices);
 }
 
-/* robust mutex handling */
-
-#define FUTEX_OWNER_DIED	0x40000000
-#define FUTEX_KEY_ADDR(x, o)    ((int *)((u8 *)(x) + (o)))
+#define FUTEX_WAITERS       0x80000000
+#define FUTEX_OWNER_DIED    0x40000000
+#define FUTEX_TID_MASK      0x3fffffff
+#define ROBUST_LIST_LIMIT   2048
 
 typedef struct robust_list {
     struct robust_list *next;
@@ -346,43 +346,56 @@ typedef struct robust_list {
 typedef struct robust_list_head {
     robust_list list;
     long futex_offset;
-    void *list_op_pending;
+    robust_list list_op_pending;
 } *robust_list_head;
 
-void wake_robust_list(process p, void *head)
+static robust_list robust_entry(robust_list l)
 {
-    struct robust_list_head *h = head;
-    struct robust_list *l;
-    int *pending;
-    int *uaddr;
+    return pointer_from_u64(u64_from_pointer(l) & ~1ull);
+}
 
-    if (!h)
+static void robust_futex_owner_died(thread t, robust_list entry, long futex_offset, boolean pending)
+{
+    u32 *uaddr = (u32 *)((u8 *)entry + futex_offset);
+    if ((u64_from_pointer(uaddr) & 3) || !memory_is_user(uaddr, sizeof(*uaddr)))
         return;
+    u32 old = __atomic_load_n(uaddr, __ATOMIC_RELAXED);
+    while (true) {
+        if (pending && old == 0) {
+            futex_wake_one_by_uaddr(t->p, (int *)uaddr);
+            return;
+        }
+        if ((old & FUTEX_TID_MASK) != t->tid)
+            return;
+        u32 new = (old & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
+        if (__atomic_compare_exchange_n(uaddr, &old, new, false, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED))
+            break;
+    }
+    if (old & FUTEX_WAITERS)
+        futex_wake_one_by_uaddr(t->p, (int *)uaddr);
+}
 
-    /* must be very careful accessing the head as well as the list */
+void wake_robust_list(thread t)
+{
+    robust_list_head h = t->robust_list;
+    if (!h || !memory_is_user(h, sizeof(*h)))
+        return;
     context ctx = get_current_context(current_cpu());
     if (context_set_err(ctx))
         return;
-
-    /* XXX could keep a list of futexes and wake them at the end
-     * to let threads acquire multiple locks without blocking */
-    pending = h->list_op_pending ? FUTEX_KEY_ADDR(h->list_op_pending, h->futex_offset) : 0;
-    for (l = h->list; (void *)l != (void *)h;) {
-        uaddr = FUTEX_KEY_ADDR(l, h->futex_offset);
-        l = l->next;
-        if (uaddr == pending)   /* don't process it twice */
-            continue;
+    robust_list l = robust_entry(h->list);
+    long futex_offset = h->futex_offset;
+    robust_list pending = robust_entry(h->list_op_pending);
+    for (int n = 0; l != (robust_list)h && n < ROBUST_LIST_LIMIT; n++) {
         if (!memory_is_user(l, sizeof(*l)))
             break;
-        if (!memory_is_user(uaddr, sizeof(*uaddr)))
-            break;
-        *uaddr |= FUTEX_OWNER_DIED;
-        futex_wake_many_by_uaddr(p, uaddr, 1);
+        robust_list next = robust_entry(l->next);
+        if (l != pending)
+            robust_futex_owner_died(t, l, futex_offset, false);
+        l = next;
     }
-    if (pending && memory_is_user(pending, sizeof(*pending))) {
-        *pending |= FUTEX_OWNER_DIED;
-        futex_wake_one_by_uaddr(p, pending);
-    }
+    if (pending)
+        robust_futex_owner_died(t, pending, futex_offset, true);
     context_clear_err(ctx);
 }
 

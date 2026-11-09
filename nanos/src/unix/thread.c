@@ -645,7 +645,7 @@ boolean exit_thread(thread t)
     if (t->select_epoll)
         epoll_finish(t->select_epoll);
 
-    wake_robust_list(t->p, t->robust_list);
+    wake_robust_list(t);
     t->robust_list = 0;
 
     blockq_flush(t->thread_bq);

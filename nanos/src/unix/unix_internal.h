@@ -1103,7 +1103,7 @@ void deallocate_futices(process_vm vm);
 sysreturn futex(int *uaddr, int futex_op, int val, u64 val2, int *uaddr2, int val3);
 sysreturn get_robust_list(int pid, void *head, u64 *len);
 sysreturn set_robust_list(void *head, u64 len);
-void wake_robust_list(process p, void *head);
+void wake_robust_list(thread t);
 boolean futex_wake_many_by_uaddr(process p, int *uaddr, int val);
 
 static inline boolean futex_wake_one_by_uaddr(process p, int *uaddr)

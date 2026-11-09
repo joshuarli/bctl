@@ -1007,7 +1007,7 @@ static boolean exec_replace_image(thread t, exec_image img, exec_image interp, e
         }
         t->clear_tid = 0;
     }
-    wake_robust_list(p, t->robust_list);
+    wake_robust_list(t);
     t->robust_list = 0;
     t->set_child_tid = 0;
     aio_process_exit(p);
