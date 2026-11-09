@@ -1178,12 +1178,12 @@ struct sandboxed_renderer_report {
 	int fork_inherits;
 };
 
-static void sandboxed_renderer(int mojo, int proc_fd, pid_t browser)
+static void sandboxed_renderer(int mojo, int proc_fd, pid_t outside)
 {
 	struct sandboxed_renderer_report rep = { 0 };
 	rep.pid_one = getpid() == 1;
 	errno = 0;
-	rep.kill_outside_denied = kill(browser, 0) < 0 && errno == ESRCH;
+	rep.kill_outside_denied = kill(outside, 0) < 0 && errno == ESRCH;
 	int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	struct sockaddr_in dst = { .sin_family = AF_INET, .sin_port = htons(80) };
 	inet_pton(AF_INET, "1.1.1.1", &dst.sin_addr);
@@ -1235,7 +1235,7 @@ static void sandboxed_renderer(int mojo, int proc_fd, pid_t browser)
 static int role_zygote(int argc, char **argv)
 {
 	int ctl = (int)arg_long(argc, argv, "--ctl");
-	pid_t browser = (pid_t)arg_long(argc, argv, "--browser-pid");
+	pid_t outside = (pid_t)arg_long(argc, argv, "--outside-pid");
 	struct zygote_report rep = { 0 };
 	if (send_message(ctl, "ZYGOTE_BOOT", 0, 0))
 		return 2;
@@ -1296,7 +1296,7 @@ static int role_zygote(int argc, char **argv)
 			close(ctl);
 			if (send_message(fds[1], "CHILD_PING", 0, 0))
 				_exit(5);
-			sandboxed_renderer(fds[0], proc_fd, browser);
+			sandboxed_renderer(fds[0], proc_fd, outside);
 		}
 		close(fds[0]);
 		close(fds[1]);
@@ -1328,16 +1328,28 @@ static void check_zygote_sandbox(void)
 	uid_t uid = getuid();
 	gid_t gid = getgid();
 	int child_ctl = fcntl(ctl[1], F_DUPFD, 10);
-	char a_ctl[32], a_browser[32];
+	char a_ctl[32], a_outside[32];
+	int hold[2];
+	if (pipe2(hold, O_CLOEXEC)) {
+		record("zygote_launch", 0, "pipe errno=%d", errno);
+		return;
+	}
+	pid_t outside = fork();
+	if (outside == 0) {
+		char c;
+		close(hold[1]);
+		_exit(read(hold[0], &c, 1) == 0 ? 0 : 1);
+	}
+	close(hold[0]);
 	snprintf(a_ctl, sizeof a_ctl, "--ctl=%d", child_ctl);
-	snprintf(a_browser, sizeof a_browser, "--browser-pid=%d", getpid());
+	snprintf(a_outside, sizeof a_outside, "--outside-pid=%d", outside);
 	long zygote = syscall(SYS_clone, CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | SIGCHLD, 0, 0, 0, 0);
 	if (zygote == 0) {
 		if (!write_id_maps(uid, gid))
 			_exit(90);
 		if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
 			_exit(91);
-		char *argv[] = { self_path, "--role=zygote", a_ctl, a_browser, 0 };
+		char *argv[] = { self_path, "--role=zygote", a_ctl, a_outside, 0 };
 		execve(self_path, argv, environ);
 		_exit(92);
 	}
@@ -1378,8 +1390,12 @@ static void check_zygote_sandbox(void)
 	close(ctl[0]);
 	int status = 0;
 	int reaped = wait_exit((pid_t)zygote, &status) && exited_with(status, 0);
-	int clean = got == sizeof rrep && reaped;
-	record("zygote_launch", boot && zygote_ok && reaped, "boot=%d ok=%d zygote_status=0x%x", boot, zygote_ok, status);
+	close(hold[1]);
+	int outside_status = 0;
+	int outside_reaped = outside > 0 && wait_exit(outside, &outside_status) && exited_with(outside_status, 0);
+	int clean = got == sizeof rrep && reaped && outside_reaped;
+	record("zygote_launch", boot && zygote_ok && reaped && outside_reaped, "boot=%d ok=%d zygote_status=0x%x outside_status=0x%x",
+		boot, zygote_ok, status, outside_status);
 	record("scm_credentials_translated", boot && zygote_ok && ping, "boot_pid=%d ok_pid=%d ping_pid=%d", boot_cred.pid,
 		ok_cred.pid, ping_cred.pid);
 	record("seccomp_null_probes", zygote_ok && zrep.seccomp_null_probes, 0);

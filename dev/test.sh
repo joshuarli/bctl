@@ -145,7 +145,7 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no PID namespaces yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium '' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw ''
 }
 
