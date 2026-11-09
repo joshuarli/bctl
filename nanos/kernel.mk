@@ -92,7 +92,7 @@ msg_sed=	SED	$@
 cmd_sed=	$(SED) -e 's/\#/%/' <$^ >$@
 
 msg_version=	VERSION	$@
-cmd_version=	$(MKDIR) $(dir $@); ( $(ECHO) "\#include <runtime.h>"; $(ECHO) "const sstring gitversion = ss_static_init(\"$(shell $(GIT) rev-parse HEAD)\");" ) >$@
+cmd_version=	$(MKDIR) $(dir $@); ( $(ECHO) "\#include <runtime.h>"; $(ECHO) "const sstring gitversion = ss_static_init(\"$(or $(shell $(GIT) -C $(ROOTDIR) rev-parse HEAD 2>/dev/null),unversioned)\");" ) >$@
 
 include ../../klib/klib.mk
 
@@ -114,7 +114,9 @@ ifneq ($(NANOS_TARGET_ROOT),)
 TARGET_ROOT_OPT=	-r $(NANOS_TARGET_ROOT)
 endif
 
-$(OBJDIR)/gitversion.c: $(ROOTDIR)/.git/index $(ROOTDIR)/.git/HEAD
+GITDIR:=	$(shell $(GIT) -C $(ROOTDIR) rev-parse --absolute-git-dir 2>/dev/null)
+
+$(OBJDIR)/gitversion.c: $(if $(GITDIR),$(GITDIR)/index $(GITDIR)/HEAD)
 	$(call cmd,version)
 
 $(VDSOGEN):

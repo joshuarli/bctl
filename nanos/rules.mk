@@ -165,8 +165,12 @@ msg_contgen=	CONTGEN	$@
 cmd_contgen=	$(CONTGEN) 10 10 >$@
 
 msg_vendor=	VENDOR	$@
-cmd_vendor=	$(RM) -r $(@D) && $(GIT) clone $(GITFLAGS) $(@D) && $(TOUCH) $@ && \
-	([ ! -f $(PATCHDIR)/$(notdir $(@D)).patch ] || (patch -p1 -d$(@D) < $(PATCHDIR)/$(notdir $(@D)).patch))
+cmd_vendor=	$(RM) -r $(@D) && $(GIT) init -q $(@D) && \
+	$(GIT) -C $(@D) fetch -q --depth 1 $(VENDOR_URL) $(VENDOR_COMMIT) && \
+	$(GIT) -C $(@D) -c advice.detachedHead=false checkout -q FETCH_HEAD && \
+	[ "$$($(GIT) -C $(@D) rev-parse HEAD)" = "$(VENDOR_COMMIT)" ] && \
+	([ ! -f $(PATCHDIR)/$(notdir $(@D)).patch ] || (patch -p1 -d$(@D) < $(PATCHDIR)/$(notdir $(@D)).patch)) && \
+	echo $(VENDOR_COMMIT) >$@
 
 ##############################################################################
 # build a program

@@ -53,11 +53,25 @@ endif
 
 THIRD_PARTY= $(ACPICA_DIR)/.vendored $(LWIPDIR)/.vendored $(MBEDTLS_DIR)/.vendored
 
-$(ACPICA_DIR)/.vendored: GITFLAGS= --depth 1  https://github.com/acpica/acpica.git -b R09_30_21
-$(LWIPDIR)/.vendored: GITFLAGS= --depth 1  https://github.com/nanovms/lwip.git -b STABLE-2_1_x
-$(MBEDTLS_DIR)/.vendored: GITFLAGS= --depth 1 https://github.com/nanovms/mbedtls.git
+ACPICA_COMMIT=	e01cc6b3d12b5f73f44d46fa15a7f569c793b328
+LWIP_COMMIT=	e27f9b7af7e5b025a5b8803899f12b1d35f7d968
+MBEDTLS_COMMIT=	f93c44d01d716315dfebadcb799760b548e76822
 
-kernel: $(THIRD_PARTY) contgen
+$(ACPICA_DIR)/.vendored: VENDOR_URL= https://github.com/acpica/acpica.git
+$(ACPICA_DIR)/.vendored: VENDOR_COMMIT= $(ACPICA_COMMIT)
+$(LWIPDIR)/.vendored: VENDOR_URL= https://github.com/nanovms/lwip.git
+$(LWIPDIR)/.vendored: VENDOR_COMMIT= $(LWIP_COMMIT)
+$(MBEDTLS_DIR)/.vendored: VENDOR_URL= https://github.com/nanovms/mbedtls.git
+$(MBEDTLS_DIR)/.vendored: VENDOR_COMMIT= $(MBEDTLS_COMMIT)
+
+VENDOR_PINS=	$(ACPICA_DIR):$(ACPICA_COMMIT) $(LWIPDIR):$(LWIP_COMMIT) $(MBEDTLS_DIR):$(MBEDTLS_COMMIT)
+
+.PHONY: vendor-check
+vendor-check: $(THIRD_PARTY)
+	$(Q) for p in $(VENDOR_PINS); do d=$${p%%:*}; want=$${p##*:}; got=$$($(GIT) -C $$d rev-parse HEAD); \
+		[ "$$want" = "$$got" ] || { echo "$$d: HEAD $$got, pinned $$want; remove $$d to refetch" >&2; exit 1; }; done
+
+kernel: vendor-check contgen
 	$(Q) $(MAKE) -C $(PLATFORMDIR) boot
 	$(Q) $(MAKE) -C $(PLATFORMDIR) kernel
 
