@@ -453,7 +453,7 @@ static void procfs_status(buffer b, process p, int tid)
     boolean nnp = p->no_new_privs;
     int pgid = p->pgid;
     process_unlock(p);
-    bprintf(b, "NStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\n", p->pid, tid, pgid, pgid);
+    bprintf(b, "NStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\n", p->pid, tid, pgid, p->sid);
     bprintf(b, "Threads:\t%d\n", zombie ? 1 : procfs_thread_count(p));
     u64 ign = 0, cgt = 0;
     for (int sig = 1; sig <= NSIG; sig++) {
@@ -488,7 +488,7 @@ static void procfs_stat(buffer b, process p)
     procfs_thread_name(p, p->pid, name);
     boolean zombie = (p->state == PROCESS_ZOMBIE);
     bprintf(b, "%d (%s) %c %d %d %d", p->pid, sstring_from_cstring(name, sizeof(name)),
-            zombie ? 'Z' : 'R', process_getppid(p), p->pgid, p->pgid);
+            zombie ? 'Z' : 'R', process_getppid(p), p->pgid, p->sid);
     for (int field = 7; field <= 52; field++) {
         if (field == 20)
             bprintf(b, " %d", zombie ? 1 : procfs_thread_count(p));

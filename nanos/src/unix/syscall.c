@@ -3238,6 +3238,11 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, getrusage, getrusage);
     register_syscall(map, getpid, getpid);
     register_syscall(map, getppid, getppid);
+    register_syscall(map, setsid, setsid);
+    register_syscall(map, getsid, getsid);
+    register_syscall(map, setpgid, setpgid);
+    register_syscall(map, getpgid, getpgid);
+    register_syscall(map, getpgrp, getpgrp);
     register_syscall(map, exit_group, exit_group);
     register_syscall(map, exit, (sysreturn (*)())exit);
     register_syscall(map, getdents64, getdents64);

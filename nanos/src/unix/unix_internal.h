@@ -126,6 +126,11 @@ static inline boolean wait_status_is_exit(int status)
 }
 
 int process_getppid(process p);
+sysreturn setsid(void);
+sysreturn getsid(int pid);
+sysreturn setpgid(int pid, int pgid);
+sysreturn getpgid(int pid);
+sysreturn getpgrp(void);
 int process_visible_pid(process target, process viewer);
 sysreturn process_signal(process sender, int pid, struct siginfo *si);
 struct rusage;
@@ -625,6 +630,7 @@ typedef struct process {
     unix_heaps        uh;       /* non-thread-specific */
     int               pid;
     int               pgid;
+    int               sid;
     struct list       l;        /* live processes */
     struct refcount   refcount; /* one for being alive, one per thread and aio context */
     closure_struct(thunk, free);

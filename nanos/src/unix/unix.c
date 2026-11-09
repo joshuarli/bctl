@@ -779,6 +779,7 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->uh = uh;
     p->pid = pid;
     p->pgid = pid;
+    p->sid = pid;
     list_init(&p->l);
     list_init(&p->children);
     list_init(&p->sibling);
@@ -906,6 +907,107 @@ int process_getppid(process p)
     return ppid;
 }
 
+static process process_by_pid_locked(int pid)
+{
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (p->pid == pid && !process_is_kernel(p))
+            return p;
+    }
+    return 0;
+}
+
+static boolean pgrp_exists_locked(int pgid)
+{
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (p->pgid == pgid && !process_is_kernel(p))
+            return true;
+    }
+    return false;
+}
+
+static boolean pgrp_in_session_locked(int pgid, int sid)
+{
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (p->pgid == pgid && p->sid == sid && !process_is_kernel(p))
+            return true;
+    }
+    return false;
+}
+
+sysreturn setsid(void)
+{
+    process p = current->p;
+    spin_lock(&processes_lock);
+    sysreturn rv;
+    if (pgrp_exists_locked(p->pid)) {
+        rv = -EPERM;
+    } else {
+        p->sid = p->pid;
+        p->pgid = p->pid;
+        rv = p->sid;
+    }
+    spin_unlock(&processes_lock);
+    return rv;
+}
+
+sysreturn getsid(int pid)
+{
+    if (pid < 0)
+        return -EINVAL;
+    spin_lock(&processes_lock);
+    process p = pid ? process_by_pid_locked(pid) : current->p;
+    sysreturn rv = p ? p->sid : -ESRCH;
+    spin_unlock(&processes_lock);
+    return rv;
+}
+
+sysreturn getpgid(int pid)
+{
+    if (pid < 0)
+        return -EINVAL;
+    spin_lock(&processes_lock);
+    process p = pid ? process_by_pid_locked(pid) : current->p;
+    sysreturn rv = p ? p->pgid : -ESRCH;
+    spin_unlock(&processes_lock);
+    return rv;
+}
+
+sysreturn getpgrp(void)
+{
+    return getpgid(0);
+}
+
+sysreturn setpgid(int pid, int pgid)
+{
+    if (pid < 0 || pgid < 0)
+        return -EINVAL;
+    process self = current->p;
+    spin_lock(&processes_lock);
+    sysreturn rv = 0;
+    process p = pid ? process_by_pid_locked(pid) : self;
+    if (!p || (p != self && p->parent != self)) {
+        rv = -ESRCH;
+        goto out;
+    }
+    if (!pgid)
+        pgid = p->pid;
+    if (p->sid == p->pid || p->sid != self->sid) {
+        rv = -EPERM;
+        goto out;
+    }
+    if (pgid != p->pid && !pgrp_in_session_locked(pgid, self->sid)) {
+        rv = -EPERM;
+        goto out;
+    }
+    p->pgid = pgid;
+  out:
+    spin_unlock(&processes_lock);
+    return rv;
+}
+
 static u64 processes_of_uid_locked(u32 uid)
 {
     u64 n = 0;
@@ -965,6 +1067,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     c->fs = cfs;
     process_fs_mirror(c);
     c->pgid = parent->pgid;
+    c->sid = parent->sid;
     c->dumpable = parent->dumpable;
     c->syscalls = parent->syscalls;
     c->rlimit_stack = parent->rlimit_stack;
