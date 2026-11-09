@@ -170,6 +170,11 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
     check_s(p, s, stack_low);
     char *strings = (char *)s;
     runtime_memcpy(strings, buffer_ref(args->strings, 0), strings_len);
+    process_lock(p);
+    p->arg_start = u64_from_pointer(strings);
+    p->arg_end = p->arg_start + args->argv_bytes;
+    p->env_end = p->arg_start + strings_len;
+    process_unlock(p);
 
     struct aux auxp[] = {
         {AT_PHDR, e->e_phoff + va},

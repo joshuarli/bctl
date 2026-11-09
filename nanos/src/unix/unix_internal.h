@@ -677,6 +677,7 @@ typedef struct process {
     struct syscall   *syscalls;
     struct aux        saved_aux[NAUX];
     buffer            cmdline;
+    u64               arg_start, arg_end, env_end;
     buffer            exe;
     thread            exec_thread;
     context           exec_waiter;

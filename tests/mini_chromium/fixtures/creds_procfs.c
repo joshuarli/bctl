@@ -688,6 +688,66 @@ static void check_reexec_proc_self_exe(void)
 	record("reexec_proc_self_exe", WIFEXITED(status) && WEXITSTATUS(status) == 0, "status=0x%x", status);
 }
 
+static int role_retitle(int argc, char **argv)
+{
+	int report = atoi(argv[2]), wait_fd = atoi(argv[3]);
+	char c;
+	if (write(report, "a", 1) != 1 || read(wait_fd, &c, 1) != 1)
+		return 2;
+	char *start = argv[0], *end = argv[argc - 1] + strlen(argv[argc - 1]);
+	memset(start, 0, (size_t)(end - start));
+	strcpy(start, "retitled-process");
+	if (write(report, "b", 1) != 1 || read(wait_fd, &c, 1) != 1)
+		return 3;
+	return 0;
+}
+
+static ssize_t read_cmdline(pid_t pid, char *buf, size_t len)
+{
+	char path[64];
+	snprintf(path, sizeof path, "/proc/%d/cmdline", (int)pid);
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	ssize_t n = read(fd, buf, len);
+	close(fd);
+	return n;
+}
+
+static void check_cmdline_retitle(void)
+{
+	int rep[2], go[2];
+	if (pipe(rep) || pipe(go)) {
+		record("cmdline_retitle", 0, "pipe");
+		return;
+	}
+	pid_t pid = fork();
+	if (pid == 0) {
+		char a[16], b[16];
+		snprintf(a, sizeof a, "%d", rep[1]);
+		snprintf(b, sizeof b, "%d", go[0]);
+		char *argv[] = { self, "--role=retitle", a, b, "padding-argument-for-room", 0 };
+		execv(self, argv);
+		_exit(9);
+	}
+	char c, before[512] = "", after[512] = "";
+	ssize_t nb = -1, na = -1;
+	if (read(rep[0], &c, 1) == 1)
+		nb = read_cmdline(pid, before, sizeof before - 1);
+	write(go[1], "g", 1);
+	if (read(rep[0], &c, 1) == 1)
+		na = read_cmdline(pid, after, sizeof after - 1);
+	write(go[1], "g", 1);
+	int status = 0;
+	waitpid(pid, &status, 0);
+	char want[512];
+	int wl = snprintf(want, sizeof want, "%s%c--role=retitle", self, 0);
+	int orig_ok = nb > wl && !memcmp(before, want, (size_t)wl);
+	int retitled = na > 0 && !strcmp(after, "retitled-process");
+	record("cmdline_retitle", orig_ok && retitled && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+		"before=%zd,after=%zd,orig_ok=%d,retitled=%d,status=0x%x", nb, na, orig_ok, retitled, status);
+}
+
 int main(int argc, char **argv)
 {
 	ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
@@ -697,6 +757,8 @@ int main(int argc, char **argv)
 		snprintf(self, sizeof self, "%s", argv[0]);
 	if (argc > 1 && !strcmp(argv[1], "--role=nnp"))
 		return role_nnp();
+	if (argc > 4 && !strcmp(argv[1], "--role=retitle"))
+		return role_retitle(argc, argv);
 	if (argc > 2 && !strcmp(argv[1], "--role=exe-link"))
 		return role_exe_link(argv[2]);
 	signal(SIGALRM, deadline);
@@ -713,6 +775,7 @@ int main(int argc, char **argv)
 	run_check("fd_listing", check_fd_listing);
 	run_check("memfd_reopen", check_memfd_reopen);
 	run_check("reexec_proc_self_exe", check_reexec_proc_self_exe);
+	run_check("cmdline_retitle", check_cmdline_retitle);
 	char line[96];
 	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS",
 		passed, failed);

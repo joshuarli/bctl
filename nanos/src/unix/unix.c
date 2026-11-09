@@ -1245,6 +1245,9 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
         return -ENOMEM;
     }
     c->cmdline = cmdline;
+    c->arg_start = parent->arg_start;
+    c->arg_end = parent->arg_end;
+    c->env_end = parent->env_end;
     c->exe = exe;
 
     if (flags & CLONE_NEWUSER) {

@@ -482,6 +482,60 @@ static int procfs_thread_count(process p)
     return n;
 }
 
+static boolean procfs_read_process_memory(process_vm vm, u64 va, u8 *dst, u64 len)
+{
+    boolean ok = true;
+    process_vm_lock(vm);
+    while (len > 0) {
+        physical phys = address_space_physical(vm->as, va & ~PAGEMASK);
+        if (phys == INVALID_PHYSICAL) {
+            ok = false;
+            break;
+        }
+        u64 off = va & PAGEMASK;
+        u64 n = MIN(len, PAGESIZE - off);
+        runtime_memcpy(dst, pointer_from_u64(virt_from_linear_backed_phys((phys & ~PAGEMASK) + off)), n);
+        dst += n;
+        va += n;
+        len -= n;
+    }
+    process_vm_unlock(vm);
+    return ok;
+}
+
+static void procfs_cmdline(buffer b, process p)
+{
+    process_lock(p);
+    process_vm vm = p->vm;
+    if (vm)
+        process_vm_reserve(vm);
+    u64 start = p->arg_start, end = p->arg_end, env_end = p->env_end;
+    if (!start && p->cmdline)
+        buffer_write(b, buffer_ref(p->cmdline, 0), buffer_length(p->cmdline));
+    process_unlock(p);
+    if (!vm)
+        return;
+    if (!start) {
+        process_vm_release(vm);
+        return;
+    }
+    u64 len = env_end - start;
+    if (len > 0 && buffer_extend(b, len)) {
+        u8 *dst = buffer_end(b);
+        if (procfs_read_process_memory(vm, start, dst, len)) {
+            u64 out = end - start;
+            if (out && dst[out - 1]) {
+                u64 i = 0;
+                while ((i < len) && dst[i])
+                    i++;
+                out = (i < len) ? i + 1 : len;
+            }
+            buffer_produce(b, out);
+        }
+    }
+    process_vm_release(vm);
+}
+
 static void procfs_status(buffer b, process p, int tid)
 {
     char name[16];
@@ -904,10 +958,7 @@ static sysreturn procfs_generate(procfs_file pf, buffer b)
         procfs_status(b, p, pf->n);
         break;
     case PROCFS_CMDLINE:
-        process_lock(p);
-        if (p->cmdline)
-            buffer_write(b, buffer_ref(p->cmdline, 0), buffer_length(p->cmdline));
-        process_unlock(p);
+        procfs_cmdline(b, p);
         break;
     case PROCFS_STAT:
         procfs_stat(b, p);
