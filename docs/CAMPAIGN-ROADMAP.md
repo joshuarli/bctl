@@ -220,6 +220,12 @@ Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
   SmolVM's own: virtio-gpu scanout to host framebuffer to RFB and WebSocket
   (`src/agent/vnc.rs`), with input through virtio-input (`src/agent/input.rs`).
   The guest runs no VNC server.
+- Owner 2026-11-09: vendor and fix anything that blocks the campaign; this is
+  pre-approved. Fixes land in bctl's vendored copy (or the laputa-systems fork
+  that owns the code) before anything is reported upstream. The host's macOS
+  content filter is MDM-managed and out of reach, so bctl routes around it:
+  guests reach host services at SmolVM's gateway `100.96.0.1`, never the
+  host's LAN address.
 - Owner 2026-11-09: bctl vendors SmolVM at the upstream tip and builds it
   from source, so it can fix SmolVM itself (the 512-connection relay limit,
   pause and checkpoint for bctl's sessions) before anything is reported
