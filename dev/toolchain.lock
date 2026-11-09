@@ -1,0 +1,25 @@
+NANOS_UPSTREAM_URL=https://github.com/nanovms/nanos.git
+NANOS_UPSTREAM_BASE=e4b9c9e65cd51ef29e5021835419a1d9a7733f20
+
+HOST_GCC_VERSION=15.2.0
+HOST_BINUTILS_VERSION=2.45.1
+HOST_NASM_VERSION=3.01
+HOST_MAKE_VERSION=4.4.1
+HOST_QEMU_VERSION=11.1.2
+
+LLVM_RELEASE=llvm-musl-23.1.5-c4f9b08
+LLVM_DIR=clang+llvm-23.1.5-x86_64-linux-musl
+LLVM_URL=https://github.com/laputa-systems/llvm-prebuilt-musl/releases/download/llvm-musl-23.1.5-c4f9b08/clang+llvm-23.1.5-x86_64-linux-musl.tar.xz
+LLVM_SHA256=8039dfa9e5b2ee53b04c1dcf94d65bd76c27842b0d4128c5a7bc6ba21d345fec
+
+MUSL_VERSION=1.2.6
+MUSL_URL=https://musl.libc.org/releases/musl-1.2.6.tar.gz
+MUSL_SHA256=d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
+
+GO_VERSION=go1.27.3
+GO_URL=https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
+GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+
+# Kernel third-party sources (acpica, lwip, mbedtls) are pinned by commit in
+# nanos/Makefile (ACPICA_COMMIT, LWIP_COMMIT, MBEDTLS_COMMIT) and checked by
+# `make -C nanos vendor-check`.
