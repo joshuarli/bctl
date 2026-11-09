@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bctl-cdp = { path = "../cdp" }
+async-io = { package = "laputa-async-io", version = "0.3" }
 futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
 miniserde = "0.1"
 

@@ -6,28 +6,49 @@ use bctl_cdp::{CallError, Connection, Event, EventFilter, EventScope, Subscripti
 use futures_lite::future::poll_once;
 use miniserde::json;
 
+use crate::actions::{Act, ActionError, Dialog};
 use crate::commands::{
-    AutoAttachFrames, AxTree, Counted, DescribeBackendNode, DescribeNode, FrameTree, GetDocumentRoot, GetFrameTree, GetFullAxTree, GetPartialAxTree,
-    IsConnected, QuerySelector, ReleaseObjectGroup, ResolveNode,
+    AutoAttachFrames, AxTree, Counted, DescribeBackendNode, DescribeNode, DialogClosed, DialogOpening, EnableLifecycleEvents, EnablePage, FrameTree,
+    GetDocumentRoot, GetFrameTree, GetFullAxTree, GetPartialAxTree, QuerySelector,
 };
 use crate::refs::{BackendNodeId, ElementRef, Host, RefCounter, RefCounterError, RefTable};
 use crate::snapshot::{self, Document, DomFacts, Drafts, FrameRead, MAX_DOCUMENTS, Snapshot, SnapshotOptions};
 use crate::{DocumentId, DocumentScope, TargetScope};
 
-const REF_OBJECT_GROUP: &str = "bctl-ref";
-
-struct Attachment {
-    page: SessionId,
+pub(crate) struct Attachment {
+    pub(crate) page: SessionId,
     /// Keyed by the iframe's target id, which is also its frame id.
-    oopifs: HashMap<TargetId, SessionId>,
+    pub(crate) oopifs: HashMap<TargetId, SessionId>,
     awaiting_auto_attach: Vec<SessionId>,
     events: Subscription,
+    pub(crate) dialogs: Subscription,
+    /// The JavaScript dialog the page shows, as last reported. While one is open the page's scripts are paused.
+    pub(crate) dialog: Option<Dialog>,
 }
 
-enum Lost {
+pub(crate) enum Lost {
     Detached,
     Overflowed,
     Cdp(CallError),
+}
+
+impl Lost {
+    fn from_call(error: CallError) -> Lost {
+        match error {
+            CallError::SessionDetached { .. } => Lost::Detached,
+            error => Lost::Cdp(error),
+        }
+    }
+}
+
+impl From<Lost> for AttachError {
+    fn from(lost: Lost) -> AttachError {
+        match lost {
+            Lost::Detached => AttachError::Detached,
+            Lost::Overflowed => AttachError::Churning,
+            Lost::Cdp(error) => AttachError::Cdp(error),
+        }
+    }
 }
 
 impl Attachment {
@@ -35,9 +56,25 @@ impl Attachment {
         let filter = EventFilter::new(&[AttachedToTarget::METHOD, DetachedFromTarget::METHOD], EventScope::Any);
         let events = cdp.connection.subscribe(filter).map_err(Lost::Cdp)?;
         let page = cdp.browser(&AttachToTarget::new(target.clone())).await.map_err(Lost::Cdp)?.session_id;
-        let mut attachment = Attachment { page: page.clone(), oopifs: HashMap::new(), awaiting_auto_attach: vec![page], events };
+        let dialogs = cdp.connection.subscribe(EventFilter::new(&[DialogOpening::METHOD, DialogClosed::METHOD], EventScope::Session(page.clone()))).map_err(Lost::Cdp)?;
+        cdp.session(&page, &EnablePage {}).await.map_err(Lost::from_call)?;
+        cdp.session(&page, &EnableLifecycleEvents { enabled: true }).await.map_err(Lost::from_call)?;
+        let mut attachment =
+            Attachment { page: page.clone(), oopifs: HashMap::new(), awaiting_auto_attach: vec![page], events, dialogs, dialog: None };
         attachment.sync(cdp).await?;
         Ok(attachment)
+    }
+
+    pub(crate) async fn current_dialog(&mut self) -> Result<Option<Dialog>, SubscriptionEnd> {
+        while let Some(next) = poll_once(self.dialogs.next()).await {
+            let event = next?;
+            if let Ok(opening) = event.decode::<DialogOpening>() {
+                self.dialog = Some(Dialog::from(opening));
+            } else if event.decode::<DialogClosed>().is_ok() {
+                self.dialog = None;
+            }
+        }
+        Ok(self.dialog.clone())
     }
 
     fn owns(&self, session: Option<&SessionId>) -> bool {
@@ -72,7 +109,7 @@ impl Attachment {
         Ok(())
     }
 
-    async fn sync(&mut self, cdp: &Counted<'_>) -> Result<(), Lost> {
+    pub(crate) async fn sync(&mut self, cdp: &Counted<'_>) -> Result<(), Lost> {
         loop {
             self.drain().await?;
             let Some(session) = self.awaiting_auto_attach.pop() else { return Ok(()) };
@@ -84,7 +121,7 @@ impl Attachment {
         }
     }
 
-    fn session_of(&self, host: &Host) -> Option<&SessionId> {
+    pub(crate) fn session_of(&self, host: &Host) -> Option<&SessionId> {
         match host {
             Host::Page => Some(&self.page),
             Host::Oopif(target) => self.oopifs.get(target),
@@ -207,27 +244,34 @@ pub struct Accessible {
 /// Snapshots and element refs over one connection. Refs live as long as this value: a new connection, as a new
 /// generation or a restarted daemon opens, starts with none, so every earlier ref is [`Staleness::Unknown`].
 pub struct Pages {
-    connection: Connection,
-    attachments: HashMap<TargetId, Attachment>,
-    refs: RefTable,
+    pub(crate) connection: Connection,
+    pub(crate) attachments: HashMap<TargetId, Attachment>,
+    pub(crate) refs: RefTable,
 }
 
-struct HostFrames {
-    session: SessionId,
-    root: FrameId,
-    documents: HashMap<FrameId, DocumentId>,
+pub(crate) struct HostFrames {
+    pub(crate) session: SessionId,
+    pub(crate) root: FrameId,
+    pub(crate) documents: HashMap<FrameId, DocumentId>,
+    /// An out-of-process iframe's root frame has a parent in another session.
+    pub(crate) parents: HashMap<FrameId, Option<FrameId>>,
+    pub(crate) preorder: Vec<FrameId>,
 }
 
-async fn frames(cdp: &Counted<'_>, session: &SessionId) -> Result<HostFrames, CallError> {
+pub(crate) async fn frames(cdp: &Counted<'_>, session: &SessionId) -> Result<HostFrames, CallError> {
     let tree = cdp.session(session, &GetFrameTree {}).await?.frame_tree;
     let root = tree.frame.id.clone();
     let mut documents = HashMap::new();
+    let mut parents = HashMap::new();
+    let mut preorder = Vec::new();
     let mut stack: Vec<FrameTree> = vec![tree];
     while let Some(tree) = stack.pop() {
+        preorder.push(tree.frame.id.clone());
+        parents.insert(tree.frame.id.clone(), tree.frame.parent_id);
         documents.insert(tree.frame.id, DocumentId::new(tree.frame.loader_id));
-        stack.extend(tree.child_frames.into_iter().flatten());
+        stack.extend(tree.child_frames.into_iter().flatten().rev());
     }
-    Ok(HostFrames { session: session.clone(), root, documents })
+    Ok(HostFrames { session: session.clone(), root, documents, parents, preorder })
 }
 
 struct Job {
@@ -242,7 +286,7 @@ impl Pages {
         Pages { connection, attachments: HashMap::new(), refs: RefTable::default() }
     }
 
-    async fn attachment(&mut self, cdp: &Counted<'_>, target: &TargetId) -> Result<&Attachment, AttachError> {
+    pub(crate) async fn attach(&mut self, cdp: &Counted<'_>, target: &TargetId) -> Result<(), AttachError> {
         const TRIES: usize = 3;
         let mut closed = Vec::new();
         for (id, attachment) in self.attachments.iter_mut().filter(|(id, _)| *id != target) {
@@ -266,7 +310,7 @@ impl Pages {
                 },
             };
             match outcome {
-                Ok(()) => return Ok(self.attachments.get(target).expect("attached")),
+                Ok(()) => return Ok(()),
                 Err(Lost::Cdp(error)) => return Err(AttachError::Cdp(error)),
                 Err(Lost::Detached) => {
                     self.attachments.remove(target);
@@ -292,7 +336,8 @@ impl Pages {
         }
         let connection = self.connection.clone();
         let cdp = Counted::new(&connection);
-        let attachment = self.attachment(&cdp, &target.target).await.map_err(SnapshotError::Attach)?;
+        self.attach(&cdp, &target.target).await.map_err(SnapshotError::Attach)?;
+        let attachment = &self.attachments[&target.target];
         let page = attachment.page.clone();
         let oopifs = attachment.oopifs.clone();
 
@@ -377,26 +422,14 @@ impl Pages {
         }
         let connection = self.connection.clone();
         let cdp = Counted::new(&connection);
-        let attachment = self.attachment(&cdp, &target.target).await.map_err(RefError::Attach)?;
-        let Some(session) = attachment.session_of(&entry.host).cloned() else {
-            self.refs.forget(element);
-            return stale(Staleness::FrameGone);
-        };
-        let scope = &entry.key.document;
-        let current = frames(&cdp, &session).await.map_err(RefError::Cdp)?;
-        let staleness = match current.documents.get(&scope.frame) {
-            None => Some(Staleness::FrameGone),
-            Some(document) if *document != scope.document => Some(Staleness::Navigated),
-            Some(_) => match connected(&cdp, &session, entry.key.node).await.map_err(RefError::Cdp)? {
-                true => None,
-                false => Some(Staleness::NodeGone),
-            },
-        };
-        if let Some(staleness) = staleness {
-            self.refs.forget(element);
-            return stale(staleness);
-        }
-        Ok(ResolvedRef { element, document: entry.key.document, session, node: entry.key.node })
+        self.attach(&cdp, &target.target).await.map_err(RefError::Attach)?;
+        let attachment = self.attachments.get_mut(&target.target).expect("attached");
+        let mut act = Act::new(&cdp, target, attachment, &mut self.refs);
+        let resolved = act.resolve_ref(element).await;
+        act.release().await;
+        let (node, backend) = resolved.map_err(ActionError::into_ref_error)?;
+        let session = node.session().clone();
+        Ok(ResolvedRef { element, document: node.scope, session, node: backend })
     }
 
     /// The node's role and accessible name as the browser computes them now.
@@ -432,21 +465,4 @@ async fn scope_subtree(
     }
     let described = cdp.session(session, &DescribeNode { node_id: found, depth: -1, pierce: true }).await?;
     Ok(facts.add(&described.node, frame.clone()))
-}
-
-/// Whether the node is still in a document. A node the session cannot find has been collected.
-async fn connected(cdp: &Counted<'_>, session: &SessionId, node: BackendNodeId) -> Result<bool, CallError> {
-    let group = REF_OBJECT_GROUP.to_string();
-    let object = match cdp.session(session, &ResolveNode { backend_node_id: node.0, object_group: group.clone() }).await {
-        Ok(resolved) => resolved.object.object_id,
-        Err(CallError::Protocol { .. }) => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    let Some(object) = object else { return Ok(false) };
-    let called = cdp.session(session, &IsConnected::new(object)).await;
-    cdp.session(session, &ReleaseObjectGroup { object_group: group }).await?;
-    match called?.result.value {
-        Some(json::Value::Bool(connected)) => Ok(connected),
-        other => Err(CallError::MalformedReply { method: "Runtime.callFunctionOn", reason: format!("isConnected returned {other:?}") }),
-    }
 }

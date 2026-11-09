@@ -2,10 +2,13 @@
 //!
 //! Identity is layered: a browser generation, then a page target (its CDP `targetId`), then a frame and the
 //! document it committed, then an element ref. [`Tabs`] lists, opens, closes, and selects page targets and keeps
-//! the selection in a [`BindingStore`]; [`Pages`] reads accessibility [`Snapshot`]s of a target and resolves the
-//! [`ElementRef`]s they hand out, each scoped to one [`DocumentScope`].
+//! the selection in a [`BindingStore`]; [`Pages`] reads accessibility [`Snapshot`]s of a target, resolves the
+//! [`ElementRef`]s they hand out, each scoped to one [`DocumentScope`], and runs [`Action`]s on elements named by
+//! a [`Locator`] with real input events.
 
+mod actions;
 mod commands;
+mod keys;
 mod pages;
 mod refs;
 mod scope;
@@ -15,6 +18,11 @@ mod url;
 
 use std::time::Duration;
 
+pub use actions::{
+    Acted, ActedOn, Action, ActionError, Candidate, ClickCount, Condition, Dialog, DialogResponse, FieldValue, LoadState, Locator, MAX_CANDIDATES, MAX_READ_CHARS,
+    Occurrence, Outcome, Query, Read, Readiness, Scroll,
+};
+pub use keys::{Chord, Modifier, UnknownKey};
 pub use pages::{Accessible, AttachError, Pages, RefError, ResolvedRef, SnapshotError, Staleness};
 pub use refs::{BackendNodeId, ElementRef, Host, MAX_LIVE_REFS, REF_BLOCK, RefCounter, RefCounterError};
 pub use scope::{DocumentId, DocumentScope, TargetScope};
