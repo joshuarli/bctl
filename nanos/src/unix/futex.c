@@ -390,7 +390,7 @@ sysreturn futex(int *uaddr, int futex_op, int val, u64 val2, int *uaddr2, int va
     boolean private = (futex_op & FUTEX_PRIVATE_FLAG) != 0;
     clock_id clkid = CLOCK_ID_MONOTONIC;
     if (futex_op & FUTEX_CLOCK_REALTIME) {
-        if (cmd != FUTEX_WAIT && cmd != FUTEX_WAIT_BITSET)
+        if (cmd != FUTEX_WAIT_BITSET)
             return -ENOSYS;
         clkid = CLOCK_ID_REALTIME;
     }
