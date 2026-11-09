@@ -189,6 +189,7 @@ static inline sysreturn sockopt_copy_to_user(void *uval, socklen_t *ulen, void *
     return rv;
 }
 
+void unixsock_init(void);
 sysreturn unixsock_open(int type, int protocol);
 
 void netlink_init(void);

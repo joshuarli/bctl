@@ -17,9 +17,17 @@ typedef struct unixsock_scm {
     fdesc fds[];
 } *unixsock_scm;
 
+struct unix_address {
+    struct sockaddr_un sa;
+    socklen_t len;
+};
+
+#define UNIX_ADDRESS_UNNAMED_LEN    __builtin_offsetof(struct sockaddr_un, sun_path)
+#define UNIX_AUTOBIND_NAME_LEN      6
+
 typedef struct unixsock_msg {
     buffer b;
-    struct sockaddr_un from_addr;
+    struct unix_address from_addr;
     unixsock_scm scm;
 } *unixsock_msg;
 
@@ -73,7 +81,9 @@ typedef struct unixsock {
     queue data;
     filesystem fs;
     inode fs_entry;
-    struct sockaddr_un local_addr;
+    struct unix_address local_addr;
+    struct list abstract_l;
+    net_namespace abstract_ns;
     queue conn_q;
     struct unixsock *peer;
     u8 shutdown;
@@ -631,14 +641,98 @@ static void scm_drop_to_vector(unixsock_scm scm, vector dropped)
     deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
 }
 
-static void unixsock_addr_copy(struct sockaddr_un *dest, struct sockaddr_un *src, socklen_t *len)
+static void unixsock_addr_copy(struct sockaddr_un *dest, struct unix_address *src, socklen_t *len)
 {
-    sstring addr = sstring_from_cstring(src->sun_path, sizeof(src->sun_path));
-    socklen_t actual_len = __builtin_offsetof(struct sockaddr_un, sun_path) + addr.len;
-    if ((addr.len > 0) && (actual_len < sizeof(struct sockaddr_un)))
-        actual_len++;   /* include the string terminator for the path name */
-    runtime_memcpy(dest, src, MIN(*len, actual_len));
-    *len = actual_len;
+    runtime_memcpy(dest, &src->sa, MIN(*len, src->len));
+    *len = src->len;
+}
+
+static struct list abstract_sockets;
+static struct spinlock abstract_lock;
+static u32 abstract_autobind_next;
+
+static boolean unix_address_is_abstract(struct unix_address *a)
+{
+    return (a->len > UNIX_ADDRESS_UNNAMED_LEN) && (a->sa.sun_path[0] == '\0');
+}
+
+static unixsock abstract_find_locked(net_namespace ns, struct unix_address *a)
+{
+    list_foreach(&abstract_sockets, l) {
+        unixsock s = struct_from_list(l, unixsock, abstract_l);
+        if ((s->abstract_ns == ns) && (s->local_addr.len == a->len) &&
+            !runtime_memcmp(s->local_addr.sa.sun_path, a->sa.sun_path, a->len - UNIX_ADDRESS_UNNAMED_LEN))
+            return s;
+    }
+    return 0;
+}
+
+static void abstract_autobind_name(struct unix_address *a)
+{
+    static const char hex[] = "0123456789abcdef";
+    u32 n = fetch_and_add_32(&abstract_autobind_next, 1);
+    a->sa.sun_family = AF_UNIX;
+    a->sa.sun_path[0] = '\0';
+    for (int i = UNIX_AUTOBIND_NAME_LEN - 1; i > 0; i--, n >>= 4)
+        a->sa.sun_path[i] = hex[n & 0xf];
+    a->len = UNIX_ADDRESS_UNNAMED_LEN + UNIX_AUTOBIND_NAME_LEN;
+}
+
+void unixsock_init(void)
+{
+    list_init(&abstract_sockets);
+    spin_lock_init(&abstract_lock);
+}
+
+static sysreturn abstract_bind(unixsock s, struct unix_address *a, boolean autobind)
+{
+    process p = current->p;
+    process_lock(p);
+    net_namespace ns = p->net_ns;
+    net_ns_reserve(ns);
+    process_unlock(p);
+    sysreturn rv = -EADDRINUSE;
+    spin_lock(&abstract_lock);
+    for (u32 attempt = 0; attempt < (autobind ? 0x100000 : 1); attempt++) {
+        if (autobind)
+            abstract_autobind_name(a);
+        if (!abstract_find_locked(ns, a)) {
+            s->local_addr = *a;
+            s->abstract_ns = ns;
+            list_push_back(&abstract_sockets, &s->abstract_l);
+            rv = 0;
+            break;
+        }
+    }
+    spin_unlock(&abstract_lock);
+    if (rv)
+        net_ns_release(ns);
+    return rv;
+}
+
+static void abstract_unbind(unixsock s)
+{
+    if (!s->abstract_ns)
+        return;
+    spin_lock(&abstract_lock);
+    list_delete(&s->abstract_l);
+    spin_unlock(&abstract_lock);
+    net_ns_release(s->abstract_ns);
+    s->abstract_ns = 0;
+}
+
+static unixsock abstract_lookup(struct unix_address *a)
+{
+    process p = current->p;
+    process_lock(p);
+    net_namespace ns = p->net_ns;
+    process_unlock(p);
+    spin_lock(&abstract_lock);
+    unixsock s = abstract_find_locked(ns, a);
+    if (s)
+        refcount_reserve(&s->refcount);
+    spin_unlock(&abstract_lock);
+    return s;
 }
 
 closure_function(9, 1, sysreturn, unixsock_read_bh,
@@ -979,7 +1073,7 @@ static sysreturn unixsock_write_to(void *src, struct iovec *iov, u64 length,
             break;
         }
         if (from && from->sock.type == SOCK_DGRAM)
-            runtime_memcpy(&shb->from_addr, &from->local_addr, sizeof(struct sockaddr_un));
+            shb->from_addr = from->local_addr;
         if (src) {
             assert(buffer_write(shb->b, src + buf_offset, xfer));
             buf_offset += xfer;
@@ -1044,8 +1138,30 @@ static sysreturn unixsock_get_path(sstring *path, struct sockaddr *addr, socklen
     return 0;
 }
 
+static sysreturn unixsock_get_address(struct unix_address *a, struct sockaddr *addr, socklen_t addrlen)
+{
+    if ((addrlen < UNIX_ADDRESS_UNNAMED_LEN) || (addrlen > sizeof(struct sockaddr_un)))
+        return -EINVAL;
+    if (!copy_from_user(addr, &a->sa, addrlen))
+        return -EFAULT;
+    if (a->sa.sun_family != AF_UNIX)
+        return -EINVAL;
+    a->len = addrlen;
+    return 0;
+}
+
 static sysreturn lookup_socket(unixsock *s, struct sockaddr *addr, socklen_t addrlen)
 {
+    struct unix_address a;
+    if ((addrlen > UNIX_ADDRESS_UNNAMED_LEN) && (addrlen <= sizeof(struct sockaddr_un))) {
+        sysreturn rv = unixsock_get_address(&a, addr, addrlen);
+        if (rv)
+            return rv;
+        if (unix_address_is_abstract(&a)) {
+            *s = abstract_lookup(&a);
+            return *s ? 0 : -ECONNREFUSED;
+        }
+    }
     sstring path;
     sysreturn rv = unixsock_get_path(&path, addr, addrlen);
     if (rv)
@@ -1281,6 +1397,7 @@ closure_func_basic(fdesc_close, sysreturn, unixsock_close,
     if (s->fs_entry) {
         filesystem_clear_socket(s->fs, s->fs_entry);
     }
+    abstract_unbind(s);
     unixsock_dealloc(s);
     return io_complete(completion, 0);
 }
@@ -1293,6 +1410,19 @@ static sysreturn unixsock_bind(struct sock *sock, struct sockaddr *addr,
     sysreturn ret;
     if (s->fs_entry) {
         ret = -EADDRINUSE;
+        goto out;
+    }
+    if (s->abstract_ns) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    struct unix_address a;
+    ret = unixsock_get_address(&a, addr, addrlen);
+    if (ret)
+        goto out;
+    if ((a.len == UNIX_ADDRESS_UNNAMED_LEN) || unix_address_is_abstract(&a)) {
+        ret = abstract_bind(s, &a, a.len == UNIX_ADDRESS_UNNAMED_LEN);
         goto out;
     }
 
@@ -1308,7 +1438,8 @@ static sysreturn unixsock_bind(struct sock *sock, struct sockaddr *addr,
         ret = (fss == -EEXIST) ? -EADDRINUSE : fss;
         goto out;
     }
-    runtime_memcpy(&s->local_addr, addr, addrlen);
+    runtime_memcpy(&s->local_addr.sa, &a.sa, a.len);
+    s->local_addr.len = MIN(UNIX_ADDRESS_UNNAMED_LEN + path.len + 1, sizeof(struct sockaddr_un));
     ret = 0;
 out:
     unixsock_unlock(s);
@@ -1797,8 +1928,10 @@ static unixsock unixsock_alloc(heap h, int type, u32 flags, boolean alloc_fd)
     s->sock.recvmsg = unixsock_recvmsg;
     s->sock.shutdown = unixsock_shutdown;
     s->fs_entry = 0;
-    s->local_addr.sun_family = AF_UNIX;
-    s->local_addr.sun_path[0] = '\0';
+    s->local_addr.sa.sun_family = AF_UNIX;
+    s->local_addr.sa.sun_path[0] = '\0';
+    s->local_addr.len = UNIX_ADDRESS_UNNAMED_LEN;
+    s->abstract_ns = 0;
     s->conn_q = 0;
     s->peer = 0;
     s->shutdown = 0;

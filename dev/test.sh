@@ -72,10 +72,12 @@ suite_harness() {
 		case_verdict crashpad_cmsg "$smp" 60 PASS '' "$FIXTURES/crashpad_cmsg"
 		case_verdict session_signal "$smp" 30 PASS '' "$FIXTURES/session_signal"
 		case_verdict netns "$smp" 60 PASS '' "$FIXTURES/netns"
+		case_verdict unix_abstract "$smp" 30 PASS '' "$FIXTURES/unix_abstract"
 	done
 	fixture_native userns unshare -Ur
 	fixture_native session_signal env
 	fixture_native netns env
+	fixture_native unix_abstract env
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
 	case_verdict duplicate_result 1 20 'FAIL detail=duplicate-record' '' "$FIXTURES/duplicate_result"
@@ -215,7 +217,7 @@ suite_helium() {
 
 EXTERNAL=$WORK/build/external
 EXTERNAL_BINS='gvisor_dup gvisor_fcntl gvisor_lseek gvisor_fork gvisor_exec gvisor_wait gvisor_socket_unix_cmsg gvisor_socket_unix_peercred'
-EXTERNAL_PASSING_ON_NANOS='gvisor_dup_DupTest_Dup3 gvisor_dup_DupTest_DupClearsCloExec gvisor_exec_ExecTest_CloexecNormalFile gvisor_fcntl_FcntlTest_DupAfterO_ASYNC gvisor_fcntl_FcntlTest_IndependentDescriptorFlags gvisor_fork_ForkTest_Pipe gvisor_lseek_LseekTest_EtcPasswdDup gvisor_socket_unix_cmsg gvisor_socket_unix_peercred_UnixSocketPeerCredTest_GetPeerCred_stream gvisor_socket_unix_peercred_UnixSocketPeerCredTest_GetPeerCred_seqpacket gvisor_wait_WaitTest_SignalExit gvisor_wait_WaitTest_WaitidWNOWAIT'
+EXTERNAL_PASSING_ON_NANOS='gvisor_dup_DupTest_Dup3 gvisor_dup_DupTest_DupClearsCloExec gvisor_exec_ExecTest_CloexecNormalFile gvisor_fcntl_FcntlTest_DupAfterO_ASYNC gvisor_fcntl_FcntlTest_IndependentDescriptorFlags gvisor_fork_ForkTest_Pipe gvisor_lseek_LseekTest_EtcPasswdDup gvisor_socket_unix_cmsg gvisor_socket_unix_peercred gvisor_wait_WaitTest_SignalExit gvisor_wait_WaitTest_WaitidWNOWAIT'
 
 suite_external() {
 	make -s -C "$ROOT/tests/external"

@@ -3258,6 +3258,7 @@ boolean netsyscall_init(unix_heaps uh, tuple cfg)
 	return false;
     uh->socket_cache = socket_cache;
     net_loop_poll = closure(h, netsock_poll);
+    unixsock_init();
     netlink_init();
     vsock_init();
     return true;
