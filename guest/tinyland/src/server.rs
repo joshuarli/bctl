@@ -314,7 +314,7 @@ impl State {
                         }
                         Some(Some(pixels))
                     }
-                    Err(error) => { self.surfaces[surf_id].resource.post_error(0u32, error); return; }
+                    Err(error) => { buffer.post_error(wl_shm::Error::InvalidFd as u32, error); return; }
                 }
             }
             Some(None) => {

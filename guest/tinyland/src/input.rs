@@ -481,6 +481,43 @@ mod tests {
     }
 
     #[test]
+    fn shifted_punctuation_produces_the_us_symbols() {
+        let mut keyboard = Keyboard::new().unwrap();
+        let cases = [
+            (KeyCode::KEY_1, "1", "!"),
+            (KeyCode::KEY_SEMICOLON, ";", ":"),
+            (KeyCode::KEY_APOSTROPHE, "'", "\""),
+            (KeyCode::KEY_MINUS, "-", "_"),
+            (KeyCode::KEY_EQUAL, "=", "+"),
+            (KeyCode::KEY_DOT, ".", ">"),
+            (KeyCode::KEY_SLASH, "/", "?"),
+        ];
+        for (key, plain, shifted) in cases {
+            let code = key.code() as u32 + 8;
+            assert_eq!(keyboard.key_utf8(code), plain);
+            keyboard.update(KeyCode::KEY_RIGHTSHIFT.code(), true);
+            assert_eq!(keyboard.key_utf8(code), shifted, "{key:?}");
+            keyboard.update(KeyCode::KEY_RIGHTSHIFT.code(), false);
+        }
+    }
+
+    #[test]
+    fn modifier_chords_keep_each_held_modifier_until_its_own_release() {
+        let mut keyboard = Keyboard::new().unwrap();
+        let ctrl = keyboard.update(KeyCode::KEY_LEFTCTRL.code(), true)[0];
+        let ctrl_shift = keyboard.update(KeyCode::KEY_LEFTSHIFT.code(), true)[0];
+        let ctrl_shift_alt = keyboard.update(KeyCode::KEY_LEFTALT.code(), true)[0];
+        assert_ne!(ctrl, 0);
+        assert_eq!(ctrl_shift & ctrl, ctrl);
+        assert_ne!(ctrl_shift, ctrl);
+        assert_eq!(ctrl_shift_alt & ctrl_shift, ctrl_shift);
+        assert_ne!(ctrl_shift_alt, ctrl_shift);
+        assert_eq!(keyboard.update(KeyCode::KEY_LEFTSHIFT.code(), false)[0], ctrl_shift_alt & !(ctrl_shift & !ctrl));
+        keyboard.update(KeyCode::KEY_LEFTALT.code(), false);
+        assert_eq!(keyboard.update(KeyCode::KEY_LEFTCTRL.code(), false)[0], 0);
+    }
+
+    #[test]
     fn reset_clears_depressed_modifiers_for_resume() {
         let mut keyboard = Keyboard::new().unwrap();
         assert_ne!(keyboard.update(KeyCode::KEY_LEFTSHIFT.code(), true)[0], 0);

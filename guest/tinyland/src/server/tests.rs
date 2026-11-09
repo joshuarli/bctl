@@ -906,3 +906,88 @@ fn wheel_notches_become_discrete_axis_events_with_wayland_sign() {
     assert_eq!(axis.len(), 1);
     assert_eq!(axis[0][1..], [0, fixed(20.0)], "REL_WHEEL down is a positive vertical scroll");
 }
+
+const DISPLAY_ERROR: u16 = 0;
+
+fn display_errors(events: &Events) -> Vec<(u32, u32)> {
+    events.iter().filter(|(object, opcode, _)| *object == 1 && *opcode == DISPLAY_ERROR).map(|(_, _, args)| (args[0], args[1])).collect()
+}
+
+#[test]
+fn committing_a_buffer_whose_file_was_truncated_reports_invalid_fd_on_the_buffer() {
+    let mut f = Fixture::new();
+    let surface = f.surface();
+    let buffer = f.filled_buffer(2, 1, 9);
+    f.state.buffers[&buffer.id()].1.file.set_len(4).unwrap();
+    f.request(&surface, 1, &[buffer.id().protocol_id(), 0, 0]);
+    let events = messages(&f.request(&surface, 6, &[]));
+    assert_eq!(
+        display_errors(&events),
+        [(buffer.id().protocol_id(), wl_shm::Error::InvalidFd as u32)],
+    );
+}
+
+const KEYBOARD_ENTER: u16 = 1;
+const KEYBOARD_MODIFIERS: u16 = 4;
+const KEY_LEFTSHIFT: u16 = 42;
+
+#[test]
+fn fractional_pointer_motion_reaches_the_client_as_wl_fixed() {
+    let mut f = Fixture::with_output((100, 100));
+    let pointer = f.pointer_seat();
+    let (_surface, _xdg, _) = mapped_toplevel(&mut f, 3);
+    f.events();
+    f.state.pointer_frame(crate::input::PointerFrame {
+        motion: Some(crate::input::Motion::Relative { dx: 0.5, dy: -0.25 }),
+        ..Default::default()
+    });
+    let events = f.events();
+    let motion = sent(&events, &pointer, POINTER_MOTION);
+    assert_eq!(motion.len(), 1);
+    assert_eq!(&motion[0][1..], [fixed(50.5), fixed(49.75)]);
+}
+
+#[test]
+fn input_after_the_focused_surface_is_destroyed_reaches_nobody_and_does_not_panic() {
+    let mut f = Fixture::with_output((100, 100));
+    let pointer = f.pointer_seat();
+    let (surface, xdg, _) = mapped_toplevel(&mut f, 3);
+    let top = f.state.toplevels.values().next().unwrap().resource.clone();
+    f.move_pointer(10.0, 10.0);
+    f.press(true);
+    f.events();
+    f.request(&top, 0, &[]);
+    f.request(&xdg, 0, &[]);
+    f.request(&surface, 0, &[]);
+    f.events();
+    f.move_pointer(20.0, 20.0);
+    f.press(false);
+    f.state.key(30, true);
+    f.state.key(30, false);
+    let events = f.events();
+    assert!(sent(&events, &pointer, POINTER_MOTION).is_empty());
+    assert!(sent(&events, &pointer, POINTER_BUTTON).is_empty());
+    assert!(f.state.pointer.focus.is_none());
+}
+
+#[test]
+fn modifier_held_when_focus_is_lost_is_reported_to_the_next_focus_and_released_there() {
+    let mut f = Fixture::with_output((100, 100));
+    f.pointer_seat();
+    let (_first, _xdg, _) = mapped_toplevel(&mut f, 3);
+    let first_top = f.state.toplevels.values().next().unwrap().resource.clone();
+    f.state.key(KEY_LEFTSHIFT, true);
+    f.request(&first_top, 0, &[]);
+    f.events();
+    let second = f.surface();
+    let second_xdg = f.toplevel(&second);
+    let mut entered = messages(&f.request(&second_xdg, 4, &[7]));
+    entered.extend(f.show(&second, 100, 100, 4));
+    let keyboard = f.state.seats[0].keyboards[0].clone();
+    let held = sent(&entered, &keyboard, KEYBOARD_MODIFIERS);
+    assert!(!sent(&entered, &keyboard, KEYBOARD_ENTER).is_empty());
+    assert_eq!(held.last().map(|args| args[1] != 0), Some(true));
+    f.state.key(KEY_LEFTSHIFT, false);
+    let released = f.events();
+    assert_eq!(sent(&released, &keyboard, KEYBOARD_MODIFIERS).last().map(|args| args[1]), Some(0));
+}
