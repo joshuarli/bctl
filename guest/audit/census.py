@@ -17,7 +17,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-DEFAULT_SCRIPTS = "/Users/josh/repos/laputa-systems/chromium-build/scripts"
 CLASSES = ("rust", "exception", "gap")
 CONSUMER_LIMIT = 6
 MAX_SYMLINK_HOPS = 8
@@ -468,7 +467,7 @@ def main() -> int:
     parser.add_argument("root", type=Path, help="extracted image rootfs")
     parser.add_argument("--table", type=Path, default=Path(__file__).with_name("attribution.toml"))
     parser.add_argument("--trace", type=Path, help="TSV of 'exe<TAB>mapped path' sampled from /proc/*/maps")
-    parser.add_argument("--chromium-build-scripts", type=Path, default=Path(os.environ.get("CHROMIUM_BUILD_SCRIPTS", DEFAULT_SCRIPTS)))
+    parser.add_argument("--chromium-build-scripts", type=Path, required=True)
     parser.add_argument("--readelf", default=None, help="readelf binary (LLVM_READELF)")
     parser.add_argument("--json", type=Path, help="write the full report as JSON")
     parser.add_argument("--deny-gaps", action="store_true", help="exit 3 when any gap remains")

@@ -28,19 +28,20 @@ specific to Alpine except the optional apk-database attribution.
 ```sh
 cargo build -p bctl-proof
 guest/audit/trace.sh bctl/ref-alpine-chromium .work/tmp/trace.tsv
-guest/audit/audit.sh bctl/ref-alpine-chromium --trace .work/tmp/trace.tsv --json .work/tmp/report.json
+CHROMIUM_BUILD_SCRIPTS=../chromium-build/scripts guest/audit/audit.sh bctl/ref-alpine-chromium --trace .work/tmp/trace.tsv --json .work/tmp/report.json
 ```
 
 `audit.sh` exports the image rootfs into a throwaway Docker volume and runs
 `census.py` in an Alpine container with `python3` and `binutils` (GNU
 `readelf`; set nothing, the container supplies it). `census.py` can also run on
-any extracted rootfs directory: `census.py ROOT --readelf readelf`.
+any extracted rootfs directory: `census.py ROOT --chromium-build-scripts DIR
+--readelf readelf`.
 
 The tool is Python rather than a Rust crate because chromium-build's
 `scripts/linux_runtime.py` already owns ELF parsing (`readelf -h -l -d`, the
 glibc and musl library sets, interpreter checks) and the roadmap requires
-reusing it. `census.py` imports it from `CHROMIUM_BUILD_SCRIPTS` (default
-`~/repos/laputa-systems/chromium-build/scripts`) without modifying it, and
+reusing it. `census.py` imports it from the directory named by `--chromium-build-scripts`
+(`audit.sh` takes it from `CHROMIUM_BUILD_SCRIPTS`) without modifying it, and
 uses `is_elf`, `inspect_elf`, `readelf_output`, and its musl/glibc constants.
 It does not call `audit_tree`, because that follows symlinks on the host and
 rejects the absolute symlinks an image rootfs legitimately contains.

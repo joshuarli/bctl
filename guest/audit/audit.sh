@@ -5,7 +5,7 @@ set -eu
 tag=${1:?usage: audit.sh IMAGE_TAG [census.py options]}
 shift
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-scripts=${CHROMIUM_BUILD_SCRIPTS:-/Users/josh/repos/laputa-systems/chromium-build/scripts}
+scripts=${CHROMIUM_BUILD_SCRIPTS:?set CHROMIUM_BUILD_SCRIPTS to a chromium-build scripts directory}
 volume=r0-rootfs-$$
 container=r0-export-$$
 trap 'docker rm -f "$container" > /dev/null 2>&1 || true; docker volume rm -f "$volume" > /dev/null 2>&1 || true' EXIT
