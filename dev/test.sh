@@ -214,8 +214,8 @@ suite_helium() {
 	dir=${line##* dir=}
 	pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
 	case $line in
-	"RUN verdict=PASS "*) failures=$((failures + 1)); printf 'FAIL      helium             nanos   known-red case now passes: delete its known-red marker\n' ;;
-	*) printf 'KNOWN-RED helium             nanos   %s/10 records pass; the browser crashes at zygote launch without PID namespaces\n          log: %s\n' "$pass" "$dir" ;;
+	"RUN verdict=PASS "*) printf 'PASS      helium             nanos   %s/10 records\n' "$pass" ;;
+	*) failures=$((failures + 1)); printf 'FAIL      helium             nanos   %s/10 records pass\n          log: %s\n' "$pass" "$dir" ;;
 	esac
 }
 
