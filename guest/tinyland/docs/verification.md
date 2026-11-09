@@ -18,8 +18,9 @@ entrypoint:
 - creates `/dev/input/event*` from `/sys/class/input/*/dev` with `mknod`;
   the container gets no input nodes otherwise;
 - keeps `/dev/dri/card0` and the event nodes `root:root 0600`;
-- starts `SEATD_VTBOUND=0 seatd -g seat` as root and waits for
-  `/run/seatd.sock`;
+- starts the vendored `/usr/local/bin/seatd` as root with
+  `SEATD_VTBOUND=0` and `SEATD_SOCK=/run/seatd.sock`, then waits for the
+  socket and logs `TINYLAND_SEATD_BROKER`;
 - runs `/usr/local/bin/tinyland --seat --smoke --width 1024 --height 768
   --socket wayland-0 -- foot /usr/local/bin/guest-test smoke` as the
   unprivileged `tiny` user (uid 1000, group `seat` only), with
@@ -28,9 +29,10 @@ entrypoint:
 
 The connector's preferred mode from `SMOLVM_DISPLAY` controls scanout; the
 requested 1024x768 is a lower bound. The image carries Alpine's foot,
-seatd, libseat, libgcc, fonts, and XKB data. Tinyland links libseat
-dynamically, so the musl binary needs the guest's `libseat.so.1` and
-`libgcc_s.so.1`.
+libgcc, fonts, and XKB data, plus the vendored seatd binary. It installs
+no Alpine `seatd` or `libseat` package. Tinyland's native seatd client
+links no libseat, and its static musl binary needs no loader or shared
+libraries in the guest.
 
 `guest/harness/rfb.py` is a stdlib RFB 3.8 client. It negotiates security
 type None, requests Raw encodings, accumulates a 1280x800 framebuffer,
@@ -72,7 +74,7 @@ SMOLVM_TINYLAND_PROOF_OK
 
 ## Cargo tests
 
-Both crates test inside a linux/arm64 Alpine image with the pinned
+The workspace crates test inside a linux/arm64 Alpine image with the pinned
 `nightly-2026-09-15` toolchain and prefetched locked dependencies:
 
 ```sh
@@ -82,12 +84,14 @@ docker run --rm --platform linux/arm64 --network none -w /src/seatd \
   bctl/tinyland-smolvm-tests:local cargo test --locked
 docker run --rm --platform linux/arm64 --network none -w /src/tinyland \
   bctl/tinyland-smolvm-tests:local cargo test --locked
+docker run --rm --platform linux/arm64 --network none -w /src \
+  bctl/tinyland-smolvm-tests:local cargo test -p seatd-protocol --locked
 ```
 
-The last run passed all seatd suites (58 library, 31 adversarial, 2
-differential, 4 storm with the idle timing case ignored) and all tinyland
-suites (43 library, 1 CLI). The idle timing case stays ignored; it needs a
-`perf-gate-ready` host measurement.
+The last run passed all seatd suites (45 library, 31 adversarial, 2
+differential, 4 storm with the idle timing case ignored), the shared
+protocol suite (13), and all tinyland suites (46 library, 1 CLI). The idle
+timing case stays ignored; it needs a `perf-gate-ready` host measurement.
 
 ## Presentation
 
@@ -116,17 +120,17 @@ boundaries, seat seams, and replacement gates are in
 
 ## Build and audit
 
-The aarch64 musl target is configured in `.cargo/config.toml`:
-`mold` as the linker, `/usr/lib` for the native `libseat`, and
-`-Ctarget-feature=-crt-static` because a static musl binary cannot use
-libseat. `make audit` still checks the x86_64 release binary path
-(`target/x86_64-unknown-linux-musl/release/tinyland`) and rejects forbidden
-dependencies, linked libraries, and `unsafe` outside `src/seat.rs`; build
-that binary first when running the audit.
+`guest/` is one Cargo workspace. `guest/.cargo/config.toml` selects `mold`
+for the musl targets; tinyland keeps the target's default `crt-static`, so
+the aarch64 release has no interpreter and no `DT_NEEDED`, including no
+libseat. `make audit` checks the workspace release binary path
+(`../target/x86_64-unknown-linux-musl/release/tinyland`) and rejects
+forbidden dependencies, any dynamic dependency, and any `unsafe` in
+`src/`; build that binary first when running the audit.
 
 `make test` runs `cargo test --locked`; coverage is owned by
-`src/server/tests.rs` and `tests/cli.rs`. Bad CLI exits 2 before opening
-devices.
+`src/server/tests.rs`, `src/seat.rs`, and `tests/cli.rs`. Bad CLI exits 2
+before opening devices.
 
 ## Laputa history
 

@@ -1,0 +1,9 @@
+[package]
+name = "seatd-protocol"
+version = "0.9.3"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+libc = "=0.2.182"
+rustix = "=0.38.44"

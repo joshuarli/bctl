@@ -24,22 +24,24 @@ in tinyland for this contract.
 
 ## Seat client
 
-Use libseat built seatd-only (`-Dlibseat-logind=disabled
--Dlibseat-seatd=enabled -Dlibseat-builtin=disabled`), `LIBSEAT_BACKEND=seatd`.
-No automatic fallback when broker connection fails. Daemon loss never falls
-back to direct open.
+`src/seat.rs` is a native seatd client built on the shared
+`guest/seatd-protocol` crate; tinyland no longer links libseat. The crate
+owns the wire opcodes, framing, and SCM_RIGHTS descriptor passing, and the
+vendored `guest/seatd` server uses the same crate, so the two sides cannot
+drift. `LIBSEAT_BACKEND=seatd` is still enforced before the socket is
+touched, and the socket path is `SEATD_SOCK` or `/run/seatd.sock`, matching
+libseat's seatd backend. No automatic fallback when broker connection
+fails. Daemon loss never falls back to direct open.
 
-`src/seat.rs` is the single `unsafe` module: it links libseat at build
-time (`#[link(name = "seat", kind = "dylib")]`) and declares the eight
-used symbols against the pinned 0.9.3 header (all present in the guest's
-0.8.0). The listener and its state are boxed because libseat keeps the
-listener pointer past the open call; both stay on the owning thread.
-`Session::open` enforces `LIBSEAT_BACKEND=seatd` before touching the
-library. Dispatch runs every main-loop iteration with timeout 0; any
-dispatch error is fatal. A zero-timeout `libseat_dispatch` reports a dead
-daemon as an empty read, so dispatch polls the session fd for hangup first
-and treats it as daemon loss. The enable path runs only from the suspended
-state, so the initial activation event never double-opens devices.
+The module contains no `unsafe`. `Session::open` performs the open-seat
+handshake, requires `LIBSEAT_BACKEND=seatd`, and keeps a duplicated session
+descriptor for the shared poll set. Device descriptors arrive over
+SCM_RIGHTS and are owned by the caller; the session tracks only their ids.
+Dispatch runs every main-loop iteration with timeout 0; any dispatch error
+is fatal. Dispatch polls the session fd for hangup first and treats it as
+daemon loss, because a dead broker otherwise reads as an empty reply. The
+enable path runs only from the suspended state, so the initial activation
+event never double-opens devices.
 
 Seams in tree:
 
@@ -91,19 +93,17 @@ validated compatible output; multimonitor discovery is out of scope.
 
 ## Release packaging
 
-Musl binary is static; `readelf -d` shows no `NEEDED` beyond `ld-musl`.
-In laputa's proof build, `libxkbcommon.a` via
-`-Lnative=.work/guest-root/usr/lib` and
+The aarch64 musl binary is statically linked (`crt-static`): `file`
+reports a static executable and `readelf -d` reports no dynamic section
+and no `DT_NEEDED`, including no `libseat`. In laputa's proof build,
+`libxkbcommon.a` via `-Lnative=.work/guest-root/usr/lib` and
 `XKB_CONFIG_ROOT=.work/guest-root/usr/share/X11/xkb` were proof-only build
-inputs. This repository no longer sets `XKB_CONFIG_ROOT`. The seat build links libseat dynamically (static musl cannot
-dlopen), so the binary carries `libseat.so.1`, `libelogind.so.0`,
-`libcap.so.2`, and `libgcc_s.so.1` atop the loader; XKB stays statically
-linked. Release uses the system `libseat` link path and installed XKB data
+inputs. This repository no longer sets `XKB_CONFIG_ROOT`. XKB stays
+statically linked through kbvm, and the runtime reads installed XKB data
 (`/usr/share/X11/xkb` from `xkeyboard-config`). `TINYLAND_XKB_ROOT` or
-`XKB_CONFIG_ROOT` overrides include path at runtime. Installed artifact must
-run without source checkout or `.work`. Host builds need the system
-libseat dev package (`apk add libseat-dev` on Alpine) for
-`.cargo/config.toml`'s `/usr/lib` search path.
+`XKB_CONFIG_ROOT` overrides include path at runtime. Installed artifact
+must run without source checkout or `.work`. No libseat dev package is
+needed to build.
 
 ## Gates for `qemu-tinyland-ghostty`
 
@@ -120,8 +120,8 @@ libseat dev package (`apk add libseat-dev` on Alpine) for
    fonts; Mesa provides virgl. Remove only unreachable packages.
 
 `make seat` proves gates 1 and the device half of 2 in tinyland's own
-guest (Alpine foot 1.17.2, C seatd 0.8.0): denial marker, seat open,
-brokered devices, post-input marker with confirmed presentation. The
+guest (Alpine foot 1.17.2, vendored Rust seatd 0.9.3): denial marker, seat
+open, brokered devices, post-input marker with confirmed presentation. The
 `qemu-tinyland-ghostty` Laputa profile proves gates 1 and 2 against the
 exact Laputa chain (Ghostty 1.4.1, Rust brokers, Laputa image):
 unprivileged session, denial marker, brokered DRM/input, real input to
@@ -132,6 +132,8 @@ single-device loss, application exit, and scanner shutdown.
 ## Sequencing
 
 Qualify tinyland against the C seatd reference, substitute `seatd-rs`,
-substitute `mdevd-rs`, then qualify the complete Rust combination. The dwl
-reference and the foot profiles were removed after the Ghostty profile was
-promoted. `doas-rs` does not block display devices.
+substitute `mdevd-rs`, then qualify the complete Rust combination. The
+native seatd client replaced the C libseat client (LAP-51 Track B), so the
+current proof chain is Rust client and Rust broker on both sides of the
+socket. The dwl reference and the foot profiles were removed after the
+Ghostty profile was promoted. `doas-rs` does not block display devices.

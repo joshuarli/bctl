@@ -2,7 +2,9 @@
 
 > Laputa-specific history. This page measures laputa's own QEMU/KVM
 > profiles and harness. Those files live in laputa; this repository does
-> not run them.
+> not run them. The seat-client and libseat numbers are superseded by
+> LAP-51 Track B (native seatd client, static binary); the measurements
+> below remain historical.
 
 Measured 2026-10-30/31, Linux x86_64. `qemu-tinyland-ghostty` is the only
 graphical profile. Numbers cite the commands that produced them.
