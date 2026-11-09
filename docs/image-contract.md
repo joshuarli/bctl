@@ -59,6 +59,7 @@ Stage logs are in `/run/bctl/`: `seatd.log`, `compositor.log`,
 | Image | Base | Browser | Compositor | Role |
 |---|---|---|---|---|
 | `ref-alpine-chromium` | Alpine 3.22 | Alpine `chromium` | Sway (pixman) | Test scaffolding until the Helium arm64 archive exists; never a default |
+| `ref-alpine-tinyland` | Alpine 3.22 | Alpine `chromium` | `guest/tinyland` with `guest/seatd` | Stand-in for `helium-tinyland` until Helium exists; never a default |
 
 Build one with `images/build.sh <image>`; the archive lands in
 `.work/images/<image>.tar`.

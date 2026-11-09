@@ -34,7 +34,8 @@ fn main() -> ExitCode {
     let image = std::env::var_os("BCTL_PROOF_IMAGE")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".work/images/ref-alpine-chromium.tar"));
-    for (what, path, how) in [("runtime", &smolvm, "runtime/build.sh"), ("image", &image, "images/build.sh ref-alpine-chromium")] {
+    let build_image = format!("images/build.sh {}", image.file_stem().map_or("<image>".into(), |stem| stem.to_string_lossy()));
+    for (what, path, how) in [("runtime", &smolvm, "runtime/build.sh"), ("image", &image, build_image.as_str())] {
         if !path.exists() {
             eprintln!("bctl-proof: no {what} at {}; run {how}", path.display());
             return ExitCode::FAILURE;
@@ -253,6 +254,21 @@ async fn drive(cdp_port: u16, vnc_port: u16) -> Proof<()> {
     vnc.tap(KEY_RETURN).map_err(io)?;
     step(&mut vnc, "choosing an option")?;
 
+    vnc.pointer(x, y, Buttons::NONE).map_err(io)?;
+    thread::sleep(Duration::from_millis(400));
+    let closed = vnc.refresh().map_err(io)?.clone();
+    vnc.click(x, y).map_err(io)?;
+    thread::sleep(Duration::from_millis(600));
+    let open = vnc.refresh().map_err(io)?.clone();
+    let (left, top, right, bottom) = changed_box(&closed, &open, y + SELECT_HALF_HEIGHT)
+        .ok_or_else(|| format!("the select popup never drew below the select; frame at {}", dump_frame(&open, "select popup")))?;
+    if bottom - top < 30 {
+        return Err(format!("the select popup is only {} px tall; frame at {}", bottom - top, dump_frame(&open, "select popup")));
+    }
+    vnc.click((left + right) / 2, top + (bottom - top) * 5 / 6).map_err(io)?;
+    wait_for_js(&tab, "document.getElementById('choice').value === 'third'").await?;
+    step(&mut vnc, "choosing an option with the pointer")?;
+
     let (x, y) = at("clicker")?;
     vnc.click(x, y).map_err(io)?;
     vnc.scroll(x, y, Buttons::WHEEL_DOWN, 5).map_err(io)?;
@@ -261,9 +277,19 @@ async fn drive(cdp_port: u16, vnc_port: u16) -> Proof<()> {
     let (x, y) = at("opener")?;
     vnc.click(x, y).map_err(io)?;
     step(&mut vnc, "opening a popup window")?;
+    wait_for_js(&tab, "!document.hasFocus()").await?;
+    tab.evaluate("window.open('', 'bctl-popup').close(); 'closed'").await.map_err(|e| format!("closing the popup window failed: {e}"))?;
+    wait_for_js(&tab, "document.hasFocus()").await?;
+    step(&mut vnc, "closing the popup window")?;
+    tab.evaluate("document.activeElement.blur(); 'blurred'").await.map_err(|e| format!("blur failed: {e}"))?;
+    let (x, y) = at("text")?;
+    vnc.click(x, y).map_err(io)?;
+    wait_for_js(&tab, "document.activeElement.id === 'text'").await?;
+    vnc.type_text("!").map_err(io)?;
+    wait_for_js(&tab, "document.getElementById('text').value === 'Hello bctl!!'").await?;
 
     let log = evaluate_string(&tab, "JSON.stringify(window.__bctl)").await?;
-    for expected in [r#"["text","Hello bctl!"]"#, r#"["choice","second"]"#, r#"["click",true]"#, r#"["wheel","down"]"#, r#"["popup",true]"#] {
+    for expected in [r#"["text","Hello bctl!"]"#, r#"["text","Hello bctl!!"]"#, r#"["choice","second"]"#, r#"["choice","third"]"#, r#"["click",true]"#, r#"["wheel","down"]"#, r#"["popup",true]"#] {
         if !log.contains(expected) {
             return Err(format!("fixture log lacks {expected}: {log}"));
         }
@@ -278,6 +304,22 @@ async fn drive(cdp_port: u16, vnc_port: u16) -> Proof<()> {
     wait_for_js(&tab, "document.title === 'bctl second page'").await?;
     session.close(false).await;
     Ok(())
+}
+
+const SELECT_HALF_HEIGHT: u16 = 18;
+
+/// Bounding box `(left, top, right, bottom)` of the pixels that differ between two frames at or below row `from`.
+fn changed_box(before: &bctl_rfb::Frame, after: &bctl_rfb::Frame, from: u16) -> Option<(u16, u16, u16, u16)> {
+    let mut found: Option<(u16, u16, u16, u16)> = None;
+    for y in from.min(after.height())..after.height() {
+        for x in 0..after.width() {
+            if before.pixel(x, y) != after.pixel(x, y) {
+                let (l, t, r, b) = found.unwrap_or((x, y, x, y));
+                found = Some((l.min(x), t.min(y), r.max(x), b.max(y)));
+            }
+        }
+    }
+    found
 }
 
 fn io(error: std::io::Error) -> String {

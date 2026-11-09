@@ -72,13 +72,19 @@ That Chromium runs correctly *without* each optional global is an inference
 from it being feature-detected, not yet observed; T3's run of Chromium on
 Tinyland, which offers none of them, is the check.
 
-## Gap against Tinyland today
+## Tinyland against this contract
 
 Tinyland offers `wl_compositor` 4, `wl_subcompositor`, `wl_shm`, `wl_output` 2,
-`wl_seat` 5 (keyboard only), `wl_data_device_manager` 3, and `xdg_wm_base` 1.
-Missing for the required set: a pointer (`wl_seat.get_pointer` currently posts
-`MissingCapability`), real `xdg_positioner` placement and `xdg_popup`
-configure/dismissal (requests are accepted as no-ops today), and a policy for
-a second toplevel. Without `wp_cursor_shape_v1`, Tinyland must also accept
-`wl_pointer.set_cursor` and draw the cursor surface, or offer the cursor-shape
-protocol instead.
+`wl_seat` 5 (keyboard, plus pointer when an evdev pointer exists),
+`wl_data_device_manager` 3, and `xdg_wm_base` 1, and none of the optional
+globals. It covers the required set: `xdg_positioner` rules place popups
+inside the output, a press outside them sends `popup_done`, toplevels are
+maximized with the newest shown and activated, and focus returns to the
+previous toplevel when it closes. Cursors use `wl_pointer.set_cursor`: the
+compositor draws the client's cursor surface, so it needs no cursor artwork
+of its own, which `wp_cursor_shape_v1` would.
+
+`BCTL_PROOF_IMAGE=.work/images/ref-alpine-tinyland.tar cargo run -p
+bctl-proof -- m1` runs the B1 interactions on Tinyland, including choosing a
+`<select>` option with the pointer and returning focus after `window.open`.
+Alpine Chromium ran correctly there without any optional global.

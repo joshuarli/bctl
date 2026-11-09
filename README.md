@@ -63,6 +63,7 @@ cargo test -p bctl --test profiles -- --ignored
 cargo test -p bctl --test cdp -- --ignored
 cargo test -p bctl --test egress -- --ignored
 cargo run -p bctl-proof -- m1 --runs 10
+BCTL_PROOF_IMAGE=.work/images/ref-alpine-tinyland.tar cargo run -p bctl-proof -- m1
 pnpm --dir web exec playwright test                      # needs cargo build -p bctl
 ```
 
