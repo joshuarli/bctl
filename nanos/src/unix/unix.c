@@ -836,7 +836,7 @@ process create_process(unix_heaps uh, tuple root, filesystem fs)
     spin_lock(&processes_lock);
     boolean kernel = list_empty(&processes);
     spin_unlock(&processes_lock);
-    int pid = kernel ? 0 : allocate_u64((heap)uh->processes, 1);
+    int pid = kernel ? 0 : allocate_pid(uh);
     assert(pid != INVALID_PHYSICAL);
     process p = process_alloc(uh, root, fs, pid);
     assert(p != INVALID_ADDRESS);
@@ -925,6 +925,39 @@ static boolean pgrp_exists_locked(int pgid)
             return true;
     }
     return false;
+}
+
+static boolean pid_names_group_locked(u64 id)
+{
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if ((p->pgid == id || p->sid == id) && !process_is_kernel(p))
+            return true;
+    }
+    return false;
+}
+
+u64 allocate_pid(unix_heaps uh)
+{
+    u64 skipped[8];
+    int nskipped = 0;
+    u64 id;
+    spin_lock(&processes_lock);
+    while (true) {
+        id = allocate_u64((heap)uh->processes, 1);
+        if (id == INVALID_PHYSICAL || !pid_names_group_locked(id))
+            break;
+        if (nskipped == sizeof(skipped) / sizeof(skipped[0])) {
+            deallocate_u64((heap)uh->processes, id, 1);
+            id = INVALID_PHYSICAL;
+            break;
+        }
+        skipped[nskipped++] = id;
+    }
+    spin_unlock(&processes_lock);
+    while (nskipped > 0)
+        deallocate_u64((heap)uh->processes, skipped[--nskipped], 1);
+    return id;
 }
 
 static boolean pgrp_in_session_locked(int pgid, int sid)
@@ -1043,7 +1076,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
 #ifdef __x86_64__
     u64 flags = args->flags;
     process parent = t->p;
-    u64 pid = allocate_u64((heap)parent->uh->processes, 1);
+    u64 pid = allocate_pid(parent->uh);
     if (pid == INVALID_PHYSICAL)
         return -EAGAIN;
     process c = process_alloc(parent->uh, parent->process_root, parent->root_fs, pid);

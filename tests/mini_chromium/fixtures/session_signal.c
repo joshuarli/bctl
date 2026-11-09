@@ -95,6 +95,47 @@ static void check_setpgid(void)
 		detail);
 }
 
+static void check_session_id_not_reused(void)
+{
+	char detail[96];
+	int ready[2], hold[2];
+	if (pipe(ready) || pipe(hold)) {
+		record("session_id_not_reused", 0, "pipe-failed");
+		return;
+	}
+	pid_t leader = fork();
+	if (leader == 0) {
+		if (setsid() != getpid())
+			_exit(2);
+		pid_t member = fork();
+		if (member == 0) {
+			char c;
+			close(ready[0]);
+			write(ready[1], "r", 1);
+			read(hold[0], &c, 1);
+			_exit(0);
+		}
+		_exit(member > 0 ? 0 : 3);
+	}
+	char c;
+	close(ready[1]);
+	int leader_code = exit_code(child_status(leader));
+	read(ready[0], &c, 1);
+	int reused = 0, setsid_failed = 0;
+	for (int i = 0; i < 16; i++) {
+		pid_t p = fork();
+		if (p == 0)
+			_exit(setsid() == getpid() ? 0 : 1);
+		if (p == leader)
+			reused++;
+		if (exit_code(child_status(p)) != 0)
+			setsid_failed++;
+	}
+	write(hold[1], "h", 1);
+	snprintf(detail, sizeof detail, "leader_code=%d,reused=%d,setsid_failed=%d", leader_code, reused, setsid_failed);
+	record("session_id_not_reused", leader_code == 0 && !reused && !setsid_failed, detail);
+}
+
 struct kernel_sigaction {
 	void (*handler)(int);
 	unsigned long flags;
@@ -137,6 +178,7 @@ int main(void)
 {
 	check_setsid();
 	check_setpgid();
+	check_session_id_not_reused();
 	check_sigaction_without_restorer();
 	printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", passed, failed);
 	return failed ? 1 : 0;

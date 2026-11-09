@@ -126,6 +126,7 @@ static inline boolean wait_status_is_exit(int status)
 }
 
 int process_getppid(process p);
+u64 allocate_pid(unix_heaps uh);
 sysreturn setsid(void);
 sysreturn getsid(int pid);
 sysreturn setpgid(int pid, int pgid);

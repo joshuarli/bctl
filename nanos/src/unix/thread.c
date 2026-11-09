@@ -602,7 +602,7 @@ thread create_thread(process p, u64 tid)
     if (tid != INVALID_PHYSICAL)
         t->tid = tid;
     else
-        t->tid = allocate_u64(p->uh->processes, 1);
+        t->tid = allocate_pid(p->uh);
     assert(t->tid != INVALID_PHYSICAL);
     spin_lock(&p->threads_lock);
     rbtree_insert_node(p->threads, &t->n);
