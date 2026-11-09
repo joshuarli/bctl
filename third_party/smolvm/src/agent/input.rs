@@ -510,10 +510,13 @@ pub fn install(
 // X11 keysym -> Linux evdev keycode
 // ---------------------------------------------------------------------------
 
-/// RFB carries X11 keysyms. Clients send the *shifted* symbol together with
-/// real Shift key events, so shifted symbols map to the same physical key as
-/// their unshifted partner (US layout) and the guest's own Shift state does
-/// the rest. Returns None for keysyms with no mapping, which are dropped.
+/// Linux evdev keycode for the left Shift key.
+pub const KEY_LEFT_SHIFT: u16 = 42;
+
+/// RFB carries X11 keysyms. Shifted symbols map to the same physical key as
+/// their unshifted partner (US layout); the caller supplies Shift when a
+/// client sends the shifted symbol without a Shift key event. Returns None for
+/// keysyms with no mapping, which are dropped.
 pub fn keysym_to_evdev(keysym: u32) -> Option<u16> {
     Some(match keysym {
         // Letters: keysyms mirror ASCII; upper and lower map to the same key.
@@ -606,7 +609,7 @@ pub fn keysym_to_evdev(keysym: u32) -> Option<u16> {
         0xffc8 => 87,
         0xffc9 => 88, // F9-F12
         // Modifiers.
-        0xffe1 => 42,  // Shift_L
+        0xffe1 => KEY_LEFT_SHIFT, // Shift_L
         0xffe2 => 54,  // Shift_R
         0xffe3 => 29,  // Control_L
         0xffe4 => 97,  // Control_R
@@ -617,6 +620,37 @@ pub fn keysym_to_evdev(keysym: u32) -> Option<u16> {
         0xffec => 126, // Super_R
         _ => return None,
     })
+}
+
+/// Keysyms the guest's US layout only produces while Shift is held. A client
+/// that sends one of these without a Shift key event means the shifted
+/// character, so the caller must hold Shift around the key.
+pub fn keysym_needs_shift(keysym: u32) -> bool {
+    matches!(
+        keysym,
+        0x41..=0x5a
+            | 0x21
+            | 0x40
+            | 0x23
+            | 0x24
+            | 0x25
+            | 0x5e
+            | 0x26
+            | 0x2a
+            | 0x28
+            | 0x29
+            | 0x5f
+            | 0x2b
+            | 0x7b
+            | 0x7d
+            | 0x3a
+            | 0x22
+            | 0x7e
+            | 0x7c
+            | 0x3c
+            | 0x3e
+            | 0x3f
+    )
 }
 
 /// Windows builds have no POSIX pipe for the event provider (and the krun

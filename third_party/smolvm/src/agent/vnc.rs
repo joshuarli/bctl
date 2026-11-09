@@ -744,6 +744,8 @@ fn read_client_messages<R: Read>(
     tx: Sender<ClientMsg>,
 ) -> std::io::Result<()> {
     let mut last_button_mask = 0u8;
+    let mut physical_shift = false;
+    let mut synthetic_shift = false;
     loop {
         let mut kind = [0u8; 1];
         if s.read_exact(&mut kind).is_err() {
@@ -800,9 +802,36 @@ fn read_client_messages<R: Read>(
                     let keysym = u32::from_be_bytes([buf[3], buf[4], buf[5], buf[6]]);
                     match super::input::keysym_to_evdev(keysym) {
                         Some(code) => {
-                            input
-                                .keyboard
-                                .push(&[(super::input::EV_KEY, code, down as u32)])
+                            let mut batch: Vec<(u16, u16, u32)> = Vec::new();
+                            if matches!(keysym, 0xffe1 | 0xffe2) {
+                                physical_shift = down;
+                                batch.push((super::input::EV_KEY, code, down as u32));
+                            } else if super::input::keysym_needs_shift(keysym) {
+                                if down {
+                                    if !physical_shift && !synthetic_shift {
+                                        batch.push((
+                                            super::input::EV_KEY,
+                                            super::input::KEY_LEFT_SHIFT,
+                                            1,
+                                        ));
+                                        synthetic_shift = true;
+                                    }
+                                    batch.push((super::input::EV_KEY, code, 1));
+                                } else {
+                                    batch.push((super::input::EV_KEY, code, 0));
+                                    if synthetic_shift {
+                                        batch.push((
+                                            super::input::EV_KEY,
+                                            super::input::KEY_LEFT_SHIFT,
+                                            0,
+                                        ));
+                                        synthetic_shift = false;
+                                    }
+                                }
+                            } else {
+                                batch.push((super::input::EV_KEY, code, down as u32));
+                            }
+                            input.keyboard.push(&batch)
                         }
                         None => tracing::debug!(keysym, "vnc keysym with no evdev mapping"),
                     }

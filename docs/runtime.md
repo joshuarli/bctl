@@ -87,6 +87,13 @@ recorded content digest, which resume re-checks and refuses with the expected
 and actual digests if the archive changed. Virgl/Venus GPUs, `local-dir:` image
 layers and the Docker socket stay refused.
 
+`smolvm-0003-vnc-shifted-keysyms.patch` holds Shift around a shifted keysym
+(`:`, `"`, `A`, and the rest of the US layout's shifted symbols) when the VNC
+client sent no Shift key event of its own. The keysym table maps `:` and `;` to
+the same key, so before this patch a client that sends only the shifted symbol,
+as noVNC does for synthesized keys, typed `;`. Clients that send real Shift
+events are unchanged.
+
 The importer applies every patch to freshly imported source, so a patch that no
 longer matches the tip fails the import, not a later build. `runtime/build.sh`
 verifies each patch's digest and that it applies to either the pristine or the

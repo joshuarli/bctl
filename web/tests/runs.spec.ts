@@ -20,13 +20,16 @@ function bctl(...args: string[]): string {
 const filler = `<p>${"Fixture text so the page clears the minimum-content check. ".repeat(30)}</p>`;
 
 function loginSite(url: URL, signedIn: boolean): { status: number; headers: Record<string, string>; body: string } {
-  const html = (body: string) => ({ status: 200, headers: { "Content-Type": "text/html; charset=utf-8" }, body });
+  const html = (body: string) => ({ status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }, body });
   if (url.pathname === "/login" && url.searchParams.get("user") === "operator") {
     return { status: 302, headers: { "Set-Cookie": "auth=ok; Path=/", Location: "/" }, body: "" };
   }
   switch (url.pathname) {
     case "/style.css":
       return { status: 200, headers: { "Content-Type": "text/css" }, body: "body { color: #123; }" };
+    case "/ready":
+    case "/clicked":
+      return { status: 200, headers: { "Content-Type": "text/plain" }, body: "" };
     case "/login":
     case "/":
     case "/a.html":
@@ -34,7 +37,7 @@ function loginSite(url: URL, signedIn: boolean): { status: number; headers: Reco
       if (signedIn && url.pathname !== "/login") {
         return html(`<!doctype html><html><head><title>Members ${url.pathname}</title><link rel=stylesheet href=/style.css></head><body><h1>members ${url.pathname}</h1><a href=/a.html>a</a> <a href=/b.html>b</a>${filler}</body></html>`);
       }
-      return html(`<!doctype html><html><head><title>Sign in</title></head><body><form action=/login><input id=user name=user><input id=pass name=pass type=password><div class="g-recaptcha" data-sitekey=fixture></div><button>Sign in</button></form>${filler}</body></html>`);
+      return html(`<!doctype html><html><head><title>Sign in</title></head><body><form action=/login><input id=user name=user><input id=pass name=pass type=password><div class="g-recaptcha" data-sitekey=fixture></div><button>Sign in</button></form>${filler}<script>fetch('/ready').catch(() => {}); document.addEventListener('click', () => fetch('/clicked').catch(() => {}))</script></body></html>`);
     default:
       return { status: 404, headers: {}, body: "not found" };
   }
@@ -114,15 +117,19 @@ test("a crawl behind a login is taken over, logged in by hand, and resumed from 
   await expect(page.getByTestId("authority")).toContainText("You have control");
 
   const seedHits = () => loginHits.filter((path) => path === "/").length;
+  const readyHits = () => loginHits.filter((path) => path === "/ready").length;
   const before = seedHits();
-  await canvasPoint(page, 300, 42);
-  await page.waitForTimeout(500);
+  const readyBefore = readyHits();
+  await page.getByTestId("viewer").locator("canvas").focus();
   await page.keyboard.press("Control+L");
   await typeAddress(page, seed);
   await page.keyboard.press("Enter");
   await expect.poll(seedHits, { timeout: 30_000 }).toBeGreaterThan(before);
-  await page.waitForTimeout(2000);
+  await expect.poll(readyHits, { timeout: 30_000 }).toBeGreaterThan(readyBefore);
+  const clickHits = () => loginHits.filter((path) => path === "/clicked").length;
+  const clickBefore = clickHits();
   await canvasPoint(page, 300, 300);
+  await expect.poll(clickHits, { timeout: 30_000 }).toBeGreaterThan(clickBefore);
   await page.keyboard.press("Tab");
   await page.keyboard.type("operator");
   await page.keyboard.press("Tab");

@@ -98,6 +98,25 @@ test("the live view follows the browser and carries typing into the page", async
   await expect(page.getByTestId("stream")).toHaveText("live", { timeout: 30_000 });
 });
 
+test("the live view types shifted punctuation exactly", async ({ page }) => {
+  await page.goto(`${bctl("serve").trim()}&next=/sessions/${session}`);
+  await expect(page.getByTestId("stream")).toHaveText("live", { timeout: 30_000 });
+  await guestPage.goto("data:text/html,<body style='margin:0;background:%23fff'><textarea id=t autofocus style='width:100vw;height:100vh;border:0;font:40px sans-serif'></textarea></body>");
+  await expect.poll(() => guestPage.evaluate(() => document.activeElement?.id ?? "")).toBe("t");
+  await page.getByRole("button", { name: "Take control" }).click();
+  await expect(page.getByRole("button", { name: "Resume automation" })).toBeVisible();
+  await page.getByTestId("viewer").locator("canvas").click({ position: { x: 200, y: 200 } });
+  const punctuation = ':"<>?{}|~!@#$%^&*()_+';
+  let received = "";
+  for (const char of punctuation) {
+    received += char;
+    await page.keyboard.type(char);
+    await expect.poll(() => guestPage.evaluate(() => (document.getElementById("t") as HTMLTextAreaElement).value), { timeout: 5_000 }).toBe(received);
+  }
+  await page.getByRole("button", { name: "Resume automation" }).click();
+  await expect(page.getByRole("button", { name: "Take control" })).toBeVisible();
+});
+
 test("a login link can open a session directly but never redirects off the dashboard", async ({ page }) => {
   await page.goto(`${bctl("serve").trim()}&next=/sessions/${session}`);
   await expect(page).toHaveURL(`${origin}/sessions/${session}`);
@@ -111,20 +130,28 @@ async function rawKeys(page: Page, name: string, text: string): Promise<void> {
     const ws = new WebSocket(`ws://${location.host}/api/sessions/${name}/vnc`);
     ws.binaryType = "arraybuffer";
     let received = 0;
+    let started = false;
+    let requested = 0;
     await new Promise<void>((done, fail) => {
       ws.onerror = () => fail(new Error("websocket failed"));
+      ws.onclose = () => done();
       ws.onmessage = (event) => {
         received += (event.data as ArrayBuffer).byteLength;
-        if (received >= 12 && ws.readyState === WebSocket.OPEN && !(ws as unknown as { sent?: boolean }).sent) {
-          (ws as unknown as { sent?: boolean }).sent = true;
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (!started && received >= 12) {
+          started = true;
           ws.send(new TextEncoder().encode("RFB 003.008\n"));
           ws.send(new Uint8Array([1]));
           ws.send(new Uint8Array([1]));
+        } else if (started && !requested && received >= 48) {
           for (const char of text) {
             const sym = char.charCodeAt(0);
             for (const down of [1, 0]) ws.send(new Uint8Array([4, down, 0, 0, 0, 0, (sym >> 8) & 255, sym & 255]));
           }
-          setTimeout(() => { ws.close(); done(); }, 500);
+          ws.send(new Uint8Array([3, 1, 0, 0, 0, 0, 0, 10, 0, 10]));
+          requested = received;
+        } else if (requested && received > requested) {
+          ws.close();
         }
       };
     });
