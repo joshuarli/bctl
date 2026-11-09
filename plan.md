@@ -30,18 +30,15 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   the standard actions with forced SIGSYS, one dispatch point shared with
   strace; `seccomp` fixture green on 1 and 2 vCPUs, also under strace).
   Probe on Nanos: 36/55, raw 6/6; upstream 64 pass.
-  **Red:** `shmem_xproc` timed out once on 1 vCPU during G3.2 acceptance,
-  hung in `FUTEX_WAIT_BITSET|FUTEX_CLOCK_REALTIME` with an absolute deadline
-  already past; 20/20 on rerun. G3.2 does not touch futex or timer code.
-  Cause not yet found; suspect the past-due realtime timer path
-  (`blockq_check_timeout` → `register_timer`).
+  Realtime timers with a deadline before boot now fire (they wrapped to a
+  far-future expiry and hung `shmem_xproc` intermittently).
+  **Red:** none.
   **Owner-run:** G2.1 (SCM data and Unix-socket credentials) runs in the
   owner's session in `.work/wt/g2.1`; slices that need it (G3.4's credential
   translation, the probe's `scm_rights`/`peer_credentials` checks, the
   zygote checks) wait with it.
 - **Running lane:** G3.3 user namespaces and chroot (`.work/wt/g3.3-pi`).
-- **Next:** integrate G3.3, then G3.4 by `nanos/docs/sandbox-design.md` §5;
-  root-cause the `shmem_xproc` realtime-futex hang. The headless switch is
+- **Next:** integrate G3.3, then G3.4 by `nanos/docs/sandbox-design.md` §5. The headless switch is
   staged in `.work/wt/agent-a96d4fa7dc419bc95` (uncommitted) until
   chromium-build produces a headless archive
   (`docs/handoff-helium-headless-ozone.md`).
