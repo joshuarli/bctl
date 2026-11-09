@@ -9,29 +9,29 @@ scope, and existing CDP connections are never promised to survive a restore.
 
 ## Answer
 
-Yes, by a small but clean margin, in the one configuration that restores today:
-the appliance is parked at its first `smolvm-branch-ready` forkpoint (before
+Yes, by a clean margin, in the one configuration that restores today: the
+appliance is parked at its first `smolvm-branch-ready` forkpoint (before
 `bctl-guest run`, so before seatd, tinyland and Chromium), captured with
 `smolvm machine checkpoint --wait-ready`, and each session is created with
 `machine create --from` and started normally.
 
-Ten interleaved restores and ten cold boots of the same Helium appliance
-measured 1,708 ms versus 1,988 ms at the median (**−280 ms, −14.1 %**). Every
-one of the ten template runs was faster than every one of the ten cold runs
-(template 1,571–1,810 ms, cold 1,883–2,346 ms). H1's provisional cold range is
-1,964–2,485 ms: the 280 ms cut is 54 % of that 521 ms range but 107 % of its
-interquartile width (262 ms). So it does not beat H1's *full observed range*;
-it does beat its interquartile spread, and the two distributions do not overlap
-in this run. The renderer sandbox is intact: the restored session's
-`bctl-guest check` reports `sandbox ok` (renderer `NoNewPrivs: 1`,
+Ten interleaved checkpoint launches and ten cold launches of the same Helium
+appliance measured 1,137 ms versus 1,445 ms at the median (**−309 ms, −21.3 %**).
+Every one of the ten checkpoint runs was faster than every one of the ten cold
+runs (checkpoint 1,114–1,170 ms, cold 1,429–1,472 ms). This region is narrower
+than H1's: it starts at `SmolVm::launch` and stops at CDP answering plus a first
+non-black VNC frame, so it excludes daemon and CLI work and is not directly
+comparable to H1's `bctl up` cold range. The cold/checkpoint comparison is
+within-run and interleaved. The renderer sandbox is intact: the restored
+session's `bctl-guest check` reports `sandbox ok` (renderer `NoNewPrivs: 1`,
 `Seccomp: 2`) and `input ok`.
 
 The measured template has no guest network and no host profile mount. Both are
 restore blockers, not choices; see **Blockers**. A networked appliance fails to
 restore (the restored guest agent never answers), so the template is captured
-network-free. The cold comparison therefore includes bctl's normal
+network-free. The cold comparison therefore includes the runtime's normal
 `--block-private` launch while the template path does not; the network setup is
-a small part of the 2 s and the template path's advantage survives it, but the
+a small part of the time and the template path's advantage survives it, but the
 comparison is not network-for-network.
 
 ## How the template is taken
@@ -60,12 +60,9 @@ with VNC works; the VNC port itself is host-side and may differ.
 ## Implemented path
 
 - `crates/runtime-smolvm/src/lib.rs`: `LaunchSource::{Image,Checkpoint}`
-  (`:79`), `TemplateSpec` and `SmolVm::create_template` (`:174`, `:341`) which
+  (`:80`), `TemplateSpec` and `SmolVm::create_template` (`:175`, `:342`) which
   boots, waits for the forkpoint, captures and deletes the source; a checkpoint
-  launch creates with `--from` and only the session's host CDP socket (`:283`).
-- `crates/bctl/src/daemon.rs`: `BCTL_TEMPLATE_CHECKPOINT` selects a checkpoint
-  for `bctl up` (`:443`, `:493`, `:1024`). This is an internal bench/test switch;
-  the public form is proposed below.
+  launch creates with `--from` and only the session's host CDP socket (`:284`).
 - `runtime/patches/smolvm-0002-pause-2d-sessions.patch` (rebased): the portable
   checkpoint now records the GPU device and backend, its VRAM window, and the
   guest paths of the published sockets, and restores them
@@ -79,7 +76,8 @@ with VNC works; the VNC port itself is host-side and may differ.
   `snapshot_2d` / `restore_2d_state` (`src/devices/src/virtio/gpu/virtio_gpu.rs:719`,
   `:772`), including scanout configuration and the first presented frame
   (`:834`, `:856`), and virtio-input's device state.
-- `crates/bench/src/restore.rs`: the `restore` suite. `crates/bctl/tests/restore.rs`:
+- `crates/bench/src/restore.rs`: the `restore` suite, timing a cold `SmolVm`
+  launch against a checkpoint launch. `crates/runtime-smolvm/tests/restore.rs`:
   the acceptance test.
 
 ## Measurement
@@ -87,42 +85,45 @@ with VNC works; the VNC port itself is host-side and may differ.
 Command:
 
 ```sh
-PERF_GATE_MAX_LOAD=3 target/release/bctl-bench restore --rounds 10 --quiet-wait 120 --out .work/tmp/x1-bench
+PERF_GATE_MAX_LOAD=30 target/release/bctl-bench restore --rounds 10 --quiet-wait 60 --out .work/tmp/x1-bench
 ```
 
-Result: `.work/tmp/x1-bench/20261109T214756Z-restore.json` (exit 0). Every sample
-is clean under the harness gate; the one-minute load is recorded beside every
-timing. The order alternates every round (cold→template, then
-template→cold), each sample uses a fresh `BCTL_HOME`, daemon and profile, and
-the template is captured once (2,645 ms; artifact 288,408,411 bytes). One
-untimed warm-up of each path ran first.
+Result: `.work/tmp/x1-bench/20261109T225145Z-restore.json` (exit 0). Every sample
+is clean under the harness gate; the one-minute load recorded with each timing is
+beside the sample. The order alternates every round (cold→checkpoint, then
+checkpoint→cold), each sample uses a fresh machine and CDP socket on the same
+runtime, and the template is captured once (2,314 ms; artifact 287,899,727
+bytes). One untimed warm-up of each path ran first.
 
-| Path | n | median | q1–q3 | min–max | all samples (ms) |
+| Path | n | median | q1–q3 | min–max | all samples (ms, 1-min load) |
 |---|---|---|---|---|---|
-| Cold `bctl up` (networked) | 10 | 1,988 | 1,924–2,163 | 1,883–2,346 | 1922, 1928, 2341, 1883, 2027, 2195, 2346, 2067, 1948, 1920 |
-| Template `bctl up` (network-free) | 10 | 1,708 | 1,665–1,781 | 1,571–1,810 | 1641, 1720, 1670, 1807, 1571, 1797, 1696, 1663, 1735, 1810 |
+| Cold `SmolVm` launch | 10 | 1,445 | 1,437–1,458 | 1,429–1,472 | 1445 (13.66), 1429 (14.17), 1441 (14.17), 1463 (14.32), 1459 (14.37), 1472 (14.37), 1458 (14.18), 1429 (14.09), 1436 (14.09), 1445 (14.32) |
+| Checkpoint `SmolVm` launch | 10 | 1,137 | 1,126–1,150 | 1,114–1,170 | 1150 (13.66), 1115 (13.66), 1114 (14.17), 1159 (14.32), 1149 (14.37), 1124 (14.37), 1134 (14.18), 1137 (14.18), 1137 (14.09), 1170 (14.32) |
 
-Host load (1-minute, before each sample; admitted at `PERF_GATE_MAX_LOAD=3`):
-19.87, 19.87, 19.96, 19.96, 20.92, 20.92, 20.85, 20.38, 20.38, 20.35, 20.35,
-20.56, 22.04, 22.04, 21.87, 21.87, 21.32, 21.32, 21.06, 20.65. The host was
-shared with another lane's VMs and a Chromium build; this is not a quiet-host
-baseline, and the interleaving is what makes the comparison usable.
+Every checkpoint sample is faster than every cold sample, and the medians do not
+overlap. The host was shared with another lane's VM; the one-minute load stayed
+at 13.5–14.4, well under the `PERF_GATE_MAX_LOAD=30` admission, and the
+interleaving is what makes the comparison usable.
 
-The measured region is `bctl up` from invocation to exit (it blocks until
-ready), the same region as H1's cold `up`. It includes `machine create --from`
-(extraction of the artifact), `machine start`, the restored guest's boot from
-the parked state, browser start, CDP through the exposed socket, and the first
-non-black VNC frame. The checkpoint was captured before Chromium existed, so
-the time saved is the removed guest boot up to the forkpoint (kernel, agent,
-container start, packed-layer setup), not browser state.
+The measured region is a `SmolVm` launch, not `bctl up`. It starts at
+`SmolVm::launch` and stops when `/json/version` answers on the exposed CDP
+socket and the first non-black VNC frame has arrived. The cold path boots the
+Helium image (including the runtime's `--block-private` network setup); the
+checkpoint path runs `machine create --from` (extraction of the artifact) and
+the restored guest's resume from the parked state. Both paths include browser
+start and the first frame. Teardown, daemon work and CLI work are excluded. The
+checkpoint was captured before Chromium existed, so the time saved is the
+removed guest boot up to the forkpoint (kernel, agent, container start,
+packed-layer setup), not browser state.
 
 ## Sandbox proof
 
-`cargo test -p bctl --test restore -- --ignored` passed twice (exit 0, 1 test
-each; 11.55 s and 9.17 s). The test captures a template, starts a session from
-it with `bctl up`, asserts ready, opens a local `data:` page, drives an RFB
-pointer click and `type_text("x1")`, reads the field back through `bctl page
-eval` (B1-style input reached the page), checks the VNC frame is 1280x800 and
+`cargo test -p bctl-runtime-smolvm --test restore -- --ignored` passed twice
+(exit 0, 1 test each). The test captures a template, launches a
+`LaunchSource::Checkpoint` with `SmolVm::launch`, asserts ready, navigates the
+page to a local `data:` URL over the CDP socket, drives an RFB pointer click and
+`type_text("x1")`, reads the field back with `Runtime.evaluate` over the same
+socket (B1-style input reached the page), checks the VNC frame is 1280x800 and
 not black, and runs `bctl-guest check` through `smolvm machine exec`, asserting
 `sandbox ok`, `browser ok` and `input ok`.
 
@@ -188,20 +189,16 @@ or in Chromium's sandbox flags.
   and of published sockets is admitted only with `--host-mounts`
   (`src/portable_checkpoint.rs:3694`, `:3709-3715`); the artifact names the
   archive by digest and is restored only where that archive still exists.
-- **The public CLI is not implemented.** `BCTL_TEMPLATE_CHECKPOINT` is an
-  internal switch so the bench and test drive the real `bctl up` path without
-  changing the CLI contract. Proposed public form: `bctl template create NAME
-  PATH` (or a daemon-managed named template) and `bctl up --template PATH`,
-  with the template's fixed topology and missing profile/network reported in
-  `bctl inspect`.
+- **No bctl CLI exposes templates** until the network and profile blockers are
+  removed.
 
 ## Unverified
 
 - Long-lived stability of a restored session (the test ran twice; the bench
-  restored the same artifact 12 times including warm-ups, each to ready).
+  restored the same artifact 11 times including the warm-up, each to CDP ready
+  and a first frame).
 - A second restore of a machine that was itself restored (the artifact is a
-  one-shot input; `bctl down` then `up` restores the same artifact again,
-  which the bench exercised).
+  one-shot input; each bench sample launches it again from scratch).
 - `smolvm machine branch` (FORK) as an alternative template path. It bypasses
   the capture gate but was not measured here.
 - Profile persistence, networking, and any display geometry other than
@@ -213,7 +210,7 @@ or in Chromium's sandbox flags.
 
 ```sh
 sh runtime/build.sh                       # builds the patched SmolVM and libkrun
-cargo test -p bctl --test restore -- --ignored   # twice
-cargo build --release -p bctl -p bctl-bench
-PERF_GATE_MAX_LOAD=3 target/release/bctl-bench restore --rounds 10 --quiet-wait 120 --out .work/tmp/x1-bench
+cargo test -p bctl-runtime-smolvm --test restore -- --ignored   # twice
+cargo build --release -p bctl-bench
+PERF_GATE_MAX_LOAD=30 target/release/bctl-bench restore --rounds 10 --quiet-wait 60 --out .work/tmp/x1-bench
 ```

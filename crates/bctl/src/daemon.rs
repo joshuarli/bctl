@@ -440,8 +440,7 @@ impl Daemon {
                 Some(format!("use those, or `bctl down {name} && bctl rm {name}` to replace it")),
             ).into());
         }
-        let template = template_checkpoint();
-        if template.is_none() && !self.paths.image(&image).exists() {
+        if !self.paths.image(&image).exists() {
             return Err(Response::failure(
                 ErrorCode::ImageMissing,
                 format!("no image {image} at {}", self.paths.image(&image).display()),
@@ -489,16 +488,13 @@ impl Daemon {
                 return Err(internal(error).into());
             }
         };
-        let source = match template {
-            Some(checkpoint) => LaunchSource::Checkpoint(checkpoint),
-            None => match self.paths.image(&image).canonicalize() {
-                Ok(path) => LaunchSource::Image(path),
-                Err(error) => {
-                    let message = format!("cannot resolve image {image}: {error}");
-                    let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&message));
-                    return Err(Response::failure(ErrorCode::ImageMissing, message, None).into());
-                }
-            },
+        let image_path = match self.paths.image(&image).canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                let message = format!("cannot resolve image {image}: {error}");
+                let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&message));
+                return Err(Response::failure(ErrorCode::ImageMissing, message, None).into());
+            }
         };
         let cdp_socket = match self.private_cdp_dir(&machine) {
             Ok(path) => path,
@@ -509,7 +505,7 @@ impl Daemon {
         };
         let spec = LaunchSpec {
             machine: machine.clone(),
-            source,
+            source: LaunchSource::Image(image_path),
             profile_dir: Some(profile_dir),
             endpoints,
             cdp_socket,
@@ -1017,12 +1013,6 @@ pub fn open_log(paths: &Paths) -> std::io::Result<File> {
 /// The image `up` starts: the one named, else the one the session was created with, else the default.
 fn image_for_up(requested: Option<&str>, recorded: Option<&str>) -> String {
     requested.or(recorded).unwrap_or(DEFAULT_IMAGE).to_string()
-}
-
-/// A portable appliance template `up` restores instead of booting the session's image. The restore test and
-/// the X1 bench set this; a public `bctl template` command would name it instead.
-fn template_checkpoint() -> Option<PathBuf> {
-    std::env::var_os("BCTL_TEMPLATE_CHECKPOINT").filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 #[cfg(test)]

@@ -25,7 +25,6 @@ pub struct Session {
     pub stage: Option<String>,
     pub input: Option<String>,
     pub machine: Option<String>,
-    pub vnc_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -63,14 +62,6 @@ impl Home {
 
     pub fn bctl(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bctl")).args(args).env("BCTL_HOME", &self.path).output().unwrap()
-    }
-
-    /// Runs bctl with extra environment variables. The first command also starts the daemon, which inherits
-    /// them, so a test can select a runtime template this way.
-    pub fn bctl_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_bctl"));
-        command.args(args).env("BCTL_HOME", &self.path).envs(env.iter().copied());
-        command.output().unwrap()
     }
 
     pub fn json(&self, args: &[&str]) -> Response {
