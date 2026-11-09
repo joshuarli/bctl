@@ -1,0 +1,17 @@
+[package]
+name = "bctl-proof"
+description = "End-to-end proofs that drive a real appliance VM; not shipped"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bctl-rfb = { path = "../rfb" }
+shadowdriver = { git = "https://github.com/joshuarli/shadowdriver", rev = "b69409e3034a478b0e8a3703e6dee84332eec90c" }
+async-io = "2"
+miniserde = "0.1"
+base64 = "0.23"
+
+[lints]
+workspace = true

@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>bctl input fixture</title>
+<style>
+  html, body { margin: 0; font: 16px sans-serif; background: #fff; }
+  #marker { position: fixed; left: 0; top: 0; width: 24px; height: 24px; background: #ff00ff; }
+  #controls { position: fixed; left: 40px; top: 40px; display: grid; gap: 12px; width: 320px; }
+  #controls > * { box-sizing: border-box; height: 36px; font-size: 16px; }
+  #text { width: 320px; }
+  #spacer { height: 4000px; }
+</style>
+</head>
+<body>
+<div id="marker"></div>
+<div id="controls">
+  <input id="text" autocomplete="off">
+  <select id="choice">
+    <option value="first">first</option>
+    <option value="second">second</option>
+    <option value="third">third</option>
+  </select>
+  <button id="clicker">click</button>
+  <button id="opener">open popup</button>
+</div>
+<div id="spacer"></div>
+<script>
+  const log = [];
+  window.__bctl = log;
+  const text = document.getElementById("text");
+  text.addEventListener("input", () => log.push(["text", text.value]));
+  const choice = document.getElementById("choice");
+  choice.addEventListener("change", () => log.push(["choice", choice.value]));
+  document.getElementById("clicker").addEventListener("click", (e) => log.push(["click", e.isTrusted]));
+  document.getElementById("opener").addEventListener("click", () => {
+    const popup = window.open("about:blank", "bctl-popup", "popup,width=400,height=300");
+    log.push(["popup", popup !== null]);
+  });
+  window.addEventListener("wheel", (e) => log.push(["wheel", e.deltaY > 0 ? "down" : "up"]), { passive: true });
+  window.addEventListener("scroll", () => log.push(["scroll", Math.round(window.scrollY)]), { passive: true });
+  window.__bctlRects = () => Object.fromEntries(
+    ["text", "choice", "clicker", "opener"].map((id) => {
+      const r = document.getElementById(id).getBoundingClientRect();
+      return [id, [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)]];
+    })
+  );
+</script>
+</body>
+</html>
