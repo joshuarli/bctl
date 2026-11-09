@@ -16,3 +16,8 @@
 .tab-text span { color: var(--ui-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .failure { color: var(--ui-bad); }
 @media (max-width: 60rem) { .session-layout { grid-template-columns: 1fr; } }
+.log { margin: 0; max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.8rem/1.4 var(--ui-font-mono, monospace); }
+.artifacts { list-style: none; margin: 0; padding: 0; }
+.artifacts li { display: flex; gap: var(--ui-space-sm); justify-content: space-between; padding: var(--ui-space-sm) var(--ui-inset); border-top: 1px solid var(--ui-line); }
+.artifacts a { overflow-wrap: anywhere; }
+.artifacts span { color: var(--ui-muted); white-space: nowrap; }

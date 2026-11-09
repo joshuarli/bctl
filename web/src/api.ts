@@ -58,3 +58,62 @@ export async function takeControl(session: string): Promise<Control> {
 export async function releaseControl(session: string): Promise<Control> {
   return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control/release`, { method: "POST" })).json()) as Control;
 }
+
+export type Attempt = {
+  number: number;
+  state: string;
+  outcome: string | null;
+  detail: string | null;
+  pid: number | null;
+  started_ms: number;
+  ended_ms: number | null;
+};
+
+export type Run = {
+  id: number;
+  session: string;
+  job: string | null;
+  kind: "exec" | "grab";
+  state: string;
+  outcome: string | null;
+  detail: string | null;
+  profile: string;
+  image: string;
+  image_digest: string;
+  browser_version: string;
+  config: unknown;
+  input_digest: string;
+  output_dir: string;
+  created_ms: number;
+  progress: { pages_done: number; pages_queued: number; assets_done: number } | null;
+  interaction: { reason: string; url: string } | null;
+  attempts: Attempt[];
+};
+
+export type LogChunk = { start: number; end: number; text: string };
+export type Artifacts = { files: { path: string; size: number }[]; truncated: boolean };
+
+export async function sessionRuns(session: string): Promise<Run[]> {
+  return (await (await request(`/api/sessions/${encodeURIComponent(session)}/runs`)).json()) as Run[];
+}
+
+export async function run(id: number): Promise<Run> {
+  return (await (await request(`/api/runs/${id}`)).json()) as Run;
+}
+
+export async function runLog(id: number, offset: number | null): Promise<LogChunk> {
+  const query = offset === null ? "" : `?offset=${offset}`;
+  return (await (await request(`/api/runs/${id}/log${query}`)).json()) as LogChunk;
+}
+
+export async function runArtifacts(id: number): Promise<Artifacts> {
+  return (await (await request(`/api/runs/${id}/artifacts`)).json()) as Artifacts;
+}
+
+export function artifactUrl(id: number, path: string): string {
+  return `/api/runs/${id}/artifacts/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export async function resumeRun(id: number): Promise<Run> {
+  return (await (await request(`/api/runs/${id}/resume`, { method: "POST" })).json()) as Run;
+}

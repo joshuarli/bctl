@@ -1,6 +1,7 @@
 import { Badge, EmptyState, ErrorState, PageHeader, Panel, Shell, type Tone } from "@laputa-systems/ui-dashboard";
 import { For, Show, createSignal, onCleanup, onSettled } from "solid-js";
 import { SignedOut, sessions, type SessionView } from "./api.ts";
+import { RunPage } from "./runs.tsx";
 import { SessionPage } from "./session.tsx";
 
 const POLL_MS = 2000;
@@ -76,9 +77,13 @@ export function App() {
     const match = /^\/sessions\/([^/]+)$/.exec(path());
     return match?.[1] ? decodeURIComponent(match[1]) : null;
   };
+  const selectedRun = () => {
+    const match = /^\/runs\/(\d+)$/.exec(path());
+    return match?.[1] ? Number(match[1]) : null;
+  };
   const nav = () => [{
     label: "bctl",
-    items: [{ href: "/", label: "Sessions", current: selected() === null }]
+    items: [{ href: "/", label: "Sessions", current: selected() === null && selectedRun() === null }]
   }];
   return <Shell brand={{ href: "/", name: "bctl" }} nav={nav()}>
     <Show when={!(error() instanceof SignedOut)} fallback={
@@ -86,9 +91,11 @@ export function App() {
     }>
       <Show when={error()}>{(e) => <ErrorState compact detail={`Cannot reach the bctl daemon: ${e().message}`} />}</Show>
       <Show when={list()} fallback={<p role="status">Loading…</p>}>{(all) =>
-        <Show when={selected()} fallback={<SessionsPage list={all()} />}>{(name) =>
-          <SessionPage name={name()} session={all().find((s) => s.name === name()) ?? null} />
-        }</Show>
+        <Show when={selectedRun()} fallback={
+          <Show when={selected()} fallback={<SessionsPage list={all()} />}>{(name) =>
+            <SessionPage name={name()} session={all().find((s) => s.name === name()) ?? null} />
+          }</Show>
+        }>{(id) => <RunPage id={id()} sessions={all()} />}</Show>
       }</Show>
     </Show>
   </Shell>;

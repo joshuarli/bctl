@@ -3,10 +3,11 @@ import { Badge, Button, EmptyState, Notice, PageHeader, Panel } from "@laputa-sy
 import { For, Show, createEffect, createSignal, onCleanup, onSettled } from "solid-js";
 import { control, focusTab, releaseControl, stop, tabs, takeControl, vncUrl, type Control, type SessionView, type Tab } from "./api.ts";
 import { navigate, stateTone } from "./app.tsx";
+import { RunsPanel } from "./runs.tsx";
 
-type Stream = "connecting" | "live" | "lost";
+export type Stream = "connecting" | "live" | "lost";
 
-function Viewer(props: { name: string; viewOnly: boolean; generation: number; onStream: (s: Stream) => void }) {
+export function Viewer(props: { name: string; viewOnly: boolean; generation: number; onStream: (s: Stream) => void }) {
   let host!: HTMLDivElement;
   onSettled(() => {
     props.onStream("connecting");
@@ -90,6 +91,7 @@ export function SessionPage(props: { name: string; session: SessionView | null }
             <dt>Image</dt><dd>{session().image}</dd>
           </dl>
         </Panel>
+        <RunsPanel session={session().name} />
         <Panel title="Tabs" flush>
           <ul class="tabs">
             <For each={tabList()}>{(tab) =>
