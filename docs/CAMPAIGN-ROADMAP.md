@@ -109,7 +109,7 @@ SmolVM; 7 of 16 guest Speedometer runs stalled on a lost module-script
 request while the container never did, which points at request loss in the
 guest network path (H3 owns it); the dashboard lease race on viewer reconnect
 was not retested after N6.
-T5 (`fc4b329`, `guest/tinyland/harness/wlcs/run.sh --sweep`,
+T5 (`f386cb1`, `guest/tinyland/harness/wlcs/run.sh --sweep`,
 `docs/research/tinyland-wlcs.md`): WLCS v1.8.1 drives tinyland through a
 test-only headless feature and musl adapter; 79 pass, 767 unsupported, 379
 fail, mostly because WLCS commits buffers before acking the first configure
