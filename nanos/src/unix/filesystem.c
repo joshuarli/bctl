@@ -219,28 +219,89 @@ sysreturn file_io_init_sg(file f, u64 offset, struct iovec *iov, int count, bool
 
 int filesystem_chdir(process p, sstring path)
 {
-    process_lock(p);
-    filesystem fs = p->cwd_fs;
-    int fss;
+    filesystem fs;
+    inode cwd;
+    if (!sstring_is_empty(path) && (path.ptr[0] == '/'))
+        process_get_root(p, &fs, &cwd);
+    else
+        process_get_cwd(p, &fs, &cwd);
+    filesystem start_fs = fs;
     tuple n;
-    fss = filesystem_get_node(&fs, p->cwd, path, FS_NODE_FOLLOW, &n, 0, 0);
-    if (fss != 0)
-        goto out;
+    int fss = filesystem_get_node(&fs, cwd, path, FS_NODE_FOLLOW, &n, 0, 0);
+    if (fss != 0) {
+        if (fs == start_fs)
+            filesystem_release(start_fs);
+        return fss;
+    }
     if (!is_dir(n)) {
         fss = -ENOENT;
     } else {
-        if (fs != p->cwd_fs) {
-            filesystem_release(p->cwd_fs);
-            filesystem_reserve(fs);
-            p->cwd_fs = fs;
-        }
-        p->cwd = fs->get_inode(fs, n);
-        fss = 0;
+        inode ino = fs->get_inode(fs, n);
+        filesystem_reserve(fs);
+        filesystem_put_node(fs, n);
+        if (fs == start_fs)
+            filesystem_release(start_fs);
+        fs_struct fsp = p->fs;
+        spin_lock(&fsp->lock);
+        filesystem old_fs = fsp->cwd_fs;
+        fsp->cwd_fs = fs;
+        fsp->cwd = ino;
+        p->root_fs = fsp->root_fs;
+        p->cwd_fs = fs;
+        p->cwd = ino;
+        spin_unlock(&fsp->lock);
+        filesystem_release(old_fs);
+        return 0;
     }
     filesystem_put_node(fs, n);
-  out:
-    process_unlock(p);
+    if (fs == start_fs)
+        filesystem_release(start_fs);
     return fss;
+}
+
+void process_get_root(process p, filesystem *root_fs, inode *root)
+{
+    fs_struct fs = p->fs;
+    spin_lock(&fs->lock);
+    *root_fs = fs->root_fs;
+    filesystem_reserve(*root_fs);
+    *root = fs->root;
+    p->root_fs = fs->root_fs;
+    p->cwd_fs = fs->cwd_fs;
+    p->cwd = fs->cwd;
+    spin_unlock(&fs->lock);
+}
+
+filesystem filesystem_path_root(tuple *root)
+{
+    thread t = get_current_thread();
+    if (t && t->p && t->p->fs) {
+        fs_struct fs = t->p->fs;
+        spin_lock(&fs->lock);
+        filesystem root_fs = fs->root_fs;
+        filesystem_reserve(root_fs);
+        *root = fs->root_tuple;
+        spin_unlock(&fs->lock);
+        return root_fs;
+    }
+    filesystem root_fs = get_root_fs();
+    filesystem_reserve(root_fs);
+    *root = filesystem_getroot(root_fs);
+    return root_fs;
+}
+
+int filesystem_getcwd(process p, char *buf, u64 len)
+{
+    fs_struct fs = p->fs;
+    spin_lock(&fs->lock);
+    filesystem cwd_fs = fs->cwd_fs;
+    filesystem_reserve(cwd_fs);
+    inode cwd = fs->cwd;
+    tuple root = fs->root_tuple;
+    spin_unlock(&fs->lock);
+    int rv = file_get_path_at_root(cwd_fs, cwd, root, buf, len);
+    filesystem_release(cwd_fs);
+    return rv;
 }
 
 void filesystem_update_relatime(filesystem fs, tuple md)

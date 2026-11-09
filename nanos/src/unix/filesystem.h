@@ -3,9 +3,7 @@
     inode cwd; \
     process p = current->p; \
     if (*(__path) == '/') { \
-        __fs = p->root_fs;              \
-        filesystem_reserve(__fs);       \
-        cwd = (__fs)->get_inode(__fs, filesystem_getroot(__fs));    \
+        process_get_root(p, &(__fs), &cwd);    \
     } else if (__dirfd == AT_FDCWD) { \
         process_get_cwd(p, &__fs, &cwd);    \
     } else { \
@@ -21,6 +19,10 @@
     } \
     cwd; \
 })
+
+void process_get_root(process p, filesystem *root_fs, inode *root);
+int filesystem_getcwd(process p, char *buf, u64 len);
+int file_get_path_at_root(filesystem fs, inode ino, tuple root, char *buf, u64 len);
 
 sysreturn sysreturn_from_fs_status_value(status s);
 

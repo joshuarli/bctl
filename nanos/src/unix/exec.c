@@ -832,9 +832,7 @@ static sysreturn exec_resolve(int dirfd, sstring path, int flags, fsfile *fp, bu
         return rv;
     }
     if (path.ptr[0] == '/') {
-        fs = p->root_fs;
-        filesystem_reserve(fs);
-        cwd = fs->get_inode(fs, filesystem_getroot(fs));
+        process_get_root(p, &fs, &cwd);
     } else if (dirfd == AT_FDCWD) {
         process_get_cwd(p, &fs, &cwd);
     } else {

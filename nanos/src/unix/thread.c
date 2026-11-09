@@ -46,8 +46,8 @@ sysreturn arch_prctl(int code, unsigned long addr)
 }
 #endif
 
-#define CLONE_NAMESPACES    (CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC | \
-                             CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET)
+#define CLONE_UNSUPPORTED_NAMESPACES    (CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | \
+                                         CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNET)
 
 static sysreturn clone_validate(u64 flags)
 {
@@ -63,15 +63,24 @@ static sysreturn clone_validate(u64 flags)
         return -EINVAL;
     if ((flags & CLONE_PARENT) && process_is_init(current->p))
         return -EINVAL;
-    if (flags & CLONE_NAMESPACES)
+    if (flags & CLONE_UNSUPPORTED_NAMESPACES)
         return -EINVAL;
+    if (flags & CLONE_NEWUSER) {
+        process p = current->p;
+        if (process_is_chrooted(p))
+            return -EPERM;
+        process_lock(p);
+        u32 level = p->creds.user_ns->level;
+        process_unlock(p);
+        if (level >= USER_NS_LEVEL_MAX)
+            return -EUSERS;
+    }
     if (flags & CLONE_PIDFD) {
         msg_warn("clone: pidfds are not supported");
         return -EINVAL;
     }
-    if (!(flags & CLONE_THREAD) && (flags & (CLONE_SIGHAND | CLONE_FS))) {
-        msg_warn("clone: sharing %s between processes is not supported",
-                 (flags & CLONE_FS) ? ss("filesystem state") : ss("signal handlers"));
+    if (!(flags & CLONE_THREAD) && (flags & CLONE_SIGHAND)) {
+        msg_warn("clone: sharing signal handlers between processes is not supported");
         return -ENOSYS;
     }
     return 0;

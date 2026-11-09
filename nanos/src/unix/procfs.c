@@ -21,6 +21,17 @@ enum procfs_kind {
     PROCFS_TASK_DIR,
     PROCFS_TID,
     PROCFS_TID_STATUS,
+    PROCFS_UID_MAP,
+    PROCFS_GID_MAP,
+    PROCFS_SETGROUPS,
+    PROCFS_ROOT_LINK,
+    PROCFS_NS_DIR,
+    PROCFS_NS_USER,
+    PROCFS_NS_PID,
+    PROCFS_NS_NET,
+    PROCFS_NS_IPC,
+    PROCFS_NS_MNT,
+    PROCFS_NS_UTS,
 };
 
 typedef struct procfs_node {
@@ -43,11 +54,13 @@ static struct procfs {
 typedef struct procfs_file {
     struct special_file_wrapper w;
     closure_struct(file_io, read);
+    closure_struct(file_io, write);
     closure_struct(fdesc_events, events);
     closure_struct(fdesc_close, close);
     enum procfs_kind kind;
     int pid;
     int n;
+    user_namespace ns;
 } *procfs_file;
 
 static heap procfs_heap(void)
@@ -64,6 +77,7 @@ static boolean procfs_kind_is_dir(enum procfs_kind kind)
     case PROCFS_FDINFO_DIR:
     case PROCFS_TASK_DIR:
     case PROCFS_TID:
+    case PROCFS_NS_DIR:
         return true;
     default:
         return false;
@@ -79,6 +93,9 @@ static boolean procfs_kind_is_generated_file(enum procfs_kind kind)
     case PROCFS_MAPS:
     case PROCFS_FDINFO:
     case PROCFS_TID_STATUS:
+    case PROCFS_UID_MAP:
+    case PROCFS_GID_MAP:
+    case PROCFS_SETGROUPS:
         return true;
     default:
         return false;
@@ -319,6 +336,23 @@ static void procfs_refresh(procfs_node node)
         process_release(p);
         procfs_set_linktarget(node, b);
         break;
+    case PROCFS_ROOT_LINK: {
+        p = process_get(node->pid);
+        if (!p)
+            return;
+        buffer b = allocate_buffer(procfs_heap(), PATH_MAX);
+        assert(b != INVALID_ADDRESS);
+        fs_struct pfs = p->fs;
+        spin_lock(&pfs->lock);
+        if (buffer_length(pfs->root_path))
+            buffer_write(b, buffer_ref(pfs->root_path, 0), buffer_length(pfs->root_path));
+        else
+            push_u8(b, '/');
+        spin_unlock(&pfs->lock);
+        process_release(p);
+        procfs_set_linktarget(node, b);
+        break;
+    }
     default:
         break;
     }
@@ -398,16 +432,21 @@ static void procfs_status(buffer b, process p, int tid)
     procfs_thread_name(p, tid, name);
     boolean zombie = (p->state == PROCESS_ZOMBIE);
     int ppid = process_getppid(p);
+    user_namespace viewer_ns = process_user_ns(current->p);
     bprintf(b, "Name:\t%s\n", sstring_from_cstring(name, sizeof(name)));
     bprintf(b, "State:\t%s\n", zombie ? ss("Z (zombie)") : ss("R (running)"));
     bprintf(b, "Tgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n", p->pid, tid, ppid);
     process_lock(p);
     struct creds *c = &p->creds;
-    bprintf(b, "Uid:\t%d\t%d\t%d\t%d\n", c->uid, c->euid, c->suid, c->fsuid);
-    bprintf(b, "Gid:\t%d\t%d\t%d\t%d\n", c->gid, c->egid, c->sgid, c->fsgid);
+    bprintf(b, "Uid:\t%d\t%d\t%d\t%d\n", user_ns_from_kuid(viewer_ns, c->uid),
+            user_ns_from_kuid(viewer_ns, c->euid), user_ns_from_kuid(viewer_ns, c->suid),
+            user_ns_from_kuid(viewer_ns, c->fsuid));
+    bprintf(b, "Gid:\t%d\t%d\t%d\t%d\n", user_ns_from_kgid(viewer_ns, c->gid),
+            user_ns_from_kgid(viewer_ns, c->egid), user_ns_from_kgid(viewer_ns, c->sgid),
+            user_ns_from_kgid(viewer_ns, c->fsgid));
     buffer_write_cstring(b, "Groups:\t");
     for (u32 i = 0; i < c->ngroups; i++)
-        bprintf(b, "%d ", c->groups[i]);
+        bprintf(b, "%d ", user_ns_from_kgid(viewer_ns, c->groups[i]));
     push_u8(b, '\n');
     u64 inh = c->cap_inheritable, prm = c->cap_permitted, eff = c->cap_effective;
     u64 bnd = c->cap_bset, amb = c->cap_ambient;
@@ -440,6 +479,7 @@ static void procfs_status(buffer b, process p, int tid)
         thread_release(tt);
     }
     bprintf(b, "NoNewPrivs:\t%d\nSeccomp:\t%d\nSeccomp_filters:\t%d\n", nnp ? 1 : 0, sec_mode, sec_filters);
+    user_ns_release(viewer_ns);
 }
 
 static void procfs_stat(buffer b, process p)
@@ -549,6 +589,218 @@ static void procfs_fdinfo(buffer b, process p, int fd)
     fdesc_put(f);
 }
 
+static void userns_map_read(procfs_file pf, buffer b)
+{
+    user_namespace ns = pf->ns;
+    if (!ns)
+        return;
+    boolean group = (pf->kind == PROCFS_GID_MAP);
+    struct id_map map;
+    spin_lock(&ns->lock);
+    map = group ? ns->gid_map : ns->uid_map;
+    spin_unlock(&ns->lock);
+    user_namespace opener = process_user_ns(current->p);
+    for (u32 i = 0; i < map.nr; i++) {
+        struct id_extent *e = &map.e[i];
+        u32 lower = e->lower_first;
+        if (opener != ns) {
+            u32 k;
+            if (ns->parent &&
+                (group ? user_ns_to_kgid(ns->parent, e->lower_first, &k)
+                       : user_ns_to_kuid(ns->parent, e->lower_first, &k)))
+                lower = group ? user_ns_from_kgid(opener, k) : user_ns_from_kuid(opener, k);
+            else
+                lower = USER_NS_OVERFLOW_ID;
+        }
+        bprintf(b, "%u %u %u\n", e->first, lower, e->count);
+    }
+    user_ns_release(opener);
+}
+
+static sysreturn userns_map_parse(char *s, u64 len, struct id_map *m)
+{
+    u32 nr = 0;
+    char *p = s, *end = s + len;
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n'))
+            p++;
+        if (p == end)
+            break;
+        if (nr == USER_NS_MAP_EXTENTS)
+            return -EINVAL;
+        u32 v[3];
+        for (int i = 0; i < 3; i++) {
+            if (p == end || *p < '0' || *p > '9')
+                return -EINVAL;
+            u64 x = 0;
+            while (p < end && *p >= '0' && *p <= '9') {
+                x = x * 10 + (*p - '0');
+                if (x > U32_MAX)
+                    return -EINVAL;
+                p++;
+            }
+            v[i] = x;
+            if (i < 2) {
+                if (p == end || (*p != ' ' && *p != '\t'))
+                    return -EINVAL;
+                while (p < end && (*p == ' ' || *p == '\t'))
+                    p++;
+            }
+        }
+        if (p < end && *p != '\n' && *p != ' ' && *p != '\t')
+            return -EINVAL;
+        if (v[2] == 0 || ((u64)v[0] + v[2] > (u64)U32_MAX + 1) ||
+            ((u64)v[1] + v[2] > (u64)U32_MAX + 1))
+            return -EINVAL;
+        m->e[nr++] = (struct id_extent){ v[0], v[1], v[2] };
+    }
+    if (!nr)
+        return -EINVAL;
+    for (u32 i = 0; i < nr; i++)
+        for (u32 j = i + 1; j < nr; j++) {
+            struct id_extent *a = &m->e[i], *c = &m->e[j];
+            if (((u64)a->first < (u64)c->first + c->count &&
+                 (u64)c->first < (u64)a->first + a->count) ||
+                ((u64)a->lower_first < (u64)c->lower_first + c->count &&
+                 (u64)c->lower_first < (u64)a->lower_first + a->count))
+                return -EINVAL;
+        }
+    m->nr = nr;
+    return 0;
+}
+
+static sysreturn userns_map_write(procfs_file pf, const u8 *src, u64 len, u64 offset)
+{
+    user_namespace ns = pf->ns;
+    if (!ns || !ns->parent)
+        return -EPERM;
+    if (offset != 0)
+        return -EINVAL;
+    boolean group = (pf->kind == PROCFS_GID_MAP);
+    struct id_map *m = group ? &ns->gid_map : &ns->uid_map;
+    spin_lock(&ns->lock);
+    boolean written = m->written;
+    spin_unlock(&ns->lock);
+    if (written)
+        return -EPERM;
+    if (len == 0)
+        return 0;
+    if (len >= PAGESIZE)
+        return -EINVAL;
+    heap h = procfs_heap();
+    char *buf = allocate(h, len + 1);
+    if (buf == INVALID_ADDRESS)
+        return -ENOMEM;
+    if (!copy_from_user(src, buf, len)) {
+        deallocate(h, buf, len + 1);
+        return -EFAULT;
+    }
+    buf[len] = '\0';
+    struct id_map newmap;
+    zero(&newmap, sizeof(newmap));
+    sysreturn rv = userns_map_parse(buf, len, &newmap);
+    deallocate(h, buf, len + 1);
+    if (rv)
+        return rv;
+    process p = current->p;
+    process_lock(p);
+    user_namespace cur = p->creds.user_ns;
+    u32 euid = p->creds.euid;
+    process_unlock(p);
+    if (cur != ns && cur != ns->parent)
+        return -EPERM;
+    if (!ns_capable(p, ns, group ? CAP_SETGID : CAP_SETUID))
+        return -EPERM;
+    boolean privileged = ns_capable(p, ns->parent, group ? CAP_SETGID : CAP_SETUID);
+    if (!privileged) {
+        if (newmap.nr != 1 || newmap.e[0].count != 1)
+            return -EPERM;
+        u32 lower;
+        if (!(group ? user_ns_to_kgid(ns->parent, newmap.e[0].lower_first, &lower)
+                    : user_ns_to_kuid(ns->parent, newmap.e[0].lower_first, &lower)))
+            return -EPERM;
+        if (lower != euid)
+            return -EPERM;
+        spin_lock(&ns->lock);
+        boolean groups_allowed = ns->setgroups_allowed;
+        spin_unlock(&ns->lock);
+        if (group && groups_allowed)
+            return -EPERM;
+    }
+    for (u32 i = 0; i < newmap.nr; i++) {
+        struct id_extent *e = &newmap.e[i];
+        u32 k;
+        if (!(group ? user_ns_to_kgid(ns->parent, e->lower_first, &k)
+                    : user_ns_to_kuid(ns->parent, e->lower_first, &k)))
+            return -EPERM;
+        u32 last = e->lower_first + e->count - 1;
+        if (!(group ? user_ns_to_kgid(ns->parent, last, &k)
+                    : user_ns_to_kuid(ns->parent, last, &k)))
+            return -EPERM;
+    }
+    spin_lock(&ns->lock);
+    if (m->written) {
+        spin_unlock(&ns->lock);
+        return -EPERM;
+    }
+    *m = newmap;
+    m->written = true;
+    spin_unlock(&ns->lock);
+    return len;
+}
+
+static sysreturn userns_setgroups_write(procfs_file pf, const u8 *src, u64 len, u64 offset)
+{
+    user_namespace ns = pf->ns;
+    if (!ns || !ns->parent)
+        return -EPERM;
+    if (offset != 0)
+        return -EINVAL;
+    char buf[16];
+    if (len == 0 || len >= sizeof(buf))
+        return -EINVAL;
+    u64 count = len;
+    if (!copy_from_user(src, buf, len))
+        return -EFAULT;
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == ' ' || buf[len - 1] == '\t'))
+        len--;
+    if (len == 4 && !runtime_memcmp(buf, "deny", 4)) {
+        spin_lock(&ns->lock);
+        if (ns->gid_map.written) {
+            spin_unlock(&ns->lock);
+            return -EPERM;
+        }
+        ns->setgroups_allowed = false;
+        spin_unlock(&ns->lock);
+        return count;
+    }
+    if (len == 5 && !runtime_memcmp(buf, "allow", 5)) {
+        spin_lock(&ns->lock);
+        if (!ns->setgroups_allowed) {
+            spin_unlock(&ns->lock);
+            return -EPERM;
+        }
+        spin_unlock(&ns->lock);
+        return count;
+    }
+    return -EINVAL;
+}
+
+closure_func_basic(file_io, sysreturn, procfs_file_write,
+                   void *src, u64 len, u64 offset, context ctx, boolean bh, io_completion completion)
+{
+    procfs_file pf = struct_from_closure(procfs_file, write);
+    file f = &pf->w.f;
+    boolean is_file_offset = (offset == infinity);
+    if (is_file_offset)
+        offset = f->offset;
+    sysreturn rv = (pf->kind == PROCFS_SETGROUPS) ?
+        userns_setgroups_write(pf, src, len, offset) : userns_map_write(pf, src, len, offset);
+    if ((rv > 0) && is_file_offset)
+        f->offset += rv;
+    return io_complete(completion, rv);
+}
+
 static sysreturn procfs_generate(procfs_file pf, buffer b)
 {
     process p = process_get(pf->pid);
@@ -580,6 +832,18 @@ static sysreturn procfs_generate(procfs_file pf, buffer b)
         break;
     case PROCFS_FDINFO:
         procfs_fdinfo(b, p, pf->n);
+        break;
+    case PROCFS_UID_MAP:
+    case PROCFS_GID_MAP:
+        userns_map_read(pf, b);
+        break;
+    case PROCFS_SETGROUPS:
+        spin_lock(&pf->ns->lock);
+        if (pf->ns->setgroups_allowed)
+            buffer_write_cstring(b, "allow\n");
+        else
+            buffer_write_cstring(b, "deny\n");
+        spin_unlock(&pf->ns->lock);
         break;
     default:
         rv = -EINVAL;
@@ -624,10 +888,51 @@ closure_func_basic(fdesc_events, u32, procfs_file_events,
     return EPOLLIN;
 }
 
+static boolean procfs_kind_is_ns(enum procfs_kind kind)
+{
+    switch (kind) {
+    case PROCFS_NS_USER:
+    case PROCFS_NS_PID:
+    case PROCFS_NS_NET:
+    case PROCFS_NS_IPC:
+    case PROCFS_NS_MNT:
+    case PROCFS_NS_UTS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static enum namespace_kind procfs_ns_namespace_kind(enum procfs_kind kind)
+{
+    switch (kind) {
+    case PROCFS_NS_PID: return NAMESPACE_PID;
+    case PROCFS_NS_NET: return NAMESPACE_NET;
+    case PROCFS_NS_IPC: return NAMESPACE_IPC;
+    case PROCFS_NS_MNT: return NAMESPACE_MNT;
+    case PROCFS_NS_UTS: return NAMESPACE_UTS;
+    default: return NAMESPACE_USER;
+    }
+}
+
+static const struct {
+    sstring name;
+    enum procfs_kind kind;
+} procfs_ns_entries[] = {
+    { ss_static_init("user"), PROCFS_NS_USER },
+    { ss_static_init("pid"), PROCFS_NS_PID },
+    { ss_static_init("net"), PROCFS_NS_NET },
+    { ss_static_init("ipc"), PROCFS_NS_IPC },
+    { ss_static_init("mnt"), PROCFS_NS_MNT },
+    { ss_static_init("uts"), PROCFS_NS_UTS },
+};
+
 closure_func_basic(fdesc_close, sysreturn, procfs_file_close,
                    context ctx, io_completion completion)
 {
     procfs_file pf = struct_from_closure(procfs_file, close);
+    if (pf->ns)
+        user_ns_release(pf->ns);
     file_release(&pf->w.f);
     return io_complete(completion, 0);
 }
@@ -640,9 +945,33 @@ closure_func_basic(spec_file_open, sysreturn, procfs_node_open,
     pf->kind = node->kind;
     pf->pid = node->pid;
     pf->n = node->n;
+    pf->ns = 0;
     f->f.read = init_closure_func(&pf->read, file_io, procfs_file_read);
     f->f.events = init_closure_func(&pf->events, fdesc_events, procfs_file_events);
     f->f.close = init_closure_func(&pf->close, fdesc_close, procfs_file_close);
+    switch (node->kind) {
+    case PROCFS_UID_MAP:
+    case PROCFS_GID_MAP:
+    case PROCFS_SETGROUPS: {
+        process p = process_get(node->pid);
+        if (!p)
+            return -ESRCH;
+        user_namespace ns = process_user_ns(p);
+        process_release(p);
+        pf->ns = ns;
+        if (node->kind == PROCFS_SETGROUPS) {
+            if (!ns_capable(current->p, ns, CAP_SYS_ADMIN)) {
+                user_ns_release(ns);
+                pf->ns = 0;
+                return -EACCES;
+            }
+        }
+        f->f.write = init_closure_func(&pf->write, file_io, procfs_file_write);
+        break;
+    }
+    default:
+        break;
+    }
     return 0;
 }
 
@@ -658,6 +987,11 @@ static const struct {
     { ss_static_init("fd"), PROCFS_FD_DIR },
     { ss_static_init("fdinfo"), PROCFS_FDINFO_DIR },
     { ss_static_init("task"), PROCFS_TASK_DIR },
+    { ss_static_init("root"), PROCFS_ROOT_LINK },
+    { ss_static_init("uid_map"), PROCFS_UID_MAP },
+    { ss_static_init("gid_map"), PROCFS_GID_MAP },
+    { ss_static_init("setgroups"), PROCFS_SETGROUPS },
+    { ss_static_init("ns"), PROCFS_NS_DIR },
 };
 
 static procfs_node procfs_node_new(procfs_node parent, symbol name, enum procfs_kind kind,
@@ -682,14 +1016,21 @@ static procfs_node procfs_node_new(procfs_node parent, symbol name, enum procfs_
         set(node->md, sym(special), init_closure_func(&node->open, spec_file_open,
                                                       procfs_node_open));
         set(node->md, sym(special_alloc_size), pointer_from_u64(sizeof(struct procfs_file)));
-        set(node->md, sym(readonly), null_value);
+        if (kind != PROCFS_UID_MAP && kind != PROCFS_GID_MAP && kind != PROCFS_SETGROUPS)
+            set(node->md, sym(readonly), null_value);
     }
-    if (kind == PROCFS_FD)
+    if (kind == PROCFS_FD || procfs_kind_is_ns(kind))
         set(node->md, sym(procfd), null_value);
     if (kind == PROCFS_SELF || kind == PROCFS_THREAD_SELF) {
         buffer b = allocate_string(1);
         assert(b != INVALID_ADDRESS);
         push_u8(b, '0');
+        set(node->md, sym(linktarget), b);
+    }
+    if (kind == PROCFS_ROOT_LINK) {
+        buffer b = allocate_string(2);
+        assert(b != INVALID_ADDRESS);
+        push_u8(b, '/');
         set(node->md, sym(linktarget), b);
     }
     if (parent)
@@ -700,6 +1041,11 @@ static procfs_node procfs_node_new(procfs_node parent, symbol name, enum procfs_
             procfs_node_new(node, sym_sstring(procfs_pid_entries[i].name),
                             procfs_pid_entries[i].kind == PROCFS_STATUS && kind == PROCFS_TID ?
                             PROCFS_TID_STATUS : procfs_pid_entries[i].kind, pid, n);
+    }
+    if (kind == PROCFS_NS_DIR) {
+        for (int i = 0; i < _countof(procfs_ns_entries); i++)
+            procfs_node_new(node, sym_sstring(procfs_ns_entries[i].name),
+                            procfs_ns_entries[i].kind, pid, n);
     }
     if (kind != PROCFS_SELF && kind != PROCFS_THREAD_SELF)
         procfs_refresh(node);
@@ -772,6 +1118,105 @@ boolean procfs_fd_link(tuple n, int *pid, int *fd)
         return false;
     *pid = node->pid;
     *fd = node->n;
+    return true;
+}
+
+boolean procfs_node_path(tuple n, buffer b)
+{
+    procfs_node node = procfs_node_of(n);
+    if (!node)
+        return false;
+    switch (node->kind) {
+    case PROCFS_ROOT:
+        buffer_write_cstring(b, "/proc");
+        return true;
+    case PROCFS_PID:
+        bprintf(b, "/proc/%d", node->pid);
+        return true;
+    case PROCFS_STATUS:
+        bprintf(b, "/proc/%d/status", node->pid);
+        return true;
+    case PROCFS_CMDLINE:
+        bprintf(b, "/proc/%d/cmdline", node->pid);
+        return true;
+    case PROCFS_STAT:
+        bprintf(b, "/proc/%d/stat", node->pid);
+        return true;
+    case PROCFS_MAPS:
+        bprintf(b, "/proc/%d/maps", node->pid);
+        return true;
+    case PROCFS_EXE:
+        bprintf(b, "/proc/%d/exe", node->pid);
+        return true;
+    case PROCFS_FD_DIR:
+        bprintf(b, "/proc/%d/fd", node->pid);
+        return true;
+    case PROCFS_FD:
+        bprintf(b, "/proc/%d/fd/%d", node->pid, node->n);
+        return true;
+    case PROCFS_FDINFO_DIR:
+        bprintf(b, "/proc/%d/fdinfo", node->pid);
+        return true;
+    case PROCFS_FDINFO:
+        bprintf(b, "/proc/%d/fdinfo/%d", node->pid, node->n);
+        return true;
+    case PROCFS_TASK_DIR:
+        bprintf(b, "/proc/%d/task", node->pid);
+        return true;
+    case PROCFS_TID:
+        bprintf(b, "/proc/%d/task/%d", node->pid, node->n);
+        return true;
+    case PROCFS_TID_STATUS:
+        bprintf(b, "/proc/%d/task/%d/status", node->pid, node->n);
+        return true;
+    case PROCFS_UID_MAP:
+        bprintf(b, "/proc/%d/uid_map", node->pid);
+        return true;
+    case PROCFS_GID_MAP:
+        bprintf(b, "/proc/%d/gid_map", node->pid);
+        return true;
+    case PROCFS_SETGROUPS:
+        bprintf(b, "/proc/%d/setgroups", node->pid);
+        return true;
+    case PROCFS_ROOT_LINK:
+        bprintf(b, "/proc/%d/root", node->pid);
+        return true;
+    case PROCFS_NS_DIR:
+        bprintf(b, "/proc/%d/ns", node->pid);
+        return true;
+    case PROCFS_NS_USER:
+    case PROCFS_NS_PID:
+    case PROCFS_NS_NET:
+    case PROCFS_NS_IPC:
+    case PROCFS_NS_MNT:
+    case PROCFS_NS_UTS: {
+        const char *name = namespace_kind_name(procfs_ns_namespace_kind(node->kind));
+        bprintf(b, "/proc/%d/ns/%s", node->pid, sstring_from_cstring(name, 8));
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+boolean procfs_ns_link(tuple n, char *buf, u64 bufsiz, sysreturn *rv)
+{
+    procfs_node node = procfs_node_of(n);
+    if (!node || !procfs_kind_is_ns(node->kind))
+        return false;
+    process p = process_get(node->pid);
+    if (!p) {
+        *rv = -ESRCH;
+        return true;
+    }
+    enum namespace_kind kind = procfs_ns_namespace_kind(node->kind);
+    u32 inum = namespace_inum(p, kind);
+    process_release(p);
+    buffer tmp = little_stack_buffer(32);
+    bprintf(tmp, "%s:[%u]", sstring_from_cstring(namespace_kind_name(kind), 8), inum);
+    u64 len = MIN(bufsiz, buffer_length(tmp));
+    runtime_memcpy(buf, buffer_ref(tmp, 0), len);
+    *rv = len;
     return true;
 }
 
@@ -932,6 +1377,7 @@ void procfs_init(filesystem root_fs)
     heap h = procfs_heap();
     status s = filesystem_init(&procfs.fs, h, 0, 1, true);
     assert(is_ok(s));
+    procfs.fs.ro = false;
     procfs.by_md = allocate_table(h, identity_key, pointer_equal);
     procfs.by_ino = allocate_table(h, identity_key, pointer_equal);
     assert(procfs.by_md != INVALID_ADDRESS && procfs.by_ino != INVALID_ADDRESS);

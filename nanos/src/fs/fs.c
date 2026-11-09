@@ -1134,6 +1134,7 @@ u64 fs_freeblocks(filesystem fs)
 
 BSS_RO_AFTER_INIT static struct {
     filesystem (*get_root_fs)();    /* return filesystem at "/" */
+    filesystem (*get_root)(tuple *root);
     inode (*get_mountpoint)(tuple, filesystem *);   /* find mount point and parent filesystem */
 } fs_path_helper;
 
@@ -1144,11 +1145,34 @@ void fs_set_path_helper(filesystem (*get_root_fs)(), inode (*get_mountpoint)(tup
     fs_path_helper.get_mountpoint = get_mountpoint;
 }
 
+void fs_set_path_root(filesystem (*get_root)(tuple *root))
+{
+    fs_path_helper.get_root = get_root;
+}
+
+static tuple path_root_tuple(void)
+{
+    if (fs_path_helper.get_root) {
+        tuple root;
+        filesystem fs = fs_path_helper.get_root(&root);
+        filesystem_release(fs);
+        return root;
+    }
+    return filesystem_getroot(fs_path_helper.get_root_fs());
+}
+
 /* Requires that a mount point does not change while at least one of its two filesystems (parent and
  * child) is locked. */
 static tuple lookup_follow(filesystem *fs, tuple t, string a, tuple *p)
 {
     *p = t;
+    boolean dotdot = !buffer_strcmp(a, "..");
+    tuple root = 0;
+    if (dotdot) {
+        root = path_root_tuple();
+        if (t == root)
+            return t;
+    }
     t = (*fs)->lookup(*fs, t, a);
     if (!t)
         return t;
@@ -1169,8 +1193,7 @@ static tuple lookup_follow(filesystem *fs, tuple t, string a, tuple *p)
 
                 *fs = child_fs;
             }
-        } else if ((t == *p) && !buffer_strcmp(a, "..") &&
-                   (t != filesystem_getroot(fs_path_helper.get_root_fs()))) {
+        } else if ((t == *p) && dotdot && (t != root)) {
             /* t is the root of its filesystem: look for a mount point for this
              * filesystem, and if found look up the parent of the mount directory.
              */
@@ -1208,14 +1231,22 @@ static int filesystem_resolve_internal(filesystem *fs, tuple cwd, sstring f,
 {
     tuple t;
     if (!sstring_is_empty(f) && (f.ptr[0] == '/')) {
-        filesystem root_fs = fs_path_helper.get_root_fs();
-        filesystem_reserve(root_fs);
+        filesystem root_fs;
+        tuple root;
+        if (fs_path_helper.get_root) {
+            root_fs = fs_path_helper.get_root(&root);
+        } else {
+            root_fs = fs_path_helper.get_root_fs();
+            filesystem_reserve(root_fs);
+            root = filesystem_getroot(root_fs);
+        }
         if (root_fs != *fs) {
             filesystem_unlock(*fs);
+            filesystem_release(*fs);
             *fs = root_fs;
             filesystem_lock(*fs);
         }
-        t = filesystem_getroot(root_fs);
+        t = root;
     } else {
         filesystem_reserve(*fs);
         t = cwd;
@@ -1562,6 +1593,54 @@ int file_get_path(filesystem fs, inode ino, char *buf, u64 len)
         iterate(c, stack_closure(file_get_path_each, p, buf, len, &cur_len));
     } while (cur_len > 0);
     rv = -1;
+  out:
+    filesystem_unlock(fs);
+    filesystem_release(fs);
+    return rv;
+}
+
+int file_get_path_at_root(filesystem fs, inode ino, tuple root, char *buf, u64 len)
+{
+    if (len < 2)
+        return -1;
+    tuple n = filesystem_get_meta(fs, ino);
+    if (!n)
+        return -1;
+    filesystem_reserve(fs);
+    int rv = -1;
+    int cur_len = 1;
+    buf[0] = '\0';
+    if (n == root) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        cur_len = 2;
+        rv = cur_len;
+        goto out;
+    }
+    tuple p;
+    while (true) {
+        n = lookup_follow(&fs, n, alloca_wrap_cstring(".."), &p);
+        if (!n) {
+            rv = -ENOENT;
+            goto out;
+        }
+        if (n == p) {
+            rv = -ENOENT;
+            goto out;
+        }
+        tuple c = children(n);
+        if (!c) {
+            rv = -ENOENT;
+            goto out;
+        }
+        iterate(c, stack_closure(file_get_path_each, p, buf, len, &cur_len));
+        if (cur_len <= 0)
+            goto out;
+        if (n == root) {
+            rv = cur_len;
+            goto out;
+        }
+    }
   out:
     filesystem_unlock(fs);
     filesystem_release(fs);

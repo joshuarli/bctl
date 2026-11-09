@@ -1290,21 +1290,126 @@ sysreturn fchdir(int dirfd)
         rv = -ENOTDIR;
         goto out;
     }
-
-    process_lock(p);
-    if (f->fs != p->cwd_fs) {
-        filesystem_release(p->cwd_fs);
-        filesystem_reserve(f->fs);
-        p->cwd_fs = f->fs;
-    }
+    filesystem_reserve(f->fs);
+    fs_struct fsp = p->fs;
+    spin_lock(&fsp->lock);
+    filesystem old_fs = fsp->cwd_fs;
+    fsp->cwd_fs = f->fs;
+    fsp->cwd = f->n;
+    p->root_fs = fsp->root_fs;
+    p->cwd_fs = f->fs;
     p->cwd = f->n;
-    process_unlock(p);
+    spin_unlock(&fsp->lock);
+    filesystem_release(old_fs);
     rv = 0;
   out:
     if (cwd)
         filesystem_put_meta(f->fs, cwd);
     fdesc_put(&f->f);
     return rv;
+}
+
+sysreturn chroot(const char *path)
+{
+    sstring path_ss;
+    if (!fault_in_user_string(path, &path_ss))
+        return -EFAULT;
+    process p = current->p;
+    if (!capable(p, CAP_SYS_CHROOT))
+        return -EPERM;
+    filesystem fs;
+    inode cwd;
+    if (!sstring_is_empty(path_ss) && (path_ss.ptr[0] == '/'))
+        process_get_root(p, &fs, &cwd);
+    else
+        process_get_cwd(p, &fs, &cwd);
+    filesystem start_fs = fs;
+    tuple n;
+    int fss = filesystem_get_node(&fs, cwd, path_ss, FS_NODE_FOLLOW, &n, 0, 0);
+    if (fss != 0) {
+        if (fs == start_fs)
+            filesystem_release(start_fs);
+        return fss;
+    }
+    if (!is_dir(n)) {
+        filesystem_put_node(fs, n);
+        if (fs == start_fs)
+            filesystem_release(start_fs);
+        return -ENOTDIR;
+    }
+    buffer root_path = allocate_buffer(heap_locked(get_kernel_heaps()), PATH_MAX);
+    if (root_path == INVALID_ADDRESS) {
+        filesystem_put_node(fs, n);
+        if (fs == start_fs)
+            filesystem_release(start_fs);
+        return -ENOMEM;
+    }
+    if (!procfs_node_path(n, root_path)) {
+        if (!sstring_is_empty(path_ss) && (path_ss.ptr[0] == '/'))
+            buffer_write(root_path, path_ss.ptr, path_ss.len);
+        else
+            push_u8(root_path, '/');
+    }
+    inode root_ino = fs->get_inode(fs, n);
+    tuple root_tuple = n;
+    filesystem_reserve(fs);
+    filesystem_put_node(fs, n);
+    if (fs == start_fs)
+        filesystem_release(start_fs);
+    fs_struct fsp = p->fs;
+    spin_lock(&fsp->lock);
+    filesystem old_fs = fsp->root_fs;
+    buffer old_path = fsp->root_path;
+    fsp->root_fs = fs;
+    fsp->root = root_ino;
+    fsp->root_tuple = root_tuple;
+    fsp->root_path = root_path;
+    p->root_fs = fs;
+    p->cwd_fs = fsp->cwd_fs;
+    p->cwd = fsp->cwd;
+    spin_unlock(&fsp->lock);
+    filesystem_release(old_fs);
+    deallocate_buffer(old_path);
+    return 0;
+}
+
+sysreturn unshare(int flags)
+{
+    process p = current->p;
+    if (flags == 0)
+        return 0;
+    if (flags & (CLONE_NEWPID | CLONE_NEWNET))
+        return -ENOSYS;
+    if (flags & ~CLONE_NEWUSER)
+        return -EINVAL;
+    if (process_is_chrooted(p))
+        return -EPERM;
+    spin_lock(&p->threads_lock);
+    int nthreads = rbtree_get_count(p->threads);
+    spin_unlock(&p->threads_lock);
+    if (nthreads != 1)
+        return -EINVAL;
+    fs_struct fsp = p->fs;
+    if (fsp->refcount.c > 1)
+        return -EINVAL;
+    process_lock(p);
+    struct creds *c = &p->creds;
+    user_namespace parent = c->user_ns;
+    u32 owner = c->euid, group = c->egid;
+    process_unlock(p);
+    if (parent->level >= USER_NS_LEVEL_MAX)
+        return -EUSERS;
+    user_namespace ns = user_ns_create(parent, owner, group);
+    if (ns == INVALID_ADDRESS)
+        return -ENOMEM;
+    process_lock(p);
+    user_ns_release(c->user_ns);
+    c->user_ns = ns;
+    c->cap_permitted = c->cap_effective = CAP_FULL_SET;
+    c->cap_inheritable = 0;
+    c->cap_ambient = 0;
+    process_unlock(p);
+    return 0;
 }
 
 static sysreturn truncate_internal(filesystem fs, fsfile fsf, inode n, inode parent, long length)
@@ -1883,12 +1988,11 @@ static sysreturn getcwd(char *buf, u64 length)
 {
     if (!fault_in_user_memory(buf, length, true))
         return -EFAULT;
-    process p = current->p;
-    int cwd_len = file_get_path(p->cwd_fs, p->cwd, buf, length);
-
+    int cwd_len = filesystem_getcwd(current->p, buf, length);
+    if (cwd_len == -ENOENT)
+        return -ENOENT;
     if (cwd_len < 0)
         return set_syscall_error(current, ERANGE);
-
     return cwd_len;
 }
 
@@ -1945,6 +2049,10 @@ static sysreturn readlink_internal(filesystem fs, inode cwd, sstring pathname, c
             runtime_memcpy(buf, buffer_ref(target, 0), rv);
         }
         deallocate_buffer(target);
+        return rv;
+    }
+    if (get(n, sym(procfd)) && procfs_ns_link(n, buf, bufsiz, &rv)) {
+        filesystem_put_node(fs, n);
         return rv;
     }
     if (is_symlink(n)) {
@@ -2248,6 +2356,8 @@ boolean creds_init(struct creds *c, u32 uid, u32 gid)
     c->uid = c->euid = c->suid = c->fsuid = uid;
     c->gid = c->egid = c->sgid = c->fsgid = gid;
     c->cap_bset = CAP_FULL_SET;
+    c->user_ns = user_ns_init();
+    user_ns_reserve(c->user_ns);
     if (uid == 0)
         c->cap_permitted = c->cap_effective = CAP_FULL_SET;
     return true;
@@ -2256,6 +2366,7 @@ boolean creds_init(struct creds *c, u32 uid, u32 gid)
 boolean creds_copy(struct creds *dst, struct creds *src)
 {
     *dst = *src;
+    user_ns_reserve(dst->user_ns);
     if (!src->ngroups)
         return true;
     u64 size = src->ngroups * sizeof(u32);
@@ -2275,6 +2386,9 @@ void creds_free(struct creds *c)
         deallocate(heap_locked(get_kernel_heaps()), c->groups, c->ngroups * sizeof(u32));
     c->groups = 0;
     c->ngroups = 0;
+    if (c->user_ns)
+        user_ns_release(c->user_ns);
+    c->user_ns = 0;
 }
 
 void creds_snapshot(process p, struct creds *c)
@@ -2288,7 +2402,7 @@ void creds_snapshot(process p, struct creds *c)
 boolean capable(process p, int cap)
 {
     process_lock(p);
-    boolean r = !!(p->creds.cap_effective & (1ull << cap));
+    boolean r = ns_capable_creds(&p->creds, p->creds.user_ns, cap);
     process_unlock(p);
     return r;
 }
@@ -2314,11 +2428,14 @@ void creds_exec(process p)
 {
     process_lock(p);
     struct creds *c = &p->creds;
+    u32 root_kid;
+    boolean root = user_ns_to_kuid(c->user_ns, 0, &root_kid) &&
+                   (c->uid == root_kid || c->euid == root_kid);
     u64 old_permitted = c->cap_permitted;
     u64 permitted, effective;
-    if (c->uid == 0 || c->euid == 0) {
+    if (root) {
         permitted = c->cap_bset | (c->cap_inheritable & c->cap_bset);
-        effective = (c->euid == 0) ? permitted : 0;
+        effective = (c->euid == root_kid) ? permitted : 0;
         c->cap_ambient = 0;
     } else {
         permitted = effective = c->cap_ambient;
@@ -2343,7 +2460,7 @@ sysreturn getuid()
 {
     process p = current->p;
     process_lock(p);
-    u32 id = p->creds.uid;
+    u32 id = user_ns_from_kuid(p->creds.user_ns, p->creds.uid);
     process_unlock(p);
     return id;
 }
@@ -2352,7 +2469,7 @@ sysreturn geteuid()
 {
     process p = current->p;
     process_lock(p);
-    u32 id = p->creds.euid;
+    u32 id = user_ns_from_kuid(p->creds.user_ns, p->creds.euid);
     process_unlock(p);
     return id;
 }
@@ -2361,7 +2478,7 @@ sysreturn getgid()
 {
     process p = current->p;
     process_lock(p);
-    u32 id = p->creds.gid;
+    u32 id = user_ns_from_kgid(p->creds.user_ns, p->creds.gid);
     process_unlock(p);
     return id;
 }
@@ -2370,16 +2487,20 @@ sysreturn getegid()
 {
     process p = current->p;
     process_lock(p);
-    u32 id = p->creds.egid;
+    u32 id = user_ns_from_kgid(p->creds.user_ns, p->creds.egid);
     process_unlock(p);
     return id;
 }
 
 static sysreturn getres_ids(u32 *ruid, u32 *euid, u32 *suid, boolean group)
 {
-    struct creds c;
-    creds_snapshot(current->p, &c);
-    u32 r = group ? c.gid : c.uid, e = group ? c.egid : c.euid, s = group ? c.sgid : c.suid;
+    process p = current->p;
+    process_lock(p);
+    struct creds *c = &p->creds;
+    u32 r = group ? user_ns_from_kgid(c->user_ns, c->gid) : user_ns_from_kuid(c->user_ns, c->uid);
+    u32 e = group ? user_ns_from_kgid(c->user_ns, c->egid) : user_ns_from_kuid(c->user_ns, c->euid);
+    u32 s = group ? user_ns_from_kgid(c->user_ns, c->sgid) : user_ns_from_kuid(c->user_ns, c->suid);
+    process_unlock(p);
     if (!copy_to_user(ruid, &r, sizeof(r)) || !copy_to_user(euid, &e, sizeof(e)) ||
         !copy_to_user(suid, &s, sizeof(s)))
         return -EFAULT;
@@ -2399,34 +2520,53 @@ static sysreturn getresgid(u32 *rgid, u32 *egid, u32 *sgid)
 static sysreturn set_ids(u32 nr, u32 ne, u32 ns, boolean is_setre, boolean group)
 {
     process p = current->p;
-    boolean priv = capable(p, group ? CAP_SETGID : CAP_SETUID);
     process_lock(p);
     struct creds *c = &p->creds;
+    user_namespace un = c->user_ns;
+    u32 knr = nr, kne = ne, kns = ns;
+    if ((nr != (u32)-1) &&
+        !(group ? user_ns_to_kgid(un, nr, &knr) : user_ns_to_kuid(un, nr, &knr))) {
+        process_unlock(p);
+        return -EINVAL;
+    }
+    if ((ne != (u32)-1) &&
+        !(group ? user_ns_to_kgid(un, ne, &kne) : user_ns_to_kuid(un, ne, &kne))) {
+        process_unlock(p);
+        return -EINVAL;
+    }
+    if ((ns != (u32)-1) &&
+        !(group ? user_ns_to_kgid(un, ns, &kns) : user_ns_to_kuid(un, ns, &kns))) {
+        process_unlock(p);
+        return -EINVAL;
+    }
+    boolean priv = ns_capable_creds(c, un, group ? CAP_SETGID : CAP_SETUID);
     u32 *r = group ? &c->gid : &c->uid, *e = group ? &c->egid : &c->euid;
     u32 *s = group ? &c->sgid : &c->suid, *fs = group ? &c->fsgid : &c->fsuid;
+    u32 lr = group ? user_ns_from_kgid(un, *r) : user_ns_from_kuid(un, *r);
+    u32 le = group ? user_ns_from_kgid(un, *e) : user_ns_from_kuid(un, *e);
+    u32 ls = group ? user_ns_from_kgid(un, *s) : user_ns_from_kuid(un, *s);
     if (!priv) {
         boolean ok;
         if (is_setre)
-            ok = (nr == -1 || nr == *r || nr == *e) && (ne == -1 || id_in(ne, *r, *e, *s));
+            ok = (nr == (u32)-1 || nr == lr || nr == le) && (ne == (u32)-1 || id_in(ne, lr, le, ls));
         else
-            ok = (nr == -1 || id_in(nr, *r, *e, *s)) && (ne == -1 || id_in(ne, *r, *e, *s)) &&
-                 (ns == -1 || id_in(ns, *r, *e, *s));
+            ok = (nr == (u32)-1 || id_in(nr, lr, le, ls)) && (ne == (u32)-1 || id_in(ne, lr, le, ls)) &&
+                 (ns == (u32)-1 || id_in(ns, lr, le, ls));
         if (!ok) {
             process_unlock(p);
             return -EPERM;
         }
     }
     u32 old_uid = c->uid, old_euid = c->euid, old_suid = c->suid, old_fsuid = c->fsuid;
-    u32 old_r = *r;
-    if (nr != -1)
-        *r = nr;
-    if (ne != -1)
-        *e = ne;
+    if (nr != (u32)-1)
+        *r = knr;
+    if (ne != (u32)-1)
+        *e = kne;
     if (is_setre) {
-        if (nr != -1 || (ne != -1 && ne != old_r))
+        if (nr != (u32)-1 || (ne != (u32)-1 && ne != lr))
             *s = *e;
-    } else if (ns != -1) {
-        *s = ns;
+    } else if (ns != (u32)-1) {
+        *s = kns;
     }
     *fs = *e;
     if (!group)
@@ -2437,15 +2577,21 @@ static sysreturn set_ids(u32 nr, u32 ne, u32 ns, boolean is_setre, boolean group
 
 static sysreturn set_id(u32 id, boolean group)
 {
-    if (id == -1)
+    if (id == (u32)-1)
         return -EINVAL;
     process p = current->p;
-    if (capable(p, group ? CAP_SETGID : CAP_SETUID))
+    process_lock(p);
+    struct creds *c = &p->creds;
+    user_namespace un = c->user_ns;
+    u32 kid;
+    if (!(group ? user_ns_to_kgid(un, id, &kid) : user_ns_to_kuid(un, id, &kid))) {
+        process_unlock(p);
+        return -EINVAL;
+    }
+    boolean priv = ns_capable_creds(c, un, group ? CAP_SETGID : CAP_SETUID);
+    process_unlock(p);
+    if (priv)
         return set_ids(id, id, id, false, group);
-    struct creds c;
-    creds_snapshot(p, &c);
-    if (id != (group ? c.gid : c.uid) && id != (group ? c.sgid : c.suid))
-        return -EPERM;
     return set_ids(-1, id, -1, false, group);
 }
 
@@ -2482,19 +2628,27 @@ static sysreturn setresgid(u32 rgid, u32 egid, u32 sgid)
 static sysreturn set_fsid(u32 id, boolean group)
 {
     process p = current->p;
-    boolean priv = capable(p, group ? CAP_SETGID : CAP_SETUID);
     process_lock(p);
     struct creds *c = &p->creds;
+    user_namespace un = c->user_ns;
     u32 *fs = group ? &c->fsgid : &c->fsuid;
     u32 old = *fs;
-    if (id != -1 && (priv || id_in(id, group ? c->gid : c->uid, group ? c->egid : c->euid,
-                                   group ? c->sgid : c->suid) || id == old)) {
-        *fs = id;
+    u32 kid = id;
+    if (id != (u32)-1 &&
+        !(group ? user_ns_to_kgid(un, id, &kid) : user_ns_to_kuid(un, id, &kid))) {
+        process_unlock(p);
+        return -EINVAL;
+    }
+    boolean priv = ns_capable_creds(c, un, group ? CAP_SETGID : CAP_SETUID);
+    if (id != (u32)-1 && (priv || id_in(kid, group ? c->gid : c->uid, group ? c->egid : c->euid,
+                                         group ? c->sgid : c->suid) || kid == old)) {
+        *fs = kid;
         if (!group)
             creds_fix_caps_locked(c, c->uid, c->euid, c->suid, old);
     }
+    u32 local_old = group ? user_ns_from_kgid(un, old) : user_ns_from_kuid(un, old);
     process_unlock(p);
-    return old;
+    return local_old;
 }
 
 static sysreturn setfsuid(u32 fsuid)
@@ -2514,7 +2668,8 @@ static sysreturn getgroups(int size, u32 *list)
     process p = current->p;
     heap h = heap_locked(get_kernel_heaps());
     process_lock(p);
-    u32 n = p->creds.ngroups;
+    struct creds *c = &p->creds;
+    u32 n = c->ngroups;
     if (size == 0 || n == 0) {
         process_unlock(p);
         return n;
@@ -2528,7 +2683,8 @@ static sysreturn getgroups(int size, u32 *list)
         process_unlock(p);
         return -ENOMEM;
     }
-    runtime_memcpy(copy, p->creds.groups, n * sizeof(u32));
+    for (u32 i = 0; i < n; i++)
+        copy[i] = user_ns_from_kgid(c->user_ns, c->groups[i]);
     process_unlock(p);
     sysreturn rv = copy_to_user(list, copy, n * sizeof(u32)) ? n : -EFAULT;
     deallocate(h, copy, n * sizeof(u32));
@@ -2540,8 +2696,6 @@ static sysreturn setgroups(int size, const u32 *list)
     if (size < 0 || size > NGROUPS_MAX)
         return -EINVAL;
     process p = current->p;
-    if (!capable(p, CAP_SETGID))
-        return -EPERM;
     heap h = heap_locked(get_kernel_heaps());
     u32 *groups = 0;
     if (size) {
@@ -2552,18 +2706,35 @@ static sysreturn setgroups(int size, const u32 *list)
             deallocate(h, groups, size * sizeof(u32));
             return -EFAULT;
         }
-        for (int i = 1; i < size; i++)
-            for (int j = i; j > 0 && groups[j - 1] > groups[j]; j--) {
-                u32 tmp = groups[j];
-                groups[j] = groups[j - 1];
-                groups[j - 1] = tmp;
-            }
     }
     process_lock(p);
-    u32 *old = p->creds.groups;
-    u32 old_n = p->creds.ngroups;
-    p->creds.groups = groups;
-    p->creds.ngroups = size;
+    struct creds *c = &p->creds;
+    user_namespace un = c->user_ns;
+    if (!ns_capable_creds(c, un, CAP_SETGID) || !user_ns_setgroups_ok(un)) {
+        process_unlock(p);
+        if (groups)
+            deallocate(h, groups, size * sizeof(u32));
+        return -EPERM;
+    }
+    for (int i = 0; i < size; i++) {
+        u32 kgid;
+        if (!user_ns_to_kgid(un, groups[i], &kgid)) {
+            process_unlock(p);
+            deallocate(h, groups, size * sizeof(u32));
+            return -EINVAL;
+        }
+        groups[i] = kgid;
+    }
+    for (int i = 1; i < size; i++)
+        for (int j = i; j > 0 && groups[j - 1] > groups[j]; j--) {
+            u32 tmp = groups[j];
+            groups[j] = groups[j - 1];
+            groups[j - 1] = tmp;
+        }
+    u32 *old = c->groups;
+    u32 old_n = c->ngroups;
+    c->groups = groups;
+    c->ngroups = size;
     process_unlock(p);
     if (old_n)
         deallocate(h, old, old_n * sizeof(u32));
@@ -3070,6 +3241,8 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, eventfd2, eventfd2);
     register_syscall(map, chdir, chdir);
     register_syscall(map, fchdir, fchdir);
+    register_syscall(map, chroot, chroot);
+    register_syscall(map, unshare, unshare);
     register_syscall(map, setxattr, setxattr);
     register_syscall(map, lsetxattr, lsetxattr);
     register_syscall(map, fsetxattr, fsetxattr);

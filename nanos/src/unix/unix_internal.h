@@ -5,6 +5,7 @@
 #include <pagecache.h>
 #include <tfs.h>
 #include <unix.h>
+#include <namespace.h>
 
 #define VMAP_FLAG_PROT_MASK 0x000f
 #define VMAP_FLAG_EXEC     0x0001
@@ -202,6 +203,7 @@ typedef struct user_cap_data {
 #define CAP_SETGID      6
 #define CAP_SETUID      7
 #define CAP_SETPCAP     8
+#define CAP_SYS_CHROOT  18
 #define CAP_SYS_PTRACE  19
 #define CAP_SYS_ADMIN   21
 #define CAP_SYS_RESOURCE 24
@@ -216,6 +218,7 @@ struct creds {
     u32 ngroups;
     u32 *groups;
     u64 cap_inheritable, cap_permitted, cap_effective, cap_bset, cap_ambient;
+    user_namespace user_ns;
 };
 
 /* unix-specific memory objects and ids */
@@ -640,6 +643,7 @@ typedef struct process {
     int               ptracer;
     int               pdeathsig;
     struct creds      creds;
+    fs_struct         fs;
     process_vm        vm;
     fdtable           fdtable;
     filesystem        root_fs;
@@ -679,6 +683,16 @@ static inline timestamp proc_cputime(process p)
 
 #define process_lock(p)     spin_lock(&(p)->lock)
 #define process_unlock(p)   spin_unlock(&(p)->lock)
+
+static inline void process_fs_mirror(process p)
+{
+    fs_struct fs = p->fs;
+    spin_lock(&fs->lock);
+    p->root_fs = fs->root_fs;
+    p->cwd_fs = fs->cwd_fs;
+    p->cwd = fs->cwd;
+    spin_unlock(&fs->lock);
+}
 
 static inline void process_reserve(process p)
 {
@@ -1201,6 +1215,8 @@ boolean procfs_fd_link(tuple n, int *pid, int *fd);
 sysreturn procfs_fd_open(int pid, int fd, int flags);
 sysreturn procfs_fd_stat(int pid, int fd, struct stat *s);
 sysreturn procfs_fd_readlink(int pid, int fd, buffer b);
+boolean procfs_node_path(tuple n, buffer b);
+boolean procfs_ns_link(tuple n, char *buf, u64 bufsiz, sysreturn *rv);
 sysreturn fdesc_stat(fdesc f, struct stat *s);
 void process_list_pids(vector pids);
 boolean create_special_file(sstring path, spec_file_open open, u64 size, u64 rdev);
@@ -1237,6 +1253,9 @@ void creds_free(struct creds *c);
 void creds_snapshot(process p, struct creds *c);
 boolean capable(process p, int cap);
 void creds_exec(process p);
+
+filesystem filesystem_path_root(tuple *root);
+void fs_set_path_root(filesystem (*get_root)(tuple *root));
 
 /* getrandom(2) flags */
 #define GRND_NONBLOCK               1

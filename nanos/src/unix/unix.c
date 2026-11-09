@@ -726,7 +726,8 @@ closure_func_basic(thunk, void, process_free)
         process_vm_release(p->vm);
     if (p->fdtable)
         fdtable_release(p->fdtable);
-    filesystem_release(p->cwd_fs);
+    if (p->fs)
+        fs_struct_release(p->fs);
     deallocate_rbtree(p->threads, 0);
     deallocate_notify_set(p->signalfds);
     destroy_heap((heap)p->posix_timer_ids);
@@ -787,9 +788,10 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     init_refcount(&p->refcount, 1, init_closure_func(&p->free, thunk, process_free));
     p->vm = 0;
     p->fdtable = 0;
-    filesystem_reserve(fs); /* because it hosts the current working directory */
-    p->root_fs = p->cwd_fs = fs;
-    p->cwd = fs->get_inode(fs, filesystem_getroot(fs));
+    tuple fs_root = filesystem_getroot(fs);
+    p->fs = fs_struct_create(fs, fs, fs_root, fs->get_inode(fs, fs_root));
+    assert(p->fs != INVALID_ADDRESS);
+    process_fs_mirror(p);
     p->process_root = root;
 
     u64 id;
@@ -937,8 +939,21 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
         deallocate_u64((heap)parent->uh->processes, pid, 1);
         return -ENOMEM;
     }
-    filesystem_release(c->cwd_fs);
-    process_get_cwd(parent, &c->cwd_fs, &c->cwd);
+    fs_struct pfs = parent->fs;
+    fs_struct cfs;
+    if (flags & CLONE_FS) {
+        cfs = pfs;
+        fs_struct_reserve(cfs);
+    } else {
+        cfs = fs_struct_copy(pfs);
+    }
+    if (cfs == INVALID_ADDRESS) {
+        process_release(c);
+        return -ENOMEM;
+    }
+    fs_struct_release(c->fs);
+    c->fs = cfs;
+    process_fs_mirror(c);
     c->pgid = parent->pgid;
     c->dumpable = parent->dumpable;
     c->syscalls = parent->syscalls;
@@ -965,6 +980,19 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     }
     c->cmdline = cmdline;
     c->exe = exe;
+
+    if (flags & CLONE_NEWUSER) {
+        user_namespace ns = user_ns_create(c->creds.user_ns, c->creds.euid, c->creds.egid);
+        if (ns == INVALID_ADDRESS) {
+            process_release(c);
+            return -ENOMEM;
+        }
+        user_ns_release(c->creds.user_ns);
+        c->creds.user_ns = ns;
+        c->creds.cap_permitted = c->creds.cap_effective = CAP_FULL_SET;
+        c->creds.cap_inheritable = 0;
+        c->creds.cap_ambient = 0;
+    }
 
     spin_lock(&processes_lock);
     if (processes_of_uid_locked(c->creds.uid) >= parent->rlimit_nproc_cur) {
@@ -1412,11 +1440,15 @@ sysreturn process_signal(process sender, int pid, struct siginfo *si)
 
 void process_get_cwd(process p, filesystem *cwd_fs, inode *cwd)
 {
-    process_lock(p);
-    *cwd_fs = p->cwd_fs;
+    fs_struct fs = p->fs;
+    spin_lock(&fs->lock);
+    *cwd_fs = fs->cwd_fs;
     filesystem_reserve(*cwd_fs);
-    *cwd = p->cwd;
-    process_unlock(p);
+    *cwd = fs->cwd;
+    p->root_fs = fs->root_fs;
+    p->cwd_fs = fs->cwd_fs;
+    p->cwd = fs->cwd;
+    spin_unlock(&fs->lock);
 }
 
 timestamp proc_utime(process p)
@@ -1472,6 +1504,8 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
     u_heap = uh;
     list_init(&processes);
     spin_lock_init(&processes_lock);
+    namespace_init();
+    fs_set_path_root(filesystem_path_root);
     init_address_spaces(h);
     init_shared_pages(h);
     mmap_init(root);
