@@ -1507,7 +1507,11 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             vmflags |= VMAP_FLAG_THP;
         }
     } else {
-        desc = resolve_fd(p, fd); /* must return via out label to release fdesc */
+        desc = fdesc_get(p, fd);
+        if (!desc) {
+            ret = -EBADF;
+            goto out_unlock;
+        }
         switch (desc->type) {
         case FDESC_TYPE_REGULAR:
             thread_log(current, "   fd %d: file-backed (regular)", fd);

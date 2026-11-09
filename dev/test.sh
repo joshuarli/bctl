@@ -51,6 +51,7 @@ suite_harness() {
 			--file "$SYSROOT/lib/ld-musl-x86_64.so.1:/lib/ld-musl-x86_64.so.1" "$FIXTURES/exec_contract"
 		case_verdict shmem_xproc "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/shmem_xproc"
 		case_verdict ipc_xproc "$smp" 60 PASS '' "$FIXTURES/ipc_xproc"
+		case_verdict mmap_bad_fd "$smp" 20 PASS '' "$FIXTURES/mmap_bad_fd"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
