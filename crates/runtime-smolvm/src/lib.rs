@@ -251,6 +251,11 @@ impl SmolVm {
         }
     }
 
+    pub fn logs(&self, machine: &MachineName) -> Result<String, RuntimeError> {
+        let name = machine.to_string();
+        self.run("machine logs", &["machine", "logs", "--name", &name, "--tail", "40"], &[])
+    }
+
     pub fn guest_check(&self, machine: &MachineName) -> Result<GuestReport, RuntimeError> {
         let name = machine.to_string();
         let output = Command::new(&self.binary)

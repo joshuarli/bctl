@@ -7,15 +7,20 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use bctl_core::{AttemptEnd, AttemptRecord, Interaction, Outcome, Progress, RunKind};
+use bctl_core::{AttemptEnd, AttemptRecord, AttemptState, Interaction, Outcome, Progress, RunKind, Store};
 use miniserde::{Deserialize, Serialize, json};
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use sha2::{Digest, Sha256};
 
+use crate::paths::Paths;
 use crate::protocol::{ExecRequest, GrabRequest, ResourcesView};
 
 pub(crate) const LOG_CAP_BYTES: u64 = 8 << 20;
+pub(crate) const RUN_OUTPUT_CAP_BYTES: u64 = 256 << 20;
+pub(crate) const FAILURE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+pub(crate) const RUNS_STORAGE_CAP_BYTES: u64 = 2 << 30;
 const POLL: Duration = Duration::from_millis(200);
+const STORAGE_CHECK: Duration = Duration::from_secs(1);
 const EXEC_TERM_GRACE: Duration = Duration::from_secs(5);
 const GRAB_CANCEL_GRACE: Duration = Duration::from_secs(60);
 const GRAB_TERM_GRACE: Duration = Duration::from_secs(15);
@@ -155,6 +160,8 @@ pub(crate) enum Intent {
     Pause,
     Cancel,
     Stop,
+    Storage,
+    Fault,
 }
 
 pub(crate) struct Live {
@@ -163,6 +170,7 @@ pub(crate) struct Live {
     pub kind: RunKind,
     control: PathBuf,
     intent: Mutex<Intent>,
+    fault: Mutex<Option<String>>,
 }
 
 impl Live {
@@ -173,10 +181,21 @@ impl Live {
             Intent::Pause => 1,
             Intent::Cancel => 2,
             Intent::Stop => 3,
+            Intent::Storage => 4,
+            Intent::Fault => 5,
         };
         if rank(intent) > rank(*current) {
             *current = intent;
         }
+    }
+
+    pub fn fault(&self, reason: &str) {
+        *lock(&self.fault) = Some(reason.to_string());
+        self.request(Intent::Fault);
+    }
+
+    fn fault_reason(&self) -> Option<String> {
+        lock(&self.fault).clone()
     }
 
     fn intent(&self) -> Intent {
@@ -244,7 +263,7 @@ pub(crate) fn launch(launch: Launch<'_>, ledger: Arc<dyn Ledger>) -> Result<Arc<
     };
     ledger.set_pid(attempt, child.id());
     let pumps = pump_output(&mut child, &log);
-    let live = Arc::new(Live { run, attempt, kind, control, intent: Mutex::new(Intent::Proceed) });
+    let live = Arc::new(Live { run, attempt, kind, control, intent: Mutex::new(Intent::Proceed), fault: Mutex::new(None) });
     let supervised = Supervised {
         live: Arc::clone(&live),
         ledger,
@@ -438,8 +457,10 @@ fn ended(outcome: Outcome, detail: impl Into<String>) -> AttemptEnd {
     AttemptEnd::Ended { outcome, detail: Some(detail.into()) }
 }
 
-pub(crate) fn exec_outcome(exit: Exit, intent: Intent, timed_out: Option<Duration>, browser_alive: bool) -> AttemptEnd {
+pub(crate) fn exec_outcome(exit: Exit, intent: Intent, fault: Option<&str>, timed_out: Option<Duration>, browser_alive: bool) -> AttemptEnd {
     match (intent, timed_out, exit) {
+        (Intent::Fault, _, _) => ended(Outcome::BrowserCrashed, fault.unwrap_or("the session failed under the run").to_string()),
+        (Intent::Storage, _, _) => ended(Outcome::JobError, storage_detail()),
         (Intent::Stop, _, _) => ended(Outcome::Cancelled, "the session was stopped"),
         (Intent::Cancel | Intent::Pause, _, _) => ended(Outcome::Cancelled, "cancelled by `bctl cancel`"),
         (Intent::Proceed, Some(limit), _) => ended(Outcome::JobError, format!("timed out after {}s and was stopped", limit.as_secs())),
@@ -451,12 +472,25 @@ pub(crate) fn exec_outcome(exit: Exit, intent: Intent, timed_out: Option<Duratio
     }
 }
 
+fn storage_detail() -> String {
+    format!("the run's output passed its {} MiB bound; the job was stopped before it filled the disk", RUN_OUTPUT_CAP_BYTES >> 20)
+}
+
 const PAUSED_DETAIL: &str = "paused at a page boundary; `bctl resume` continues from Grab's state.db";
 
-pub(crate) fn grab_outcome(finished: Option<&Finished>, pending: Option<&Interaction>, intent: Intent, exit: Exit, browser_alive: bool) -> GrabVerdict {
+pub(crate) fn grab_outcome(
+    finished: Option<&Finished>,
+    pending: Option<&Interaction>,
+    intent: Intent,
+    fault: Option<&str>,
+    exit: Exit,
+    browser_alive: bool,
+) -> GrabVerdict {
     let settle = GrabVerdict::Settle;
     let reported = finished.map(|f| f.outcome.as_str());
     match intent {
+        Intent::Fault => return settle(ended(Outcome::BrowserCrashed, fault.unwrap_or("the session failed under the run").to_string())),
+        Intent::Storage => return settle(ended(Outcome::JobError, storage_detail())),
         Intent::Stop => return settle(ended(Outcome::Cancelled, "the session was stopped")),
         Intent::Cancel => return settle(ended(Outcome::Cancelled, "cancelled by `bctl cancel`")),
         Intent::Pause if matches!(reported, Some("cancelled" | "interrupted")) => {
@@ -516,6 +550,7 @@ impl Supervised {
         let mut escalation = Escalation::default();
         let mut timed_out = None;
         let mut grab = GrabState { finished: None, pending: None };
+        let mut last_storage_check = Instant::now();
         let status = loop {
             self.read_events(&mut grab);
             match child.try_wait() {
@@ -533,6 +568,17 @@ impl Supervised {
                 BoundedLog::note(&self.log, &format!("timeout of {}s reached; stopping process group {pid}", limit.as_secs()));
                 timed_out = Some(limit);
             }
+            if last_storage_check.elapsed() >= STORAGE_CHECK {
+                last_storage_check = Instant::now();
+                let bytes = tree_bytes(&self.output);
+                if bytes > RUN_OUTPUT_CAP_BYTES && self.live.intent() == Intent::Proceed {
+                    BoundedLog::note(
+                        &self.log,
+                        &format!("the output reached {bytes} bytes, past the {RUN_OUTPUT_CAP_BYTES}-byte bound; stopping process group {pid}"),
+                    );
+                    self.live.request(Intent::Storage);
+                }
+            }
             self.escalate(pid, &mut escalation, timed_out.is_some());
             thread::sleep(POLL);
         };
@@ -541,11 +587,16 @@ impl Supervised {
             BoundedLog::note(&self.log, &format!("cannot clear process group {pid}: {error}"));
         }
         drain(pumps);
+        if self.live.intent() == Intent::Proceed && tree_bytes(&self.output) > RUN_OUTPUT_CAP_BYTES {
+            BoundedLog::note(&self.log, &format!("the output passed the {RUN_OUTPUT_CAP_BYTES}-byte bound as the job ended"));
+            self.live.request(Intent::Storage);
+        }
         let intent = self.live.intent();
+        let fault = self.live.fault_reason();
         let alive = self.ledger.browser_alive();
         let end = match self.live.kind {
-            RunKind::Exec => exec_outcome(status, intent, timed_out, alive),
-            RunKind::Grab => match grab_outcome(grab.finished.as_ref(), grab.pending.as_ref(), intent, status, alive) {
+            RunKind::Exec => exec_outcome(status, intent, fault.as_deref(), timed_out, alive),
+            RunKind::Grab => match grab_outcome(grab.finished.as_ref(), grab.pending.as_ref(), intent, fault.as_deref(), status, alive) {
                 GrabVerdict::Settle(end) => end,
                 GrabVerdict::Verify => self.verify(),
             },
@@ -565,7 +616,7 @@ impl Supervised {
             return;
         }
         let now = Instant::now();
-        let immediate = timed_out || intent == Intent::Stop || self.live.kind == RunKind::Exec;
+        let immediate = timed_out || matches!(intent, Intent::Stop | Intent::Storage | Intent::Fault) || self.live.kind == RunKind::Exec;
         if escalation.asked.is_none() {
             escalation.asked = Some(now);
             if !immediate {
@@ -656,7 +707,7 @@ impl Supervised {
                     Ok(None) => {}
                     Err(error) => return ended(Outcome::VerificationFailed, format!("cannot wait for `grab verify`: {error}")),
                 }
-                if matches!(self.live.intent(), Intent::Cancel | Intent::Stop) {
+                if matches!(self.live.intent(), Intent::Cancel | Intent::Stop | Intent::Storage | Intent::Fault) {
                     escalation.asked.get_or_insert_with(Instant::now);
                     if escalation.termed.is_none() {
                         escalation.termed = Some(Instant::now());
@@ -668,6 +719,10 @@ impl Supervised {
             let _ = signal_group(pid, Signal::KILL);
             drain(pumps);
             match self.live.intent() {
+                Intent::Fault => {
+                    return ended(Outcome::BrowserCrashed, self.live.fault_reason().unwrap_or_else(|| "the session failed under the run".into()))
+                }
+                Intent::Storage => return ended(Outcome::JobError, storage_detail()),
                 Intent::Stop => return ended(Outcome::Cancelled, "the session was stopped during verification"),
                 Intent::Cancel => return ended(Outcome::Cancelled, "cancelled by `bctl cancel` during verification"),
                 Intent::Pause | Intent::Proceed => {}
@@ -690,6 +745,86 @@ fn drain(pumps: Vec<JoinHandle<()>>) {
     }
     for pump in pumps.into_iter().filter(|p| p.is_finished()) {
         let _ = pump.join();
+    }
+}
+
+fn tree_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else { return 0 };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| tree_bytes(&entry.path()))
+        .sum()
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct GcReport {
+    pub expired: Vec<i64>,
+    pub evicted: Vec<i64>,
+    pub orphans: Vec<i64>,
+    pub bytes: u64,
+}
+
+pub(crate) fn gc(paths: &Paths, store: &mut Store, now_ms: i64) -> Result<GcReport, String> {
+    gc_with_limits(paths, store, now_ms, FAILURE_RETENTION_MS, RUNS_STORAGE_CAP_BYTES)
+}
+
+fn gc_with_limits(paths: &Paths, store: &mut Store, now_ms: i64, failure_retention_ms: i64, storage_cap: u64) -> Result<GcReport, String> {
+    let mut report = GcReport::default();
+    let mut kept = Vec::new();
+    for run in store.ended_runs().map_err(|e| e.to_string())? {
+        let old_failure = matches!(run.state, AttemptState::Failed | AttemptState::Cancelled | AttemptState::Interrupted)
+            && run.ended_ms.is_some_and(|ended| now_ms.saturating_sub(ended) >= failure_retention_ms);
+        if old_failure {
+            remove_run(paths, store, run.id)?;
+            report.expired.push(run.id);
+        } else {
+            kept.push((run.id, tree_bytes(&paths.run_dir(run.id))));
+        }
+    }
+
+    let mut total: u64 = kept.iter().map(|(_, bytes)| *bytes).sum();
+    for (id, bytes) in kept {
+        if total <= storage_cap {
+            break;
+        }
+        remove_run(paths, store, id)?;
+        total = total.saturating_sub(bytes);
+        report.evicted.push(id);
+    }
+
+    let known: std::collections::HashSet<i64> = store.run_ids().map_err(|e| e.to_string())?.into_iter().collect();
+    let runs_dir = paths.home.join("runs");
+    if let Ok(entries) = fs::read_dir(&runs_dir) {
+        for entry in entries.flatten() {
+            let Some(id) = entry.file_name().to_str().and_then(|name| name.parse::<i64>().ok()) else { continue };
+            if known.contains(&id) {
+                continue;
+            }
+            match fs::remove_dir_all(entry.path()) {
+                Ok(()) => report.orphans.push(id),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => eprintln!("bctl: cannot remove orphaned run directory {}: {error}", entry.path().display()),
+            }
+        }
+    }
+    report.bytes = tree_bytes(&runs_dir);
+    Ok(report)
+}
+
+fn remove_run(paths: &Paths, store: &mut Store, id: i64) -> Result<(), String> {
+    store.delete_run(id).map_err(|e| format!("cannot forget run {id}: {e}"))?;
+    match fs::remove_dir_all(paths.run_dir(id)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot remove run {id}'s files: {error}")),
     }
 }
 
@@ -785,40 +920,51 @@ mod tests {
     #[test]
     fn an_exec_attempt_is_categorized_by_what_stopped_it() {
         let ok = Exit::Code(0);
-        assert!(matches!(exec_outcome(ok, Intent::Proceed, None, true), AttemptEnd::Ended { outcome: Outcome::Succeeded, .. }));
-        assert!(matches!(exec_outcome(Exit::Code(3), Intent::Proceed, None, true), AttemptEnd::Ended { outcome: Outcome::JobError, detail: Some(d) } if d.contains("status 3")));
-        assert!(matches!(exec_outcome(Exit::Code(1), Intent::Proceed, None, false), AttemptEnd::Ended { outcome: Outcome::BrowserCrashed, .. }));
-        assert!(matches!(exec_outcome(Exit::Signal(15), Intent::Proceed, Some(Duration::from_secs(2)), true), AttemptEnd::Ended { outcome: Outcome::JobError, detail: Some(d) } if d.contains("timed out after 2s")));
-        assert!(matches!(exec_outcome(Exit::Signal(15), Intent::Cancel, None, true), AttemptEnd::Ended { outcome: Outcome::Cancelled, .. }));
-        assert!(matches!(exec_outcome(ok, Intent::Cancel, None, true), AttemptEnd::Ended { outcome: Outcome::Cancelled, .. }), "a cancel wins over a late clean exit");
+        assert!(matches!(exec_outcome(ok, Intent::Proceed, None, None, true), AttemptEnd::Ended { outcome: Outcome::Succeeded, .. }));
+        assert!(matches!(exec_outcome(Exit::Code(3), Intent::Proceed, None, None, true), AttemptEnd::Ended { outcome: Outcome::JobError, detail: Some(d) } if d.contains("status 3")));
+        assert!(matches!(exec_outcome(Exit::Code(1), Intent::Proceed, None, None, false), AttemptEnd::Ended { outcome: Outcome::BrowserCrashed, .. }));
+        assert!(matches!(exec_outcome(Exit::Signal(15), Intent::Proceed, None, Some(Duration::from_secs(2)), true), AttemptEnd::Ended { outcome: Outcome::JobError, detail: Some(d) } if d.contains("timed out after 2s")));
+        assert!(matches!(exec_outcome(Exit::Signal(15), Intent::Cancel, None, None, true), AttemptEnd::Ended { outcome: Outcome::Cancelled, .. }));
+        assert!(matches!(exec_outcome(ok, Intent::Cancel, None, None, true), AttemptEnd::Ended { outcome: Outcome::Cancelled, .. }), "a cancel wins over a late clean exit");
+    }
+
+    #[test]
+    fn a_dead_session_and_a_full_run_each_name_their_own_end() {
+        let fault = exec_outcome(Exit::Signal(9), Intent::Fault, Some("compositor exited unexpectedly"), None, false);
+        assert!(matches!(fault, AttemptEnd::Ended { outcome: Outcome::BrowserCrashed, detail: Some(d) } if d.contains("compositor")));
+        let storage = exec_outcome(Exit::Code(0), Intent::Storage, None, None, true);
+        assert!(matches!(storage, AttemptEnd::Ended { outcome: Outcome::JobError, detail: Some(d) } if d.contains("MiB bound")));
+        let grab_fault = grab_outcome(None, None, Intent::Fault, Some("browser exited unexpectedly"), Exit::Code(1), false);
+        assert!(matches!(&grab_fault, GrabVerdict::Settle(AttemptEnd::Ended { outcome: Outcome::BrowserCrashed, detail: Some(d) }) if d.contains("browser")));
+        assert_eq!(outcome_of(grab_outcome(None, None, Intent::Storage, None, Exit::Code(1), true)), Some(Outcome::JobError));
     }
 
     #[test]
     fn a_grab_success_is_verified_before_it_counts() {
-        assert_eq!(grab_outcome(Some(&finished("succeeded", "crawl completed")), None, Intent::Proceed, Exit::Code(0), true), GrabVerdict::Verify);
+        assert_eq!(grab_outcome(Some(&finished("succeeded", "crawl completed")), None, Intent::Proceed, None, Exit::Code(0), true), GrabVerdict::Verify);
     }
 
     #[test]
     fn a_paused_grab_is_resumable_and_a_cancelled_one_is_not() {
-        let paused = grab_outcome(Some(&finished("cancelled", "cancel requested")), Some(&challenge()), Intent::Pause, Exit::Code(0), true);
+        let paused = grab_outcome(Some(&finished("cancelled", "cancel requested")), Some(&challenge()), Intent::Pause, None, Exit::Code(0), true);
         assert!(matches!(paused, GrabVerdict::Settle(AttemptEnd::Paused { .. })));
-        let cancelled = grab_outcome(Some(&finished("cancelled", "cancel requested")), None, Intent::Cancel, Exit::Code(0), true);
+        let cancelled = grab_outcome(Some(&finished("cancelled", "cancel requested")), None, Intent::Cancel, None, Exit::Code(0), true);
         assert_eq!(outcome_of(cancelled), Some(Outcome::Cancelled));
-        let interrupted = grab_outcome(Some(&finished("interrupted", "SIGTERM")), None, Intent::Proceed, Exit::Code(130), true);
+        let interrupted = grab_outcome(Some(&finished("interrupted", "SIGTERM")), None, Intent::Proceed, None, Exit::Code(130), true);
         assert_eq!(outcome_of(interrupted), Some(Outcome::Interrupted));
     }
 
     #[test]
     fn a_failed_grab_names_the_browser_the_site_or_the_job() {
         let failed = finished("failed", "1 site failed");
-        assert_eq!(outcome_of(grab_outcome(Some(&failed), None, Intent::Proceed, Exit::Code(1), false)), Some(Outcome::BrowserCrashed));
-        assert_eq!(outcome_of(grab_outcome(Some(&failed), Some(&challenge()), Intent::Proceed, Exit::Code(1), true)), Some(Outcome::SiteRejected));
+        assert_eq!(outcome_of(grab_outcome(Some(&failed), None, Intent::Proceed, None, Exit::Code(1), false)), Some(Outcome::BrowserCrashed));
+        assert_eq!(outcome_of(grab_outcome(Some(&failed), Some(&challenge()), Intent::Proceed, None, Exit::Code(1), true)), Some(Outcome::SiteRejected));
         let login = Interaction { reason: "login".into(), url: "http://site/login".into() };
-        assert_eq!(outcome_of(grab_outcome(Some(&failed), Some(&login), Intent::Proceed, Exit::Code(1), true)), Some(Outcome::LoginRequired));
+        assert_eq!(outcome_of(grab_outcome(Some(&failed), Some(&login), Intent::Proceed, None, Exit::Code(1), true)), Some(Outcome::LoginRequired));
         let waf = finished("failed", "page is behind a bot-protection challenge");
-        assert_eq!(outcome_of(grab_outcome(Some(&waf), None, Intent::Proceed, Exit::Code(1), true)), Some(Outcome::SiteRejected));
-        assert_eq!(outcome_of(grab_outcome(Some(&failed), None, Intent::Proceed, Exit::Code(1), true)), Some(Outcome::JobError));
-        assert_eq!(outcome_of(grab_outcome(None, None, Intent::Proceed, Exit::Signal(9), true)), Some(Outcome::JobError));
+        assert_eq!(outcome_of(grab_outcome(Some(&waf), None, Intent::Proceed, None, Exit::Code(1), true)), Some(Outcome::SiteRejected));
+        assert_eq!(outcome_of(grab_outcome(Some(&failed), None, Intent::Proceed, None, Exit::Code(1), true)), Some(Outcome::JobError));
+        assert_eq!(outcome_of(grab_outcome(None, None, Intent::Proceed, None, Exit::Signal(9), true)), Some(Outcome::JobError));
     }
 
     #[test]
@@ -833,6 +979,104 @@ mod tests {
         assert_eq!(parse_event(r#"{"type":"heartbeat"}"#), Ok(GrabEvent::Other));
         assert!(parse_event(r#"{"type":"progress","pages_done":2}"#).is_err());
         assert!(parse_event("not json").is_err());
+    }
+
+    fn gc_home(tag: &str) -> Paths {
+        let home = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../.work/tmp/gc-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("runs")).unwrap();
+        Paths { home }
+    }
+
+    fn stored_run(store: &mut Store, session: &str, ended_ms: i64, end: AttemptEnd) -> i64 {
+        let session = bctl_core::SessionName::new(session).unwrap();
+        let profile = bctl_core::ProfileName::new("personal").unwrap();
+        if store.session(&session).is_err() {
+            store.create_session(&session, &profile, "helium", bctl_core::Resources::DEFAULT, &[]).unwrap();
+        }
+        let spec = bctl_core::NewRun {
+            session,
+            job: None,
+            kind: RunKind::Exec,
+            profile,
+            image: "helium".into(),
+            image_digest: "sha256:0".into(),
+            browser_version: "Chrome/156".into(),
+            config: "{}".into(),
+            input_digest: "sha256:1".into(),
+            created_ms: 1,
+        };
+        let (id, attempt) = store.create_run(&spec).unwrap();
+        store.finish_attempt(attempt, &end, ended_ms).unwrap();
+        id
+    }
+
+    fn write_run(paths: &Paths, id: i64, bytes: usize) {
+        let dir = paths.run_dir(id).join("output");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("artifact"), vec![b'x'; bytes]).unwrap();
+    }
+
+    #[test]
+    fn failure_records_expire_after_a_week_and_other_states_do_not() {
+        let paths = gc_home("retention");
+        let mut store = Store::open(&paths.home.join("state.db")).unwrap();
+        let day = 24 * 60 * 60 * 1000;
+        let now = 10 * day;
+        let old_failure = stored_run(&mut store, "old-failure", now - 8 * day, ended(Outcome::JobError, "boom"));
+        let old_success = stored_run(&mut store, "old-success", now - 8 * day, AttemptEnd::Ended { outcome: Outcome::Succeeded, detail: None });
+        let recent = stored_run(&mut store, "recent-failure", now - day, ended(Outcome::JobError, "boom"));
+        let paused = stored_run(&mut store, "paused", now - 30 * day, AttemptEnd::Paused { detail: "a page boundary".into() });
+        for id in [old_failure, old_success, recent, paused] {
+            write_run(&paths, id, 16);
+        }
+
+        let report = gc_with_limits(&paths, &mut store, now, FAILURE_RETENTION_MS, u64::MAX).unwrap();
+        assert_eq!(report.expired, vec![old_failure]);
+        assert!(store.run(old_failure).is_err(), "the expired failure's record is gone");
+        assert!(!paths.run_dir(old_failure).exists(), "the expired failure's files are gone");
+        for kept in [old_success, recent, paused] {
+            assert!(store.run(kept).is_ok(), "run {kept} must be retained");
+            assert!(paths.run_dir(kept).exists(), "run {kept}'s files must be retained");
+        }
+        fs::remove_dir_all(&paths.home).unwrap();
+    }
+
+    #[test]
+    fn storage_gc_evicts_the_oldest_ended_runs_above_the_cap_and_never_a_paused_one() {
+        let paths = gc_home("cap");
+        let mut store = Store::open(&paths.home.join("state.db")).unwrap();
+        let day = 24 * 60 * 60 * 1000;
+        let now = 10 * day;
+        let oldest = stored_run(&mut store, "oldest", now - 3 * day, AttemptEnd::Ended { outcome: Outcome::Succeeded, detail: None });
+        let middle = stored_run(&mut store, "middle", now - 2 * day, AttemptEnd::Ended { outcome: Outcome::Succeeded, detail: None });
+        let newest = stored_run(&mut store, "newest", now - day, AttemptEnd::Ended { outcome: Outcome::Succeeded, detail: None });
+        let paused = stored_run(&mut store, "paused", now - 4 * day, AttemptEnd::Paused { detail: "a page boundary".into() });
+        for id in [oldest, middle, newest, paused] {
+            write_run(&paths, id, 1000);
+        }
+
+        let report = gc_with_limits(&paths, &mut store, now, FAILURE_RETENTION_MS, 1500).unwrap();
+        assert_eq!(report.evicted, vec![oldest, middle]);
+        assert!(store.run(oldest).is_err() && !paths.run_dir(oldest).exists());
+        assert!(store.run(newest).is_ok() && paths.run_dir(newest).exists());
+        assert!(store.run(paused).is_ok() && paths.run_dir(paused).exists(), "a paused run is resumable and is never evicted");
+        assert_eq!(report.bytes, 2000, "the newest run and the paused run remain");
+        fs::remove_dir_all(&paths.home).unwrap();
+    }
+
+    #[test]
+    fn storage_gc_removes_run_directories_no_record_names() {
+        let paths = gc_home("orphan");
+        let mut store = Store::open(&paths.home.join("state.db")).unwrap();
+        let orphan = paths.run_dir(999);
+        fs::create_dir_all(orphan.join("output")).unwrap();
+        fs::write(orphan.join("output/left-behind"), b"x").unwrap();
+
+        let report = gc_with_limits(&paths, &mut store, 10, FAILURE_RETENTION_MS, RUNS_STORAGE_CAP_BYTES).unwrap();
+        assert_eq!(report.orphans, vec![999]);
+        assert!(!orphan.exists());
+        fs::remove_dir_all(&paths.home).unwrap();
     }
 
     #[test]

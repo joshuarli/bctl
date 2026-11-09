@@ -78,6 +78,13 @@ INSERT OR IGNORE INTO element_refs (id, next) VALUES (1, 1);
 
 const LIVE_STATES: &str = "('starting', 'running', 'needs-interaction')";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedRun {
+    pub id: i64,
+    pub state: AttemptState,
+    pub ended_ms: Option<i64>,
+}
+
 #[derive(Debug)]
 pub enum StoreError {
     Sqlite(rusqlite::Error),
@@ -395,6 +402,35 @@ impl Store {
         let mut attempts = stmt.query_map([id], raw_attempt)?.collect::<Result<Vec<_>, _>>()?.into_iter().map(attempt_record).collect::<Result<Vec<_>, _>>()?;
         let current = attempts.pop().ok_or_else(|| StoreError::Corrupt(format!("run {id} has no attempts")))?;
         Ok(RunRecord { id, spec: run_spec(spec)?, previous: attempts, current })
+    }
+
+    pub fn ended_runs(&self) -> Result<Vec<EndedRun>, StoreError> {
+        let mut stmt = self.db.prepare(
+            "SELECT r.id, a.state, a.ended_ms FROM runs r
+             JOIN attempts a ON a.run = r.id
+             WHERE a.number = (SELECT MAX(number) FROM attempts WHERE run = r.id)
+               AND a.state NOT IN ('starting', 'running', 'needs-interaction', 'paused')
+             ORDER BY COALESCE(a.ended_ms, 0), r.id",
+        )?;
+        let raw = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter()
+            .map(|(id, state, ended_ms)| Ok(EndedRun { id, state: parse_attempt_state(&state)?, ended_ms }))
+            .collect()
+    }
+
+    pub fn run_ids(&self) -> Result<Vec<i64>, StoreError> {
+        let mut stmt = self.db.prepare("SELECT id FROM runs ORDER BY id")?;
+        Ok(stmt.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn delete_run(&mut self, id: i64) -> Result<(), StoreError> {
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM attempts WHERE run = ?1", [id])?;
+        tx.execute("DELETE FROM runs WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn attempts(&self) -> Result<Vec<AttemptRecord>, StoreError> {

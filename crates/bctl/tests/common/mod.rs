@@ -17,14 +17,16 @@ pub struct Error {
     pub code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Session {
     pub name: String,
     pub state: String,
     pub generation: u64,
     pub stage: Option<String>,
+    pub failure: Option<String>,
     pub input: Option<String>,
     pub machine: Option<String>,
+    pub vnc_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +38,12 @@ pub struct Response {
 #[derive(Deserialize)]
 pub struct Machine {
     pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct MachineStatus {
+    pub state: String,
+    pub pid: Option<u32>,
 }
 
 /// The image every VM test boots: `BCTL_TEST_IMAGE`, or helium, the default image.
@@ -96,6 +104,36 @@ impl Home {
         let machines: Vec<Machine> = json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
         let prefix = format!("bctl-{}-", self.prefix());
         machines.into_iter().map(|m| m.name).filter(|n| n.starts_with(&prefix)).collect()
+    }
+
+    pub fn smolvm(&self, args: &[&str]) -> Output {
+        Command::new(self.path.join("runtime/smolvm/smolvm")).args(args).output().unwrap()
+    }
+
+    pub fn machine_status(&self, machine: &str) -> MachineStatus {
+        let output = self.smolvm(&["machine", "status", "--name", machine, "--json"]);
+        json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|_| panic!("machine status {machine}: {output:?}"))
+    }
+
+    pub fn machine_logs(&self, machine: &str) -> String {
+        let output = self.smolvm(&["machine", "logs", "--name", machine, "--tail", "40"]);
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    pub fn guest_shell(&self, machine: &str, script: &str) -> Output {
+        let busybox = self.path.join("runtime/smolvm/agent-rootfs/bin/busybox");
+        assert!(busybox.is_file(), "no busybox at {} for guest failure injection", busybox.display());
+        let copy = self.smolvm(&["machine", "cp", "--mode", "755", busybox.to_str().unwrap(), &format!("{machine}:/tmp/busybox")]);
+        assert_ok(&copy);
+        self.smolvm(&["machine", "exec", "--name", machine, "--", "/tmp/busybox", "sh", "-c", script])
+    }
+
+    pub fn kill_guest_process(&self, machine: &str, name: &str) {
+        let output = self.guest_shell(
+            machine,
+            &format!("pids=$(/tmp/busybox pidof {name}); test -n \"$pids\" || exit 3; for p in $pids; do kill -9 \"$p\" 2>/dev/null || true; done"),
+        );
+        assert_ok(&output);
     }
 }
 
@@ -268,6 +306,52 @@ pub fn http(port: u16, host: &str, request_line: &str, extra: &str) -> (u16, Str
     let _ = stream.read_to_string(&mut response);
     let status = response.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     (status, response)
+}
+
+pub fn process_alive(pid: u32) -> bool {
+    Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().unwrap().success()
+}
+
+pub fn port_open(port: u16) -> bool {
+    TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(500)).is_ok()
+}
+
+pub fn browser_answers(home: &Home, session: &str) -> bool {
+    let output = home.bctl(&["cdp-url", session]);
+    if !output.status.success() {
+        return false;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let Some(host) = url.strip_prefix("http://") else { return false };
+    let Some(port) = host.rsplit(':').next().and_then(|port| port.parse::<u16>().ok()) else { return false };
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return false };
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    if write!(stream, "GET /json/version HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response.starts_with("HTTP/1.1 200") && response.contains("\"Browser\"")
+}
+
+pub fn open_vnc_viewer(port: u16, address: &str, headers: &str, session: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        stream,
+        "GET /api/sessions/{session}/vnc HTTP/1.1\r\nHost: {address}\r\n{headers}\
+         Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert!(stream.read(&mut byte).unwrap() != 0, "the live view closed during its upgrade");
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head);
+    assert!(head.lines().next().is_some_and(|line| line.contains(" 101 ")), "{head}");
+    stream
 }
 
 /// Signs a dashboard viewer in and returns the headers that act as it, plus the dashboard's address.

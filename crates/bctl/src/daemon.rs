@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -7,11 +7,11 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bctl_core::{
-    Action, AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Generation, Interaction, LiveState, MachineName, NewRun, Outcome as RunOutcome,
-    ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
+    Action, AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Generation, Interaction, LiveState, MachineName, MachineState, NewRun,
+    Outcome as RunOutcome, ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
 };
 use bctl_runtime_smolvm::{InputSupport, LaunchSpec, RuntimeError, SmolVm, cdp_socket_browser};
 use miniserde::json;
@@ -28,6 +28,10 @@ use crate::tabs::{self, Browsers, TabCommand};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
+const HEALTH_FAILURES: u32 = 3;
+const FAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+const GC_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Observed {
@@ -41,6 +45,7 @@ pub(crate) struct Daemon {
     runtime: SmolVm,
     observed: Mutex<HashMap<SessionName, Observed>>,
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
+    busy: Mutex<HashSet<SessionName>>,
     pub(crate) gateway: SharedGateway,
     pub(crate) browsers: Browsers,
     pub(crate) authority: Authorities,
@@ -77,6 +82,7 @@ pub fn run(paths: Paths) -> Result<(), String> {
         store: Mutex::new(store),
         observed: Mutex::default(),
         live: Mutex::default(),
+        busy: Mutex::default(),
         gateway: Mutex::default(),
         browsers: Mutex::default(),
         authority: Authorities::default(),
@@ -86,6 +92,9 @@ pub fn run(paths: Paths) -> Result<(), String> {
     } else {
         eprintln!("bctl daemon: no runtime at {}; sessions cannot start until it exists", daemon.paths.runtime().display());
     }
+    daemon.collect_garbage();
+    let watcher = Arc::clone(&daemon);
+    thread::spawn(move || watcher.watch_health());
 
     let socket = daemon.paths.socket();
     let _ = fs::remove_file(&socket);
@@ -185,12 +194,142 @@ impl Ledger for RunLedger {
         }
         drop(sessions);
         gateway::revoke_cdp_url(&self.daemon, &self.cdp_url);
+        self.daemon.collect_garbage();
+    }
+}
+
+pub(crate) struct Busy<'a> {
+    daemon: &'a Daemon,
+    session: SessionName,
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        lock(&self.daemon.busy).remove(&self.session);
     }
 }
 
 impl Daemon {
     pub(crate) fn store(&self) -> MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn busy(&self, session: &SessionName) -> Busy<'_> {
+        lock(&self.busy).insert(session.clone());
+        Busy { daemon: self, session: session.clone() }
+    }
+
+    fn is_busy(&self, session: &SessionName) -> bool {
+        lock(&self.busy).contains(session)
+    }
+
+    fn collect_garbage(&self) {
+        let mut store = self.store();
+        match runs::gc(&self.paths, &mut store, now_ms()) {
+            Ok(report) if !(report.expired.is_empty() && report.evicted.is_empty() && report.orphans.is_empty()) => eprintln!(
+                "bctl daemon: gc expired {:?}, evicted {:?}, removed orphan dirs {:?}; runs use {} bytes",
+                report.expired, report.evicted, report.orphans, report.bytes
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("bctl daemon: gc: {error}"),
+        }
+    }
+
+    fn watch_health(self: &Arc<Self>) {
+        let mut failures: HashMap<(SessionName, Generation), u32> = HashMap::new();
+        let mut last_gc = Instant::now();
+        loop {
+            thread::sleep(HEALTH_INTERVAL);
+            if last_gc.elapsed() >= GC_INTERVAL {
+                last_gc = Instant::now();
+                self.collect_garbage();
+            }
+            let sessions = self.store().sessions().unwrap_or_default();
+            let ready: HashSet<(SessionName, Generation)> =
+                sessions.iter().filter(|s| s.state == SessionState::Ready).map(|s| (s.name.clone(), s.generation)).collect();
+            failures.retain(|key, _| ready.contains(key));
+            for record in sessions.into_iter().filter(|s| s.state == SessionState::Ready) {
+                if self.is_busy(&record.name) {
+                    continue;
+                }
+                let Some(socket) = self.cdp_socket(&record.name) else { continue };
+                if cdp_socket_browser(&socket).is_some() {
+                    failures.remove(&(record.name.clone(), record.generation));
+                    continue;
+                }
+                let key = (record.name.clone(), record.generation);
+                let count = failures.entry(key.clone()).or_default();
+                *count += 1;
+                if *count < HEALTH_FAILURES {
+                    continue;
+                }
+                failures.remove(&key);
+                let Ok(current) = self.store().session(&record.name) else { continue };
+                if current.state != SessionState::Ready || current.generation != record.generation || self.is_busy(&record.name) {
+                    continue;
+                }
+                let machine = MachineName { session: record.name.clone(), generation: record.generation };
+                let cause = self.fault_cause(&machine);
+                self.fail_session(&current, &cause);
+            }
+        }
+    }
+
+    fn fault_cause(&self, machine: &MachineName) -> String {
+        if let Ok(logs) = self.runtime.logs(machine)
+            && let Some(line) = logs
+                .lines()
+                .rev()
+                .find(|line| line.starts_with("bctl-guest: ") && (line.contains("exited unexpectedly") || line.contains("signal ")))
+        {
+            return line.trim_start_matches("bctl-guest: ").trim().to_string();
+        }
+        match self.runtime.list() {
+            Ok(machines) if machines.iter().any(|m| m.name == machine.to_string() && m.state == MachineState::Running) => {
+                format!("the browser on {machine} stopped answering CDP")
+            }
+            _ => format!("machine {machine} stopped unexpectedly"),
+        }
+    }
+
+    fn fail_session(&self, record: &SessionRecord, cause: &str) {
+        eprintln!("bctl daemon: session {} failed: {cause}", record.name);
+        self.stop_live_run_for(&record.name, cause);
+        self.authority.of(&record.name, Control::reset);
+        if let Err(error) = self.store().transition(&record.name, record.generation, SessionState::Failed, Some(cause))
+            && !matches!(error, StoreError::StaleGeneration { .. })
+        {
+            eprintln!("bctl daemon: cannot record {}'s failure: {error}", record.name);
+        }
+        let machine = MachineName { session: record.name.clone(), generation: record.generation };
+        if let Err(error) = self.runtime.remove(&machine) {
+            eprintln!("bctl daemon: could not remove failed {machine}: {error}");
+        }
+        self.discard_endpoints(&machine);
+        tabs::close(self, &record.name);
+        gateway::revoke_cdp(self, &record.name);
+        self.authority.of(&record.name, Control::reset);
+        self.observe(&record.name, |o| *o = Observed::default());
+    }
+
+    fn stop_live_run_for(&self, session: &SessionName, cause: &str) {
+        let Some(live) = lock(&self.live).get(session).cloned() else { return };
+        live.fault(cause);
+        let deadline = Instant::now() + FAULT_STOP_TIMEOUT;
+        while lock(&self.live).get(session).is_some_and(|current| current.attempt == live.attempt) {
+            if Instant::now() >= deadline {
+                eprintln!("bctl daemon: run {} did not end within {FAULT_STOP_TIMEOUT:?} of its session failing", live.run);
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn discard_endpoints(&self, machine: &MachineName) {
+        let socket = self.paths.cdp_socket(&machine.to_string());
+        if let Some(dir) = socket.parent() {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     fn observe(&self, session: &SessionName, update: impl FnOnce(&mut Observed)) {
@@ -475,6 +614,13 @@ impl Daemon {
         }
 
         let configured = self.store().session(name).map_err(store_failure)?;
+        if configured.state == SessionState::Failed {
+            let previous = MachineName { session: name.clone(), generation: configured.generation };
+            if let Err(error) = self.runtime.remove(&previous) {
+                eprintln!("bctl daemon: could not remove {previous} from its failed start: {error}");
+            }
+            self.discard_endpoints(&previous);
+        }
         let Resources { viewport: [width, height], cpus, memory_mib } = configured.resources;
         let display = (u16::try_from(width).map_err(internal)?, u16::try_from(height).map_err(internal)?);
         let cpus = u8::try_from(cpus).map_err(internal)?;
@@ -532,6 +678,7 @@ impl Daemon {
     }
 
     fn pause_session(&self, name: &SessionName) -> Outcome {
+        let _busy = self.busy(name);
         let record = self.store().session(name).map_err(store_failure)?;
         if record.state != SessionState::Ready {
             return Err(Response::failure(
@@ -551,6 +698,7 @@ impl Daemon {
     }
 
     fn resume_session(&self, name: &SessionName) -> Outcome {
+        let _busy = self.busy(name);
         let record = self.store().session(name).map_err(store_failure)?;
         if record.state != SessionState::Paused {
             return Err(Response::failure(
@@ -679,10 +827,12 @@ impl Daemon {
         if let Err(e) = self.runtime.remove(machine) {
             eprintln!("bctl daemon: could not remove {machine}: {e}");
         }
+        self.discard_endpoints(machine);
         let _ = self.store().transition(&machine.session, machine.generation, SessionState::Failed, Some(&error.to_string()));
     }
 
     fn down(&self, name: &SessionName) -> Outcome {
+        let _busy = self.busy(name);
         self.stop_live_run(name);
         gateway::revoke_cdp(self, name);
         tabs::close(self, name);
@@ -691,6 +841,11 @@ impl Daemon {
         match record.state {
             SessionState::Stopped => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
             SessionState::Failed => {
+                let machine = MachineName { session: name.clone(), generation: record.generation };
+                if let Err(error) = self.runtime.remove(&machine) {
+                    eprintln!("bctl daemon: could not remove failed {machine}: {error}");
+                }
+                self.discard_endpoints(&machine);
                 self.store().transition(name, record.generation, SessionState::Stopped, record.failure.as_deref()).map_err(store_failure)?;
                 let record = self.store().session(name).map_err(store_failure)?;
                 return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() });
@@ -960,7 +1115,7 @@ impl Daemon {
         let generation: Generation = record.generation;
         match self.runtime.remove(machine) {
             Ok(()) => {
-                let _ = fs::remove_dir_all(self.paths.cdp_socket(&machine.to_string()).parent().expect("a socket path has a directory"));
+                self.discard_endpoints(machine);
                 self.observe(&record.name, |o| *o = Observed::default());
                 let _ = self.store().transition(&record.name, generation, SessionState::Stopped, None);
             }
