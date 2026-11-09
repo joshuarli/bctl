@@ -1807,6 +1807,16 @@ static boolean pagecache_node_unmap_intersections(pagecache_node pn, address_spa
     return shared_mappings;
 }
 
+void pagecache_node_move_mapping(pagecache_node pn, address_space as, range from, range to,
+                                 u64 node_offset, boolean shared)
+{
+    pagecache_map pcm = pagecache_node_new_mapping(pn, as, to, node_offset, shared);
+    pagecache_lock_mappings();
+    pagecache_node_unmap_intersections(pn, as, from);
+    pagecache_add_mapping(pn, pcm);
+    pagecache_unlock_mappings();
+}
+
 /* A null address space scans the mappings of every address space. */
 void pagecache_node_scan(pagecache_node pn, address_space as, range q /* bytes */,
                          status_handler complete)

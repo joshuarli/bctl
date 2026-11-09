@@ -775,6 +775,22 @@ static vmap allocate_vmap_locked(rangemap rm, struct vmap *k)
     return vm;
 }
 
+static void vmap_hold_backing(vmap k)
+{
+    if (k->fd && !(k->flags & VMAP_FLAG_TAIL_BSS))
+        fetch_and_add(&k->fd->refcnt, 1);
+    if (k->shared_anon)
+        refcount_reserve(&k->shared_anon->refcount);
+}
+
+static void vmap_release_backing(vmap k)
+{
+    if (k->shared_anon)
+        refcount_release(&k->shared_anon->refcount);
+    if (k->fd && !(k->flags & VMAP_FLAG_TAIL_BSS))
+        fdesc_put(k->fd);
+}
+
 vmap allocate_vmap(process p, range q, struct vmap k)
 {
     k.node.r = q;
@@ -931,6 +947,8 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
         rv = -EINVAL;
         goto unlock_out;
     }
+    if (k.cache_node || k.shared_anon)
+        k.node_offset += old.start - old_vmap->node.r.start;
 
     range new;
     boolean remap_old = false;
@@ -980,6 +998,7 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
         }
     }
 
+    vmap_hold_backing(&k);
     process_remove_range_locked(p, old, false);
 
     /* remove mappings under fixed area */
@@ -988,7 +1007,9 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
 
     /* create new vmap with old attributes */
     k.node.r = new;
-    if (allocate_vmap_locked(p->vm->vmaps, &k) == INVALID_ADDRESS) {
+    vmap v = allocate_vmap_locked(p->vm->vmaps, &k);
+    vmap_release_backing(&k);
+    if (v == INVALID_ADDRESS) {
         msg_err("%s: failed to allocate vmap", func_ss);
         rv = -ENOMEM;
         goto unlock_out;
@@ -1001,6 +1022,11 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
                    new.start, old);
         address_space_remap_pages(p->vm->as, new.start, old.start, range_span(old));
     }
+    vmap_unlock(p);
+    if (k.cache_node)
+        pagecache_node_move_mapping(k.cache_node, p->vm->as, old, new, k.node_offset,
+                                    !!(k.flags & VMAP_FLAG_SHARED));
+    return rv;
   unlock_out:
     vmap_unlock(p);
     return rv;

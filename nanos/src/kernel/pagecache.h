@@ -62,6 +62,8 @@ boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physic
 
 void pagecache_node_unmap_pages(pagecache_node pn, address_space as, range v /* bytes */,
                                 u64 node_offset, boolean del_mappings);
+void pagecache_node_move_mapping(pagecache_node pn, address_space as, range from, range to,
+                                 u64 node_offset, boolean shared);
 
 pagecache_volume pagecache_allocate_volume(u64 length, int block_order);
 
