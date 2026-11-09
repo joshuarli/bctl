@@ -11,22 +11,23 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** G1.1 (see `git log`).
-- **Accepted:** G0 (gate green from a fresh clone). H. G1.1 (per-process
-  page tables, eager `fork`, per-process exit, cross-process
-  epoll/select/poll delivery: `vm_isolation` 20/20 on 1 and 2 vCPUs, the
-  sharing build fails it, `poll_xproc` 40/40). G5 prep
-  (`dev/test.sh helium-native` 11/11). Probe: native 55/55 and raw 6/6; on
-  Nanos 5/55 and 2–3/6.
-  **Red:** none. **Parked:** none.
-- **Designs:** G1 `nanos/docs/chromium-compat.md`, G2/G3
-  `nanos/docs/sandbox-design.md` (about 4,700 LoC of kernel code and 2,950
-  of tests, no blocker).
-- **Next:** G1.2 (COW, `wait4`/zombies, `vfork`, fd table semantics) in
-  parallel with G2.1 (SCM data, credentials, MSG flags) and the seccomp core
-  (validator and interpreter, not yet wired in); then G1.3 `execve`, G1.4
-  process signals, then the rest of G2/G3 fanned out by the design table.
-- **Gate matrix:** G0 PASS · H PASS · G1 NOT RUN (G1.1 accepted) · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
+- **Last accepted revision:** G1.2 (see `git log`).
+- **Accepted:** G0. H. G1.1. G1.2 (`process_vm`/`fdtable` split, COW
+  fork, zombies and `wait4`/`waitid`, reparenting, init is pid 1, `kill`
+  across processes, `RLIMIT_NPROC`, Linux clone-flag validation,
+  `CLONE_VM`/`vfork`; fixed a 4 KiB per-fork leak and a page-cache bug that
+  zeroed `.data` in children; `cow_stress` 20/20 static and dynamic on 1 and
+  2 vCPUs). X1 external corpus (20 gVisor tests, 30 records, native 30/30,
+  regression-guarded). G5 prep. Probe on Nanos: 13/55, raw 4/6.
+  **Red:** `gvisor_wait` `SignalExit` hangs about 1 in 20 runs on 2 vCPUs
+  (SIGKILL right after fork is lost or the parent's wakeup is); owned by
+  the G1.3 lane, first commit.
+  **Parked:** none.
+- **Running lane:** G1.3 (`.work/wt/g1.3`): the kill race, then `execve`
+  with close-on-exec (also fixes `F_GETFD` never reporting `FD_CLOEXEC`).
+- **Next:** G1.4 process signals, then the G2/G3 fan-out by
+  `nanos/docs/sandbox-design.md` §5.
+- **Gate matrix:** G0 PASS · H PASS · G1 NOT RUN (G1.1, G1.2 accepted) · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
