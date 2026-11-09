@@ -1,4 +1,5 @@
 use std::fmt;
+use std::ops::Range;
 use std::path::Path;
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
@@ -10,7 +11,7 @@ use crate::state::{
     SessionState,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS profiles (
@@ -68,6 +69,11 @@ CREATE TABLE IF NOT EXISTS selected_targets (
     target TEXT NOT NULL CHECK (target <> ''),
     url TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS element_refs (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    next INTEGER NOT NULL CHECK (next >= 1)
+) STRICT;
+INSERT OR IGNORE INTO element_refs (id, next) VALUES (1, 1);
 ";
 
 const LIVE_STATES: &str = "('starting', 'running', 'needs-interaction')";
@@ -433,6 +439,14 @@ impl Store {
             params![name.as_str(), to_sql_generation(generation)?, target],
         )?;
         Ok(())
+    }
+
+    /// Hands out `count` element ref numbers that no earlier call on this database returned, so a restarted daemon never reissues one.
+    pub fn reserve_element_refs(&mut self, count: u64) -> Result<Range<u64>, StoreError> {
+        let count = i64::try_from(count).map_err(|_| StoreError::Corrupt(format!("cannot reserve {count} element refs")))?;
+        let next: i64 = self.db.query_row("UPDATE element_refs SET next = next + ?1 WHERE id = 1 RETURNING next", [count], |row| row.get(0))?;
+        let end = u64::try_from(next).map_err(|_| StoreError::Corrupt(format!("element ref counter {next}")))?;
+        Ok(end - count as u64..end)
     }
 
     /// Applies the record-keeping half of a reconciliation plan. Stopping stale machines is the caller's effect.
@@ -893,6 +907,22 @@ mod tests {
         assert_eq!(store.run(run).unwrap().id, run);
         store.select_target(&name("research"), generation, &target("A")).unwrap();
         assert_eq!(store.selected_target(&name("research"), generation).unwrap(), Some(target("A")));
+    }
+
+    #[test]
+    fn element_ref_numbers_are_never_handed_out_twice_even_after_a_reopen_or_an_upgrade() {
+        let mut store = store_with(&[]);
+        let first = store.reserve_element_refs(256).unwrap();
+        let second = store.reserve_element_refs(3).unwrap();
+        assert_eq!((first, second.clone()), (1..257, 257..260));
+        let Store { db } = store;
+        let mut store = Store::init(db).unwrap();
+        assert_eq!(store.reserve_element_refs(1).unwrap(), 260..261);
+
+        let Store { db } = store;
+        db.execute_batch("DROP TABLE element_refs; PRAGMA user_version = 2;").unwrap();
+        let mut store = Store::init(db).unwrap();
+        assert_eq!(store.reserve_element_refs(2).unwrap(), 1..3, "a version 2 database never handed out element refs");
     }
 
     const PRE_RUNS_SCHEMA: &str = "
