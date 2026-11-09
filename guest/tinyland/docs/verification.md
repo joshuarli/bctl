@@ -93,6 +93,13 @@ differential, 4 storm with the idle timing case ignored), the shared
 protocol suite (13), and all tinyland suites (46 library, 1 CLI). The idle
 timing case stays ignored; it needs a `perf-gate-ready` host measurement.
 
+## WLCS
+
+`harness/wlcs/run.sh` builds Wayland Conformance Test Suite and a test-only
+cdylib adapter in an arm64 Alpine container and runs the suite against
+tinyland's `headless` feature. Neither ships in the guest. Method and results
+are in `../../../docs/research/tinyland-wlcs.md`.
+
 ## Presentation
 
 Modeset tries atomic then legacy. Capability fallback allows ENOSYS,
