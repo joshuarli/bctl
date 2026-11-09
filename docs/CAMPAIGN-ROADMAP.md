@@ -220,7 +220,12 @@ Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
   SmolVM's own: virtio-gpu scanout to host framebuffer to RFB and WebSocket
   (`src/agent/vnc.rs`), with input through virtio-input (`src/agent/input.rs`).
   The guest runs no VNC server.
-- Prescribed: the runtime is the official SmolVM 1.31.4 macOS bundle, taken by
+- Owner 2026-11-09: bctl vendors SmolVM at the upstream tip and builds it
+  from source, so it can fix SmolVM itself (the 512-connection relay limit,
+  pause and checkpoint for bctl's sessions) before anything is reported
+  upstream. Nothing is reported upstream until bctl's fix exists. This
+  supersedes the next entry once the vendored build passes the VM suites.
+- Prescribed (legacy, until the vendored build lands): the runtime is the official SmolVM 1.31.4 macOS bundle, taken by
   digest, with only `libkrun.dylib` rebuilt (`runtime/build.sh`,
   `runtime/runtime.toml`). The bundle already enables display and input, but
   its venus-only virglrenderer rejects `RESOURCE_CREATE_2D` with `EINVAL`, so
