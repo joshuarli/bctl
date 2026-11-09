@@ -253,6 +253,9 @@ Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
 - Delegated: guest base. Prefer an Alpine aarch64 rootfs carrying SmolVM's
   static musl agent. Fall back to niceforge's Debian 13 agent rootfs if SmolVM
   rejects a non-Debian base, and record which in `docs/image-contract.md`.
+- Owner 2026-11-08: Rust cryptography uses graviola. Never `aws-lc-rs`,
+  `aws-lc-sys`, or `ring`, directly or through a dependency's default
+  features; a crate that needs a TLS or crypto provider gets graviola's.
 - Delegated: Rust crates (CLI parsing, HTTP, SQLite, WebSocket). Each needs a
   one-line reason in its commit body and must fit H1's binary-size gate.
 
@@ -854,7 +857,7 @@ WebRTC or a new video pipeline until H1 shows the VNC path inadequate; if
 it does, `algesten/str0m` (sans-I/O WebRTC, host side only) is the first
 candidate, but its rust-crypto provider pulls `aws-lc-rs` through `dimpl`'s
 `rcgen` feature and it has no video encoder, so a spike must prove a pure-Rust
-closure first (SmolVM's `/video` H.264 endpoint is evaluated
+closure first, with graviola as the crypto provider (SmolVM's `/video` H.264 endpoint is evaluated
 in H1 only if RFB fails the latency gate), recording, a workflow language,
 stealth or fingerprint patching in bctl (that belongs in chromium-build and
 Shadowdriver), and a general-purpose guest agent or init system. From the
