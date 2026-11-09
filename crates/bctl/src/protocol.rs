@@ -23,6 +23,9 @@ pub struct Request {
     pub element: Option<String>,
     /// For the `page-*` actions (`page-click` and the rest).
     pub action: Option<Box<ActionRequest>>,
+    /// For `page-batch`: the steps, each an object whose `action` names a page action (`click`, `fill`, ...)
+    /// and whose other fields are that action's [`ActionRequest`] fields.
+    pub batch: Option<Vec<json::Value>>,
 }
 
 /// A page action's element and arguments, as the CLI read them. Which fields apply depends on the op; the
@@ -170,9 +173,30 @@ pub enum Op {
     PageScreenshot,
     PageEval,
     PageDialog,
+    PageBatch,
 }
 
 impl Op {
+    /// The ops [`ActionRequest`] describes, which a batch may run.
+    pub const PAGE_ACTIONS: [Op; 16] = [
+        Op::PageGoto,
+        Op::PageClick,
+        Op::PageDblclick,
+        Op::PageFill,
+        Op::PageType,
+        Op::PagePress,
+        Op::PageHover,
+        Op::PageScroll,
+        Op::PageSelect,
+        Op::PageCheck,
+        Op::PageUncheck,
+        Op::PageWait,
+        Op::PageGet,
+        Op::PageScreenshot,
+        Op::PageEval,
+        Op::PageDialog,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Op::Ping => "ping",
@@ -213,6 +237,7 @@ impl Op {
             Op::PageScreenshot => "page-screenshot",
             Op::PageEval => "page-eval",
             Op::PageDialog => "page-dialog",
+            Op::PageBatch => "page-batch",
         }
     }
 
@@ -256,6 +281,7 @@ impl Op {
             Op::PageScreenshot,
             Op::PageEval,
             Op::PageDialog,
+            Op::PageBatch,
         ]
         .into_iter()
         .find(|op| op.as_str() == s)
@@ -417,6 +443,28 @@ pub struct PageView {
     pub snapshot: Option<SnapshotView>,
     pub element: Option<ElementView>,
     pub action: Option<ActionView>,
+    pub batch: Option<BatchView>,
+}
+
+/// For `page-batch`: the steps that ran, in order. A batch stops at its first failing step, so `ran` ends with
+/// that step when one failed; steps after it never ran. Nothing a step did is undone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchView {
+    /// The target every step acted on: the one selected when the batch began.
+    pub target: String,
+    /// How many steps the batch asked for.
+    pub steps: u32,
+    pub ran: Vec<StepView>,
+    pub elapsed_ms: u64,
+}
+
+/// One step of a batch: its result, or the error that stopped the batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepView {
+    pub action: String,
+    pub result: Option<ActionView>,
+    pub error: Option<ErrorBody>,
+    pub elapsed_ms: u64,
 }
 
 /// For the `page-*` actions: what was done, where, and what it cost. Fields an action does not produce are null.

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bctl_automation::{
     Acted, Action, ActionError, AttachError, Checked, Chord, ClickCount, Condition, Coverage, Dialog, DialogResponse, ElementRef, FieldValue, LoadState,
-    Locator, NodeValue, Occurrence, Outcome, Query, Read, Readiness, RefCounter, RefCounterError, RefError, Scroll, SnapshotError, SnapshotNode,
+    Locator, NodeValue, Occurrence, Outcome, Pages, Query, Read, Readiness, RefCounter, RefCounterError, RefError, Scroll, SnapshotError, SnapshotNode,
     SnapshotOptions, TargetScope, Tabs,
 };
 use bctl_cdp::CallError;
@@ -16,8 +16,8 @@ use miniserde::json;
 
 use crate::daemon::{Daemon, Refusal};
 use crate::protocol::{
-    ActionRequest, ActionView, CandidateView, DialogView, ElementView, ErrorBody, ErrorCode, NodeView, Op, PageView, Request, Response, SnapshotRequest,
-    SnapshotView,
+    ActionRequest, ActionView, BatchView, CandidateView, DialogView, ElementView, ErrorBody, ErrorCode, NodeView, Op, PageView, Request, Response,
+    SnapshotRequest, SnapshotView, StepView,
 };
 use crate::tabs::{self, SessionBindings, failure};
 
@@ -61,7 +61,7 @@ pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: PageComman
                 documents: snapshot.documents as u32,
                 cdp_calls: snapshot.cdp_calls,
             };
-            Ok(Response { page: Some(Box::new(PageView { snapshot: Some(view), element: None, action: None })), ..Response::empty() })
+            Ok(Response { page: Some(Box::new(PageView { snapshot: Some(view), ..PageView::default() })), ..Response::empty() })
         }
         PageCommand::Resolve => {
             let text = request.element.as_deref().unwrap_or_default();
@@ -77,7 +77,7 @@ pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: PageComman
                 role: accessible.role,
                 name: accessible.name,
             };
-            Ok(Response { page: Some(Box::new(PageView { snapshot: None, element: Some(view), action: None })), ..Response::empty() })
+            Ok(Response { page: Some(Box::new(PageView { element: Some(view), ..PageView::default() })), ..Response::empty() })
         }
     }
 }
@@ -346,13 +346,26 @@ pub(crate) fn act(daemon: &Daemon, session: &SessionName, op: Op, request: &Requ
     let browser = tabs::browser(daemon, session)?;
     let store = SessionBindings { daemon, session };
     let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
-    let acted = {
-        let mut pages = browser.pages.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        block_on(pages.act(&target, &action, &StoredRefCounter { daemon })).map_err(|e| action_failure(session, &target, e))?
-    };
+    let mut pages = browser.pages.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut view = run_step(daemon, session, &target, &mut pages, &Step { op, asked, action })?;
+    drop(pages);
+    view.elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(Response { page: Some(Box::new(PageView { action: Some(view), ..PageView::default() })), ..Response::empty() })
+}
+
+/// One page action, checked and ready to run.
+struct Step {
+    op: Op,
+    asked: ActionRequest,
+    action: Action,
+}
+
+fn run_step(daemon: &Daemon, session: &SessionName, target: &TargetScope, pages: &mut Pages, step: &Step) -> Result<ActionView, Refusal> {
+    let Step { op, asked, action } = step;
+    let acted = block_on(pages.act(target, action, &StoredRefCounter { daemon })).map_err(|e| action_failure(session, target, e))?;
     let Acted { on, outcome, cdp_calls, elapsed, .. } = acted;
     let mut view = ActionView {
-        action: op.as_str().trim_start_matches("page-").to_string(),
+        action: op_name(*op),
         target: target.target.to_string(),
         frame: on.as_ref().map(|on| on.frame.to_string()),
         element: on.and_then(|on| on.element).map(|e| e.to_string()),
@@ -385,14 +398,92 @@ pub(crate) fn act(daemon: &Daemon, session: &SessionName, op: Op, request: &Requ
         Outcome::Matched(matches) => view.matched = Some(matches as u64),
         Outcome::Png(png) => {
             let path = needed(&asked.path, "a path for the PNG")?;
-            write_png(Path::new(path), &png).map_err(|message| page_failure(&target, ErrorCode::WriteFailed, message, None))?;
+            write_png(Path::new(path), &png).map_err(|message| page_failure(target, ErrorCode::WriteFailed, message, None))?;
             view.path = Some(path.to_string());
             view.bytes = Some(png.len() as u64);
         }
         Outcome::DialogHandled(dialog) => view.dialog = dialog.map(dialog_view),
     }
-    view.elapsed_ms = started.elapsed().as_millis() as u64;
-    Ok(Response { page: Some(Box::new(PageView { snapshot: None, element: None, action: Some(view) })), ..Response::empty() })
+    Ok(view)
+}
+
+/// The most steps one batch may hold.
+pub(crate) const MAX_BATCH_STEPS: usize = 1000;
+
+/// Reads one batch step: an object whose `action` names a page action and whose other fields are
+/// [`ActionRequest`] fields. Unknown fields are refused rather than ignored.
+fn plan(index: usize, step: &json::Value) -> Result<Step, Refusal> {
+    let at = |message: String| bad(format!("batch step {}: {message}", index + 1));
+    let json::Value::Object(fields) = step else { return Err(at("is not a JSON object".into())) };
+    let verb = match fields.get("action") {
+        Some(json::Value::String(verb)) => verb,
+        _ => return Err(at("needs an \"action\" naming a page action, such as \"click\"".into())),
+    };
+    let op = Op::parse(&format!("page-{verb}")).filter(|op| Op::PAGE_ACTIONS.contains(op)).ok_or_else(|| at(format!("{verb:?} is not a page action")))?;
+    let json::Value::Object(mut merged) = json::from_str::<json::Value>(&json::to_string(&ActionRequest::default())).expect("an ActionRequest is an object") else {
+        unreachable!("an ActionRequest serializes as an object")
+    };
+    for (key, value) in fields.iter().filter(|(key, _)| *key != "action") {
+        if !merged.contains_key(key) {
+            return Err(at(format!("{verb} takes no field {key:?}")));
+        }
+        merged.insert(key.clone(), value.clone());
+    }
+    let asked: ActionRequest = json::from_str(&json::to_string(&json::Value::Object(merged))).map_err(|_| at(format!("a {verb} field has the wrong type")))?;
+    let action = action(op, &asked).map_err(|refusal| {
+        let message = refusal.0.error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
+        at(format!("{verb}: {message}"))
+    })?;
+    Ok(Step { op, asked, action })
+}
+
+/// Runs a batch's steps in order over the session's one connection, on the target selected when it began, and
+/// stops at the first that fails. No other native command on the session runs between its steps. It is not a
+/// transaction: what earlier steps did stays done.
+pub(crate) fn batch(daemon: &Daemon, session: &SessionName, request: &Request) -> Result<Response, Refusal> {
+    let started = Instant::now();
+    let steps = request.batch.as_deref().unwrap_or_default();
+    if steps.is_empty() || steps.len() > MAX_BATCH_STEPS {
+        return Err(bad(format!("a batch holds 1 to {MAX_BATCH_STEPS} steps; this one has {}", steps.len())));
+    }
+    let planned = steps.iter().enumerate().map(|(index, step)| plan(index, step)).collect::<Result<Vec<_>, _>>()?;
+    if planned.iter().any(|step| step.action.mutates()) {
+        tabs::refuse_while_person_in_control(daemon, session)?;
+    }
+    let browser = tabs::browser(daemon, session)?;
+    let store = SessionBindings { daemon, session };
+    let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
+    let mut pages = browser.pages.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut batch = BatchView { target: target.target.to_string(), steps: planned.len() as u32, ran: Vec::new(), elapsed_ms: 0 };
+    let mut failed = None;
+    for (index, step) in planned.iter().enumerate() {
+        let step_started = Instant::now();
+        let ran = run_step(daemon, session, &target, &mut pages, step);
+        let elapsed_ms = step_started.elapsed().as_millis() as u64;
+        let action = op_name(step.op);
+        match ran {
+            Ok(mut view) => {
+                view.elapsed_ms = elapsed_ms;
+                batch.ran.push(StepView { action, result: Some(view), error: None, elapsed_ms });
+            }
+            Err(refusal) => {
+                let error = *refusal.0.error.expect("a refused step carries its error");
+                let mut stopped = error.clone();
+                stopped.message = format!("batch step {} of {} ({action}) failed: {}", index + 1, planned.len(), error.message);
+                batch.ran.push(StepView { action, result: None, error: Some(error), elapsed_ms });
+                failed = Some(stopped);
+                break;
+            }
+        }
+    }
+    drop(pages);
+    batch.elapsed_ms = started.elapsed().as_millis() as u64;
+    let response = Response { error: failed.map(Box::new), page: Some(Box::new(PageView { batch: Some(batch), ..PageView::default() })), ..Response::empty() };
+    if response.error.is_some() { Err(response.into()) } else { Ok(response) }
+}
+
+fn op_name(op: Op) -> String {
+    op.as_str().trim_start_matches("page-").to_string()
 }
 
 fn action_failure(session: &SessionName, target: &TargetScope, error: ActionError) -> Response {

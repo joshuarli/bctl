@@ -8,7 +8,7 @@ use bctl_cdp::protocol::{FrameId, TargetId};
 use crate::{DocumentId, DocumentScope, TargetScope};
 
 /// Refs taken from a [`RefCounter`] at a time.
-pub const REF_BLOCK: u64 = 256;
+pub(crate) const REF_BLOCK: u64 = 256;
 /// Live refs one connection keeps; past this the oldest expire and fail as stale.
 pub const MAX_LIVE_REFS: usize = 50_000;
 
@@ -60,7 +60,7 @@ pub trait RefCounter {
 /// The CDP target whose renderer holds a frame's document: the page itself, or an out-of-process iframe's
 /// own target (whose id is its frame id).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Host {
+pub(crate) enum Host {
     Page,
     Oopif(TargetId),
 }

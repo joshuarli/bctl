@@ -308,6 +308,7 @@ impl Daemon {
             | Op::PageScreenshot
             | Op::PageEval
             | Op::PageDialog => page::act(self, &session()?, op, request),
+            Op::PageBatch => page::batch(self, &session()?, request),
             Op::Rm => {
                 let name = session()?;
                 tabs::close(self, &name);

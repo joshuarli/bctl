@@ -59,6 +59,7 @@ const USAGE: &str = "usage:
   bctl page eval SESSION EXPRESSION                  run JavaScript in the page and print its JSON value
   bctl page dialog SESSION accept [--text T] | dismiss
                                                      answer the dialog the page shows
+  bctl page batch SESSION FILE|-                     run a JSON list of page actions in order, stopping at the first failure
       ELEMENT is a ref (@e12) or a QUERY: --css SELECTOR | --role ROLE [--name NAME] | --label TEXT |
       --placeholder TEXT | --testid ID, plus --nth N to pick a match; a query matching several fails AMBIGUOUS.
       Page commands act on the target `bctl tab use` selected; every one takes --json.
@@ -66,7 +67,7 @@ const USAGE: &str = "usage:
   bctl daemon                                        run the daemon in the foreground";
 
 enum Cli {
-    Request { op: Op, request: Request, json: bool, open: bool },
+    Request { op: Op, request: Box<Request>, json: bool, open: bool },
     Doctor { json: bool },
     ProfileLogin { profile: String, image: Option<String> },
     Daemon,
@@ -132,7 +133,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
     Ok(match command.as_str() {
         "doctor" => Cli::Doctor { json },
         "daemon" => Cli::Daemon,
-        _ => Cli::Request { op, request, json, open },
+        _ => Cli::Request { op, request: Box::new(request), json, open },
     })
 }
 
@@ -183,7 +184,7 @@ fn parse_run_command(command: &str, mut parser: lexopt::Parser) -> Result<Cli, l
     if op == Op::Run && request.session.is_none() {
         return Err(format!("bctl {command} needs --session SESSION").into());
     }
-    Ok(Cli::Request { op, request, json, open: false })
+    Ok(Cli::Request { op, request: Box::new(request), json, open: false })
 }
 
 const TAB_USAGE: &str = "usage: bctl tab list SESSION | new SESSION [URL] | use SESSION TARGET_ID | close SESSION TARGET_ID [--json]";
@@ -216,7 +217,7 @@ fn parse_tab_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
     if positional.next().is_some() {
         return Err(TAB_USAGE.into());
     }
-    Ok(Cli::Request { op, request, json, open: false })
+    Ok(Cli::Request { op, request: Box::new(request), json, open: false })
 }
 
 const PAGE_USAGE: &str = "usage: bctl page snapshot SESSION [--full] [--depth N] [--scope CSS] | resolve SESSION REF [--json]";
@@ -226,6 +227,7 @@ fn parse_page_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> 
         Some(Value(v)) => match v.string()?.as_str() {
             "snapshot" => Op::PageSnapshot,
             "resolve" => Op::PageResolve,
+            "batch" => return parse_page_batch(parser),
             verb => match Op::parse(&format!("page-{verb}")) {
                 Some(op) => return parse_page_action(op, parser),
                 None => return Err(format!("unknown page command {verb:?}; see `bctl --help`").into()),
@@ -260,7 +262,34 @@ fn parse_page_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> 
     if positional.next().is_some() {
         return Err(PAGE_USAGE.into());
     }
-    Ok(Cli::Request { op, request, json, open: false })
+    Ok(Cli::Request { op, request: Box::new(request), json, open: false })
+}
+
+const BATCH_USAGE: &str = "usage: bctl page batch SESSION FILE|- [--json]
+  FILE holds a JSON list of steps such as [{\"action\":\"goto\",\"url\":\"https://example.com/\"},{\"action\":\"click\",\"role\":\"link\",\"name\":\"More\"}]";
+
+fn parse_page_batch(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    let mut json = false;
+    let mut positional = Vec::new();
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Long("json") => json = true,
+            Value(v) => positional.push(v.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    let [session, file] = <[String; 2]>::try_from(positional).map_err(|_| BATCH_USAGE)?;
+    let text = if file == "-" {
+        std::io::read_to_string(std::io::stdin()).map_err(|e| format!("cannot read the batch from stdin: {e}"))?
+    } else {
+        std::fs::read_to_string(&file).map_err(|e| format!("cannot read {file}: {e}"))?
+    };
+    let steps = match json::from_str::<json::Value>(&text) {
+        Ok(json::Value::Array(steps)) => steps,
+        _ => return Err(format!("{file} is not a JSON list of steps\n{BATCH_USAGE}").into()),
+    };
+    let request = Request { op: Op::PageBatch.as_str().to_string(), session: Some(session), batch: Some(steps.into_iter().collect()), ..Request::empty() };
+    Ok(Cli::Request { op: Op::PageBatch, request: Box::new(request), json, open: false })
 }
 
 fn parse_page_action(op: Op, mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
@@ -342,7 +371,7 @@ fn parse_page_action(op: Op, mut parser: lexopt::Parser) -> Result<Cli, lexopt::
         return Err(usage());
     }
     let request = Request { op: op.as_str().to_string(), session: Some(session), action: Some(Box::new(action)), ..Request::empty() };
-    Ok(Cli::Request { op, request, json, open: false })
+    Ok(Cli::Request { op, request: Box::new(request), json, open: false })
 }
 
 /// Resolves `job` from `bctl.toml` here, where relative paths mean something, and sends the daemon only the result.
@@ -477,12 +506,20 @@ fn report(error: &ErrorBody, json: bool) -> ExitCode {
 }
 
 fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
-    if let Some(error) = &response.error {
-        return report(error, json);
-    }
     if json {
         println!("{}", json::to_string(response));
-        return ExitCode::SUCCESS;
+        return if response.error.is_some() { ExitCode::FAILURE } else { ExitCode::SUCCESS };
+    }
+    if let Some(batch) = response.page.as_ref().and_then(|p| p.batch.as_ref()) {
+        for (number, step) in batch.ran.iter().enumerate() {
+            if let Some(result) = &step.result {
+                print!("{} ", number + 1);
+                print_action(Op::parse(&format!("page-{}", step.action)).unwrap_or(op), result);
+            }
+        }
+    }
+    if let Some(error) = &response.error {
+        return report(error, false);
     }
     match op {
         Op::Status => {
@@ -553,6 +590,7 @@ fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
                 print_action(op, action);
             }
         }
+        Op::PageBatch => {}
     }
     let failed = matches!(op, Op::Run | Op::Resume) && response.runs.iter().any(|r| r.state == "failed");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }

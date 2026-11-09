@@ -75,6 +75,16 @@ while a person holds the input lease), `UNKNOWN_OUTCOME` (the browser may or
 may not have acted; bctl never retries), and `CDP_FAILED`. URLs shown or
 stored by these commands have no userinfo, query, or fragment.
 
+`bctl page` acts on the selected target: `snapshot` prints its accessibility
+tree with element refs (`@e12`), and `goto`, `click`, `fill`, `type`, `press`,
+`select`, `check`, `wait`, `get`, `screenshot`, `eval`, and the rest act on
+an element named by a ref or a query (`--role button --name Go`, `--label`,
+`--css`, ...) with real input. `bctl page batch S FILE` runs a JSON list of
+those actions in order and stops at the first failure; it is not a
+transaction. The same automation is a Rust library, `bctl-automation`.
+[docs/automation.md](docs/automation.md) describes the commands, the socket
+protocol, batches, the library, ref lifetimes, and the known limits.
+
 The guest's CDP is exposed to the host only as a Unix socket in a 0700
 directory under `BCTL_HOME`; no host TCP port reaches it, so the gateway is the
 only way in. Guests launch with `--block-private`: the public internet is open,
@@ -91,6 +101,9 @@ cargo test -p bctl --test profiles -- --ignored
 cargo test -p bctl --test cdp -- --ignored
 cargo test -p bctl --test egress -- --ignored
 cargo test -p bctl --test tabs -- --ignored
+cargo test -p bctl --test snapshots -- --ignored
+cargo test -p bctl --test actions -- --ignored
+cargo test -p bctl --test batches -- --ignored
 BCTL_GRAB="$PWD/../shadowdriver/grab/.venv/bin/grab" cargo test -p bctl --test runs -- --ignored
 cargo run -p bctl-proof -- m1 --runs 10
 BCTL_PROOF_IMAGE=.work/images/ref-alpine-tinyland.tar cargo run -p bctl-proof -- m1
