@@ -54,6 +54,13 @@ void wakeup_or_interrupt_cpu_all()
     }
 }
 
+void interrupt_cpu_in_user_mode(cpuinfo ci)
+{
+    memory_barrier();
+    if ((ci != current_cpu()) && (*(volatile int *)&ci->state == cpu_user))
+        send_ipi(ci->id, wakeup_vector);
+}
+
 static void wakeup_cpu(u64 cpu)
 {
     if (bitmap_test_and_set_atomic(idle_cpu_mask, cpu, 0)) {

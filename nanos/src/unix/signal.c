@@ -232,6 +232,11 @@ static void deliver_signal(sigstate ss, struct siginfo *info)
     sig_debug("next prev %p, next %p\n", qs->l.next->prev, qs->l.next->next);
 }
 
+static void interrupt_thread_in_user_mode(thread t)
+{
+    interrupt_cpu_in_user_mode(struct_from_field(t->scheduling_queue, cpuinfo, thread_queue));
+}
+
 static inline void signalfd_dispatch(thread t, u64 pending)
 {
     notify_dispatch_for_thread(t->p->signalfds, pending, t);
@@ -261,7 +266,13 @@ void deliver_pending_to_thread(thread t)
        could change before run_thread occurs... */
 
     signalfd_dispatch(t, pending_masked);
-    thread_attempt_interrupt(t);
+    if (!thread_attempt_interrupt(t))
+        interrupt_thread_in_user_mode(t);
+}
+
+boolean thread_has_dispatchable_signal(thread t)
+{
+    return (get_all_pending_signals(t) & ~get_signal_mask(t)) != 0;
 }
 
 void deliver_signal_to_thread(thread t, struct siginfo *info)
@@ -293,6 +304,7 @@ closure_function(2, 1, boolean, deliver_signal_handler,
             /* thread scheduled to run or running; no explicit wakeup */
             sig_debug("thread %d running and sig unmasked; return\n",
                       t->tid);
+            interrupt_thread_in_user_mode(t);
             if (*can_wake) {
                 thread_release(*can_wake);
                 *can_wake = 0;

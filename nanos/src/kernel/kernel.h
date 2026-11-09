@@ -254,6 +254,8 @@ static inline cpuinfo cpuinfo_from_id(int cpu)
     return vector_get(cpuinfos, cpu);
 }
 
+void interrupt_cpu_in_user_mode(cpuinfo ci);
+
 extern const sstring context_type_strings[CONTEXT_TYPE_MAX];
 
 static inline boolean is_kernel_context(context c)

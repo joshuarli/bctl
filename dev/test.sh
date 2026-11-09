@@ -45,6 +45,7 @@ suite_harness() {
 		case_verdict poll_xproc "$smp" 20 PASS '' "$FIXTURES/poll_xproc"
 		case_verdict cow_stress "$smp" 60 PASS '' "$FIXTURES/cow_stress"
 		case_verdict cow_stress_dyn "$smp" 60 PASS '' "$FIXTURES/cow_stress_dyn"
+		case_verdict kill_race "$smp" 200 PASS '' "$FIXTURES/kill_race"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"

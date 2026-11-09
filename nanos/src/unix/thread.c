@@ -352,16 +352,28 @@ closure_func_basic(thunk, void, thread_return)
         set_user_value(t->set_child_tid, tid);
         t->set_child_tid = 0;
     }
-    dispatch_signals(t);
-    current_cpu()->state = cpu_user;
-    if (check_stop_conditions(t)) {
-        process p = t->p;
-        boolean last = exit_thread(t);
-        clear_fault_handler();
-        if (last)
-            process_teardown(p);
-        thread_release(t);
-        runloop();
+    thread_lock(t);
+    /* Keep track of the CPU on which this thread is about to run, so that the thread will continue
+     * to be scheduled on the same CPU (unless the CPU affinity does not allow it). */
+    if ((t->scheduling_queue != &ci->thread_queue) && (bitmap_get(t->task.affinity, ci->id)))
+        t->scheduling_queue = &ci->thread_queue;
+    thread_unlock(t);
+    while (true) {
+        dispatch_signals(t);
+        ci->state = cpu_user;
+        memory_barrier();
+        if (check_stop_conditions(t)) {
+            process p = t->p;
+            boolean last = exit_thread(t);
+            clear_fault_handler();
+            if (last)
+                process_teardown(p);
+            thread_release(t);
+            runloop();
+        }
+        if (!thread_has_dispatchable_signal(t))
+            break;
+        ci->state = cpu_kernel;
     }
     // XXX fixme
     //ftrace_thread_switch(old, t);    /* ftrace needs to know about the switch event */
@@ -369,11 +381,6 @@ closure_func_basic(thunk, void, thread_return)
     thread_lock(t);
     /* cover wake-before-sleep situations (e.g. sched yield, fs ops that don't go to disk, etc.) */
     t->syscall = 0;
-
-    /* Keep track of the CPU on which this thread is about to run, so that the thread will continue
-     * to be scheduled on the same CPU (unless the CPU affinity does not allow it). */
-    if ((t->scheduling_queue != &ci->thread_queue) && (bitmap_get(t->task.affinity, ci->id)))
-        t->scheduling_queue = &ci->thread_queue;
     thread_unlock(t);
 
     context_frame f = t->context.frame;
@@ -606,6 +613,7 @@ boolean exit_thread(thread t)
     rbtree_remove_by_key(t->p->threads, &t->n);
     boolean last = rbtree_get_count(t->p->threads) == 0;
     spin_unlock(&t->p->threads_lock);
+    t->signal_mask = -1ull;
 
     /* dequeue signals for thread */
     sigstate_flush_queue(&t->signals);

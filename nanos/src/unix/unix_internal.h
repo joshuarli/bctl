@@ -904,6 +904,7 @@ static inline sigaction sigaction_from_sig(thread t, int signum)
 boolean dispatch_signals(thread t);
 void deliver_signal_to_thread(thread t, struct siginfo *);
 void deliver_signal_to_process(process p, struct siginfo *);
+boolean thread_has_dispatchable_signal(thread t);
 void deliver_fault_signal(u32 signo, thread t, u64 vaddr, s32 si_code);
 
 void threads_to_vector(process p, vector v);

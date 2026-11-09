@@ -183,6 +183,13 @@ void blockq_resume_blocking(blockq bq, unix_context t)
     blockq_unlock(bq);
 }
 
+static boolean signal_raced_with_blocking(unix_context t)
+{
+    memory_barrier();
+    return is_syscall_context(&t->kc.context) &&
+        thread_has_dispatchable_signal(((syscall_context)t)->t);
+}
+
 sysreturn blockq_check_timeout(blockq bq, blockq_action a, boolean in_bh,
                                clock_id clkid, timestamp timeout, boolean absolute)
 {
@@ -244,9 +251,13 @@ sysreturn blockq_check_timeout(blockq bq, blockq_action a, boolean in_bh,
     thread_unlock(t);
     blockq_unlock(bq);
 
+    boolean interrupt = signal_raced_with_blocking(t);
+
     /* It is safe to call wake here. Action closures are contextual, so the
        context acquire will wait for this path to terminate at runloop before
        the action runs. */
+    if (interrupt)
+        blockq_wake_one_for_thread(bq, t, true);
     if (wake)
         blockq_wake_one(bq);
 
