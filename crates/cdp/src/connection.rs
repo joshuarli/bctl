@@ -18,6 +18,7 @@ use h12tiny::web::{
 };
 use miniserde::{Deserialize, json};
 
+use crate::surrogates;
 use crate::protocol::{CdpEvent, Command, DetachedFromTarget, Effect, SessionId};
 use crate::{
     CLOSE_DEADLINE, CONNECT_DEADLINE, CallError, ConnectError, DecodeError, EVENT_QUEUE_CAPACITY, Endpoint, MAX_MESSAGE_BYTES,
@@ -506,17 +507,19 @@ fn dispatch(shared: &Shared, text: &str) {
         Ok(Inbound { id: Some(id), error, .. }) => answer(shared, id, error.map_or(Answer::Result(text), Answer::Error)),
         Ok(Inbound { id: None, method: Some(method), session_id, .. }) => deliver(shared, method, session_id, text),
         Ok(Inbound { id: None, method: None, .. }) => {}
-        Err(_) => {
-            if let Some(id) = leading_id(text) {
-                answer(shared, id, Answer::Malformed);
+        Err(_) => match surrogates::replace_unpaired(text) {
+            Some(replaced) => dispatch(shared, &replaced),
+            None => {
+                if let Some(id) = leading_id(text) {
+                    answer(shared, id, Answer::Malformed);
+                }
             }
-        }
+        },
     }
 }
 
 /// Chrome serializes every reply with `id` as its first member, so a reply
-/// whose body fails to parse (an unpaired surrogate escape, say) still names
-/// the command it answers.
+/// whose body fails to parse still names the command it answers.
 fn leading_id(text: &str) -> Option<u64> {
     let rest = text.strip_prefix("{\"id\":")?;
     let end = rest.find([',', '}'])?;

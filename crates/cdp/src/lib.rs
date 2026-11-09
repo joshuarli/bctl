@@ -9,6 +9,7 @@ mod connection;
 mod endpoint;
 mod error;
 pub mod protocol;
+mod surrogates;
 
 use std::time::Duration;
 

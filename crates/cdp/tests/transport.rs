@@ -224,6 +224,29 @@ fn malformed_messages_fail_only_the_command_they_name() {
 }
 
 #[test]
+fn unpaired_surrogates_from_javascript_strings_decode_as_replacement_characters() {
+    let (mock, connection, _driver) = connected();
+    let mut created = connection.subscribe(EventFilter::new(&["Target.targetCreated"], EventScope::Any)).unwrap();
+    let titled = |title: &str| {
+        format!(r#"{{"targetInfos":[{{"targetId":"T","type":"page","title":"{title}","url":"about:blank","attached":false}}]}}"#)
+    };
+    let title = |raw: &str| {
+        let listing = spawn_call(&connection, None, GetTargets {}, soon());
+        let request = mock.request();
+        mock.reply(request.id, &titled(raw));
+        listing.join().unwrap().unwrap().target_infos.remove(0).title
+    };
+    assert_eq!(title(r"a\ud800b"), "a\u{fffd}b");
+    assert_eq!(title(r"\uDBFF\uDBFF\uDFFF"), "\u{fffd}\u{10ffff}");
+    assert_eq!(title(r"\udc00\ud83d"), "\u{fffd}\u{fffd}");
+    assert_eq!(title(r"\\ud800 \ud83d\ude00"), "\\ud800 \u{1f600}");
+
+    mock.send(r#"{"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"\ud800","type":"page","title":"","url":"","attached":false}}}"#);
+    let event = block_on(created.next()).unwrap().decode::<TargetCreated>().unwrap();
+    assert_eq!(event.target_info.target_id.as_str(), "\u{fffd}");
+}
+
+#[test]
 fn concurrent_callers_each_receive_their_own_reply() {
     let (mock, connection, _driver) = connected();
     let callers: Vec<_> = (0..32).map(|i| (i, spawn_call(&connection, Some(SessionId::new(format!("s{i}"))), GetTargets {}, soon()))).collect();
