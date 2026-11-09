@@ -120,7 +120,13 @@ guest: the bench now reaches the host at SmolVM's gateway `100.96.0.1`
 `docs/jobs.md` says to use it; SmolVM's relay tracks at most 512 guest TCP
 connections and holds host-closed ones for a 10 s TIME-WAIT, so more than
 about 50 short connections a second are refused (not hit by Chromium's
-keep-alive pool; a crawl of close-per-request servers could); the dashboard lease race on viewer reconnect
+keep-alive pool; a crawl of close-per-request servers could). SmolVM's main
+tip, vendored in `third_party/smolvm` and built from source by
+`runtime/build.sh` (`1ae1c06`, B1 10/10 and the VM suites pass), already
+tracks 65,536 flows and reaps TIME-WAIT at once, which closes that limit.
+Its Cargo graph links `ring` and `aws-lc-rs` through rustls and rcgen, and
+its guest agent is built with Debian's musl-gcc: both break campaign rules
+and are being fixed in the vendored copy. The dashboard lease race on viewer reconnect
 was not retested after N6.
 T5 (`f386cb1`, `guest/tinyland/harness/wlcs/run.sh --sweep`,
 `docs/research/tinyland-wlcs.md`): WLCS v1.8.1 drives tinyland through a
