@@ -209,3 +209,6 @@ Guests reach the public internet only. `bctl up S --allow-private CIDR`
 (repeatable) lets session `S` reach a private IPv4 range too, and is part of
 its configuration. With SmolVM's default guest link, `100.96.0.0/30` allows
 the host's loopback, which the guest reaches at `100.96.0.1`.
+Reach a host service there rather than at the host's LAN address: SmolVM
+dials a LAN address as an ordinary host connection, which a macOS content
+filter can stall mid-response, while it dials `100.96.0.1` as `127.0.0.1`.

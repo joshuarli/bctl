@@ -89,8 +89,9 @@ own toggle counter over CDP afterwards and reports it against the trials sent.
 - The VMM process tree is found by the per-home runtime path in its command line.
   Idle CPU is `ps` CPU time over a 60 s window, 30 s after ready.
 - The container reaches the host benchmark server as `host.docker.internal`; the
-  guest reaches it at the host's LAN address through `--allow-private ADDR/32`.
-  Both paths add their own network stack to the fixture load time.
+  guest reaches it at `100.96.0.1`, SmolVM's gateway to the host loopback,
+  through `--allow-private 100.96.0.0/30`. Both paths add their own network
+  stack to the fixture load time.
 
 ## Conditions of the latest results
 
@@ -210,7 +211,8 @@ Stalls: 7 of 16 guest runs (3 of 8 on the Sway image, 4 of 8 on the Tinyland ima
 stopped making progress and were aborted after 120 s; the container had none.
 They stopped in different workloads (`observable-plot`, `angular-complex`,
 `perf-dashboard`, `react-stockcharts`, `chartjs`, `tiptap`), so no workload is
-at fault. See Findings.
+at fault. These runs reached the server at the host's LAN address, which stalls
+on this host without any VM; see Findings.
 
 ### Resources (5 boots per image, one VM per boot; minimum to maximum)
 
@@ -244,15 +246,37 @@ images. The cause was not profiled.
   this is a property of the launch configuration, not of SmolVM. Whether the tab,
   the JS heap, and CDP survive a resume cannot be asked until the launch
   configuration can be paused. Checkpoint restore (X1) will meet the same refusal.
-- **Speedometer stalls in the guest about 40 percent of the time.** In the one stalled
-  run inspected, the iframe stayed `interactive`, its next module script had no resource timing
-  entry, no TCP connection to the host server was open, and a `fetch` of the same
-  file from the page afterwards took 27 ms. The container, on the same server and
-  browser, never stalled. The guest's network path (or something it shares with
-  the fixture server) loses requests intermittently; the cause is not established,
-  and any crawl that fetches many subresources through the guest may see it. The
-  harness aborts a run with no progress for 120 s, discards it with the stall point,
- .
+- **Host connections to the host's own LAN address stall; the guest was not at
+  fault.** The h1 guests reached the benchmark server at the host's LAN address
+  (`10.0.1.28`), so SmolVM's relay dialed that address on the host. On this host
+  a macOS socket content filter is active (`sysctl net.cfil.active_count` is 2;
+  CrowdStrike Falcon and Tailscale are installed), and it attaches to every TCP
+  connection to the LAN address and to none to `127.0.0.1`
+  (`net.cfil.sock_attached_count` grows by 2 per connection). Such connections
+  stop mid-response: in an inspected stall the server sat in `sendto` with 134
+  KiB of a 286 KiB module script unsent while the kernel reported the
+  connection's window open and nothing queued, SmolVM's relay had forwarded every
+  byte it received, and the guest had acknowledged all of it. Chromium waits
+  forever for the rest, which is the stalled module script with no resource
+  timing entry. The same stall needs no VM: six keep-alive Python clients on the
+  host fetching the Speedometer tree from `bctl-bench serve` for 60 s stalled 19
+  times (10 s timeouts) through `10.0.1.28` and never through `127.0.0.1`
+  (276,272 requests). Through SmolVM's gateway, which the relay dials as
+  `127.0.0.1`, Speedometer finished 24 of 24 runs in the guest; through the LAN
+  address it stalled in 7 of 24. The container never stalled because Docker
+  reaches the host by loopback too. The browser suite now uses the gateway, and
+  `crates/bctl/tests/host_http.rs` keeps the guest-to-host keep-alive load as a
+  VM test. Which filter stalls, and whether it stalls connections to other LAN
+  hosts, is not established.
+- **SmolVM refuses guest TCP connections beyond 512 tracked ones.** Its relay
+  keeps every guest connection in a 512-entry table until smoltcp closes it, and
+  a connection whose host side closes first holds its entry through smoltcp's
+  10 s TIME-WAIT. A guest opening more than about 50 such connections per second
+  (for example HTTP/1.0 or `Connection: close` requests) gets `Connection
+  refused`; 200 concurrent `wget`s per round from the guest failed 180 of 200 by
+  the fourth round, and the VMM log reads `relay table is full active=512`.
+  Chromium's keep-alive pool stays far below the limit (9 connections for 3,660
+  module requests). This is SmolVM's, not patched here.
 - **The input lease dies with the WebSocket.** Before the authority change, a viewer
   that reconnected to the gateway while its previous connection was still closing
   could lose the lease it had just taken, because the old connection's teardown

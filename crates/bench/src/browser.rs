@@ -1,4 +1,3 @@
-use std::net::{IpAddr, UdpSocket};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +17,8 @@ const SPEEDOMETER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const LOADS_PER_BATCH: usize = 5;
 pub const SPEEDOMETER_DIR: &str = ".work/dl/speedometer/src";
 const CONTAINER_IMAGE: &str = "bctl-bench/chromium";
+const HOST_RANGE: &str = "100.96.0.0/30";
+const HOST_FROM_GUEST: &str = "100.96.0.1";
 const THROTTLE_FLAGS: [&str; 3] = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
 
 struct Target {
@@ -44,15 +45,6 @@ impl Drop for Guard {
     }
 }
 
-fn lan_address() -> Fallible<std::net::Ipv4Addr> {
-    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-    socket.connect("8.8.8.8:80").map_err(|e| format!("no route to the internet to pick a LAN address: {e}"))?;
-    match socket.local_addr().map_err(|e| e.to_string())?.ip() {
-        IpAddr::V4(ip) if ip.is_private() => Ok(ip),
-        other => Err(format!("host address {other} is not a private IPv4 address the guest could be allowed to reach")),
-    }
-}
-
 fn wait_for_cdp(endpoint: &Endpoint) -> Fallible<String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -75,14 +67,13 @@ fn attach(label: &str, endpoint: Endpoint, base_url: String, guard: Guard) -> Fa
 }
 
 fn guest_target(home: &Home, image: &str, server_port: u16, notes: &mut Vec<String>) -> Fallible<Target> {
-    let lan = lan_address()?;
     let name = session_name(&format!("br-{}", image.trim_start_matches("ref-alpine-")));
-    home.up(&name, &name, image, &[format!("{lan}/32")])?;
+    home.up(&name, &name, image, &[HOST_RANGE.to_string()])?;
     let url = home.cdp_url(&name)?;
     let host = url.strip_prefix("http://").ok_or("cdp url is not http")?.to_string();
     let port: u16 = host.rsplit(':').next().and_then(|p| p.parse().ok()).ok_or("cdp url has no port")?;
-    notes.push(format!("{image}: guest reaches the benchmark server at {lan}:{server_port} through --allow-private {lan}/32"));
-    attach(&format!("guest-{}", image.trim_start_matches("ref-alpine-")), Endpoint::Tcp { port, host }, format!("http://{lan}:{server_port}"), Guard::None)
+    notes.push(format!("{image}: guest reaches the benchmark server at {HOST_FROM_GUEST}:{server_port}, SmolVM's gateway to the host loopback, through --allow-private {HOST_RANGE}"));
+    attach(&format!("guest-{}", image.trim_start_matches("ref-alpine-")), Endpoint::Tcp { port, host }, format!("http://{HOST_FROM_GUEST}:{server_port}"), Guard::None)
 }
 
 fn container_target(server_port: u16, notes: &mut Vec<String>) -> Fallible<Target> {
