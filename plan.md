@@ -11,13 +11,16 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** `63b0309` (G0.1).
-- **Accepted:** G0.1 (fork imported at `nanos/`, vendored sources pinned,
-  `dev/{bootstrap,doctor,build}.sh`; fresh clone builds in 59 s and two clean
-  builds give byte-identical `kernel.img`, `kernel.elf` and `boot.img`).
+- **Last accepted revision:** G0.2 (see `git log`).
+- **Accepted:** G0.1 (fork at `nanos/`, pinned vendoring, bootstrap/doctor/build;
+  byte-identical clean rebuilds). G0.2 (`dev/image.sh`, `dev/run.sh`,
+  `dev/test.sh harness` in 42 s: static hello passes on 1 and 2 vCPUs; crash,
+  missing record, duplicate record and hang give CRASH, FAIL, FAIL and TIMEOUT;
+  musl stdio fixtures are known-red on the console `writev` bug).
   **Red:** none. **Parked:** none.
-- **Next slice:** `G0.2`.
-- **Gate matrix:** G0 NOT RUN (1/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Next slice:** `G0.5` (no kernel change), then `G0.3`, the first kernel change.
+- **Lanes:** `H` running in `.work/wt/h` (branch `lane/h`).
+- **Gate matrix:** G0 NOT RUN (2/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -252,7 +255,7 @@ Upstream checkout in `.work/src/nanos` at `e4b9c9e`.
 | Static musl hello image | 15.3 MB; boot to exit under KVM 0.23–0.65 s (1 and 2 vCPUs) |
 | Upstream `make run` | exits 0 when QEMU fails to start (port 8080 busy) |
 | Upstream test manifests | dynamic ones hard-code glibc paths (`/lib64/ld-linux-x86-64.so.2`) and fail at `mkfs` |
-| **Known red: console `writev`** | writes only the last iovec and returns its length: `writev(1, {"WV1 ","WV2\n"})` prints `WV2`, returns 4. musl stdio flushes through `writev`, so every `printf` on stdout is lost while the program exits 0. Fixed in G0.3 |
+| **Known red: console `writev`** | writes only the last iovec and returns its length: `writev(1, {"WV1 ","WV2\n"})` prints `WV2`, returns 4. musl stdio flushes through `writev(buffer, new)`; when the last iovec is empty the call completes with 0 and musl retries forever, so any program that prints through stdio and exits through `exit()` hangs (`dev/test.sh harness` marks `hello_stdio`, `hello_pthread` known-red). Fixed in G0.3 |
 | `ioctl(1, TIOCGWINSZ)` | `ENOSYS`. musl treats it as "not a tty"; harmless |
 | `kernel.mk:117` | `gitversion.c` depends on `$(ROOTDIR)/.git/index`; breaks in worktrees and under `hydrogen/nanos/`. Fixed in G0.1 |
 | Pinned LLVM building the kernel | fails at lld (`R_X86_64_PC32` against `IMAGE_BASE`) |

@@ -35,7 +35,7 @@ if command -v qemu-system-x86_64 >/dev/null 2>&1; then
 		-no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -drive file="$probe",format=raw,if=floppy \
 		>/dev/null 2>"$WORK/tmp/kvm-probe.err" &
 	qpid=$!
-	( sleep 10; kill "$qpid" 2>/dev/null ) &
+	( sleep 10; kill "$qpid" ) >/dev/null 2>&1 &
 	wpid=$!
 	wait "$qpid"
 	rc=$?

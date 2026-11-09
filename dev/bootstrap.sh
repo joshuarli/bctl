@@ -32,10 +32,12 @@ if [ ! -f "$SYSROOT/.musl-$MUSL_VERSION" ]; then
 	(
 		cd "$src"
 		./configure --quiet --prefix="$SYSROOT" --syslibdir="$SYSROOT/lib" --target=x86_64-linux-musl \
-			CC="$LLVM/bin/clang" AR="$LLVM/bin/llvm-ar" RANLIB="$LLVM/bin/llvm-ranlib"
+			CC="$LLVM/bin/clang" AR="$LLVM/bin/llvm-ar" RANLIB="$LLVM/bin/llvm-ranlib" \
+			LDFLAGS="-Wl,-soname,$MUSL_SONAME"
 		make -s -j"$(nproc)"
 		make -s install
 	)
+	ln -sf libc.so "$SYSROOT/lib/$MUSL_SONAME"
 	touch "$SYSROOT/.musl-$MUSL_VERSION"
 fi
 
