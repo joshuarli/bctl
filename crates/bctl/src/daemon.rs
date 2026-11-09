@@ -12,8 +12,9 @@ use bctl_core::{Action, Endpoints, Generation, MachineName, ProfileName, Session
 use bctl_runtime_smolvm::{InputSupport, LaunchSpec, RuntimeError, SmolVm};
 use miniserde::json;
 
+use crate::gateway::{self, SharedGateway};
 use crate::paths::Paths;
-use crate::protocol::{ErrorCode, Op, ProfileView, Request, Response, SessionView};
+use crate::protocol::{ErrorCode, Op, ProfileView, Request, Response, SessionView, SessionsPayload};
 
 const DISPLAY: (u16, u16) = (1280, 800);
 const MEMORY_MIB: u32 = 4096;
@@ -26,11 +27,12 @@ struct Observed {
     input: Option<InputSupport>,
 }
 
-struct Daemon {
+pub(crate) struct Daemon {
     paths: Paths,
     store: Mutex<Store>,
     runtime: SmolVm,
     observed: Mutex<HashMap<SessionName, Observed>>,
+    pub(crate) gateway: SharedGateway,
 }
 
 type Outcome = Result<Response, Response>;
@@ -50,7 +52,13 @@ pub fn run(paths: Paths) -> Result<(), String> {
     }
 
     let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
-    let daemon = Arc::new(Daemon { runtime: SmolVm::new(paths.runtime()), paths, store: Mutex::new(store), observed: Mutex::default() });
+    let daemon = Arc::new(Daemon {
+        runtime: SmolVm::new(paths.runtime()),
+        paths,
+        store: Mutex::new(store),
+        observed: Mutex::default(),
+        gateway: Mutex::default(),
+    });
     if daemon.paths.runtime().exists() {
         daemon.restore()?;
     } else {
@@ -139,7 +147,7 @@ impl Daemon {
         Ok(())
     }
 
-    fn serve(&self, stream: UnixStream) {
+    fn serve(self: &Arc<Self>, stream: UnixStream) {
         let mut reader = BufReader::new(&stream);
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() {
@@ -153,7 +161,7 @@ impl Daemon {
         let _ = writeln!(writer, "{}", json::to_string(&response));
     }
 
-    fn handle(&self, request: &Request) -> Outcome {
+    fn handle(self: &Arc<Self>, request: &Request) -> Outcome {
         let op = Op::parse(&request.op)
             .ok_or_else(|| Response::failure(ErrorCode::BadRequest, format!("unknown operation {:?}", request.op), None))?;
         let session = || -> Result<SessionName, Response> {
@@ -162,6 +170,10 @@ impl Daemon {
         };
         match op {
             Op::Ping => Ok(Response::empty()),
+            Op::Serve => {
+                let url = gateway::serve(self).map_err(internal)?;
+                Ok(Response { url: Some(url), ..Response::empty() })
+            }
             Op::Up => self.up(&session()?, request.profile.as_deref(), request.image.as_deref()),
             Op::Down => self.down(&session()?),
             Op::Rm => {
@@ -308,6 +320,32 @@ impl Daemon {
         fs::create_dir_all(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         Ok(path)
+    }
+
+    pub(crate) fn session_views(&self) -> SessionsPayload {
+        let sessions = self.store().sessions().unwrap_or_default();
+        SessionsPayload { sessions: sessions.iter().map(|s| self.view(s)).collect() }
+    }
+
+    fn ready_endpoints(&self, name: &SessionName) -> Option<Endpoints> {
+        let record = self.store().session(name).ok()?;
+        (record.state == SessionState::Ready).then_some(record.endpoints).flatten()
+    }
+
+    pub(crate) fn cdp_port(&self, name: &SessionName) -> Option<u16> {
+        self.ready_endpoints(name).map(|e| e.cdp_port)
+    }
+
+    /// The VNC port to proxy and whether viewer input may reach the guest; a view-only runtime never accepts input.
+    pub(crate) fn vnc_target(&self, name: &SessionName) -> Option<(u16, bctl_rfb::InputPolicy)> {
+        let endpoints = self.ready_endpoints(name)?;
+        let observed = self.observed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let interactive = observed.get(name).and_then(|o| o.input) == Some(InputSupport::Interactive);
+        Some((endpoints.vnc_port, gateway::input_policy(interactive)))
+    }
+
+    pub(crate) fn down_session(&self, name: &SessionName) -> Result<(), String> {
+        self.down(name).map(drop).map_err(|failure| failure.error.map(|e| e.message).unwrap_or_default())
     }
 
     fn image_required(&self) -> Response {

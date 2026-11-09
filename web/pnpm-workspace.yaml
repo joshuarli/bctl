@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@laputa-systems/ui-dashboard@0.5.0'

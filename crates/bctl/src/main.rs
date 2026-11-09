@@ -1,4 +1,5 @@
 mod daemon;
+mod gateway;
 mod paths;
 mod protocol;
 
@@ -21,13 +22,16 @@ const USAGE: &str = "usage:
   bctl rm NAME [--json]                                       forget a stopped session
   bctl status [--json]                               list sessions and why they are not ready
   bctl inspect NAME [--json]                         one session in detail
+  bctl serve [--open] [--json]                        print (or open) a one-time dashboard login link
   bctl profile list [--json]                         profiles and the session holding each
+  bctl profile login PROFILE [--image IMAGE]          start a session on PROFILE and open it to sign in by hand
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
 enum Cli {
-    Request { op: Op, request: Request, json: bool },
+    Request { op: Op, request: Request, json: bool, open: bool },
     Doctor { json: bool },
+    ProfileLogin { profile: String, image: Option<String> },
     Daemon,
 }
 
@@ -43,19 +47,36 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "down" => (Op::Down, true),
         "rm" => (Op::Rm, true),
         "status" => (Op::Status, false),
+        "serve" => (Op::Serve, false),
         "inspect" => (Op::Inspect, true),
         "profile" => match parser.next()? {
             Some(Value(v)) if v == "list" => (Op::Profiles, false),
-            _ => return Err("usage: bctl profile list".into()),
+            Some(Value(v)) if v == "login" => {
+                let profile = match parser.next()? {
+                    Some(Value(v)) => v.string()?,
+                    _ => return Err("usage: bctl profile login PROFILE [--image IMAGE]".into()),
+                };
+                let mut image = None;
+                while let Some(arg) = parser.next()? {
+                    match arg {
+                        Long("image") => image = Some(parser.value()?.string()?),
+                        _ => return Err(arg.unexpected()),
+                    }
+                }
+                return Ok(Cli::ProfileLogin { profile, image });
+            }
+            _ => return Err("usage: bctl profile list | bctl profile login PROFILE [--image IMAGE]".into()),
         },
         "doctor" | "daemon" => (Op::Ping, false),
         other => return Err(format!("unknown command {other:?}").into()),
     };
     let mut request = Request { op: op.as_str().to_string(), ..Request::empty() };
     let mut json = false;
+    let mut open = false;
     while let Some(arg) = parser.next()? {
         match arg {
             Long("json") if command != "daemon" => json = true,
+            Long("open") if op == Op::Serve => open = true,
             Long("profile") if op == Op::Up => request.profile = Some(parser.value()?.string()?),
             Long("image") if op == Op::Up => request.image = Some(parser.value()?.string()?),
             Value(v) if needs_session && request.session.is_none() => request.session = Some(v.string()?),
@@ -68,7 +89,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
     Ok(match command.as_str() {
         "doctor" => Cli::Doctor { json },
         "daemon" => Cli::Daemon,
-        _ => Cli::Request { op, request, json },
+        _ => Cli::Request { op, request, json, open },
     })
 }
 
@@ -96,8 +117,16 @@ fn main() -> ExitCode {
             }
         },
         Cli::Doctor { json } => doctor(&paths, json),
-        Cli::Request { op, request, json } => match call(&paths, &request) {
-            Ok(response) => render(op, &response, json),
+        Cli::ProfileLogin { profile, image } => profile_login(&paths, profile, image),
+        Cli::Request { op, request, json, open } => match call(&paths, &request) {
+            Ok(response) => {
+                let code = render(op, &response, json);
+                if open && let Some(url) = &response.url && Command::new("open").arg(url).status().map_or(true, |s| !s.success()) {
+                    eprintln!("bctl: could not open {url}");
+                    return ExitCode::FAILURE;
+                }
+                code
+            }
             Err(error) => report(&error, json),
         },
     }
@@ -144,7 +173,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, ErrorBody> {
 
 fn report(error: &ErrorBody, json: bool) -> ExitCode {
     if json {
-        println!("{}", json::to_string(&Response { error: Some(error.clone()), ..Response::empty() }));
+        println!("{}", json::to_string(&Response { error: Some(Box::new(error.clone())), ..Response::empty() }));
     } else {
         eprintln!("bctl: {} [{}]", error.message, error.code);
         if let Some(remedy) = &error.remedy {
@@ -177,6 +206,11 @@ fn render(op: Op, response: &Response, json: bool) -> ExitCode {
             }
         }
         Op::Up | Op::Down | Op::Inspect => response.sessions.iter().for_each(print_session),
+        Op::Serve => {
+            if let Some(url) = &response.url {
+                println!("{url}");
+            }
+        }
         Op::Rm | Op::Ping => {}
     }
     ExitCode::SUCCESS
@@ -240,4 +274,28 @@ fn doctor(paths: &Paths, json_output: bool) -> ExitCode {
         }
     }
     if checks.iter().all(|(_, ok, _)| *ok) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// Brings up a session named after the profile and opens the dashboard on it, so the user can sign in to sites by hand.
+fn profile_login(paths: &Paths, profile: String, image: Option<String>) -> ExitCode {
+    let up = Request { op: Op::Up.as_str().to_string(), session: Some(profile.clone()), profile: Some(profile.clone()), image };
+    match call(paths, &up) {
+        Ok(response) if response.error.is_none() => {}
+        Ok(response) => return render(Op::Up, &response, false),
+        Err(error) => return report(&error, false),
+    }
+    let serve = Request { op: Op::Serve.as_str().to_string(), ..Request::empty() };
+    let url = match call(paths, &serve) {
+        Ok(Response { url: Some(url), .. }) => format!("{url}&next=/sessions/{profile}"),
+        Ok(response) => return render(Op::Serve, &response, false),
+        Err(error) => return report(&error, false),
+    };
+    println!("{url}");
+    match Command::new("open").arg(&url).status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        _ => {
+            eprintln!("bctl: could not open the dashboard; visit the link above");
+            ExitCode::FAILURE
+        }
+    }
 }

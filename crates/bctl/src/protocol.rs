@@ -24,6 +24,7 @@ pub enum Op {
     Status,
     Inspect,
     Profiles,
+    Serve,
 }
 
 impl Op {
@@ -36,11 +37,12 @@ impl Op {
             Op::Status => "status",
             Op::Inspect => "inspect",
             Op::Profiles => "profiles",
+            Op::Serve => "serve",
         }
     }
 
     pub fn parse(s: &str) -> Option<Op> {
-        [Op::Ping, Op::Up, Op::Down, Op::Rm, Op::Status, Op::Inspect, Op::Profiles].into_iter().find(|op| op.as_str() == s)
+        [Op::Ping, Op::Up, Op::Down, Op::Rm, Op::Status, Op::Inspect, Op::Profiles, Op::Serve].into_iter().find(|op| op.as_str() == s)
     }
 }
 
@@ -116,11 +118,18 @@ pub struct ProfileView {
     pub holder: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionsPayload {
+    pub sessions: Vec<SessionView>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Response {
-    pub error: Option<ErrorBody>,
+    pub error: Option<Box<ErrorBody>>,
     pub sessions: Vec<SessionView>,
     pub profiles: Vec<ProfileView>,
+    /// For `serve`: a single-use dashboard login URL.
+    pub url: Option<String>,
 }
 
 impl Response {
@@ -129,6 +138,6 @@ impl Response {
     }
 
     pub fn failure(code: ErrorCode, message: impl Into<String>, remedy: Option<String>) -> Response {
-        Response { error: Some(ErrorBody::new(code, message, remedy)), ..Default::default() }
+        Response { error: Some(Box::new(ErrorBody::new(code, message, remedy))), ..Default::default() }
     }
 }

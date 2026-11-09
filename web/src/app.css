@@ -1,0 +1,18 @@
+.session-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: var(--ui-space-md);
+  margin-top: var(--ui-space-md);
+}
+.session-side { display: grid; gap: var(--ui-space-md); align-content: start; }
+.viewer { width: 100%; aspect-ratio: 16 / 10; background: var(--ui-surface); }
+.controls { display: flex; flex-wrap: wrap; gap: var(--ui-space-sm); }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: var(--ui-space-xs) var(--ui-space-sm); margin: var(--ui-space-md) 0 0; }
+.facts dt { color: var(--ui-muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.tabs { list-style: none; margin: 0; padding: 0; }
+.tabs li { display: flex; gap: var(--ui-space-sm); align-items: center; justify-content: space-between; padding: var(--ui-space-sm) var(--ui-inset); border-top: 1px solid var(--ui-line); }
+.tab-text { display: grid; min-width: 0; }
+.tab-text span { color: var(--ui-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.failure { color: var(--ui-bad); }
+@media (max-width: 60rem) { .session-layout { grid-template-columns: 1fr; } }
