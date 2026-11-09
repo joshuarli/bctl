@@ -1,0 +1,175 @@
+diff --git a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+index d91bd203..ece23008 100644
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -778,7 +778,26 @@ impl VirtioGpu {
+     ) -> VirtioGpuResult {
+         self.rutabaga
+             .resource_create_3d(resource_id, resource_create_3d)?;
++        self.record_created_resource(resource_id, resource_create_3d)
++    }
+ 
++    /// Creates a classic 2D resource, falling back to rutabaga's 2D component when the 3D
++    /// renderer cannot hold it.
++    pub fn resource_create_2d(
++        &mut self,
++        resource_id: u32,
++        resource_create_3d: ResourceCreate3D,
++    ) -> VirtioGpuResult {
++        self.rutabaga
++            .resource_create_2d(resource_id, resource_create_3d)?;
++        self.record_created_resource(resource_id, resource_create_3d)
++    }
++
++    fn record_created_resource(
++        &mut self,
++        resource_id: u32,
++        resource_create_3d: ResourceCreate3D,
++    ) -> VirtioGpuResult {
+         let format = ResourceFormat::try_from(resource_create_3d.format).ok();
+         if format.is_none() {
+             debug!(
+diff --git a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+index d0990a9a..179a7f49 100644
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -422,7 +422,7 @@ impl Worker {
+                     flags: 0,
+                 };
+ 
+-                virtio_gpu.resource_create_3d(resource_id, resource_create_3d)
++                virtio_gpu.resource_create_2d(resource_id, resource_create_3d)
+             }
+             GpuCommand::ResourceUnref(info) => virtio_gpu.unref_resource(info.resource_id),
+             GpuCommand::SetScanout(info) => virtio_gpu.set_scanout(
+diff --git a/src/rutabaga_gfx/src/rutabaga_core.rs b/src/rutabaga_gfx/src/rutabaga_core.rs
+index 84ced9b0..8a4b5ff3 100644
+--- a/src/rutabaga_gfx/src/rutabaga_core.rs
++++ b/src/rutabaga_gfx/src/rutabaga_core.rs
+@@ -642,15 +642,51 @@ impl Rutabaga {
+         Ok(())
+     }
+ 
++    /// Creates a classic 2D resource. The default component gets it first; when that component
++    /// cannot (virglrenderer built for venus only, as on macOS, rejects 2D creation with EINVAL),
++    /// the 2D component owns it so dumb-buffer scanouts still reach the display.
++    pub fn resource_create_2d(
++        &mut self,
++        resource_id: u32,
++        resource_create_3d: ResourceCreate3D,
++    ) -> RutabagaResult<()> {
++        let default_result = self.resource_create_3d(resource_id, resource_create_3d);
++        if default_result.is_ok() || self.default_component == RutabagaComponentType::Rutabaga2D {
++            return default_result;
++        }
++        if self.resources.contains_key(&resource_id) {
++            return default_result;
++        }
++
++        let component = self
++            .components
++            .get_mut(&RutabagaComponentType::Rutabaga2D)
++            .ok_or(RutabagaError::InvalidComponent)?;
++        let resource = component.create_3d(resource_id, resource_create_3d)?;
++        self.resources.insert(resource_id, resource);
++        Ok(())
++    }
++
++    fn component_for_resource(&self, resource_id: u32) -> RutabagaComponentType {
++        let only_2d = 1 << (RutabagaComponentType::Rutabaga2D as u8);
++        match self.resources.get(&resource_id) {
++            Some(resource) if resource.component_mask == only_2d => {
++                RutabagaComponentType::Rutabaga2D
++            }
++            _ => self.default_component,
++        }
++    }
++
+     /// Attaches `vecs` to the resource.
+     pub fn attach_backing(
+         &mut self,
+         resource_id: u32,
+         mut vecs: Vec<RutabagaIovec>,
+     ) -> RutabagaResult<()> {
++        let component_type = self.component_for_resource(resource_id);
+         let component = self
+             .components
+-            .get_mut(&self.default_component)
++            .get_mut(&component_type)
+             .ok_or(RutabagaError::InvalidComponent)?;
+ 
+         let resource = self
+@@ -665,9 +701,10 @@ impl Rutabaga {
+ 
+     /// Detaches any previously attached iovecs from the resource.
+     pub fn detach_backing(&mut self, resource_id: u32) -> RutabagaResult<()> {
++        let component_type = self.component_for_resource(resource_id);
+         let component = self
+             .components
+-            .get_mut(&self.default_component)
++            .get_mut(&component_type)
+             .ok_or(RutabagaError::InvalidComponent)?;
+ 
+         let resource = self
+@@ -682,9 +719,10 @@ impl Rutabaga {
+ 
+     /// Releases guest kernel reference on the resource.
+     pub fn unref_resource(&mut self, resource_id: u32) -> RutabagaResult<()> {
++        let component_type = self.component_for_resource(resource_id);
+         let component = self
+             .components
+-            .get_mut(&self.default_component)
++            .get_mut(&component_type)
+             .ok_or(RutabagaError::InvalidComponent)?;
+ 
+         self.resources
+@@ -703,9 +741,10 @@ impl Rutabaga {
+         resource_id: u32,
+         transfer: Transfer3D,
+     ) -> RutabagaResult<()> {
++        let component_type = self.component_for_resource(resource_id);
+         let component = self
+             .components
+-            .get(&self.default_component)
++            .get(&component_type)
+             .ok_or(RutabagaError::InvalidComponent)?;
+ 
+         let resource = self
+@@ -727,9 +766,10 @@ impl Rutabaga {
+         transfer: Transfer3D,
+         buf: Option<IoSliceMut>,
+     ) -> RutabagaResult<()> {
++        let component_type = self.component_for_resource(resource_id);
+         let component = self
+             .components
+-            .get(&self.default_component)
++            .get(&component_type)
+             .ok_or(RutabagaError::InvalidComponent)?;
+ 
+         let resource = self
+@@ -741,9 +781,10 @@ impl Rutabaga {
+     }
+ 
+     pub fn resource_flush(&mut self, resource_id: u32) -> RutabagaResult<()> {
++        let component_type = self.component_for_resource(resource_id);
+         let component = self
+             .components
+-            .get(&self.default_component)
++            .get(&component_type)
+             .ok_or(RutabagaError::Unsupported)?;
+ 
+         let resource = self
+@@ -1297,10 +1338,9 @@ impl RutabagaBuilder {
+             ));
+         }
+ 
+-        if self.default_component == RutabagaComponentType::Rutabaga2D {
+-            let rutabaga_2d = Rutabaga2D::init(fence_handler.clone())?;
+-            rutabaga_components.insert(RutabagaComponentType::Rutabaga2D, rutabaga_2d);
+-        } else {
++        let rutabaga_2d = Rutabaga2D::init(fence_handler.clone())?;
++        rutabaga_components.insert(RutabagaComponentType::Rutabaga2D, rutabaga_2d);
++        if self.default_component != RutabagaComponentType::Rutabaga2D {
+             #[cfg(feature = "virgl_renderer")]
+             if self.default_component == RutabagaComponentType::VirglRenderer {
+                 #[cfg(not(feature = "virgl_renderer_next"))]
