@@ -11,22 +11,22 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** G0 gate (see `git log`).
-- **Accepted:** G0 (all slices; `dev/bootstrap.sh && dev/test.sh g0` green
-  from a fresh clone in 3m37s, downloads seeded from the verified cache
-  while GitHub release downloads returned 504). G0.3 also fixed `wait4`
-  and the stale boot identity window found by G0.4. H. Probe native side
-  (`mini_chromium` 47/47, raw 6/6 natively; 2/47 and 1/6 on Nanos).
+- **Last accepted revision:** G1.1 (see `git log`).
+- **Accepted:** G0 (gate green from a fresh clone). H. G1.1 (per-process
+  page tables, eager `fork`, per-process exit, cross-process
+  epoll/select/poll delivery: `vm_isolation` 20/20 on 1 and 2 vCPUs, the
+  sharing build fails it, `poll_xproc` 40/40). G5 prep
+  (`dev/test.sh helium-native` 11/11). Probe: native 55/55 and raw 6/6; on
+  Nanos 5/55 and 2–3/6.
   **Red:** none. **Parked:** none.
-- **G5 prep accepted:** `dev/helium-rootfs.sh` (Helium plus weston 14
-  headless/kiosk from pinned Alpine 3.24.2 packages, 975 MB) and
-  `tests/helium/guest_init.c` (compositor, HTTP fixture, sandboxed Helium,
-  in-guest CDP client, `/proc` sandbox report, clean shutdown).
-  `dev/test.sh helium-native` passes 11/11; `dev/test.sh helium` boots the
-  1.06 GB image on Nanos, known-red 0/11 until G1 (no fork).
-- **Running lane:** G1.1 kernel (`.work/wt/g1.1`, owns `nanos/src`).
-- **Next:** accept G1.1, then G1.2 (COW, `wait4`/zombies, `vfork`).
-- **Gate matrix:** G0 PASS · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
+- **Designs:** G1 `nanos/docs/chromium-compat.md`, G2/G3
+  `nanos/docs/sandbox-design.md` (about 4,700 LoC of kernel code and 2,950
+  of tests, no blocker).
+- **Next:** G1.2 (COW, `wait4`/zombies, `vfork`, fd table semantics) in
+  parallel with G2.1 (SCM data, credentials, MSG flags) and the seccomp core
+  (validator and interpreter, not yet wired in); then G1.3 `execve`, G1.4
+  process signals, then the rest of G2/G3 fanned out by the design table.
+- **Gate matrix:** G0 PASS · H PASS · G1 NOT RUN (G1.1 accepted) · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -249,13 +249,31 @@ only when every slice in it is accepted on `main`.
 - **Contract-driven scope** (`docs/chromium-contract.md` §7 is the
   checklist for G1–G3): `SOCK_SEQPACKET` with `SCM_CREDENTIALS` whose pid is
   translated into the receiver's PID namespace is required (G2.1); seccomp
-  actions are only `ALLOW`, `ERRNO` and `TRAP`, with the `SPEC_ALLOW` flag
-  accepted and `TSYNC` accepted (renderers only probe it with a NULL program
-  that must give `EFAULT`); `TRACE`, `KILL`, `LOG` and `USER_NOTIF` are not
-  needed and return `EINVAL` (G3.2); user namespaces nest two deep (G3.3);
+  actions follow Linux: install accepts any return action, and at run time
+  `ALLOW`, `ERRNO`, `TRAP`, `KILL_THREAD` and `KILL_PROCESS` behave as on
+  Linux, `LOG` allows, `TRACE` with no tracer fails the syscall with
+  `ENOSYS`; only the `NEW_LISTENER` (`USER_NOTIF`) flag and unknown flags give
+  `EINVAL`; `SPEC_ALLOW` is accepted and `TSYNC` must really synchronize all
+  threads, because Helium's GPU process installs with it (executor decision
+  2026-11-09, from `nanos/docs/sandbox-design.md` findings) (G3.2); user namespaces nest two deep (G3.3);
   `ptrace`, `setns` and `mount` stay `ENOSYS`, but `PR_SET_PTRACER` must
   succeed (G3.1/G3.4); `memfd_create("", ~0)` and `eventfd2(0, ~0)` must fail
   with `EINVAL`; `/proc/self/task` needs `st_nlink == threads + 2`.
+
+- **G2/G3 binding design:** `nanos/docs/sandbox-design.md` (verdict
+  feasible). Its §5 slice table supersedes the G2 and G3 rows below for
+  owned files, probe checks turned green and runtime tests; its findings
+  correct this doc where they disagree (check placement: `proc_status` and
+  `ptrace_denied` at G3.2, every zygote check at G3.4; `/proc` is not
+  filtered by PID namespace; abstract `AF_UNIX` names are out of scope).
+- **Parallel lanes** (owner preference 2026-11-09: fan out once designs are
+  solid): run concurrent writer lanes whenever their owned files in the
+  design tables are disjoint, plus shared headers edited in distinct
+  sections. Integrate one lane at a time on `main`, each with its
+  acceptance plus `dev/test.sh harness probe upstream`. Lanes never push.
+- **Init exit ends the VM** (executor, 2026-11-09): a child's exit or fatal
+  signal tears down only that process; the VM exits with init's code when
+  init exits, as PID 1 does on Linux.
 
 ### Delegated (decide within the bound, record in the commit body)
 
