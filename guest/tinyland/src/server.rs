@@ -269,16 +269,17 @@ impl State {
             display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::NoMemory, "too many outstanding frame callbacks");
             return;
         }
-        let pixels = match pending.buffer {
+        let attached = match pending.buffer {
+            Some(Some(id)) if !self.buffers.contains_key(&id) => None,
+            other => other,
+        };
+        let pixels = match attached {
             Some(Some(id)) => {
                 let needed = match self.buffers.get(&id) {
                     Some((_, data)) => (data.width as usize).checked_mul(data.height as usize).and_then(|n| n.checked_mul(4)),
                     None => None,
                 };
-                let Some((buffer, data)) = self.buffers.get(&id) else {
-                    display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::Implementation, "attached buffer was destroyed before commit");
-                    return;
-                };
+                let Some((buffer, data)) = self.buffers.get(&id) else { unreachable!("destroyed buffers were filtered out above") };
                 let needed = match needed {
                     Some(n) => n,
                     None => {

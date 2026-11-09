@@ -912,7 +912,6 @@ fn wheel_notches_become_discrete_axis_events_with_wayland_sign() {
 const DISPLAY_ERROR: u16 = 0;
 const DISPLAY_OBJECT: u32 = 1;
 const DISPLAY_NO_MEMORY: u32 = 2;
-const DISPLAY_IMPLEMENTATION: u32 = 3;
 
 fn display_errors(events: &Events) -> Vec<(u32, u32)> {
     events.iter().filter(|(object, opcode, _)| *object == 1 && *opcode == DISPLAY_ERROR).map(|(_, _, args)| (args[0], args[1])).collect()
@@ -933,14 +932,19 @@ fn committing_a_buffer_whose_file_was_truncated_reports_invalid_fd_on_the_buffer
 }
 
 #[test]
-fn committing_a_buffer_destroyed_after_attach_reports_an_implementation_error_on_the_display() {
+fn committing_a_buffer_destroyed_after_attach_keeps_the_current_content() {
     let mut f = Fixture::new();
     let surface = f.surface();
+    f.show(&surface, 2, 1, 7);
+    let before = f.state.surfaces[&surface.id()].pixels.as_ref().expect("content is shown").bytes.clone();
     let buffer = f.filled_buffer(2, 1, 9);
     f.request(&surface, 1, &[buffer.id().protocol_id(), 0, 0]);
     f.state.buffers.remove(&buffer.id());
+    f.request(&surface, 3, &[2]);
     let events = messages(&f.request(&surface, 6, &[]));
-    assert_eq!(display_errors(&events), [(DISPLAY_OBJECT, DISPLAY_IMPLEMENTATION)]);
+    assert!(display_errors(&events).is_empty());
+    assert_eq!(f.state.surfaces[&surface.id()].pixels.as_ref().map(|p| p.bytes.clone()), Some(before));
+    assert!(f.state.surfaces[&surface.id()].callbacks.len() == 1, "the frame callback still queues");
 }
 
 const KEYBOARD_ENTER: u16 = 1;
