@@ -11,22 +11,19 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** G0.3 (see `git log`).
-- **Accepted:** G0.1 (fork, pinned vendoring, bootstrap/doctor/build,
-  byte-identical rebuilds, ccache: warm clean build 2 s). G0.2 (image/run
-  harness rejecting every false-pass channel). G0.3 (vectored io skipped
-  iovec 0 on console/pipes, so musl stdio hung: fixed; `wait4`/`waitid`
-  answer `ECHILD`/`EINVAL` instead of 0/`ENOSYS`). G0.5 (debug kernel, GDB,
-  symbolized crashes, metrics). H (`docs/chromium-contract.md`). Probe
-  native side: `mini_chromium` 47/47 and raw 6/6 natively; on Nanos 2/47 and
-  1/6, known-red until G1.
+- **Last accepted revision:** G0 gate (see `git log`).
+- **Accepted:** G0 (all slices; `dev/bootstrap.sh && dev/test.sh g0` green
+  from a fresh clone in 3m37s, downloads seeded from the verified cache
+  while GitHub release downloads returned 504). G0.3 also fixed `wait4`
+  and the stale boot identity window found by G0.4. H. Probe native side
+  (`mini_chromium` 47/47, raw 6/6 natively; 2/47 and 1/6 on Nanos).
   **Red:** none. **Parked:** none.
 - **Running lanes:** upstream suite on musl (`.work/wt/upstream`, G0.4);
   G1.1 kernel, per-process page tables plus eager fork, owning `nanos/src`
   (`.work/wt/g1.1`); G5 prep, Helium plus headless-compositor rootfs and
   `guest_init` proven natively (`.work/wt/g5-prep`).
 - **Next:** integrate G0.4, then G1.1 when its acceptance holds, then G1.2.
-- **Gate matrix:** G0 NOT RUN (4/5 slices) · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
+- **Gate matrix:** G0 PASS · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -301,7 +298,8 @@ Upstream checkout in `.work/src/nanos` at `e4b9c9e`.
 | `ioctl(1, TIOCGWINSZ)` | `ENOSYS`. musl treats it as "not a tty"; harmless |
 | `kernel.mk:117` | `gitversion.c` depends on `$(ROOTDIR)/.git/index`; breaks in worktrees and under `hydrogen/nanos/`. Fixed in G0.1 |
 | Pinned LLVM building the kernel | fails at lld (`R_X86_64_PC32` against `IMAGE_BASE`) |
-| Upstream runtime tests (partial, musl, pre-`writev` fix) | pass: `dup`, `epoll`, `eventfd`. Build fail on musl: `aio`, `filesystem`. No Go: `fst`. Timed out at 90 s: `fcntl`, `fs_full`, `futex`, `getdents`. `futexrobust` exit 29. The rest not run. These results are not trustworthy until the `writev` fix; G0.4 produces the real table here |
+| Upstream runtime suite (`dev/test.sh upstream`, musl, after G0.3 and the identity-window fix) | 78 runs (39 tests × 1 and 2 vCPUs): 63 pass, 15 known-red, pinned to causes in `dev/test.sh` `upstream_known`: `filesystem` (no `faccessat2`), `io_uring` (ring `mmap` `EINVAL`), `mmap` (user write fault in `memset`), `netsock` (crash reading the `sendmsg` msghdr), `sigloop` (`SIG_DFL`/`SIG_IGN` without `SA_RESTORER` rejected), `signal` (silent hang), `tlbshootdown` smp 2 (`FUTEX_REQUEUE` missing), `tun` (`TUNGETIFF`). Runs in about 2.5 min |
+| **Fixed: stale boot identity window** | PVH boot identity-maps `[0, 4M)` with 2 MiB supervisor pages and reclaim left `[0xa000, 2M)` and `[END, 4M)` mapped in the user half: intermittent `SEGV_ACCERR` in musl malloc whenever heap ASLR put `brk` below 4M, and a kernel panic from user `mmap(MAP_FIXED)` + `munmap` there. `low_user_va` fixture |
 | Sandbox syscalls at `e4b9c9e` | `clone` without `CLONE_THREAD` returns `-ENOSYS` (`nanos/src/unix/thread.c:58`); `execve`/`fork`/`seccomp`/`unshare` unregistered; `wait4`, `setuid`, `setgid`, `setgroups`, `capset` are `syscall_ignore`; `prctl` returns 0 for every option it doesn't know; no `/proc/self/status` |
 | Existing reusable pieces | `memfd_create` and seals (`nanos/klib/shmem.c:12`, `F_ADD_SEALS` in `syscall.c`), `pledge`/`unveil`/`sandbox` klibs (`nanos/klib/`), the `strace` klib, `NO_KASLR` (`nanos/src/kernel/init.c:86`) |
 | Native oracle | unprivileged `unshare -Urpn` works on the host; seccomp present |
