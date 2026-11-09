@@ -127,11 +127,10 @@ void reclaim_regions(void)
                      func_ss, irange(e->base, e->base + e->length));
         }
     }
-    /* we're done with looking at e820 (and our custom) regions, so
-       release the initial map here */
-    unmap(0, INITIAL_MAP_SIZE);
-
-    unmap(u64_from_pointer(&START) - kas_kern_offset, pad(&END - &START, PAGESIZE));
+    /* The boot loaders identity-map low memory with 2MB pages, from 0 through
+       the kernel image. None of it is used past this point, and anything
+       left mapped would sit in the user address space. */
+    unmap(0, pad(u64_from_pointer(&END) - kas_kern_offset, PAGESIZE_2M));
 }
 
 void vm_shutdown(u8 code)
