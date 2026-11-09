@@ -663,7 +663,7 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
   SmolVM on H1's measures while passing the full acceptance suite unchanged.
   Nanos, assessed 2026-11-08 (`docs/research/unikernel-nanos.md`), is not viable:
   no process creation, namespaces, seccomp, DRM, or evdev, and Chromium dies
-  in early init. The next unikernel probe is Unikraft's multiprocess loader.
+  in early init. Unikraft, assessed 2026-11-08 (`docs/research/unikernel-unikraft.md`), is not viable: Chromium examples need the unpublished `base-compat` Cloud kernel, and stock Unikraft has vfork/execve only, with no fork, namespaces, seccomp, DRM/KMS or evdev.
 - **X3 Remote contexts.** A remote `bctl` daemon on a Linux KVM host using the
   amd64 Helium artifact, with the same API and ownership model. Jobs reach its
   sessions through its gateway's CDP endpoint, or run on that host when H1's
