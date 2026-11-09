@@ -662,10 +662,9 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
     reattaches); checkpoint restore once X1 exists.
   - Browser: Speedometer 3.x run headed in the guest (score and spread),
     plus JetStream and MotionMark as secondary scores; page-load timing of
-    a local fixture from the Navigation Timing API. Comparisons on the same
-    Mac: native macOS Chromium of the same major version, and Linux arm64
-    Chromium in a container, so the VM and the guest stack's cost is
-    visible. Rerun on Helium (P2) and on each image (Sway, Tinyland).
+    a local fixture from the Navigation Timing API. The comparison is Linux
+    arm64 Chromium in a container on the same Mac, the container-browser
+    class bctl competes with; a native macOS browser is not a baseline. Rerun on Helium (P2) and on each image (Sway, Tinyland).
   - Interaction: input-to-pixel latency through the gateway (RFB input to a
     changed framebuffer), viewer frame rate and bandwidth, CDP round trip
     through the capability gateway versus inside the guest.
