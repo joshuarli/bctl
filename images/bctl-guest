@@ -1,0 +1,93 @@
+#!/bin/sh
+set -eu
+
+browser_user=browser
+runtime_dir=/run/user/1000
+state=/run/bctl
+profile=${BCTL_PROFILE_DIR:-/profile}
+cdp_port=${BCTL_CDP_PORT:-9222}
+browser_cdp_port=9221
+start_url=${BCTL_START_URL:-about:blank}
+
+fail() { echo "bctl-guest: $*" >&2; exit 1; }
+
+expose_devices() {
+    mkdir -p /dev/input
+    for dev in /sys/class/input/event*/dev; do
+        [ -e "$dev" ] || continue
+        node=/dev/input/$(basename "$(dirname "$dev")")
+        IFS=: read -r major minor < "$dev"
+        [ -e "$node" ] || mknod "$node" c "$major" "$minor"
+    done
+    [ -e /dev/dri/card0 ] || fail "no /dev/dri/card0: start the machine with a display"
+    chgrp video /dev/dri/* /dev/input/* 2>/dev/null || chgrp video /dev/dri/*
+    chmod 660 /dev/dri/* /dev/input/* 2>/dev/null || chmod 660 /dev/dri/*
+}
+
+wait_for() {
+    what=$1; shift
+    for _ in $(seq 1 200); do
+        "$@" && return 0
+        sleep 0.1
+    done
+    fail "timed out waiting for $what"
+}
+
+wayland_socket() { [ -S "$runtime_dir/wayland-1" ]; }
+cdp_ready() { wget -qO- "http://127.0.0.1:$cdp_port/json/version" >/dev/null 2>&1; }
+
+run() {
+    mkdir -p "$state" "$runtime_dir" "$profile"
+    chown "$browser_user" "$runtime_dir" "$profile"
+    chmod 700 "$runtime_dir"
+    expose_devices
+
+    SEATD_VTBOUND=0 seatd -g video > "$state/seatd.log" 2>&1 &
+    wait_for seatd test -S /run/seatd.sock
+
+    no_input=0
+    ls /dev/input/event* >/dev/null 2>&1 || no_input=1
+    printf 'xwayland disable\noutput * bg #000000 solid_color\n' > "$state/sway.cfg"
+    chmod 644 "$state/sway.cfg"
+    su-exec "$browser_user" env XDG_RUNTIME_DIR="$runtime_dir" LIBSEAT_BACKEND=seatd \
+        WLR_RENDERER=pixman WLR_NO_HARDWARE_CURSORS=1 WLR_LIBINPUT_NO_DEVICES=$no_input \
+        sway -c "$state/sway.cfg" > "$state/compositor.log" 2>&1 &
+    wait_for compositor wayland_socket
+
+    su-exec "$browser_user" env XDG_RUNTIME_DIR="$runtime_dir" WAYLAND_DISPLAY=wayland-1 \
+        chromium --ozone-platform=wayland \
+        --remote-debugging-port="$browser_cdp_port" \
+        --user-data-dir="$profile" --no-first-run --no-default-browser-check \
+        --start-maximized "$start_url" > "$state/browser.log" 2>&1 &
+    browser=$!
+    socat TCP-LISTEN:"$cdp_port",fork,reuseaddr TCP:127.0.0.1:"$browser_cdp_port" > "$state/relay.log" 2>&1 &
+    wait_for browser cdp_ready
+    echo "bctl-guest: ready"
+    wait "$browser"
+}
+
+check() {
+    status=0
+    report() {
+        if "$@"; then echo "$name ok"; else echo "$name missing"; status=1; fi
+    }
+    name=seat report test -S /run/seatd.sock
+    name=compositor report wayland_socket
+    name=browser report cdp_ready
+    renderer=$(pgrep -f -- '--type=renderer' | head -n 1 || true)
+    if [ -n "$renderer" ] &&
+        grep -q '^NoNewPrivs:[[:space:]]*1$' "/proc/$renderer/status" &&
+        grep -q '^Seccomp:[[:space:]]*2$' "/proc/$renderer/status"; then
+        echo "sandbox ok"
+    else
+        echo "sandbox missing"
+        status=1
+    fi
+    return "$status"
+}
+
+case ${1:-run} in
+    run) run ;;
+    check) check ;;
+    *) fail "usage: bctl-guest [run|check]" ;;
+esac
