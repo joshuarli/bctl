@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -224,7 +225,6 @@ static void uds_stream_test(void)
 
     test_assert((poll(&fds, 1, -1) == 1) && (fds.revents & POLLHUP));
     test_assert(recv(s2, writeBuf, 1, 0) == 0);
-    /* on linux, this generates SIGPIPE instead of returning */
     test_assert((send(s2, writeBuf, 1, 0) == -1) && (errno == EPIPE));
 
     test_assert(close(s1) == 0);
@@ -686,6 +686,7 @@ static void uds_fault_test(void)
 
 int main(int argc, char **argv)
 {
+    signal(SIGPIPE, SIG_IGN);
     uds_stream_test();
     uds_dgram_test();
     uds_seqpacket_test();
