@@ -25,6 +25,7 @@ const BUTTONS: &str = r#"<!doctype html><title>Buttons</title>
 <button id=confirm onclick="log('confirm ' + confirm('Sure?'))">Confirm</button>
 <button id=popup onclick="window.open('/inner?popup', '_blank')">Popup</button>
 <button id=far style="margin-top:3000px" onclick="log('far')">Far</button>
+<a id=away href="/inner?away">Away</a>
 <p id=log></p>
 <script>
 window.events = [];
@@ -342,6 +343,10 @@ fn n4_clicks_land_only_on_the_named_visible_enabled_uncovered_element_in_any_fra
          by role p50/p95 {role_p50}/{role_p95} ms CLI, {role_daemon_p50}/{role_daemon_p95} ms daemon; get title p50/p95 {get_p50}/{get_p95} ms CLI, {get_daemon_p50}/{get_daemon_p95} ms daemon",
         warm_ref.cdp_calls, warm_role.cdp_calls, warm_css.cdp_calls,
     );
+
+    done(&home, "click", s, &["--role", "link", "--name", "Away"]);
+    done(&home, "wait", s, &["--url", "*/inner?away"]);
+    assert_eq!(done(&home, "get", s, &["title"]).text.as_deref(), Some("Inner"), "a click that navigates its own document away has landed");
     assert_ok(&home.bctl(&["down", s]));
 }
 

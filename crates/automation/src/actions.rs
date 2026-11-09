@@ -1205,30 +1205,27 @@ impl<'a> Act<'a> {
         if as_str(&armed) != Some("armed") {
             return Err(helper_reply("arming the press check", &armed));
         }
-        self.click_at(x, y, count).await?;
-        let landed = self.inspect(&node.held, "the press check", PRESS_LANDED, Vec::new()).await?;
-        match as_str(&landed) {
-            Some("landed") => Ok(()),
-            Some("nothing") => Err(ActionError::NotActionable {
-                locator: locator.to_string(),
-                reason: "did not get the click: the browser delivered no press to its frame".into(),
-            }),
-            Some(elsewhere) if elsewhere.starts_with("elsewhere:") => {
-                Err(ActionError::Missed { locator: locator.to_string(), by: elsewhere["elsewhere:".len()..].to_string() })
-            }
-            _ => Err(helper_reply("the press check", &landed)),
-        }
-    }
-
-    async fn click_at(&mut self, x: f64, y: f64, count: ClickCount) -> Result<(), ActionError> {
         self.mouse("mouseMoved", x, y, false, 0).await?;
-        let clicks = match count {
-            ClickCount::Single => 1,
-            ClickCount::Double => 2,
-        };
-        for n in 1..=clicks {
-            self.mouse("mousePressed", x, y, true, n).await?;
-            self.mouse("mouseReleased", x, y, false, n).await?;
+        self.mouse("mousePressed", x, y, true, 1).await?;
+        let landed = self.inspect(&node.held, "the press check", PRESS_LANDED, Vec::new()).await;
+        self.mouse("mouseReleased", x, y, false, 1).await?;
+        let landed = landed?;
+        match as_str(&landed) {
+            Some("landed") => {}
+            Some("nothing") => {
+                return Err(ActionError::NotActionable {
+                    locator: locator.to_string(),
+                    reason: "did not get the click: the browser delivered no press to its frame".into(),
+                });
+            }
+            Some(elsewhere) if elsewhere.starts_with("elsewhere:") => {
+                return Err(ActionError::Missed { locator: locator.to_string(), by: elsewhere["elsewhere:".len()..].to_string() });
+            }
+            _ => return Err(helper_reply("the press check", &landed)),
+        }
+        if count == ClickCount::Double {
+            self.mouse("mousePressed", x, y, true, 2).await?;
+            self.mouse("mouseReleased", x, y, false, 2).await?;
         }
         Ok(())
     }
