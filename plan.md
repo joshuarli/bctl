@@ -275,6 +275,20 @@ only when every slice in it is accepted on `main`.
   signal tears down only that process; the VM exits with init's code when
   init exits, as PID 1 does on Linux.
 
+- **Independent differential corpus** (owner-supplied prior-art handoff,
+  2026-11-09). Beside the bespoke probe, the campaign keeps a small bank of
+  externally authored cases in `tests/external/`, each compiled once with the
+  musl guest toolchain and run natively and on Nanos with the same records.
+  gVisor's syscall tests (Apache-2.0, designed to also pass on native Linux)
+  are ported case by case to C with the upstream notice, pinned commit,
+  file and test name kept per case. Linux selftests (GPL-2.0) and Fuchsia
+  Starnix are behavior references only: write independent tests, copy no
+  code. Start with the 12–20 cases matching the slices in flight (fd
+  ownership and SCM_RIGHTS lifetime now, seccomp/TSYNC with G3.2, including
+  Starnix's `ErrnoIsMaxFFF` errno cap); grow only when a case exposes a real
+  gap. A case passes only when every observation and its cleanup hold on
+  both sides; a case that cannot run is recorded as such, never as a pass.
+
 ### Delegated (decide within the bound, record in the commit body)
 
 - **Reproducible build check (G0.1).** Two clean builds of the same commit at
@@ -529,6 +543,16 @@ relies on it.
   `musl-gpu-sandbox-broker-tsync.patch`, `musl-gpu-pwritev2-sandbox.patch`,
   `musl-gpu-sched-affinity-errno.patch`, and Helium's `no-sandbox-settls.patch`
   (see `config/helium.patch-disposition.json`).
+- Prior art, reference only (not in scope here): Nanos booting under
+  libkrun on Apple Silicon (`github.com/tsirysndr/bsdkrun`, fork
+  `tsirysndr/nanos` branch `fix/aarch64-libkrun-boot`: virtio-mmio
+  enumeration, DC ZVA before MMU, EFI cache maintenance, GIC selection,
+  firmware interrupt routing, level de-assert) for a later bctl
+  convergence; Chimera's musl Chromium recipe (`chimera-linux/cports`
+  `main/chromium`) for comparing musl patches in chromium-build (its
+  `libgcc-chimera` shim is why "LLVM + musl" is not the same as no
+  libgcc); waymux (`tek-cat/waymux`) was considered for the Wayland stopgap
+  and not adopted, because it brings Mesa, FFmpeg and a Go viewer.
 - Nanos code map at `e4b9c9e` (paths relative to `nanos/` after import):
   CR3 load `src/x86_64/page.c:115-125`; process creation refusal
   `src/unix/thread.c:58`; syscall registration `src/unix/syscall.c:2460-2465`
