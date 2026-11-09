@@ -611,29 +611,14 @@ sysreturn sigaltstack(const stack_t *ss, stack_t *oss)
 sysreturn tgkill(int tgid, int tid, int sig)
 {
     sig_debug("tgid %d, tid %d, sig %d\n", tgid, tid, sig);
-
-    /* tgid == pid */
-    if (tgid != current->p->pid)
-        return -ESRCH;
-
-    if (tid <= 0 || sig < 0 || sig > NSIG)
+    if (tgid <= 0 || tid <= 0 || sig < 0 || sig > NSIG)
         return -EINVAL;
-
-    if (sig == 0)
-        return 0;               /* always permitted */
-
-    thread t;
-    if ((t = thread_from_tid(current->p, tid)) == INVALID_ADDRESS)
-        return -ESRCH;
-
+    process p = current->p;
     struct siginfo si;
     init_siginfo(&si, sig, SI_TKILL);
-    si.sifields.rt.pid = tgid;
-    si.sifields.rt.uid = 0;
-    sig_debug("-> delivering to thread\n");
-    deliver_signal_to_thread(t, &si);
-    thread_release(t);
-    return 0;
+    si.sifields.rt.pid = p->pid;
+    si.sifields.rt.uid = p->creds.uid;
+    return thread_signal(p, tgid, tid, &si);
 }
 
 sysreturn kill(int pid, int sig)
@@ -653,61 +638,53 @@ sysreturn kill(int pid, int sig)
     return process_signal(p, pid, &si);
 }
 
-static inline sysreturn sigqueueinfo_sanitize_args(int tgid, int sig, siginfo_t *uinfo)
+static sysreturn sigqueueinfo_copy(int tgid, int sig, siginfo_t *uinfo, struct siginfo *si)
 {
-    if (tgid != current->p->pid)
-        return -ESRCH;
-
     if (sig < 0 || sig > NSIG)
         return -EINVAL;
-
-    context ctx = get_current_context(current_cpu());
-    if (!memory_is_user(uinfo, sizeof(siginfo_t)) || context_set_err(ctx))
+    if (!copy_from_user(uinfo, si, sizeof(*si)))
         return -EFAULT;
-    touch_memory(uinfo, sizeof(siginfo_t));
-    uinfo->si_signo = sig;
-    context_clear_err(ctx);
-
-    if (sig == 0)
-        return 0;               /* always permitted */
-
-    if (uinfo->si_code >= 0 || uinfo->si_code == SI_TKILL)
+    si->si_signo = sig;
+    if (tgid != current->p->pid && (si->si_code >= 0 || si->si_code == SI_TKILL))
         return -EPERM;
-
-    return 1;
+    return 0;
 }
 
 sysreturn rt_sigqueueinfo(int tgid, int sig, siginfo_t *uinfo)
 {
-    sig_debug("tgid (pid) %d, sig %d, uinfo %p, si_code %d\n", tgid, sig, uinfo, uinfo->si_code);
-
-    sysreturn rv = sigqueueinfo_sanitize_args(tgid, sig, uinfo);
-    if (rv <= 0)
+    sig_debug("tgid (pid) %d, sig %d, uinfo %p\n", tgid, sig, uinfo);
+    if (tgid <= 0)
+        return -ESRCH;
+    struct siginfo si;
+    sysreturn rv = sigqueueinfo_copy(tgid, sig, uinfo, &si);
+    if (rv)
         return rv;
-    deliver_signal_to_process(current->p, uinfo);
-    return 0;
+    return process_signal(current->p, tgid, &si);
 }
 
 sysreturn rt_tgsigqueueinfo(int tgid, int tid, int sig, siginfo_t *uinfo)
 {
-    sig_debug("tgid (pid) %d, sig %d, uinfo %p\n", tgid, sig, uinfo);
-
-    sysreturn rv = sigqueueinfo_sanitize_args(tgid, sig, uinfo);
-    if (rv <= 0)
+    sig_debug("tgid (pid) %d, tid %d, sig %d, uinfo %p\n", tgid, tid, sig, uinfo);
+    if (tgid <= 0 || tid <= 0)
+        return -EINVAL;
+    struct siginfo si;
+    sysreturn rv = sigqueueinfo_copy(tgid, sig, uinfo, &si);
+    if (rv)
         return rv;
-
-    thread t;
-    if ((t = thread_from_tid(current->p, tid)) == INVALID_ADDRESS)
-        return -ESRCH;
-
-    deliver_signal_to_thread(t, uinfo);
-    thread_release(t);
-    return 0;
+    return thread_signal(current->p, tgid, tid, &si);
 }
 
 sysreturn tkill(int tid, int sig)
 {
-    return tgkill(1, tid, sig);
+    sig_debug("tid %d, sig %d\n", tid, sig);
+    if (tid <= 0 || sig < 0 || sig > NSIG)
+        return -EINVAL;
+    process p = current->p;
+    struct siginfo si;
+    init_siginfo(&si, sig, SI_TKILL);
+    si.sifields.rt.pid = p->pid;
+    si.sifields.rt.uid = p->creds.uid;
+    return thread_signal(p, 0, tid, &si);
 }
 
 /* aarch64: may be invoked directly from ppoll(2) */

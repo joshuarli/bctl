@@ -134,6 +134,7 @@ sysreturn getpgid(int pid);
 sysreturn getpgrp(void);
 int process_visible_pid(process target, process viewer);
 sysreturn process_signal(process sender, int pid, struct siginfo *si);
+sysreturn thread_signal(process sender, int tgid, int tid, struct siginfo *si);
 struct rusage;
 sysreturn process_wait(int idtype, int id, int options, int *wstatus, struct siginfo *infop,
                        struct rusage *ru, boolean report_pid);

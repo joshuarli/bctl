@@ -1585,6 +1585,57 @@ sysreturn process_signal(process sender, int pid, struct siginfo *si)
     return permitted ? 0 : -EPERM;
 }
 
+static process process_of_tid(int tid)
+{
+    vector candidates = allocate_vector(heap_locked(get_kernel_heaps()), 8);
+    if (candidates == INVALID_ADDRESS)
+        return 0;
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (!process_is_kernel(p)) {
+            process_reserve(p);
+            vector_push(candidates, p);
+        }
+    }
+    spin_unlock(&processes_lock);
+    process found = 0, p;
+    vector_foreach(candidates, p) {
+        if (!found) {
+            thread t = thread_from_tid(p, tid);
+            if (t != INVALID_ADDRESS) {
+                thread_release(t);
+                found = p;
+                continue;
+            }
+        }
+        process_release(p);
+    }
+    deallocate_vector(candidates);
+    return found;
+}
+
+sysreturn thread_signal(process sender, int tgid, int tid, struct siginfo *si)
+{
+    process target = tgid > 0 ? process_get(tgid) : process_of_tid(tid);
+    if (!target)
+        return -ESRCH;
+    int sig = si->si_signo;
+    sysreturn rv = 0;
+    thread t = thread_from_tid(target, tid);
+    if (t == INVALID_ADDRESS) {
+        rv = -ESRCH;
+    } else {
+        if (!process_signal_permitted(sender, target))
+            rv = -EPERM;
+        else if (sig && (target->state == PROCESS_RUNNING) && process_may_signal(sender, target, sig))
+            deliver_signal_to_thread(t, si);
+        thread_release(t);
+    }
+    process_release(target);
+    return rv;
+}
+
 void process_get_cwd(process p, filesystem *cwd_fs, inode *cwd)
 {
     fs_struct fs = p->fs;

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -174,12 +175,157 @@ static void check_sigaction_without_restorer(void)
 	record("sigaction_without_restorer", set_dfl && set_ign && ignored && segv, detail);
 }
 
+static volatile sig_atomic_t got_sig, got_code, got_tid;
+
+static void on_info(int sig, siginfo_t *si, void *uc)
+{
+	(void)uc;
+	got_sig = sig;
+	got_code = si->si_code;
+	got_tid = syscall(SYS_gettid);
+}
+
+static void catch_usr1(void)
+{
+	struct sigaction sa = { 0 };
+	sa.sa_sigaction = on_info;
+	sa.sa_flags = SA_SIGINFO;
+	sigaction(SIGUSR1, &sa, 0);
+	got_sig = got_code = got_tid = 0;
+}
+
+static int child_self_reraise(void)
+{
+	catch_usr1();
+	siginfo_t si = { 0 };
+	si.si_signo = SIGUSR1;
+	si.si_code = SI_KERNEL;
+	if (syscall(SYS_rt_tgsigqueueinfo, getpid(), syscall(SYS_gettid), SIGUSR1, &si))
+		return 2;
+	if (got_sig != SIGUSR1 || got_code != SI_KERNEL)
+		return 3;
+	catch_usr1();
+	if (syscall(SYS_tkill, syscall(SYS_gettid), SIGUSR1))
+		return 4;
+	if (got_sig != SIGUSR1 || got_code != SI_TKILL)
+		return 5;
+	return 0;
+}
+
+static void check_self_reraise(void)
+{
+	char detail[64];
+	pid_t pid = fork();
+	if (pid == 0)
+		_exit(child_self_reraise());
+	int code = exit_code(child_status(pid));
+	snprintf(detail, sizeof detail, "stage=%d", code);
+	record("signal_self_reraise", code == 0, detail);
+}
+
+struct worker_pipes {
+	int report, release;
+};
+
+static void *signalled_worker(void *arg)
+{
+	struct worker_pipes *w = arg;
+	sigset_t mask;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGUSR1);
+	pthread_sigmask(SIG_UNBLOCK, &mask, 0);
+	pid_t tid = syscall(SYS_gettid);
+	char c;
+	write(w->report, &tid, sizeof tid);
+	while (read(w->release, &c, 1) < 0 && errno == EINTR)
+		;
+	return (void *)(long)(got_sig == SIGUSR1 && got_tid == tid);
+}
+
+static int child_thread_target(int report, int release)
+{
+	struct worker_pipes w = { report, release };
+	sigset_t mask;
+	pthread_t th;
+	void *hit;
+	catch_usr1();
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGUSR1);
+	pthread_sigmask(SIG_BLOCK, &mask, 0);
+	if (pthread_create(&th, 0, signalled_worker, &w))
+		return 2;
+	pthread_join(th, &hit);
+	return hit ? 0 : 3;
+}
+
+static void check_thread_target(void)
+{
+	char detail[96];
+	int report[2], release[2];
+	if (pipe(report) || pipe(release)) {
+		record("signal_thread_target", 0, "pipe-failed");
+		return;
+	}
+	pid_t pid = fork();
+	if (pid == 0)
+		_exit(child_thread_target(report[1], release[0]));
+	pid_t tid = 0;
+	read(report[0], &tid, sizeof tid);
+	int sent = tid > 0 && tid != pid && syscall(SYS_tkill, tid, SIGUSR1) == 0;
+	write(release[1], "h", 1);
+	int code = exit_code(child_status(pid));
+	snprintf(detail, sizeof detail, "tid_distinct=%d,sent=%d,code=%d", tid > 0 && tid != pid, sent, code);
+	record("signal_thread_target", sent && code == 0, detail);
+}
+
+static void check_cross_process(void)
+{
+	char detail[160];
+	int report[2], release[2];
+	if (pipe(report) || pipe(release)) {
+		record("signal_cross_process", 0, "pipe-failed");
+		return;
+	}
+	pid_t pid = fork();
+	if (pid == 0) {
+		catch_usr1();
+		char c;
+		write(report[1], "r", 1);
+		while (read(release[0], &c, 1) < 0 && errno == EINTR)
+			;
+		_exit(got_sig == SIGUSR1 && got_code == SI_QUEUE ? 0 : 2);
+	}
+	char c;
+	read(report[0], &c, 1);
+	siginfo_t si = { 0 };
+	si.si_signo = SIGUSR1;
+	si.si_code = SI_KERNEL;
+	errno = 0;
+	int forged = syscall(SYS_rt_tgsigqueueinfo, pid, pid, SIGUSR1, &si) == -1 && errno == EPERM;
+	errno = 0;
+	int forged_proc = syscall(SYS_rt_sigqueueinfo, pid, SIGUSR1, &si) == -1 && errno == EPERM;
+	si.si_code = SI_QUEUE;
+	int queued = syscall(SYS_rt_tgsigqueueinfo, pid, pid, SIGUSR1, &si) == 0;
+	errno = 0;
+	int wrong_group = syscall(SYS_tgkill, getpid(), pid, 0) == -1 && errno == ESRCH;
+	int tg_probe = syscall(SYS_tgkill, pid, pid, 0) == 0 ? 0 : errno;
+	int t_probe = syscall(SYS_tkill, pid, 0) == 0 ? 0 : errno;
+	write(release[1], "h", 1);
+	int code = exit_code(child_status(pid));
+	snprintf(detail, sizeof detail, "forged=%d,forged_proc=%d,queued=%d,wrong_group=%d,tgkill_errno=%d,tkill_errno=%d,code=%d",
+		forged, forged_proc, queued, wrong_group, tg_probe, t_probe, code);
+	record("signal_cross_process", forged && forged_proc && queued && wrong_group && !tg_probe && !t_probe && code == 0, detail);
+}
+
 int main(void)
 {
 	check_setsid();
 	check_setpgid();
 	check_session_id_not_reused();
 	check_sigaction_without_restorer();
+	check_self_reraise();
+	check_cross_process();
+	check_thread_target();
 	printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", passed, failed);
 	return failed ? 1 : 0;
 }
