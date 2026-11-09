@@ -9,4 +9,4 @@ pub use state::{
     AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Interaction, LiveState, MachineObservation, NewRun, Outcome, Progress, Resources, RunKind,
     RunRecord, SessionRecord, SessionState,
 };
-pub use store::{Store, StoreError};
+pub use store::{SelectedTarget, Store, StoreError};

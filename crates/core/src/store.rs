@@ -10,7 +10,7 @@ use crate::state::{
     SessionState,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS profiles (
@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS attempts (
     interaction_reason TEXT,
     interaction_url TEXT,
     UNIQUE (run, number)
+) STRICT;
+CREATE TABLE IF NOT EXISTS selected_targets (
+    session TEXT PRIMARY KEY REFERENCES sessions(name),
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    target TEXT NOT NULL CHECK (target <> ''),
+    url TEXT NOT NULL
 ) STRICT;
 ";
 
@@ -194,6 +200,7 @@ impl Store {
             return Err(StoreError::NotStartable { session: name.clone(), state: session.state });
         }
         let generation = session.generation.next();
+        tx.execute("DELETE FROM selected_targets WHERE session = ?1", [name.as_str()])?;
         let updated = tx.execute(
             "UPDATE sessions SET state = 'starting', generation = ?2, vnc_port = ?3, failure = NULL WHERE name = ?1",
             params![name.as_str(), to_sql_generation(generation)?, endpoints.vnc_port],
@@ -241,6 +248,7 @@ impl Store {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM attempts WHERE run IN (SELECT id FROM runs WHERE session = ?1)", [name.as_str()])?;
         tx.execute("DELETE FROM runs WHERE session = ?1", [name.as_str()])?;
+        tx.execute("DELETE FROM selected_targets WHERE session = ?1", [name.as_str()])?;
         tx.execute("DELETE FROM sessions WHERE name = ?1", [name.as_str()])?;
         tx.commit()?;
         Ok(())
@@ -389,6 +397,44 @@ impl Store {
         raw.into_iter().map(attempt_record).collect()
     }
 
+    /// The target selected for native commands in `generation`, if that is still the session's generation.
+    pub fn selected_target(&self, name: &SessionName, generation: Generation) -> Result<Option<SelectedTarget>, StoreError> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT t.target, t.url FROM selected_targets t JOIN sessions s ON s.name = t.session AND s.generation = t.generation
+                 WHERE t.session = ?1 AND t.generation = ?2",
+                params![name.as_str(), to_sql_generation(generation)?],
+                |row| Ok(SelectedTarget { target: row.get(0)?, url: row.get(1)? }),
+            )
+            .optional()?)
+    }
+
+    /// Selects `target` for `generation`, replacing any earlier selection. `url` is stored as given, so it must
+    /// already be stripped of userinfo, query, and fragment. A session that has moved past `generation` is reported stale.
+    pub fn select_target(&mut self, name: &SessionName, generation: Generation, target: &SelectedTarget) -> Result<(), StoreError> {
+        let changed = self.db.execute(
+            "INSERT INTO selected_targets (session, generation, target, url)
+             SELECT name, generation, ?3, ?4 FROM sessions WHERE name = ?1 AND generation = ?2
+             ON CONFLICT (session) DO UPDATE SET generation = excluded.generation, target = excluded.target, url = excluded.url",
+            params![name.as_str(), to_sql_generation(generation)?, target.target, target.url],
+        )?;
+        if changed == 0 {
+            self.session(name)?;
+            return Err(StoreError::StaleGeneration { session: name.clone(), expected: generation });
+        }
+        Ok(())
+    }
+
+    /// Clears the selection of `generation` only if it is still `target`, so a concurrent selection survives.
+    pub fn release_target(&mut self, name: &SessionName, generation: Generation, target: &str) -> Result<(), StoreError> {
+        self.db.execute(
+            "DELETE FROM selected_targets WHERE session = ?1 AND generation = ?2 AND target = ?3",
+            params![name.as_str(), to_sql_generation(generation)?, target],
+        )?;
+        Ok(())
+    }
+
     /// Applies the record-keeping half of a reconciliation plan. Stopping stale machines is the caller's effect.
     pub fn apply(&mut self, actions: &[Action], now_ms: i64) -> Result<(), StoreError> {
         let tx = self.db.transaction()?;
@@ -415,6 +461,13 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+}
+
+/// A page target chosen for native commands, by CDP `targetId`, with its URL when it was chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedTarget {
+    pub target: String,
+    pub url: String,
 }
 
 const INTERRUPTED_DETAIL: &str = "bctl stopped while this attempt was live; its effects are unknown and it was not retried";
@@ -790,6 +843,56 @@ mod tests {
         let late = AttemptEnd::Ended { outcome: Outcome::Succeeded, detail: None };
         assert!(matches!(store.finish_attempt(attempt, &late, 13), Err(StoreError::StaleAttempt(_))));
         assert_eq!(store.run(run).unwrap().current.outcome, Some(Outcome::Cancelled));
+    }
+
+    fn ready(store: &mut Store, session: &str) -> Generation {
+        let machine = store.begin_start(&name(session), PORTS).unwrap();
+        store.transition(&name(session), machine.generation, SessionState::Ready, None).unwrap();
+        machine.generation
+    }
+
+    fn target(id: &str) -> SelectedTarget {
+        SelectedTarget { target: id.into(), url: "https://example.com/".into() }
+    }
+
+    #[test]
+    fn a_selected_target_belongs_to_one_generation_and_a_restart_forgets_it() {
+        let mut store = store_with(&[("research", "personal")]);
+        let first = ready(&mut store, "research");
+        store.select_target(&name("research"), first, &target("A")).unwrap();
+        assert_eq!(store.selected_target(&name("research"), first).unwrap(), Some(target("A")));
+
+        store.transition(&name("research"), first, SessionState::Stopped, None).unwrap();
+        let second = ready(&mut store, "research");
+        assert_eq!(store.selected_target(&name("research"), second).unwrap(), None);
+        assert_eq!(store.selected_target(&name("research"), first).unwrap(), None);
+        assert!(matches!(store.select_target(&name("research"), first, &target("A")), Err(StoreError::StaleGeneration { .. })));
+        assert_eq!(store.selected_target(&name("research"), second).unwrap(), None);
+    }
+
+    #[test]
+    fn releasing_a_target_keeps_a_selection_that_already_moved_on() {
+        let mut store = store_with(&[("research", "personal")]);
+        let generation = ready(&mut store, "research");
+        store.select_target(&name("research"), generation, &target("A")).unwrap();
+        store.select_target(&name("research"), generation, &target("B")).unwrap();
+        store.release_target(&name("research"), generation, "A").unwrap();
+        assert_eq!(store.selected_target(&name("research"), generation).unwrap(), Some(target("B")));
+        store.release_target(&name("research"), generation, "B").unwrap();
+        assert_eq!(store.selected_target(&name("research"), generation).unwrap(), None);
+    }
+
+    #[test]
+    fn a_version_1_database_keeps_its_runs_and_gains_target_selection() {
+        let mut store = store_with(&[("research", "personal")]);
+        let generation = ready(&mut store, "research");
+        let (run, _) = store.create_run(&new_run("research")).unwrap();
+        let Store { db } = store;
+        db.execute_batch("DROP TABLE selected_targets; PRAGMA user_version = 1;").unwrap();
+        let mut store = Store::init(db).unwrap();
+        assert_eq!(store.run(run).unwrap().id, run);
+        store.select_target(&name("research"), generation, &target("A")).unwrap();
+        assert_eq!(store.selected_target(&name("research"), generation).unwrap(), Some(target("A")));
     }
 
     const PRE_RUNS_SCHEMA: &str = "
