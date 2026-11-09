@@ -17,8 +17,11 @@ Accepted: P0 (`feac477`), P1 (`6ad2878`), B1 (`c38e9b7`: `cargo run -p
 bctl-proof -- m1 --runs 10`, 10/10 at about 4 s per boot-to-teardown). `guest/tinyland` and `guest/seatd`
 are vendored and pass `cargo check --locked --target
 aarch64-unknown-linux-musl --all-targets`.
-Next: C1. Unikernel viability lane (Nanos) running.
-Resume: `implement C1 from docs/CAMPAIGN-ROADMAP.md`.
+C1 (`f539b0f`), C2 (`e1ac445`), C3 (`4979a9d`), C4 (`b1e3de2`), each proved by
+its VM-backed test (`cargo test -p <crate> --test <name> -- --ignored`).
+X2 Nanos lane (`248a1db`): not viable; see `docs/research/unikernel-nanos.md`.
+Next: D1 (with `bctl profile login`), then J2 and J1.
+Resume: `implement D1 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
@@ -141,10 +144,12 @@ Resume: `implement C1 from docs/CAMPAIGN-ROADMAP.md`.
   connects to it. The browser-facing stream requires a dashboard session and
   an Origin match. CDP is forwarded to loopback only. In v1 any local process
   of the same user can reach it; H2 puts it behind the gateway.
-- Delegated: profile storage. Prefer a per-profile SmolVM disk (`--storage`)
-  over a host directory volume. Pick the host volume only if a browser profile
-  on it survives P3's acceptance (login cookie persists across `down`/`up`, no
-  SQLite lock errors in `chrome_debug.log` over 20 restarts).
+- Settled 2026-11-08 (C4): profile storage is a host directory,
+  `<BCTL_HOME>/profiles/<profile>`, mounted at `/profile` over virtiofs. The
+  preferred per-profile disk is unusable: smolvm loses its packed-layers disk
+  when `--disk` is attached to a machine booted from a local image archive.
+  The host directory passed the criterion: a cookie persisted across 20
+  `down`/`up` cycles with no SQLite lock or corruption messages.
 - Delegated: guest base. Prefer an Alpine aarch64 rootfs carrying SmolVM's
   static musl agent. Fall back to niceforge's Debian 13 agent rootfs if SmolVM
   rejects a non-Debian base, and record which in `docs/image-contract.md`.
@@ -538,6 +543,9 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
 - **X2 Alternative backends.** A unikernel-style or other VMM backend
   (Unikraft-style library OS, Firecracker/Cloud Hypervisor on Linux) must beat
   SmolVM on H1's measures while passing the full acceptance suite unchanged.
+  Nanos, assessed 2026-11-08 (`docs/research/unikernel-nanos.md`), is not viable:
+  no process creation, namespaces, seccomp, DRM, or evdev, and Chromium dies
+  in early init. The next unikernel probe is Unikraft's multiprocess loader.
 - **X3 Remote contexts.** A remote `bctl` daemon on a Linux KVM host using the
   amd64 Helium artifact, with the same API and ownership model. Jobs reach its
   sessions through its gateway's CDP endpoint, or run on that host when H1's
