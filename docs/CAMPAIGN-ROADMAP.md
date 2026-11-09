@@ -808,6 +808,20 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
   past H1's spread without weakening the sandbox? Restoring a running browser
   is a separate later question. Existing CDP connections are never promised
   to survive a restore.
+  Blocked today (H1, source-read 2026-11-09): SmolVM's one capture gate,
+  `validate_capture_profile` (`src/portable_checkpoint.rs:3944-3994` in
+  niceforge's vendored 1.31.4), refuses exposed sockets, local-archive image
+  layers, and `--gpu`, which every session uses. The GPU refusal is a real gap:
+  libkrun's virtio-gpu saves only transport state, and rutabaga snapshots 2D
+  only, while SmolVM's `--gpu` enables virgl and Venus. The other two are mostly
+  policy: virtio-fs and block devices already save and restore, and vsock saves
+  its queues but drops live connections. The bounded path, if X1 is taken up:
+  run the display as a 2D-only virtio-gpu (bctl renders on the CPU anyway),
+  save and restore rutabaga's 2D resources and scanout in a libkrun patch, and
+  relax the gate for 2D GPUs and idle exposed sockets, which means building
+  SmolVM from source instead of taking the release bundle by digest (an owner
+  decision). virtio-input has no save arm and is silently skipped. Branch
+  (`FORK`) bypasses the gate and is unverified.
 - **X2 Alternative backends.** A unikernel-style or other VMM backend
   (Unikraft-style library OS, Firecracker/Cloud Hypervisor on Linux) must beat
   SmolVM on H1's measures while passing the full acceptance suite unchanged.
