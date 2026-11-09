@@ -10,7 +10,6 @@ pub const BROWSER_LINK: &str = "/usr/local/bin/browser";
 pub const SELF: &str = "/usr/local/bin/bctl-guest";
 pub const SEATD: &str = "/usr/local/bin/seatd";
 pub const TINYLAND: &str = "/usr/local/bin/tinyland";
-pub const XKB_ROOT: &str = "/usr/share/X11/xkb";
 
 pub fn runtime_dir(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}"))

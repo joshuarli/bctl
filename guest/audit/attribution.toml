@@ -85,16 +85,24 @@ reason = "C compositor, seat, and input stack; replaced by tinyland, guest/seatd
 packages = ["sway", "swaybar", "swaynag", "sway-wallpapers", "wlroots", "seatd", "libseat", "libinput-libs", "libevdev", "mtdev", "libelogind", "libudev-zero", "basu", "libdisplay-info", "wayland-libs-server", "pixman", "xcb-util-renderutil", "xcb-util-wm", "vulkan-loader", "libcap2"]
 
 [[rule]]
+class = "rust"
+name = "kbvm-xkbcommon"
+reason = "libxkbcommon.so.0 for the browser, built on kbvm with a built-in US keymap; the browser's own C copy is removed"
+source = "github.com/laputa-systems/kbvm kbvm-xkbcommon (crate kbvm-xkbcommon), at the kbvm rev pinned in guest/Cargo.lock"
+paths = ["/usr/local/lib/libxkbcommon.so.0"]
+elf = true
+
+[[rule]]
 class = "gap"
 name = "libxkbcommon"
-reason = "C libxkbcommon; R3 replaces it with a kbvm-backed library"
+reason = "C libxkbcommon; the scratch image carries kbvm-xkbcommon instead"
 paths = ["*/lib/libxkbcommon.so*"]
 packages = ["libxkbcommon", "xkeyboard-config"]
 
 [[rule]]
 class = "gap"
 name = "xkb-data"
-reason = "xkeyboard-config data that tinyland's kbvm compiles the US keymap from at start"
+reason = "xkeyboard-config data; tinyland and kbvm-xkbcommon fall back to built-in US keymaps without it"
 paths = ["/usr/share/X11/xkb/*"]
 
 [[rule]]

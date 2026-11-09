@@ -25,9 +25,9 @@ specific to Alpine except the optional apk-database attribution.
 
 R1 added a second stand-in, `bctl/ref-scratch-chromium`
 (`images/ref-scratch-chromium`): no base image, busybox, or shell; the Rust
-`bctl-guest`, `guest/tinyland`, `guest/seatd`, musl's loader, XKB data, and
-the same Alpine `chromium` 142.0.7444.59 packed with its runtime closure in
-the Helium archive layout under `/opt/browser`. Its results are in
+`bctl-guest`, `guest/tinyland`, `guest/seatd`, musl's loader, the kbvm-backed
+`libxkbcommon.so.0` (R3), and the same Alpine `chromium` 142.0.7444.59 packed
+with its runtime closure in the Helium archive layout under `/opt/browser`. Its results are in
 **Results on ref-scratch-chromium**. When the Helium archive exists, the same
 image built around it (`docs/image-contract.md`) replaces both stand-ins.
 
@@ -411,22 +411,23 @@ Data files mapped by `exe`, by unit:
 
 ## Results on ref-scratch-chromium
 
-Docker image `44a8a768f73b`, traced with the `bctl-guest` tap during one B1
+Docker image `2585b45d03db`, traced with the `bctl-guest` tap during one B1
 run.
 
 | class | units | files | bytes |
 |---|---:|---:|---:|
-| rust | 4 | 5 | 6.1 MiB |
+| rust | 5 | 6 | 8.2 MiB |
 | exception | 5 | 92 | 450.1 MiB |
-| gap | 143 | 434 | 101.9 MiB |
-| total | 152 | 531 | 558.1 MiB |
+| gap | 141 | 141 | 98.5 MiB |
+| total | 151 | 239 | 556.8 MiB |
 
 ### Rust-owned
 
 | unit | rule | bytes | files | ELF | basis |
 |---|---|---:|---:|---:|---|
-| tinyland | tinyland | 4.6 MiB | 1 | 1 | guest/tinyland (crate tinyland) |
-| bctl-guest | bctl-guest | 881.6 KiB | 1 | 1 | guest/appliance (crate bctl-guest) |
+| tinyland | tinyland | 4.7 MiB | 1 | 1 | guest/tinyland (crate tinyland) |
+| kbvm-xkbcommon | kbvm-xkbcommon | 2.0 MiB | 1 | 1 | github.com/laputa-systems/kbvm kbvm-xkbcommon (crate kbvm-xkbcommon), at the kbvm rev pinned in guest/Cargo.lock |
+| bctl-guest | bctl-guest | 881.5 KiB | 1 | 1 | guest/appliance (crate bctl-guest) |
 | seatd | seatd | 658.5 KiB | 1 | 1 | guest/seatd (crate seatd) |
 | bctl-guest-accounts | bctl-guest-accounts | 117 B | 2 | 0 | guest/appliance/rootfs/etc |
 
@@ -450,7 +451,6 @@ run.
 | libaom.so.3 | 6.4 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
 | libcrypto.so.3 | 4.4 MiB | 1 | 1 | yes | browser-archive, libavformat.so.60, libavutil.so.58, libsrt.so.1.5, libssh.so.4, libssl.so.3 | a shared library the browser archive ships and loads at run time that no exception names |
 | libSvtAv1Enc.so.2 | 4.1 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
-| xkb-data | 3.1 MiB | 292 | 0 | no | none | xkeyboard-config data that tinyland's kbvm compiles the US keymap from at start |
 | libstdc++.so.6 | 2.6 MiB | 1 | 1 | yes | browser-archive, libcrc32c.so.1, libdouble-conversion.so.3, libhwy.so.1, libjxl.so.0.10, libjxl_cms.so.0.10 (+8) | a shared library the browser archive ships and loads at run time that no exception names |
 | libavformat.so.60 | 2.5 MiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
 | libvpx.so.9 | 2.4 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
@@ -502,7 +502,6 @@ run.
 | libhogweed.so.6 | 322.0 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30 | a shared library the browser archive ships and loads at run time that no exception names |
 | libnettle.so.8 | 322.0 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30, libhogweed.so.6 | a shared library the browser archive ships and loads at run time that no exception names |
 | libwebp.so.7 | 321.9 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libwebpdemux.so.2, libwebpmux.so.3 | a shared library the browser archive ships and loads at run time that no exception names |
-| libxkbcommon | 321.9 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | C libxkbcommon; R3 replaces it with a kbvm-backed library |
 | libbluray.so.2 | 321.8 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
 | libFLAC.so.12 | 321.8 KiB | 1 | 1 | yes | browser-archive, libsndfile.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
 | libatk-bridge-2.0.so.0 | 261.5 KiB | 1 | 1 | yes | browser-archive, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
@@ -625,27 +624,26 @@ Libraries mapped by a process but outside its static DT_NEEDED closure, which me
 
 Data files mapped by `exe`, by unit:
 
-- `/opt/browser/chromium`: browser-archive 6, created at run time 154
+- `/opt/browser/chromium`: browser-archive 7, created at run time 160
 
 ## Reading the scratch results
 
-- Every gap but one is inside the browser's runtime closure: the 141
-  libraries under `/opt/browser/lib` that no exception names (98.5 MiB) and
-  `libxkbcommon.so.0` (R3), which the browser and GTK link. The one gap
-  outside it is `xkb-data`, the xkeyboard-config tree under
-  `/usr/share/X11/xkb` (3.1 MiB): no ELF links it. tinyland no longer needs
-  it: it carries a built-in US keymap (`guest/tinyland/data/us.xkb`) and
-  uses XKB rules only when `TINYLAND_XKB_ROOT` or the system tree provides
-  them. The data stays in the image anyway. With it removed, B1 fails: the
-  browser's own libxkbcommon compiles `rules/evdev` for its default layout
-  ("Couldn't look up rules 'evdev'"), and the browser then dies with SIGSEGV
-  when the compositor's client connects, even with an empty
-  `/usr/share/X11/xkb` present. Removal waits on R3 (a kbvm-backed
-  `libxkbcommon` that can serve the same built-in keymap) or an owner
-  decision that the data is an exception.
+- Every gap is inside the browser's runtime closure: the 141 libraries
+  under `/opt/browser/lib` that no exception names (98.5 MiB). R3 removed
+  the other two. The archive's C `libxkbcommon.so.0` is deleted and
+  `kbvm-xkbcommon` (the fork's `libxkbcommon.so.0`, built in the image's
+  `xkbcommon-build` stage from the kbvm revision `guest/Cargo.lock` pins
+  for tinyland) sits at `/usr/local/lib`, which musl searches after the
+  browser's `LD_LIBRARY_PATH`; the trace shows the browser mapping it. The
+  xkeyboard-config tree is gone: tinyland uses its built-in US keymap, and
+  when GDK asks for the default keymap by name, the library serves its
+  built-in evdev/pc105/us keymap and logs `XKB rules 'evdev' not found in
+  the include paths; using the built-in evdev/pc105/us keymap` to the
+  browser log.
 - Rust-owned: `tinyland`, `seatd`, `bctl-guest` (all three static, no
-  PT_INTERP), and the two account files. The only C outside the browser
-  archive is musl's loader.
+  PT_INTERP), `kbvm-xkbcommon` (a shared library whose only `DT_NEEDED` is
+  musl), and the two account files. The only C outside the browser archive
+  is musl's loader.
 - The closure is the DT_NEEDED closure of every ELF file in the browser
   directory plus the libraries the browser mapped outside its DT_NEEDED
   closure in a traced B1 run on `ref-alpine-tinyland`, plus the four NSS

@@ -119,7 +119,6 @@ impl Supervisor {
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("LIBSEAT_BACKEND", "seatd")
             .env("SEATD_SOCK", layout::SEAT_SOCKET)
-            .env("TINYLAND_XKB_ROOT", layout::XKB_ROOT)
             .stdin(Stdio::null())
             .stdout(compositor_log.try_clone().map_err(io_error("compositor.log"))?)
             .stderr(compositor_log)
