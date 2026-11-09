@@ -127,6 +127,21 @@ pub struct CheckpointCmd {
     #[arg(long = "host-mounts")]
     pub host_mounts: bool,
 
+    /// Wait for the source workload to reach its `smolvm-branch-ready`
+    /// boundary before capture. A workload that parks there leaves a template
+    /// whose restored children continue from the same point.
+    #[arg(long = "wait-ready")]
+    pub wait_ready: bool,
+
+    /// Seconds to wait for the source's branchpoint.
+    #[arg(
+        long = "ready-timeout",
+        value_name = "SECS",
+        default_value_t = 120,
+        requires = "wait_ready"
+    )]
+    pub ready_timeout: u64,
+
     /// Path to library directory containing libkrun and libkrunfw.
     #[arg(long, value_name = "DIR", hide = true)]
     pub lib_dir: Option<PathBuf>,
@@ -164,6 +179,12 @@ impl CheckpointCmd {
         let name = self
             .name
             .ok_or_else(|| smolvm::Error::config("checkpoint", "--name is required"))?;
+        if self.wait_ready {
+            smolvm::agent::fork::wait_for_forkpoint(
+                &name,
+                std::time::Duration::from_secs(self.ready_timeout),
+            )?;
+        }
         let result = smolvm::portable_checkpoint::capture_to_path_with_history(
             &name,
             &self.output,

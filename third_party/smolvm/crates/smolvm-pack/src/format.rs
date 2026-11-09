@@ -733,6 +733,28 @@ pub struct CheckpointSettings {
     /// virtio-gpu shared-memory window the captured guest had, in MiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_vram_mib: Option<u32>,
+    /// The captured machine had a virtio-gpu device.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu: bool,
+    /// virtio-gpu backend the captured device ran (`2d` or `3d`). A restored
+    /// guest resumes the device it was captured with, so it must build the
+    /// same one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mode: Option<String>,
+    /// Unix-socket bridges the captured guest agent was started with. The
+    /// host listener path is not part of the guest, so a restore supplies its
+    /// own; the guest side listens on a vsock port fixed by this list's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published_sockets: Vec<CheckpointPublishedSocket>,
+}
+
+/// One Unix-socket bridge the captured guest agent runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointPublishedSocket {
+    /// `expose` (guest→host) or `mount` (host→guest).
+    pub direction: String,
+    /// Path inside the guest the bridge serves.
+    pub guest_path: String,
 }
 
 impl CheckpointSettings {

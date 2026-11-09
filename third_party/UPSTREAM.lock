@@ -1,7 +1,7 @@
 [import]
 format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
-source_identity = "sha256:fa62b5c0ad82160194cb5bc11d9c36632ceeceb5fe2d14d4469691bc41456aea"
+source_identity = "sha256:44d7e0aa11f446be58c2000c7f6f034b4cd7e70294ee98052587163daf20e896"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
 patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch"]
 
@@ -48,7 +48,7 @@ sha256 = "f24061e55c716f824a436ea3b4d6e96ee6e5fd349ecb29153e534d993064b05e"
 [[patch]]
 path = "smolvm-0002-pause-2d-sessions.patch"
 tree = "."
-sha256 = "bfb6440fc8540e258983e3d5a46a41bd65320ecc483d6d9913c29ff1f885fd69"
+sha256 = "94eb5920bffca5b4a9d55d244baf5bd260ce9fb0bf1ed5166f6bf752c734da68"
 
 [[patch]]
 path = "smolvm-0003-vnc-shifted-keysyms.patch"

@@ -13,7 +13,7 @@ use bctl_core::{
     Action, AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Generation, Interaction, LiveState, MachineName, MachineState, NewRun,
     Outcome as RunOutcome, ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
 };
-use bctl_runtime_smolvm::{InputSupport, LaunchSpec, RuntimeError, SmolVm, cdp_socket_browser};
+use bctl_runtime_smolvm::{InputSupport, LaunchSource, LaunchSpec, RuntimeError, SmolVm, cdp_socket_browser};
 use miniserde::json;
 
 use crate::authority::{Authorities, Control};
@@ -651,7 +651,7 @@ impl Daemon {
         };
         let spec = LaunchSpec {
             machine: machine.clone(),
-            image: image_path,
+            source: LaunchSource::Image(image_path),
             profile_dir: Some(profile_dir),
             endpoints,
             cdp_socket,
@@ -740,7 +740,7 @@ impl Daemon {
         let image = self.paths.image(&record.image).canonicalize().map_err(|e| format!("cannot resolve image {}: {e}", record.image))?;
         Ok(LaunchSpec {
             machine: machine.clone(),
-            image,
+            source: LaunchSource::Image(image),
             profile_dir: Some(self.paths.profile_dir(record.profile.as_str())),
             endpoints,
             cdp_socket: self.paths.cdp_socket(&machine.to_string()),

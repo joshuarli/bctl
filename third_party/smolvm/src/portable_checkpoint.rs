@@ -3722,8 +3722,7 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()> 
         unsupported.push("named inter-VM networking");
     }
     if vm.gpu.unwrap_or(false)
-        && !(host_mounts
-            && vm.gpu_mode == Some(crate::data::resources::GpuMode::TwoD))
+        && vm.gpu_mode != Some(crate::data::resources::GpuMode::TwoD)
     {
         unsupported.push("Vulkan GPU state");
     }
@@ -4037,6 +4036,22 @@ fn checkpoint_settings(vm: &VmRecord) -> smolvm_pack::format::CheckpointSettings
             .gpu
             .unwrap_or(false)
             .then(|| vm.vm_resources().effective_gpu_vram_mib()),
+        gpu: vm.gpu.unwrap_or(false),
+        gpu_mode: vm.gpu_mode.map(|mode| {
+            match mode {
+                crate::data::resources::GpuMode::TwoD => "2d",
+                crate::data::resources::GpuMode::ThreeD => "3d",
+            }
+            .to_string()
+        }),
+        published_sockets: vm
+            .published_sockets
+            .iter()
+            .map(|socket| smolvm_pack::format::CheckpointPublishedSocket {
+                direction: socket.direction.as_str().to_string(),
+                guest_path: socket.guest_path.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -5330,6 +5345,22 @@ pub fn validate_compatibility(checkpoint: &PortableCheckpointManifest) -> Result
         ));
     }
     validate_clock(checkpoint)?;
+    match (checkpoint.settings.gpu, checkpoint.settings.gpu_mode.as_deref()) {
+        (true, None | Some("2d") | Some("3d")) => {}
+        (true, Some(other)) => {
+            return Err(Error::agent(
+                "restore checkpoint",
+                format!("checkpoint uses unknown GPU mode '{other}'"),
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(Error::agent(
+                "restore checkpoint",
+                "checkpoint records a GPU mode but no GPU",
+            ));
+        }
+        (false, None) => {}
+    }
     if checkpoint.packed_layers.is_some() && checkpoint.host_image.is_some() {
         return Err(Error::agent(
             "restore checkpoint",

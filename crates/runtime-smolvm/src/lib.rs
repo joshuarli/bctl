@@ -76,9 +76,15 @@ pub struct Ready {
 }
 
 #[derive(Debug, Clone)]
+pub enum LaunchSource {
+    Image(PathBuf),
+    Checkpoint(PathBuf),
+}
+
+#[derive(Debug, Clone)]
 pub struct LaunchSpec {
     pub machine: MachineName,
-    pub image: PathBuf,
+    pub source: LaunchSource,
     /// Host directory mounted at `/profile`, so the browser profile outlives the VM.
     pub profile_dir: Option<PathBuf>,
     pub endpoints: Endpoints,
@@ -156,6 +162,25 @@ struct ErrorBody {
     message: String,
 }
 
+/// The appliance parked at its pre-browser forkpoint, captured without a guest network: SmolVM cannot yet
+/// restore a machine that has both virtio-net and the packed-layers virtiofs, so restored sessions have no
+/// guest network.
+#[derive(Debug, Clone)]
+pub struct TemplateSpec {
+    pub machine: String,
+    pub image: PathBuf,
+    pub checkpoint: PathBuf,
+    pub staging_dir: PathBuf,
+    pub display: (u16, u16),
+    pub memory_mib: u32,
+    pub cpus: u8,
+    /// Host path where the guest's CDP socket appears; its directory must already exist.
+    pub cdp_socket: PathBuf,
+}
+
+const TEMPLATE_WORKLOAD: &str =
+    r#"{"entrypoint":["/usr/local/bin/smolvm-branch-ready","--","/usr/local/bin/bctl-guest","run"],"forkable":true}"#;
+
 pub struct SmolVm {
     binary: PathBuf,
 }
@@ -188,6 +213,36 @@ impl SmolVm {
         })
     }
 
+    fn run_input(&self, operation: &'static str, args: &[&str], input: &str, env: &[(&str, String)]) -> Result<String, RuntimeError> {
+        use std::process::Stdio;
+        let mut child = Command::new(&self.binary)
+            .args(args)
+            .arg("--error-format")
+            .arg("json")
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| RuntimeError::Spawn { message: e.to_string() })?;
+        child
+            .stdin
+            .take()
+            .expect("stdin was piped")
+            .write_all(input.as_bytes())
+            .map_err(|e| RuntimeError::Spawn { message: e.to_string() })?;
+        let output = child.wait_with_output().map_err(|e| RuntimeError::Spawn { message: e.to_string() })?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let envelope = stderr.lines().rev().find_map(|line| json::from_str::<ErrorEnvelope>(line).ok());
+        Err(match envelope {
+            Some(ErrorEnvelope { error }) => RuntimeError::Smolvm { operation, code: error.code, message: error.message },
+            None => RuntimeError::Smolvm { operation, code: "UNKNOWN".into(), message: stderr.trim().to_string() },
+        })
+    }
+
     pub fn list(&self) -> Result<Vec<MachineObservation>, RuntimeError> {
         let stdout = self.run("machine ls", &["machine", "ls", "--json"], &[])?;
         let machines: Vec<ListedMachine> = json::from_str(&stdout)
@@ -208,19 +263,39 @@ impl SmolVm {
     /// Creates and starts the VM. The display and VNC endpoint are bound at start, so they travel with it.
     pub fn launch(&self, spec: &LaunchSpec) -> Result<(), RuntimeError> {
         let name = spec.machine.to_string();
-        let image = spec.image.to_string_lossy();
         let socket = format!("{GUEST_CDP_SOCKET}:{}", spec.cdp_socket.to_string_lossy());
         let memory = spec.memory_mib.to_string();
         let cpus = spec.cpus.to_string();
-        let mut create = vec!["machine", "create", "--name", &name, "--gpu", "--gpu-mode", "2d", "--mem", &memory, "--cpus", &cpus, "--expose-socket", &socket, "--block-private", "--image", &image];
-        let volume = spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy()));
+        let mut create: Vec<String> = vec!["machine".into(), "create".into(), "--name".into(), name.clone()];
+        match &spec.source {
+            LaunchSource::Image(image) => {
+                create.extend(["--gpu", "--gpu-mode", "2d", "--mem", &memory, "--cpus", &cpus].map(str::to_string));
+                create.extend(["--expose-socket", &socket, "--block-private"].map(str::to_string));
+                create.push("--image".into());
+                create.push(image.to_string_lossy().into_owned());
+            }
+            LaunchSource::Checkpoint(checkpoint) => {
+                create.push("--from".into());
+                create.push(checkpoint.to_string_lossy().into_owned());
+                create.extend(["--expose-socket", &socket].map(str::to_string));
+            }
+        }
+        let volume = match &spec.source {
+            LaunchSource::Image(_) => spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy())),
+            LaunchSource::Checkpoint(_) => None,
+        };
         if let Some(volume) = &volume {
-            create.extend(["-v", volume]);
+            create.push("-v".into());
+            create.push(volume.clone());
         }
-        for range in &spec.allow_private {
-            create.extend(["--allow-private", range]);
+        if matches!(&spec.source, LaunchSource::Image(_)) {
+            for range in &spec.allow_private {
+                create.push("--allow-private".into());
+                create.push(range.clone());
+            }
         }
-        self.run("machine create", &create, &[])?;
+        let args: Vec<&str> = create.iter().map(String::as_str).collect();
+        self.run("machine create", &args, &[])?;
         if let Err(error) = self.run("machine start", &["machine", "start", "--name", &name], &display_env(spec)) {
             let _ = self.remove(&spec.machine);
             return Err(error);
@@ -243,8 +318,11 @@ impl SmolVm {
 
     /// Stops and deletes the VM, running or paused; a machine that is already gone is not an error.
     pub fn remove(&self, machine: &MachineName) -> Result<(), RuntimeError> {
-        let name = machine.to_string();
-        match self.run("machine delete", &["machine", "delete", "--name", &name, "-f"], &[]) {
+        self.delete_named(&machine.to_string())
+    }
+
+    pub fn delete_named(&self, name: &str) -> Result<(), RuntimeError> {
+        match self.run("machine delete", &["machine", "delete", "--name", name, "-f"], &[]) {
             Ok(_) => Ok(()),
             Err(RuntimeError::Smolvm { code, .. }) if code == "NOT_FOUND" => Ok(()),
             Err(e) => Err(e),
@@ -254,6 +332,55 @@ impl SmolVm {
     pub fn logs(&self, machine: &MachineName) -> Result<String, RuntimeError> {
         let name = machine.to_string();
         self.run("machine logs", &["machine", "logs", "--name", &name, "--tail", "40"], &[])
+    }
+
+    /// Deletes the source machine whether or not the capture succeeds.
+    pub fn create_template(&self, spec: &TemplateSpec) -> Result<(), RuntimeError> {
+        let name = spec.machine.as_str();
+        let _ = self.delete_named(name);
+        if let Err(error) = std::fs::remove_file(&spec.checkpoint)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(RuntimeError::Spawn { message: format!("remove {}: {error}", spec.checkpoint.display()) });
+        }
+        if let Err(error) = std::fs::create_dir_all(&spec.staging_dir) {
+            return Err(RuntimeError::Spawn { message: format!("create {}: {error}", spec.staging_dir.display()) });
+        }
+        let image = spec.image.to_string_lossy();
+        let memory = spec.memory_mib.to_string();
+        let cpus = spec.cpus.to_string();
+        let socket = format!("{GUEST_CDP_SOCKET}:{}", spec.cdp_socket.to_string_lossy());
+        let create = vec![
+            "machine", "create", "--name", name, "--spec-stdin", "--gpu", "--gpu-mode", "2d", "--mem", &memory, "--cpus", &cpus,
+            "--expose-socket", &socket, "--image", &image,
+        ];
+        let checkpoint = spec.checkpoint.to_string_lossy();
+        let staging = spec.staging_dir.to_string_lossy();
+        let result = (|| {
+            self.run_input("machine create", &create, TEMPLATE_WORKLOAD, &[])?;
+            // SmolVM's restore leaves the guest agent unanswered unless the capture had the same display
+            // and VNC surfaces as the restore.
+            let vnc = free_port().map_err(|e| RuntimeError::Spawn { message: format!("find a VNC port: {e}") })?;
+            self.run(
+                "machine start",
+                &["machine", "start", "--name", name],
+                &[
+                    ("SMOLVM_DISPLAY", format!("{}x{}", spec.display.0, spec.display.1)),
+                    ("SMOLVM_VNC", format!("127.0.0.1:{vnc}")),
+                ],
+            )?;
+            self.run(
+                "machine checkpoint",
+                &[
+                    "machine", "checkpoint", "--name", name, "--output", &checkpoint, "--host-mounts", "--wait-ready", "--ready-timeout",
+                    "120", "--staging-dir", &staging,
+                ],
+                &[],
+            )?;
+            Ok(())
+        })();
+        let _ = self.delete_named(name);
+        result
     }
 
     pub fn guest_check(&self, machine: &MachineName) -> Result<GuestReport, RuntimeError> {
@@ -362,6 +489,10 @@ fn display_env(spec: &LaunchSpec) -> [(&'static str, String); 2] {
         ("SMOLVM_DISPLAY", format!("{}x{}", spec.display.0, spec.display.1)),
         ("SMOLVM_VNC", format!("127.0.0.1:{}", spec.endpoints.vnc_port)),
     ]
+}
+
+fn free_port() -> std::io::Result<u16> {
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
 #[cfg(test)]
