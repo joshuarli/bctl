@@ -856,6 +856,11 @@ fn second_toplevel_covers_the_primary_and_focus_returns_when_it_closes() {
     assert_eq!(f.state.seats[0].keyboard_focus, Some(primary.id()));
     assert!(f.state.toplevels[&primary_top].activated);
     assert_eq!(sent(&events, &f.state.toplevels[&primary_top].resource, 0).len(), 1, "primary is reactivated");
+    let position = |object: u32, opcode: u16| events.iter().position(|(o, op, _)| *o == object && *op == opcode).unwrap();
+    assert!(
+        position(keyboard.id().protocol_id(), 1) < position(f.state.toplevels[&primary_top].resource.id().protocol_id(), 0),
+        "keyboard enter precedes the activating configure",
+    );
     assert_eq!(sent(&events, &keyboard, 1)[0][1], primary.id().protocol_id());
     assert_eq!(sent(&events, &pointer, POINTER_ENTER)[0][1], primary.id().protocol_id());
 

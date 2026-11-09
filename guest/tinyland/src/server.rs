@@ -538,12 +538,6 @@ impl State {
         if let Some(old) = &old_surface {
             self.dismiss_popups(old);
         }
-        if let Some(old) = old_top.filter(|old| self.toplevels.get(old).is_some_and(|top| top.mapped && top.activated)) {
-            self.configure_toplevel(&old, false);
-        }
-        if self.toplevels.get(&top_id).is_some_and(|top| top.configures.started() && !top.activated) {
-            self.configure_toplevel(&top_id, true);
-        }
         let serial = self.next_serial();
         if let Some(old) = old_surface {
             for seat in &mut self.seats {
@@ -560,19 +554,27 @@ impl State {
         self.active_toplevel = Some(top_id.clone());
         self.toplevel_order.retain(|id| id != &top_id);
         self.toplevel_order.push(top_id.clone());
-        let Some(new_surface) = self.active_surface() else { return };
-        let Some(surface) = self.surfaces.get(&new_surface) else { return };
-        let new_client = surface.resource.client();
-        let [depressed, latched, locked, group] = self.keyboard.modifiers();
-        for seat in &mut self.seats {
-            if seat.resource.client() != new_client {
-                continue;
+        if let Some(new_surface) = self.active_surface() {
+            if let Some(surface) = self.surfaces.get(&new_surface) {
+                let new_client = surface.resource.client();
+                let [depressed, latched, locked, group] = self.keyboard.modifiers();
+                for seat in &mut self.seats {
+                    if seat.resource.client() != new_client {
+                        continue;
+                    }
+                    seat.keyboard_focus = Some(new_surface.clone());
+                    for keyboard in &seat.keyboards {
+                        keyboard.enter(serial, &surface.resource, Vec::new());
+                        keyboard.modifiers(serial, depressed, latched, locked, group);
+                    }
+                }
             }
-            seat.keyboard_focus = Some(new_surface.clone());
-            for keyboard in &seat.keyboards {
-                keyboard.enter(serial, &surface.resource, Vec::new());
-                keyboard.modifiers(serial, depressed, latched, locked, group);
-            }
+        }
+        if let Some(old) = old_top.filter(|old| self.toplevels.get(old).is_some_and(|top| top.mapped && top.activated)) {
+            self.configure_toplevel(&old, false);
+        }
+        if self.toplevels.get(&top_id).is_some_and(|top| top.configures.started() && !top.activated) {
+            self.configure_toplevel(&top_id, true);
         }
         self.send_selection();
         self.refocus_pointer();
@@ -977,39 +979,10 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
             }
         }
         lost.clear();
+        let mut arrived = Vec::new();
         for (position, (_, device)) in inputs.iter_mut().enumerate() {
             match device.read() {
-                Ok(events) => {
-                    for event in events {
-                        let (code, down) = match event {
-                            InputEvent::Key { code, down } => (code, down),
-                            InputEvent::Pointer(frame) => {
-                                state.pointer_frame(frame);
-                                continue;
-                            }
-                        };
-                        state.key(code, down);
-
-                        // Grabbed keyboards hide the combo from the console,
-                        // so the compositor must hand the switch to the
-                        // privileged broker itself. Forwarding stays intact
-                        // for the fast path; releases dropped while suspended
-                        // are replayed on resume, and the reset keeps this
-                        // side clean for what comes next.
-                        if down {
-                            if let Some(vt) = input::vt_switch_target(code, state.keyboard.modifiers()[0]) {
-                                if let Some(broker) = broker.as_ref() {
-                                    eprintln!("TINYLAND_VT_SWITCH vt={vt}");
-                                    if let Err(error) = broker.switch_session(vt) {
-                                        eprintln!("seat switch failed: {error}");
-                                    }
-                                    vt_chord = Some(code);
-                                    state.keyboard.reset_stuck();
-                                }
-                            }
-                        }
-                    }
-                },
+                Ok(events) => arrived.extend(events),
                 Err(error) if input::is_gone(&error) => {
                     // Revoke lands in the kernel before its disable
                     // notification arrives; drain first so a suspend wins
@@ -1023,6 +996,36 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
                     break;
                 }
                 Err(error) => { eprintln!("{error}"); return 1; }
+            }
+        }
+        arrived.sort_by_key(|(time, _)| *time);
+        for (_, event) in arrived {
+            let (code, down) = match event {
+                InputEvent::Key { code, down } => (code, down),
+                InputEvent::Pointer(frame) => {
+                    state.pointer_frame(frame);
+                    continue;
+                }
+            };
+            state.key(code, down);
+
+            // Grabbed keyboards hide the combo from the console,
+            // so the compositor must hand the switch to the
+            // privileged broker itself. Forwarding stays intact
+            // for the fast path; releases dropped while suspended
+            // are replayed on resume, and the reset keeps this
+            // side clean for what comes next.
+            if down {
+                if let Some(vt) = input::vt_switch_target(code, state.keyboard.modifiers()[0]) {
+                    if let Some(broker) = broker.as_ref() {
+                        eprintln!("TINYLAND_VT_SWITCH vt={vt}");
+                        if let Err(error) = broker.switch_session(vt) {
+                            eprintln!("seat switch failed: {error}");
+                        }
+                        vt_chord = Some(code);
+                        state.keyboard.reset_stuck();
+                    }
+                }
             }
         }
         if !lost.is_empty() {

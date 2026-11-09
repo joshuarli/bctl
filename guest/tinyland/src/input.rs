@@ -1,6 +1,7 @@
 use evdev::{AbsoluteAxisCode, Device, EventType, KeyCode, RelativeAxisCode, SynchronizationCode};
 use std::fs::File;
 use std::io::Write;
+use std::time::SystemTime;
 use wayland_server::protocol::{wl_keyboard, wl_pointer, wl_seat};
 
 #[derive(Debug)]
@@ -246,21 +247,21 @@ impl InputDevice {
         is_keyboard(&self.device)
     }
 
-    fn translate(&mut self, events: impl Iterator<Item = evdev::InputEvent>) -> Vec<InputEvent> {
+    fn translate(&mut self, events: impl Iterator<Item = evdev::InputEvent>) -> Vec<(SystemTime, InputEvent)> {
         let mut out = Vec::new();
         for event in events {
             if event.event_type() == EventType::KEY && event.value() != 2 && !is_button(event.code()) {
-                out.push(InputEvent::Key { code: event.code(), down: event.value() != 0 });
+                out.push((event.timestamp(), InputEvent::Key { code: event.code(), down: event.value() != 0 }));
                 continue;
             }
             if let Some(frame) = self.pointer.as_mut().and_then(|pointer| pointer.feed(&event)) {
-                out.push(InputEvent::Pointer(frame));
+                out.push((event.timestamp(), InputEvent::Pointer(frame)));
             }
         }
         out
     }
 
-    pub fn read(&mut self) -> Result<Vec<InputEvent>, std::io::Error> {
+    pub fn read(&mut self) -> Result<Vec<(SystemTime, InputEvent)>, std::io::Error> {
         let events: Vec<evdev::InputEvent> = match self.device.fetch_events() {
             Ok(events) => events.collect(),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(Vec::new()),
