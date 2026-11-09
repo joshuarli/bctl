@@ -331,7 +331,19 @@ Checked 2026-11-08, read-only, nothing built or run.
   `install-runtime.py --verify-extract`. Refuse an archive whose sidecars do not
   bind its digest, product, and `aarch64`. Resolve the musl-loader question.
   Acceptance: same checks as P1, and the image's receipt records the Helium
-  version string and archive SHA-256.
+  version string and archive SHA-256. Qualification also covers every
+  shipped ELF (interpreter, transitive `DT_NEEDED`, RPATH/RUNPATH, the
+  `dlopen`s R0 traces) and the provenance of statically linked compiler
+  support: no dynamic dependency does not prove no static GNU runtime, and a
+  `libgcc_s.so.1` rebuilt from compiler-rt and libunwind (Chimera's approach)
+  does not meet the no-libgcc rule. The Helium archive gets its own
+  imported-symbol census against the kbvm libxkbcommon ABI; the Alpine
+  stand-in's 33 symbols include GTK's and do not qualify Helium. Before P2,
+  compare Chimera Linux's musl/aarch64 Chromium recipe
+  (`chimera-linux/cports` `main/chromium`, pinned) with chromium-build's
+  Helium patches: a matrix of covered, not applicable, proposed with a
+  failing repro, or rejected; its GTK/Qt/Pulse/PipeWire desktop profile is
+  out.
 
 ### M1: one observable browser (scripts, no daemon)
 
@@ -516,6 +528,22 @@ daemon idle CPU and RSS, memory after repeated snapshots) go into H1.
   Taking control mid-command waits for the in-flight command to settle,
   keeps the browser, tab, and profile, and resumes cleanly.
 
+- **N7 Actionability.** Prereq: N6. Actions wait, with a finite deadline,
+  for the target to become actionable instead of failing at once, and a
+  timeout names the condition still false. Preparing (resolve, check, scroll,
+  hit-test) is retried until the deadline; dispatching input never is, and a
+  lost reply after dispatch stays `UNKNOWN_OUTCOME`. A takeover during a
+  wait, locator evaluation, scroll, or batch preparation ends it promptly
+  without holding the page lock and can never race a new dispatch.
+  Regression fixtures are adapted from Playwright's independently authored
+  click tests (`microsoft/playwright` `tests/page/page-click.spec.ts`, pinned
+  revision and test names, its notice kept): late layout, an overlay that
+  disappears, fractional boxes and non-unit scale, a target detached or moved
+  across documents during preparation, navigation or a popup after dispatch,
+  and transport loss after input. Playwright is a fixture source, never a
+  dependency. Acceptance: fixture observations prove the intended target got
+  the input within the bound, with no fixed sleeps standing in for readiness.
+
 Acceptance for M3N, on real VMs: snapshot and click a button; role and name
 matching with implicit ARIA roles; fill with Unicode, select, check, and read
 text back; duplicate names fail as ambiguous; hidden, disabled, and covered
@@ -565,6 +593,21 @@ M1 to M3.
 - **T4 Default switch.** Owns `images/`. Prereq: T3, R1. `helium-tinyland`
   becomes the default image. The Sway image stays as a diagnostic image.
   Acceptance: the full acceptance suite passes on both images.
+- **T5 Compositor conformance.** Owns `guest/tinyland/` test tooling only.
+  Prereq: T3. A bounded spike: can tinyland's event loop and virtual-output
+  test mode be driven through WLCS's integration ABI (`canonical/wlcs`,
+  `wlcs_server_integration`) without a compositor refactor? If so, run the
+  applicable core-surface, xdg-shell and popup, focus, pointer, and
+  buffer-lifetime tests, recording unsupported protocols apart from failures
+  in claimed ones; if not, report why and port a smaller fixture set. WLCS is
+  test infrastructure and never ships in the guest; its C++ runner does not
+  justify glibc in product output. Input regressions to cover: shifted
+  punctuation, modifier chords, key release on disconnect and takeover,
+  repeat, popup grab and focus, fractional coordinates, surface destruction
+  with input queued. References only: `quinnjr/kiosk-rs` (Smithay kiosk
+  policy) and `patrickjaja/wlroots-bridge` (evdev/XKB offsets, modifier
+  release on disconnect, logical vs physical pixels); neither replaces
+  tinyland or kbvm.
 
 ### M4R: pure-Rust userland
 
@@ -807,7 +850,11 @@ Owner-provided; never blocks other items.
 
 ## Out of scope
 
-WebRTC or a new video pipeline (SmolVM's `/video` H.264 endpoint is evaluated
+WebRTC or a new video pipeline until H1 shows the VNC path inadequate; if
+it does, `algesten/str0m` (sans-I/O WebRTC, host side only) is the first
+candidate, but its rust-crypto provider pulls `aws-lc-rs` through `dimpl`'s
+`rcgen` feature and it has no video encoder, so a spike must prove a pure-Rust
+closure first (SmolVM's `/video` H.264 endpoint is evaluated
 in H1 only if RFB fails the latency gate), recording, a workflow language,
 stealth or fingerprint patching in bctl (that belongs in chromium-build and
 Shadowdriver), and a general-purpose guest agent or init system. From the
