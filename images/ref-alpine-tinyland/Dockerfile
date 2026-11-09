@@ -13,6 +13,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-ini
 WORKDIR /src
 COPY --from=guest Cargo.toml Cargo.lock ./
 COPY --from=guest .cargo/ ./.cargo/
+COPY --from=guest appliance/ ./appliance/
 COPY --from=guest seatd-protocol/ ./seatd-protocol/
 COPY --from=guest seatd/ ./seatd/
 COPY --from=guest tinyland/ ./tinyland/

@@ -19,6 +19,7 @@ FROM buildenv AS guest-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo/ ./.cargo/
+COPY appliance/ ./appliance/
 COPY seatd-protocol/ ./seatd-protocol/
 COPY seatd/ ./seatd/
 COPY tinyland/ ./tinyland/
@@ -29,6 +30,7 @@ FROM buildenv AS tests
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo/ ./.cargo/
+COPY appliance/ ./appliance/
 COPY seatd-protocol/ ./seatd-protocol/
 COPY seatd/ ./seatd/
 COPY tinyland/ ./tinyland/

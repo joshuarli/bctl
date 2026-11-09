@@ -42,7 +42,7 @@ logs land under `.work/harness/`.
 
 ## Build notes
 
-`guest/` is one Cargo workspace (`seatd`, `seatd-protocol`, `tinyland`).
+`guest/` is one Cargo workspace (`appliance`, `seatd`, `seatd-protocol`, `tinyland`).
 `guest/.cargo/config.toml` selects `mold` for the musl targets; the
 aarch64 musl tinyland build uses the target's default `crt-static`, so the
 binary has no program interpreter and no `DT_NEEDED` (including no
