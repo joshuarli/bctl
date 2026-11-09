@@ -452,6 +452,25 @@ static int child_chroot_fs(void)
 	int ready[2], go[2], obs[2], rr[2];
 	if (pipe(ready) || pipe(go) || pipe(obs) || pipe(rr))
 		return 2;
+	pid_t observer = fork();
+	if (observer == 0) {
+		close(ready[0]);
+		close(ready[1]);
+		close(go[0]);
+		close(go[1]);
+		close(obs[1]);
+		close(rr[0]);
+		long helper;
+		if (read(obs[0], &helper, sizeof helper) != sizeof helper)
+			_exit(1);
+		char rootpath[96] = "", base[64], want[96];
+		snprintf(base, sizeof base, "/proc/%ld", helper);
+		snprintf(want, sizeof want, "/proc/%ld/fdinfo", helper);
+		ssize_t n = readlink_at_path(rootpath, base);
+		struct stat rst;
+		char ok = n > 0 && !strcmp(rootpath, want) && !stat(want, &rst) && S_ISDIR(rst.st_mode);
+		_exit(write(rr[1], ok ? "1" : "0", 1) == 1 ? 0 : 2);
+	}
 	long helper = syscall(SYS_clone, CLONE_FS | SIGCHLD, 0, 0, 0, 0);
 	if (helper == 0) {
 		close(ready[0]);
@@ -464,25 +483,6 @@ static int child_chroot_fs(void)
 	}
 	if (helper < 0)
 		return 3;
-	pid_t observer = fork();
-	if (observer == 0) {
-		close(ready[0]);
-		close(ready[1]);
-		close(go[0]);
-		close(go[1]);
-		close(obs[1]);
-		close(rr[0]);
-		char c;
-		if (read(obs[0], &c, 1) != 1)
-			_exit(1);
-		char rootpath[96] = "", base[64], want[96];
-		snprintf(base, sizeof base, "/proc/%ld", helper);
-		snprintf(want, sizeof want, "/proc/%ld/fdinfo", helper);
-		ssize_t n = readlink_at_path(rootpath, base);
-		struct stat rst;
-		char ok = n > 0 && !strcmp(rootpath, want) && !stat(want, &rst) && S_ISDIR(rst.st_mode);
-		_exit(write(rr[1], ok ? "1" : "0", 1) == 1 ? 0 : 2);
-	}
 	close(ready[1]);
 	close(go[0]);
 	close(obs[0]);
@@ -499,7 +499,7 @@ static int child_chroot_fs(void)
 	errno = 0;
 	if (open(self, O_RDONLY | O_CLOEXEC) >= 0 || errno != ENOENT)
 		return 7;
-	if (write(obs[1], "x", 1) != 1)
+	if (write(obs[1], &helper, sizeof helper) != sizeof helper)
 		return 8;
 	char root_ok = '0';
 	if (read(rr[0], &root_ok, 1) != 1 || root_ok != '1')
