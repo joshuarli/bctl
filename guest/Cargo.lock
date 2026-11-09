@@ -397,8 +397,7 @@ dependencies = [
 [[package]]
 name = "kbvm"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87848566101698caf999ac33fca97f46a4127150168280a384ebf2987a46a194"
+source = "git+https://github.com/laputa-systems/kbvm?rev=c21a0508a6505639ec0d46e6f21a60de2d83e2e4#c21a0508a6505639ec0d46e6f21a60de2d83e2e4"
 dependencies = [
  "arrayvec",
  "bstr",
@@ -420,8 +419,7 @@ dependencies = [
 [[package]]
 name = "kbvm-proc"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "634c57aa7634150e449ddee5625e759a71077e9f71d44677bea5ad7196ca91da"
+source = "git+https://github.com/laputa-systems/kbvm?rev=c21a0508a6505639ec0d46e6f21a60de2d83e2e4#c21a0508a6505639ec0d46e6f21a60de2d83e2e4"
 dependencies = [
  "proc-macro2",
  "quote",
