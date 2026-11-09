@@ -671,6 +671,7 @@ fn per_client_memory_budget_rejects_without_harming_healthy_client() {
     f.request(&offender, 1, &[offender_buffer.id().protocol_id(), 0, 0]);
     let response = f.request(&offender, 6, &[]);
     assert!(String::from_utf8_lossy(&response).contains("memory budget"));
+    assert_eq!(display_errors(&messages(&response)), [(DISPLAY_OBJECT, DISPLAY_NO_MEMORY)]);
     assert!(f.state.surfaces.get(&offender.id()).map(|s| s.pixels.is_none()).unwrap_or(true));
     let mut header = Vec::new();
     header.extend(healthy_surface.id().protocol_id().to_ne_bytes());
@@ -699,6 +700,7 @@ fn callback_bound_disconnects_offender_only() {
     }
     let response = f.request(&surface, 3, &[2 + crate::server::MAX_CALLBACKS_PER_SURFACE as u32]);
     assert!(String::from_utf8_lossy(&response).contains("too many outstanding frame callbacks"));
+    assert_eq!(display_errors(&messages(&response)), [(DISPLAY_OBJECT, DISPLAY_NO_MEMORY)]);
 }
 
 #[test]
@@ -908,6 +910,9 @@ fn wheel_notches_become_discrete_axis_events_with_wayland_sign() {
 }
 
 const DISPLAY_ERROR: u16 = 0;
+const DISPLAY_OBJECT: u32 = 1;
+const DISPLAY_NO_MEMORY: u32 = 2;
+const DISPLAY_IMPLEMENTATION: u32 = 3;
 
 fn display_errors(events: &Events) -> Vec<(u32, u32)> {
     events.iter().filter(|(object, opcode, _)| *object == 1 && *opcode == DISPLAY_ERROR).map(|(_, _, args)| (args[0], args[1])).collect()
@@ -925,6 +930,17 @@ fn committing_a_buffer_whose_file_was_truncated_reports_invalid_fd_on_the_buffer
         display_errors(&events),
         [(buffer.id().protocol_id(), wl_shm::Error::InvalidFd as u32)],
     );
+}
+
+#[test]
+fn committing_a_buffer_destroyed_after_attach_reports_an_implementation_error_on_the_display() {
+    let mut f = Fixture::new();
+    let surface = f.surface();
+    let buffer = f.filled_buffer(2, 1, 9);
+    f.request(&surface, 1, &[buffer.id().protocol_id(), 0, 0]);
+    f.state.buffers.remove(&buffer.id());
+    let events = messages(&f.request(&surface, 6, &[]));
+    assert_eq!(display_errors(&events), [(DISPLAY_OBJECT, DISPLAY_IMPLEMENTATION)]);
 }
 
 const KEYBOARD_ENTER: u16 = 1;

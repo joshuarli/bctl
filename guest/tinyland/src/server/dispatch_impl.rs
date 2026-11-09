@@ -40,7 +40,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for State {
             wl_compositor::Request::CreateSurface { id } => {
                 use crate::server::MAX_SURFACES_PER_CLIENT;
                 if state.count_client_surfaces(&client.id()) >= MAX_SURFACES_PER_CLIENT {
-                    _resource.post_error(0u32, "too many surfaces for client");
+                    super::display_error::post(_resource, super::display_error::DisplayError::NoMemory, "too many surfaces for client");
                     return;
                 }
                 let surf = data_init.init(id, ());
@@ -60,7 +60,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for State {
                     })
                     .count();
                 if regions_for_client >= MAX_REGIONS_PER_CLIENT {
-                    _resource.post_error(0u32, "too many regions for client");
+                    super::display_error::post(_resource, super::display_error::DisplayError::NoMemory, "too many regions for client");
                     return;
                 }
                 let region = data_init.init(id, ());
@@ -95,7 +95,7 @@ impl Dispatch<wl_region::WlRegion, ()> for State {
                 if width > 0 && height > 0 {
                     use crate::server::MAX_REGION_RECTS;
                     if entry.len() >= MAX_REGION_RECTS {
-                        resource.post_error(0u32, "too many region rectangles");
+                        super::display_error::post(resource, super::display_error::DisplayError::NoMemory, "too many region rectangles");
                         return;
                     }
                     entry.push((x, y, width, height));
@@ -147,7 +147,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                     .map(|c| c.callbacks.len())
                     .unwrap_or(0);
                 if pending + current + cached >= MAX_CALLBACKS_PER_SURFACE {
-                    resource.post_error(0u32, "too many outstanding frame callbacks");
+                    super::display_error::post(resource, super::display_error::DisplayError::NoMemory, "too many outstanding frame callbacks");
                     return;
                 }
                 let cb = data_init.init(cb_id, ());
@@ -462,7 +462,7 @@ impl Dispatch<wl_shm::WlShm, ()> for State {
             wl_shm::Request::CreatePool { id, fd, size } => {
                 use crate::server::MAX_POOLS_PER_CLIENT;
                 if state.count_client_pools(&client.id()) >= MAX_POOLS_PER_CLIENT {
-                    _resource.post_error(0u32, "too many shm pools for client");
+                    super::display_error::post(_resource, super::display_error::DisplayError::NoMemory, "too many shm pools for client");
                     return;
                 }
                 let pool_size = match shm::validate_pool_size(size) {
@@ -507,14 +507,14 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for State {
             wl_shm_pool::Request::CreateBuffer { id, offset, width, height, stride, format } => {
                 use crate::server::MAX_BUFFERS_PER_CLIENT;
                 if state.count_client_buffers(&client.id()) >= MAX_BUFFERS_PER_CLIENT {
-                    resource.post_error(0u32, "too many buffers for client");
+                    super::display_error::post(resource, super::display_error::DisplayError::NoMemory, "too many buffers for client");
                     return;
                 }
                 let pool_id = resource.id();
                 let pool_size = match state.pools.get(&pool_id) {
                     Some(p) => p.size,
                     None => {
-                        resource.post_error(0u32, "unknown pool");
+                        super::display_error::post(resource, super::display_error::DisplayError::Implementation, "unknown pool");
                         return;
                     }
                 };
@@ -612,7 +612,7 @@ impl GlobalDispatch<wl_output::WlOutput, ()> for State {
         let existing = state.outputs.iter().filter(|(id, _)| id == &client.id()).count();
         if existing >= MAX_OUTPUTS_PER_CLIENT {
             let out = data_init.init(resource, ());
-            out.post_error(0u32, "too many outputs for client");
+            super::display_error::post(&out, super::display_error::DisplayError::NoMemory, "too many outputs for client");
             return;
         }
         let out = data_init.init(resource, ());
@@ -677,7 +677,7 @@ impl GlobalDispatch<wl_seat::WlSeat, ()> for State {
             .count();
         if existing >= MAX_SEATS_PER_CLIENT {
             let seat = data_init.init(resource, ());
-            seat.post_error(0u32, "too many seats for client");
+            super::display_error::post(&seat, super::display_error::DisplayError::NoMemory, "too many seats for client");
             return;
         }
         let seat = data_init.init(resource, ());
@@ -862,7 +862,7 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for State {
                 use crate::server::MAX_SOURCES_PER_CLIENT;
                 if state.count_client_sources(client) >= MAX_SOURCES_PER_CLIENT {
                     let source = data_init.init(id, ());
-                    source.post_error(0u32, "too many data sources for client");
+                    super::display_error::post(&source, super::display_error::DisplayError::NoMemory, "too many data sources for client");
                     return;
                 }
                 let source = data_init.init(id, ());
@@ -872,7 +872,7 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for State {
                 use crate::server::MAX_DEVICES_PER_CLIENT;
                 if state.count_client_devices(client) >= MAX_DEVICES_PER_CLIENT {
                     let device = data_init.init(id, ());
-                    device.post_error(0u32, "too many data devices for client");
+                    super::display_error::post(&device, super::display_error::DisplayError::NoMemory, "too many data devices for client");
                     return;
                 }
                 let device = data_init.init(id, ());
@@ -891,7 +891,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
             if let Some(source) = state.selection.sources.get_mut(&resource.id()) {
                 use crate::server::MAX_MIME_TYPES_PER_SOURCE;
                 if source.mime_types.len() >= MAX_MIME_TYPES_PER_SOURCE {
-                    resource.post_error(0u32, "too many mime types for source");
+                    super::display_error::post(resource, super::display_error::DisplayError::NoMemory, "too many mime types for source");
                     return;
                 }
                 source.mime_types.push(mime_type);
@@ -1037,7 +1037,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
             xdg_surface::Request::GetToplevel { id } => {
                 use crate::server::MAX_TOPLEVELS_PER_CLIENT;
                 if state.count_client_toplevels(&client.id()) >= MAX_TOPLEVELS_PER_CLIENT {
-                    resource.post_error(0u32, "too many toplevels for client");
+                    super::display_error::post(resource, super::display_error::DisplayError::NoMemory, "too many toplevels for client");
                     return;
                 }
                 let xsurf_id = resource.id();

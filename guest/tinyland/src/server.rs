@@ -266,7 +266,7 @@ impl State {
         let current_callbacks = self.surfaces.get(surf_id).map(|s| s.callbacks.len()).unwrap_or(0);
         let cached_callbacks = self.surfaces.get(surf_id).and_then(|s| s.cached.as_ref()).map(|c| c.callbacks.len()).unwrap_or(0);
         if pending.callbacks.len() + current_callbacks + cached_callbacks > MAX_CALLBACKS_PER_SURFACE {
-            self.surfaces[surf_id].resource.post_error(0u32, "too many outstanding frame callbacks");
+            display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::NoMemory, "too many outstanding frame callbacks");
             return;
         }
         let pixels = match pending.buffer {
@@ -276,13 +276,13 @@ impl State {
                     None => None,
                 };
                 let Some((buffer, data)) = self.buffers.get(&id) else {
-                    self.surfaces[surf_id].resource.post_error(0u32, "attached buffer was destroyed before commit");
+                    display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::Implementation, "attached buffer was destroyed before commit");
                     return;
                 };
                 let needed = match needed {
                     Some(n) => n,
                     None => {
-                        self.surfaces[surf_id].resource.post_error(0u32, "buffer size overflow");
+                        display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::NoMemory, "buffer size overflow");
                         return;
                     }
                 };
@@ -293,7 +293,7 @@ impl State {
                         && (self.client_bytes.get(&client).copied().unwrap_or(0).saturating_add(net as usize) > MAX_PER_CLIENT_BYTES
                             || self.total_bytes.saturating_add(net as usize) > MAX_TOTAL_BYTES)
                     {
-                        self.surfaces[surf_id].resource.post_error(0u32, "client exceeds memory budget");
+                        display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::NoMemory, "client exceeds memory budget");
                         return;
                     }
                 }
@@ -305,7 +305,7 @@ impl State {
                             let net = pixels.bytes.len() as isize - old as isize;
                             if net > 0 {
                                 if self.charge_bytes(client, net as usize).is_err() {
-                                    self.surfaces[surf_id].resource.post_error(0u32, "client exceeds memory budget");
+                                    display_error::post(&self.surfaces[surf_id].resource, display_error::DisplayError::NoMemory, "client exceeds memory budget");
                                     return;
                                 }
                             } else if net < 0 {
@@ -1228,6 +1228,7 @@ fn spawn_app(mode: &str, runtime_dir: &str, socket_name: &str, command: &[std::f
 }
 
 mod dispatch_impl;
+mod display_error;
 mod pointer;
 mod popup;
 
