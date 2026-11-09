@@ -117,7 +117,7 @@ test("a crawl behind a login is taken over, logged in by hand, and resumed from 
   const before = seedHits();
   await canvasPoint(page, 300, 42);
   await page.waitForTimeout(500);
-  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Control+L");
   await typeAddress(page, seed);
   await page.keyboard.press("Enter");
   await expect.poll(seedHits, { timeout: 30_000 }).toBeGreaterThan(before);
