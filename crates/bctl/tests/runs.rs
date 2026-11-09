@@ -257,7 +257,7 @@ fn login_site(target: &str, authed: bool) -> Reply {
     }
 }
 
-const CHAIN_PAGES: u32 = 8;
+const CHAIN_PAGES: u32 = 12;
 
 fn chain_site(target: &str, _authed: bool) -> Reply {
     let page = target.strip_prefix("/chain/").and_then(|rest| rest.strip_suffix(".html")).and_then(|n| n.parse::<u32>().ok());
@@ -321,7 +321,7 @@ fn browser_answers(control_url: &str) -> bool {
 #[ignore = "boots real VMs: needs runtime/build.sh, images/build.sh ref-alpine-chromium, and BCTL_GRAB"]
 fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_in_the_same_browser() {
     require_grab();
-    let home = Home::new("j3-");
+    let home = Home::new("j3-l");
     let session = format!("{}-login", home.prefix());
     let fixture = Fixture::start(login_site);
     assert_ok(&up_with_host_access(&home, &session));
@@ -364,9 +364,9 @@ fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh, images/build.sh ref-alpine-chromium, and BCTL_GRAB"]
-fn killing_the_daemon_mid_crawl_interrupts_the_attempt_and_resume_continues_from_grab_state() {
+fn a_crawl_interrupted_by_a_daemon_kill_or_paused_continues_from_grab_state_on_resume() {
     require_grab();
-    let home = Home::new("j3-");
+    let home = Home::new("j3-c");
     let session = format!("{}-crawl", home.prefix());
     let fixture = Fixture::start(chain_site);
     assert_ok(&up_with_host_access(&home, &session));
@@ -394,11 +394,28 @@ fn killing_the_daemon_mid_crawl_interrupts_the_attempt_and_resume_continues_from
     let first_page_hits = fixture.hits("/chain/0.html");
     let second_page_hits = fixture.hits("/chain/1.html");
 
-    let resumed = home.bctl(&["resume", &crawl.id.to_string()]);
-    assert_ok(&resumed);
-    let done = wait_for(&home, crawl.id, "ended", Duration::from_secs(300), |r| r.attempts.len() == 2 && !matches!(r.state.as_str(), "starting" | "running"));
+    assert_ok(&home.bctl(&["resume", &crawl.id.to_string()]));
+    wait_for(&home, crawl.id, "crawling again", Duration::from_secs(300), |r| {
+        r.attempts.len() == 2 && r.state == "running" && r.progress.as_ref().is_some_and(|p| p.pages_done >= 4)
+    });
+    assert_ok(&home.bctl(&["pause", &crawl.id.to_string()]));
+    let paused = wait_state(&home, crawl.id, "paused", Duration::from_secs(120));
+    assert_eq!((paused.attempts[1].state.as_str(), paused.outcome.as_deref()), ("paused", None));
+    let status = home.json(&["status"]);
+    let held = status_of(&status, &session);
+    assert_eq!((held.state.as_str(), held.generation), ("ready", 1), "pause touched the VM");
+    let chain_hits = || (0..CHAIN_PAGES).map(|n| fixture.hits(&format!("/chain/{n}.html"))).sum::<usize>();
+    let while_paused = chain_hits();
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(chain_hits(), while_paused, "a paused crawl kept navigating");
+
+    assert_ok(&home.bctl(&["resume", &crawl.id.to_string()]));
+    let done = wait_for(&home, crawl.id, "ended", Duration::from_secs(300), |r| r.attempts.len() == 3 && !matches!(r.state.as_str(), "starting" | "running"));
     assert_eq!((done.state.as_str(), done.outcome.as_deref()), ("succeeded", Some("succeeded")), "{done:?}\n{}", logs(&home, crawl.id));
-    assert_eq!(done.attempts.iter().map(|a| (a.number, a.outcome.clone())).collect::<Vec<_>>(), [(1, Some("interrupted".into())), (2, Some("succeeded".into()))]);
+    assert_eq!(
+        done.attempts.iter().map(|a| (a.number, a.state.clone(), a.outcome.clone())).collect::<Vec<_>>(),
+        [(1, "interrupted".into(), Some("interrupted".into())), (2, "paused".into(), None), (3, "succeeded".into(), Some("succeeded".into()))]
+    );
     let attempts_log = logs(&home, crawl.id);
     let second = attempts_log.split("[bctl] attempt 2:").nth(1).expect("the log records the second attempt");
     let visited = second.split("resume: loaded state").nth(1).and_then(|rest| rest.split('(').nth(1)).and_then(|rest| rest.split(' ').next()).and_then(|n| n.parse::<u32>().ok());
@@ -414,7 +431,7 @@ fn killing_the_daemon_mid_crawl_interrupts_the_attempt_and_resume_continues_from
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
 fn exec_runs_end_with_categorized_outcomes_and_never_outlive_cancel_timeout_or_a_daemon_kill() {
-    let home = Home::new("j3-");
+    let home = Home::new("j3-e");
     let session = format!("{}-exec", home.prefix());
     let config = write_config(
         &home,

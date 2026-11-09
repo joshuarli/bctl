@@ -38,8 +38,13 @@ bctl up research --image ref-alpine-chromium   # start a browser session
 bctl serve --open                              # open the dashboard
 bctl profile login personal --image ref-alpine-chromium   # sign in to sites by hand
 bctl status
+bctl grab https://example.com/ --session research   # crawl it with Grab
+bctl run mirror-docs --session docs            # run a job from ./bctl.toml
+bctl runs                                      # runs and their outcomes
 bctl down research                             # stop it; the profile stays
 ```
+
+Jobs, runs, and their outcomes are described in [docs/jobs.md](docs/jobs.md).
 
 Automation attaches to a CDP control URL from `bctl cdp-url NAME` (for example
 Shadowdriver's `control_url`, Playwright's `connectOverCDP`). The URL is a
@@ -51,7 +56,8 @@ person holds the dashboard input lease, new attachments are refused.
 The guest's CDP is exposed to the host only as a Unix socket in a 0700
 directory under `BCTL_HOME`; no host TCP port reaches it, so the gateway is the
 only way in. Guests launch with `--block-private`: the public internet is open,
-while RFC 1918, link-local, and host loopback addresses are not.
+while RFC 1918, link-local, and host loopback addresses are not, unless the
+session was started with `bctl up NAME --allow-private CIDR`.
 
 ## Test
 
@@ -62,6 +68,7 @@ cargo test -p bctl --test daemon -- --ignored
 cargo test -p bctl --test profiles -- --ignored
 cargo test -p bctl --test cdp -- --ignored
 cargo test -p bctl --test egress -- --ignored
+BCTL_GRAB="$PWD/../shadowdriver/grab/.venv/bin/grab" cargo test -p bctl --test runs -- --ignored
 cargo run -p bctl-proof -- m1 --runs 10
 BCTL_PROOF_IMAGE=.work/images/ref-alpine-tinyland.tar cargo run -p bctl-proof -- m1
 pnpm --dir web exec playwright test                      # needs cargo build -p bctl
