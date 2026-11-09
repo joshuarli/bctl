@@ -107,6 +107,12 @@ only when every slice in it is accepted on `main`.
 5. **Pushing.** After each accepted slice, push hydrogen `main` to `origin`
    (`git@github.com:joshuarli/hydrogen`). No other push target, no force
    push, no new remote repositories. `upstream` is fetch-only.
+9. **Unattended with broader grant** (owner, 2026-11-09 night): proceed
+   without the owner and make the judgment calls. Installing tools and
+   forking or vendoring dependencies are preapproved (prefer pinned local
+   installs under `.work/` or vendored sources with recorded provenance;
+   host `apk` installs are allowed when a local install is impractical, and
+   recorded in `dev/toolchain.lock`). The other forbidden effects stand.
 6. **Performance gates are waived.** Only feature completeness counts.
    Measurements are still taken and reported, but they never gate a slice and
    `perf-gate-ready` is not consulted.
@@ -500,9 +506,7 @@ this host for the H cross-check.
 in `~/d/chromium-build` or `~/d/laputa-systems`; chromium-build `build` or
 any step after `prepare`; building Chromium or Helium from source; pushing to
 any target other than hydrogen `origin main`; force pushes; creating remote
-repositories; `sudo`, or installing host packages with `apk` (provision
-everything locally under `.work/`; if a host package is truly required, park
-the slice and name it); `/tmp` and `$TMPDIR` outside `.work/tmp`;
+repositories; `sudo` (host `apk` installs only as owner decision 9 allows); `/tmp` and `$TMPDIR` outside `.work/tmp`;
 `--no-sandbox`, `--single-process` or `--no-zygote` in any qualifying run;
 fake sandbox state or syscalls that report success without effect; Nix,
 systemd, Ansible or other heavy orchestration; `ops` (`mkfs` from the fork
