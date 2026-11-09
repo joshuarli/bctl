@@ -188,8 +188,12 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let mut response: Vec<Samples> = targets.iter().map(|_| Samples::new()).collect();
     let mut nonce = 0;
 
-    for round in 0..ctx.rounds {
+    'rounds: for round in 0..ctx.rounds {
         for step in 0..targets.len() {
+            if ctx.gate.gave_up() {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped before round {round} of {}", ctx.rounds));
+                break 'rounds;
+            }
             let at = (round + step) % targets.len();
             let target = &mut targets[at];
             let result = ctx.gate.run(|| speedometer(target, ctx.iterations));

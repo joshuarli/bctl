@@ -65,6 +65,7 @@ pub fn image_identity(name: &str) -> Fallible<ImageIdentity> {
 pub struct QuietGate {
     budget: Duration,
     waited: Cell<Duration>,
+    gave_up: Cell<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +77,7 @@ pub enum Verdict {
 
 impl QuietGate {
     pub fn new(budget: Duration) -> QuietGate {
-        QuietGate { budget, waited: Cell::new(Duration::ZERO) }
+        QuietGate { budget, waited: Cell::new(Duration::ZERO), gave_up: Cell::new(false) }
     }
 
     fn ready(args: &[&str]) -> bool {
@@ -89,10 +90,12 @@ impl QuietGate {
         loop {
             if Self::ready(&[]) {
                 self.waited.set(self.waited.get() + started.elapsed());
+                self.gave_up.set(false);
                 return true;
             }
             if self.waited.get() + started.elapsed() >= self.budget {
                 self.waited.set(self.waited.get() + started.elapsed());
+                self.gave_up.set(true);
                 return false;
             }
             thread::sleep(pause);
@@ -111,6 +114,10 @@ impl QuietGate {
             (true, true) => Verdict::Clean,
         };
         Ok((value, elapsed, verdict))
+    }
+
+    pub fn gave_up(&self) -> bool {
+        self.gave_up.get()
     }
 
     pub fn waited(&self) -> Duration {

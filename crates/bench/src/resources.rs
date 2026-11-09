@@ -72,21 +72,25 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
             vmm_footprint.push(vmm.iter().map(|pid| footprint_mib(*pid)).sum::<Fallible<f64>>()?);
             daemon_with_session.push(kib_to_mib(process_stats(daemon_pid)?.rss_kib));
 
-            let window = ctx.gate.run(|| {
-                let (_, vmm_before) = tree_stats(&vmm)?;
-                let (_, daemon_before) = tree_stats(&[daemon_pid])?;
-                let started = Instant::now();
-                thread::sleep(IDLE_WINDOW);
-                let elapsed = started.elapsed().as_secs_f64();
-                let (_, vmm_after) = tree_stats(&vmm)?;
-                let (_, daemon_after) = tree_stats(&[daemon_pid])?;
-                Ok(((vmm_after - vmm_before) / elapsed * 100.0, (daemon_after - daemon_before) / elapsed * 100.0))
-            })?;
-            let ((vmm_percent, daemon_percent), _, verdict) = window;
-            eprintln!("resources round {round}: {image} idle vmm {vmm_percent:.2}% daemon {daemon_percent:.2}% of one core ({verdict:?})");
-            vmm_cpu.record(vmm_percent, verdict);
-            daemon_cpu.record(daemon_percent, verdict);
-            vmm_rss_after.push(kib_to_mib(tree_stats(&vmm)?.0));
+            if ctx.gate.gave_up() {
+                outcome.notes.push(format!("perf gate deferred: host busy; idle CPU window skipped for {image} round {round}"));
+            } else {
+                let window = ctx.gate.run(|| {
+                    let (_, vmm_before) = tree_stats(&vmm)?;
+                    let (_, daemon_before) = tree_stats(&[daemon_pid])?;
+                    let started = Instant::now();
+                    thread::sleep(IDLE_WINDOW);
+                    let elapsed = started.elapsed().as_secs_f64();
+                    let (_, vmm_after) = tree_stats(&vmm)?;
+                    let (_, daemon_after) = tree_stats(&[daemon_pid])?;
+                    Ok(((vmm_after - vmm_before) / elapsed * 100.0, (daemon_after - daemon_before) / elapsed * 100.0))
+                })?;
+                let ((vmm_percent, daemon_percent), _, verdict) = window;
+                eprintln!("resources round {round}: {image} idle vmm {vmm_percent:.2}% daemon {daemon_percent:.2}% of one core ({verdict:?})");
+                vmm_cpu.record(vmm_percent, verdict);
+                daemon_cpu.record(daemon_percent, verdict);
+                vmm_rss_after.push(kib_to_mib(tree_stats(&vmm)?.0));
+            }
 
             let data_dir = output_of(home.smolvm().to_str().expect("utf-8 path"), &["machine", "data-dir", "--name", &machine])?;
             disk.push(disk_kib(&data_dir)? as f64 / 1024.0);

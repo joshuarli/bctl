@@ -93,18 +93,27 @@ fn sign_in(home: &Home, session: &str) -> Fallible<Dashboard> {
     let mut stream = net::tcp("127.0.0.1", port)?;
     let response = net::request(&mut stream, "GET", &host, &format!("/{path}"), &[], b"")?;
     let cookie = response.header("set-cookie").and_then(|c| c.split(';').next()).ok_or_else(|| format!("login answered {} without a cookie", response.status))?.to_string();
+    let dashboard = Dashboard { port, cookie };
+    take_control(&dashboard, session)?;
+    Ok(dashboard)
+}
+
+fn take_control(dashboard: &Dashboard, session: &str) -> Fallible<()> {
+    let host = format!("127.0.0.1:{}", dashboard.port);
     let origin = format!("http://{host}");
-    let control = net::request(&mut stream, "POST", &host, &format!("/api/sessions/{session}/control"), &[("Cookie", &cookie), ("Origin", &origin)], b"")?;
+    let mut stream = net::tcp("127.0.0.1", dashboard.port)?;
+    let control = net::request(&mut stream, "POST", &host, &format!("/api/sessions/{session}/control"), &[("Cookie", &dashboard.cookie), ("Origin", &origin)], b"")?;
     if control.status != 200 {
         return Err(format!("taking control answered {}: {}", control.status, control.text()));
     }
-    Ok(Dashboard { port, cookie })
+    Ok(())
 }
 
 fn connect_viewer(path: Path, vnc_port: u16, dashboard: &Dashboard, session: &str) -> Fallible<Viewer> {
     match path {
         Path::Direct => Viewer::handshake(net::tcp("127.0.0.1", vnc_port)?),
         Path::Gateway => {
+            take_control(dashboard, session)?;
             let host = format!("127.0.0.1:{}", dashboard.port);
             let origin = format!("http://{host}");
             let socket = WebSocket::upgrade(net::tcp("127.0.0.1", dashboard.port)?, &host, &format!("/api/sessions/{session}/vnc"), &[("Cookie", &dashboard.cookie), ("Origin", &origin)])?;
@@ -133,6 +142,9 @@ fn input_block(viewer: &mut Viewer, probe: &Probe, click: (u16, u16)) -> Fallibl
             viewer.release_pointer(click.0, click.1)?;
         }
         thread::sleep(Duration::from_millis(400));
+    }
+    if pointer.is_empty() && key.is_empty() {
+        return Err("no input trial changed the probe pixel".into());
     }
     Ok((pointer, key, failures))
 }
@@ -165,6 +177,10 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let paths = |round: usize| if round.is_multiple_of(2) { [Path::Direct, Path::Gateway] } else { [Path::Gateway, Path::Direct] };
 
     for round in 0..ctx.rounds {
+        if ctx.gate.gave_up() {
+            outcome.notes.push(format!("perf gate deferred: host busy; CDP blocks stopped before round {round} of {}", ctx.rounds));
+            break;
+        }
         for path in paths(round) {
             let endpoint = if path == Path::Direct { &direct } else { &gateway };
             match ctx.gate.run(|| cdp_block(endpoint)) {
@@ -197,6 +213,10 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let dashboard = sign_in(&home, &session)?;
     let mut failures = 0;
     for round in 0..ctx.rounds {
+        if ctx.gate.gave_up() {
+            outcome.notes.push(format!("perf gate deferred: host busy; input blocks stopped before round {round} of {}", ctx.rounds));
+            break;
+        }
         for path in paths(round) {
             let mut viewer = connect_viewer(path, vnc_port, &dashboard, &session)?;
             match ctx.gate.run(|| input_block(&mut viewer, &probe, click)) {

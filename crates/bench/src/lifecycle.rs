@@ -28,6 +28,10 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let mut browser = None;
 
     for round in 0..ctx.rounds {
+        if ctx.gate.gave_up() {
+            outcome.notes.push(format!("perf gate deferred: host busy; stopped before round {round} of {}", ctx.rounds));
+            break;
+        }
         let home = Home::new("life")?;
         let (spawn, _, verdict) = ctx.gate.run(|| home.start_daemon())?;
         daemon.record(ms(spawn), verdict);
@@ -120,7 +124,11 @@ fn bare_pause_resume(ctx: &Context, outcome: &mut Outcome) -> Fallible<()> {
     let mut pause = Samples::new();
     let mut resume = Samples::new();
     let mut survived = 0;
-    for _ in 0..ctx.rounds {
+    for round in 0..ctx.rounds {
+        if ctx.gate.gave_up() {
+            outcome.notes.push(format!("perf gate deferred: host busy; pause and resume stopped before round {round} of {}", ctx.rounds));
+            break;
+        }
         let pid_before = machine.exec("cat /tmp/counter.pid")?;
         let before: u64 = machine.exec("cat /tmp/counter")?.parse().map_err(|_| "counter is not a number")?;
         let (_, paused, verdict) = ctx.gate.run(|| machine.smolvm(&["machine", "pause", "--name", &machine.name]))?;
