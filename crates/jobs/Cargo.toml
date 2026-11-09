@@ -1,0 +1,15 @@
+[package]
+name = "bctl-jobs"
+description = "Parse, validate, and resolve reusable browser jobs from bctl.toml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bctl-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+toml = "1.2"
+
+[lints]
+workspace = true
