@@ -51,6 +51,7 @@ suite_harness() {
 			--file "$SYSROOT/lib/ld-musl-x86_64.so.1:/lib/ld-musl-x86_64.so.1" "$FIXTURES/exec_contract"
 		case_verdict shmem_xproc "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/shmem_xproc"
 		case_verdict ipc_xproc "$smp" 60 PASS '' "$FIXTURES/ipc_xproc"
+		case_verdict creds_procfs "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/creds_procfs"
 		case_verdict mmap_bad_fd "$smp" 20 PASS '' "$FIXTURES/mmap_bad_fd"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
@@ -118,7 +119,7 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no seccomp, namespaces, credentials, procfs or SCM data yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium 'no seccomp, namespaces or SCM data yet' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw 'no seccomp yet'
 }
 
