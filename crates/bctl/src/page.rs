@@ -24,6 +24,8 @@ use crate::tabs::{self, SessionBindings, failure};
 
 const GOTO_TIMEOUT: Duration = Duration::from_secs(30);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an action waits for its element to become actionable.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy)]
@@ -247,6 +249,16 @@ fn needed<'a>(value: &'a Option<String>, what: &str) -> Result<&'a str, Refusal>
     value.as_deref().ok_or_else(|| bad(format!("{what} is required")))
 }
 
+/// How long the action may wait: for its element, for its page to load, or for its condition.
+fn patience(op: Op, asked: &ActionRequest) -> Result<Duration, Refusal> {
+    match op {
+        Op::PageGoto => timeout(asked, GOTO_TIMEOUT),
+        Op::PageWait => timeout(asked, WAIT_TIMEOUT),
+        Op::PageScreenshot | Op::PageEval | Op::PageDialog if asked.timeout_ms.is_some() => Err(bad(format!("{} takes no timeout", op.as_str()))),
+        _ => timeout(asked, ACTION_TIMEOUT),
+    }
+}
+
 fn action(op: Op, asked: &ActionRequest) -> Result<Action, Refusal> {
     let locator = locator(asked)?;
     Ok(match op {
@@ -258,7 +270,7 @@ fn action(op: Op, asked: &ActionRequest) -> Result<Action, Refusal> {
                 Some("networkidle") => Readiness::NetworkIdle,
                 Some(other) => return Err(bad(format!("--wait {other:?} is not commit, domcontentloaded, load, or networkidle"))),
             };
-            Action::Navigate { url: needed(&asked.url, "a URL")?.to_string(), readiness, timeout: timeout(asked, GOTO_TIMEOUT)? }
+            Action::Navigate { url: needed(&asked.url, "a URL")?.to_string(), readiness }
         }
         Op::PageClick => Action::Click { locator: required(locator, op)?, count: ClickCount::Single },
         Op::PageDblclick => Action::Click { locator: required(locator, op)?, count: ClickCount::Double },
@@ -297,7 +309,7 @@ fn action(op: Op, asked: &ActionRequest) -> Result<Action, Refusal> {
                 (None, None, None, Some(other), false) => return Err(bad(format!("--load {other:?} is not domcontentloaded or load"))),
                 _ => return Err(bad("wait for one thing: an element (optionally --gone), --text, --url, or --load")),
             };
-            Action::Wait { condition, timeout: timeout(asked, WAIT_TIMEOUT)? }
+            Action::Wait { condition }
         }
         Op::PageGet => match (asked.read.as_deref(), locator) {
             (Some("text"), locator) => Action::Read(Read::Text(locator)),
@@ -342,12 +354,13 @@ pub(crate) fn act(daemon: &Daemon, session: &SessionName, op: Op, request: &Requ
     let started = Instant::now();
     let asked = request.action.as_deref().cloned().unwrap_or_default();
     let action = action(op, &asked)?;
+    let timeout = patience(op, &asked)?;
     let in_flight = tabs::begin(daemon, session, effect(&action))?;
     let browser = tabs::browser(daemon, session)?;
     let store = SessionBindings { daemon, session };
     let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
     let mut pages = browser.pages.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut view = run_step(daemon, session, &target, &mut pages, &Step { op, asked, action }, &in_flight)?;
+    let mut view = run_step(daemon, session, &target, &mut pages, &Step { op, asked, action, timeout }, &in_flight)?;
     drop(pages);
     view.elapsed_ms = started.elapsed().as_millis() as u64;
     Ok(Response { page: Some(Box::new(PageView { action: Some(view), ..PageView::default() })), ..Response::empty() })
@@ -358,6 +371,7 @@ struct Step {
     op: Op,
     asked: ActionRequest,
     action: Action,
+    timeout: Duration,
 }
 
 fn effect(action: &Action) -> Effect {
@@ -365,8 +379,8 @@ fn effect(action: &Action) -> Effect {
 }
 
 fn run_step(daemon: &Daemon, session: &SessionName, target: &TargetScope, pages: &mut Pages, step: &Step, in_flight: &InFlight<'_>) -> Result<ActionView, Refusal> {
-    let Step { op, asked, action } = step;
-    let acted = block_on(pages.act(target, action, &StoredRefCounter { daemon }, in_flight)).map_err(|e| action_failure(session, target, e))?;
+    let Step { op, asked, action, timeout } = step;
+    let acted = block_on(pages.act(target, action, *timeout, &StoredRefCounter { daemon }, in_flight)).map_err(|e| action_failure(session, target, e))?;
     let Acted { on, outcome, cdp_calls, elapsed, .. } = acted;
     let mut view = ActionView {
         action: op_name(*op),
@@ -434,11 +448,12 @@ fn plan(index: usize, step: &json::Value) -> Result<Step, Refusal> {
         merged.insert(key.clone(), value.clone());
     }
     let asked: ActionRequest = json::from_str(&json::to_string(&json::Value::Object(merged))).map_err(|_| at(format!("a {verb} field has the wrong type")))?;
-    let action = action(op, &asked).map_err(|refusal| {
+    let checked = action(op, &asked).and_then(|action| Ok((action, patience(op, &asked)?)));
+    let (action, timeout) = checked.map_err(|refusal| {
         let message = refusal.0.error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
         at(format!("{verb}: {message}"))
     })?;
-    Ok(Step { op, asked, action })
+    Ok(Step { op, asked, action, timeout })
 }
 
 /// Runs a batch's steps in order over the session's one connection, on the target selected when it began, and
@@ -515,6 +530,15 @@ fn action_failure(session: &SessionName, target: &TargetScope, error: ActionErro
         ActionError::Ref(error) => ref_failure(session, target, error),
         ActionError::NotVisible { .. } => page_failure(target, ErrorCode::NotVisible, message, snapshot()),
         ActionError::Disabled { .. } => page_failure(target, ErrorCode::Disabled, message, None),
+        ActionError::Unstable { .. } => page_failure(target, ErrorCode::NotStable, message, None),
+        ActionError::NotEditable { .. } => page_failure(target, ErrorCode::NotActionable, message, None),
+        ActionError::Unready { last, .. } => {
+            let mut response = action_failure(session, target, *last);
+            let body = response.error.as_deref_mut().expect("a failure has an error");
+            body.message = message;
+            body.remedy = Some(body.remedy.take().map_or_else(|| "wait longer with --timeout MS".to_string(), |remedy| format!("{remedy}, or wait longer with --timeout MS")));
+            response
+        }
         ActionError::Covered { .. } => page_failure(target, ErrorCode::Covered, message, Some("close or move what covers it first".into())),
         ActionError::Missed { .. } => page_failure(
             target,

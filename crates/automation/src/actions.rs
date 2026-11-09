@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZeroUsize;
+use std::future::Future;
+use std::pin::pin;
 use std::time::{Duration, Instant};
 
 use async_io::Timer;
 use bctl_cdp::protocol::{CdpEvent, Command, DetachedFromTarget, FrameId, SessionId, TargetId};
-use bctl_cdp::{CallError, EventFilter, EventScope, SubscriptionEnd};
+use bctl_cdp::{CallError, EventFilter, EventScope, SubscriptionEnd, Unobserved};
 use futures_lite::future;
 use miniserde::json;
 
@@ -18,7 +20,7 @@ use crate::keys::{self, Chord, Key};
 use crate::pages::{AttachError, Attachment, HostFrames, Lost, Pages, RefError, Staleness, frames};
 use crate::refs::{BackendNodeId, ElementRef, Host, NodeKey, RefCounter, RefCounterError, RefTable};
 use crate::snapshot::MAX_DOCUMENTS;
-use crate::{DocumentScope, SafeUrl, TargetScope};
+use crate::{DocumentId, DocumentScope, SafeUrl, TargetScope};
 
 const WORLD: &str = "bctl";
 const OBJECT_GROUP: &str = "bctl-action";
@@ -26,10 +28,16 @@ const OBJECT_GROUP: &str = "bctl-action";
 pub const MAX_CANDIDATES: usize = 10;
 /// The most characters `get text` returns; longer text is cut and marked truncated.
 pub const MAX_READ_CHARS: usize = 100_000;
-const POLL: Duration = Duration::from_millis(100);
+/// How often an action asks its [`Interrupt`] while it waits.
+const INTERRUPT_POLL: Duration = Duration::from_millis(20);
+/// The longest an action waits for a sign that the page changed before it checks again.
+const MAX_QUIET: Duration = Duration::from_millis(200);
 // Chromium discards input to an iframe for 500 ms after the iframe moves or first appears, as a defence
 // against clickjacking, so a click into a frame younger than this would silently do nothing.
 const FRAME_INPUT_GRACE: Duration = Duration::from_millis(500);
+// Chromium holds a new document's first paint until it has contentful content or is 500 ms past its commit,
+// and drops input to it meanwhile: a press 400 ms after commit never reaches a page that shows no text.
+const PAINT_HOLDING: Duration = Duration::from_millis(500);
 
 /// What a locator searches for. Text is compared exactly after collapsing whitespace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +163,7 @@ pub enum DialogResponse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    Navigate { url: String, readiness: Readiness, timeout: Duration },
+    Navigate { url: String, readiness: Readiness },
     Click { locator: Locator, count: ClickCount },
     Hover(Locator),
     /// Replaces the field's content with `text`, as one insertion.
@@ -166,7 +174,7 @@ pub enum Action {
     Scroll(Scroll),
     Select { locator: Locator, values: Vec<String> },
     SetChecked { locator: Locator, checked: bool },
-    Wait { condition: Condition, timeout: Duration },
+    Wait { condition: Condition },
     Read(Read),
     Screenshot,
     /// Runs the caller's expression in the page's own world and returns its JSON value.
@@ -188,10 +196,50 @@ impl Action {
             Action::Click { .. } | Action::Hover(_) | Action::Fill { .. } | Action::Type { .. } | Action::Press { .. } | Action::Scroll(_) | Action::SetChecked { .. }
         )
     }
+
+    /// The element the action waits for before it acts, if it names one.
+    fn element(&self) -> Option<&Locator> {
+        match self {
+            Action::Click { locator, .. }
+            | Action::Hover(locator)
+            | Action::Fill { locator, .. }
+            | Action::Type { into: Some(locator), .. }
+            | Action::Press { into: Some(locator), .. }
+            | Action::Scroll(Scroll::IntoView(locator))
+            | Action::Select { locator, .. }
+            | Action::SetChecked { locator, .. }
+            | Action::Read(Read::Text(Some(locator)) | Read::Attribute { locator, .. } | Read::Value(locator)) => Some(locator),
+            _ => None,
+        }
+    }
+
+    fn verb(&self) -> &'static str {
+        match self {
+            Action::Navigate { .. } => "goto",
+            Action::Click { count: ClickCount::Single, .. } => "click",
+            Action::Click { count: ClickCount::Double, .. } => "dblclick",
+            Action::Hover(_) => "hover",
+            Action::Fill { .. } => "fill",
+            Action::Type { .. } => "type",
+            Action::Press { .. } => "press",
+            Action::Scroll(_) => "scroll",
+            Action::Select { .. } => "select",
+            Action::SetChecked { checked: true, .. } => "check",
+            Action::SetChecked { checked: false, .. } => "uncheck",
+            Action::Wait { .. } => "wait",
+            Action::Read(_) => "get",
+            Action::Screenshot => "screenshot",
+            Action::Evaluate(_) => "eval",
+            Action::Dialog(_) => "dialog",
+        }
+    }
 }
 
-/// Asks a long action to stop early. [`Pages::act`] asks between the polls of a wait and while a navigation it
-/// started loads; it never stops an action part way through sending input.
+/// Asks a long action to stop early. [`Pages::act`] asks while it waits for its element to become actionable,
+/// between the checks of a wait, while a navigation it started loads, and once more right before it sends
+/// any input or other change; once that last answer is no, the action runs to its end and is never stopped
+/// part way through its input. An implementation should answer from the same state, under the same lock,
+/// that the decision to stop is made in, so that no input can begin after the decision.
 pub trait Interrupt {
     fn interrupted(&self) -> bool;
 }
@@ -274,6 +322,10 @@ pub enum ActionError {
     Ref(RefError),
     NotVisible { locator: String, reason: String },
     Disabled { locator: String },
+    /// The element moves, or sits in a frame or page the browser still drops input to.
+    Unstable { locator: String, reason: String },
+    /// A text field that is read-only.
+    NotEditable { locator: String },
     Covered { locator: String, by: String },
     /// The click was dispatched but the page delivered its press to another element.
     Missed { locator: String, by: String },
@@ -283,6 +335,8 @@ pub enum ActionError {
     DialogOpen(Dialog),
     NoDialog,
     Timeout { waiting_for: String, waited: Duration },
+    /// The element was still not actionable at the deadline; `last` is the check that failed last.
+    Unready { last: Box<ActionError>, waited: Duration },
     /// The caller's [`Interrupt`] asked the action to stop while it waited. A navigation's command had already
     /// been sent.
     Interrupted { waiting_for: String, waited: Duration },
@@ -307,6 +361,8 @@ impl fmt::Display for ActionError {
             ActionError::Ref(error) => error.fmt(f),
             ActionError::NotVisible { locator, reason } => write!(f, "{locator} is not visible: {reason}"),
             ActionError::Disabled { locator } => write!(f, "{locator} is disabled"),
+            ActionError::Unstable { locator, reason } => write!(f, "{locator} is not stable: {reason}"),
+            ActionError::NotEditable { locator } => write!(f, "{locator} is read-only"),
             ActionError::Covered { locator, by } => write!(f, "{locator} is covered by {by}, which would get the click"),
             ActionError::Missed { locator, by } => write!(f, "the click meant for {locator} was delivered to {by} instead"),
             ActionError::Detached { locator } => write!(f, "{locator} left its document before bctl could act on it"),
@@ -314,6 +370,7 @@ impl fmt::Display for ActionError {
             ActionError::DialogOpen(dialog) => write!(f, "the page shows a {} dialog: {}", dialog.kind, json::to_string(&dialog.message)),
             ActionError::NoDialog => f.write_str("the page shows no dialog"),
             ActionError::Timeout { waiting_for, waited } => write!(f, "{waiting_for} did not happen within {} ms", waited.as_millis()),
+            ActionError::Unready { last, waited } => write!(f, "{last}, still after waiting {} ms", waited.as_millis()),
             ActionError::Interrupted { waiting_for, waited } => write!(f, "waiting for {waiting_for} was interrupted after {} ms", waited.as_millis()),
             ActionError::NavigationFailed { url, reason } => write!(f, "navigating to {url} failed: {reason}"),
             ActionError::Script { exception } => write!(f, "the expression threw: {exception}"),
@@ -353,7 +410,7 @@ fn subscription_end(end: SubscriptionEnd) -> ActionError {
 
 const ACTIONABLE: &str = "function(needsEnabled) {
   if (this.nodeType !== Node.ELEMENT_NODE) return 'not-element';
-  if (!this.isConnected) return 'detached';
+  if (!this.isConnected || this.ownerDocument !== document) return 'detached';
   if (!this.checkVisibility({ visibilityProperty: true })) return 'hidden';
   const box = this.getBoundingClientRect();
   if (box.width === 0 || box.height === 0) return 'empty';
@@ -379,23 +436,57 @@ const SETTLED: &str = "function() {
 
 const ARM_PRESS: &str = "function() {
   const target = this;
-  const record = { landed: false, elsewhere: null };
-  addEventListener('mousedown', event => {
-    const hit = event.composedPath()[0];
-    if (event.composedPath().includes(target)) record.landed = true;
-    else record.elsewhere = hit.localName + (hit.id ? '#' + hit.id : '');
-  }, { capture: true, once: true });
-  globalThis.bctlPress = record;
+  let settle;
+  const verdict = new Promise(resolve => settle = resolve);
+  const pressed = event => {
+    const path = event.composedPath();
+    const hit = path[0];
+    settle(path.includes(target) ? 'landed' : 'elsewhere:' + hit.localName + (hit.id ? '#' + hit.id : ''));
+  };
+  addEventListener('mousedown', pressed, { capture: true, once: true });
+  globalThis.bctlPress = { verdict, missed: () => { removeEventListener('mousedown', pressed, true); settle('nothing'); } };
   return 'armed';
 }";
 
-const PRESS_LANDED: &str = "function() {
-  const record = globalThis.bctlPress;
+const PRESS_VERDICT: &str = "function() { return globalThis.bctlPress.verdict; }";
+
+const PRESS_MISSED: &str = "function() {
+  const press = globalThis.bctlPress;
   delete globalThis.bctlPress;
-  return record.landed ? 'landed' : record.elsewhere ? 'elsewhere:' + record.elsewhere : 'nothing';
+  press.missed();
+  return 'settled';
 }";
 
 const DOCUMENT_AGE: &str = "function() { return performance.now(); }";
+
+const UNPAINTED_AGE: &str = "function() {
+  if (performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint')) return -1;
+  const navigation = performance.getEntriesByType('navigation')[0];
+  return performance.now() - (navigation ? navigation.responseStart : 0);
+}";
+
+const CHANGED: &str = "function(quietMs) {
+  return new Promise(resolve => {
+    const events = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel', 'scroll', 'resize', 'hashchange', 'popstate', 'pageshow', 'visibilitychange', 'focusin', 'readystatechange', 'load'];
+    let done = false;
+    const finish = why => {
+      if (done) return;
+      done = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      for (const type of events) document.removeEventListener(type, changed, true);
+      removeEventListener('resize', changed, true);
+      if (document.hidden) resolve(why);
+      else requestAnimationFrame(() => resolve(why));
+    };
+    const changed = () => finish('changed');
+    const observer = new MutationObserver(changed);
+    observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    for (const type of events) document.addEventListener(type, changed, true);
+    addEventListener('resize', changed, true);
+    const timer = setTimeout(() => finish('quiet'), quietMs);
+  });
+}";
 
 const DESCRIBE: &str = "function() {
   const text = (this.innerText ?? this.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 40);
@@ -448,33 +539,32 @@ const SEARCH: &str = "function(kind, value, limit) {
   return shown;
 }";
 
-const FILL_PREPARE: &str = "function() {
+const FILL_KIND: &str = "function() {
   const textTypes = ['text', 'search', 'url', 'tel', 'password', 'email', 'number'];
   const valueTypes = ['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'];
   if (this.localName === 'input') {
     if (valueTypes.includes(this.type)) return this.readOnly ? 'readonly' : 'value';
     if (!textTypes.includes(this.type)) return 'type:' + this.type;
-    if (this.readOnly) return 'readonly';
-    this.focus();
-    this.select();
-    return 'text';
+    return this.readOnly ? 'readonly' : 'text';
   }
-  if (this.localName === 'textarea') {
-    if (this.readOnly) return 'readonly';
-    this.focus();
-    this.select();
-    return 'text';
-  }
-  if (this.isContentEditable) {
-    this.focus();
-    const range = document.createRange();
-    range.selectNodeContents(this);
-    const selection = getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-    return 'text';
-  }
+  if (this.localName === 'textarea') return this.readOnly ? 'readonly' : 'text';
+  if (this.isContentEditable) return 'text';
   return 'element:' + this.localName;
+}";
+
+const SELECT_CONTENT: &str = "function() {
+  this.focus();
+  if (this.localName === 'input' || this.localName === 'textarea') {
+    if (this.readOnly) return 'readonly';
+    this.select();
+    return 'selected';
+  }
+  const range = document.createRange();
+  range.selectNodeContents(this);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return 'selected';
 }";
 
 const SET_VALUE: &str = "function(value) {
@@ -501,7 +591,7 @@ const FOCUS_END: &str = "function() {
   return this.matches(':focus, :focus-within') ? 'focused' : 'unfocusable';
 }";
 
-const SELECT: &str = "function(values) {
+const SELECT: &str = "function(values, apply) {
   if (this.localName !== 'select') return 'element:' + this.localName;
   const norm = s => s.replace(/\\s+/g, ' ').trim();
   const options = Array.from(this.options);
@@ -513,6 +603,7 @@ const SELECT: &str = "function(values) {
     if (!chosen.includes(option)) chosen.push(option);
   }
   if (chosen.length > 1 && !this.multiple) return 'single';
+  if (!apply) return 'ok';
   this.focus();
   for (const option of options) option.selected = chosen.includes(option);
   this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
@@ -551,7 +642,7 @@ const LOCATION: &str = "function() { return location.href; }";
 const READY_STATE: &str = "function() { return document.readyState; }";
 const HAS_TEXT: &str = "function(text) { return !!document.body && document.body.innerText.includes(text); }";
 const VIEWPORT_CENTRE: &str = "function() { return [innerWidth / 2, innerHeight / 2]; }";
-const IS_CONNECTED: &str = "function() { return this.isConnected; }";
+const IS_CONNECTED: &str = "function() { return this.isConnected && this.ownerDocument === document; }";
 
 fn string(value: &str) -> json::Value {
     json::Value::String(value.to_string())
@@ -708,19 +799,96 @@ enum Raced<T> {
     Dialog(Result<Dialog, SubscriptionEnd>),
 }
 
+/// How long an action may wait, and who may stop it while it does.
+#[derive(Clone, Copy)]
+struct Bound<'i> {
+    started: Instant,
+    deadline: Instant,
+    interrupt: &'i dyn Interrupt,
+}
+
+impl Bound<'_> {
+    async fn interruption(self) {
+        while !self.interrupt.interrupted() {
+            Timer::after(INTERRUPT_POLL).await;
+        }
+    }
+
+    /// Runs `work` to its end, or gives up on it as soon as the interrupt asks.
+    async fn unless_interrupted<T>(self, work: impl Future<Output = T>) -> Option<T> {
+        future::or(async { Some(work.await) }, async {
+            self.interruption().await;
+            None
+        })
+        .await
+    }
+
+    fn interrupted(&self, waiting_for: String) -> ActionError {
+        ActionError::Interrupted { waiting_for, waited: self.started.elapsed() }
+    }
+}
+
+/// What preparation found, ready for the action's input.
+enum Prepared {
+    Nothing,
+    Element(Node),
+    Point(Node, (f64, f64)),
+    Fill(Node, FillKind),
+    /// A check or uncheck whose element is already in the state asked for.
+    Unchanged(Node),
+}
+
+impl Prepared {
+    fn node(self) -> Option<Node> {
+        match self {
+            Prepared::Nothing => None,
+            Prepared::Element(node) | Prepared::Point(node, _) | Prepared::Fill(node, _) | Prepared::Unchanged(node) => Some(node),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FillKind {
+    /// Typed into: an input, textarea, or contenteditable element.
+    Text,
+    /// Set as a value: a date, time, colour, or range input.
+    Value,
+}
+
+/// Where an action stands with the page: preparing, which at most scrolls its element into view and brings
+/// its tab to the front; cleared to act, which asks the interrupt once more right before its first change; or
+/// changing it.
+#[derive(Clone, Copy)]
+enum Input<'i> {
+    Preparing,
+    Cleared(Bound<'i>),
+    /// The first command that changed the page, after preparation.
+    Sent(&'static str),
+}
+
+/// What an action needs of its element.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Attached,
+    Visible,
+    Enabled,
+}
+
 pub(crate) struct Act<'a> {
     cdp: &'a Counted<'a>,
     target: &'a TargetScope,
     attachment: &'a mut Attachment,
     refs: &'a mut RefTable,
     hosts: HashMap<Host, HostFrames>,
-    worlds: HashMap<(SessionId, FrameId), i64>,
+    /// bctl's isolated world in each frame, with the document it was made in: a world ends with its document.
+    worlds: HashMap<(SessionId, FrameId), (DocumentId, i64)>,
     holding: HashSet<SessionId>,
+    input: Input<'a>,
 }
 
 impl<'a> Act<'a> {
     pub(crate) fn new(cdp: &'a Counted<'a>, target: &'a TargetScope, attachment: &'a mut Attachment, refs: &'a mut RefTable) -> Act<'a> {
-        Act { cdp, target, attachment, refs, hosts: HashMap::new(), worlds: HashMap::new(), holding: HashSet::new() }
+        Act { cdp, target, attachment, refs, hosts: HashMap::new(), worlds: HashMap::new(), holding: HashSet::new(), input: Input::Preparing }
     }
 
     fn lost(&self, error: CallError) -> ActionError {
@@ -737,6 +905,7 @@ impl<'a> Act<'a> {
     /// A dialog pauses the page, which then answers nothing until the dialog closes, so a mutating command
     /// fails as soon as one opens.
     async fn dispatch<C: Command>(&mut self, session: &SessionId, command: &C) -> Result<C::Returns, ActionError> {
+        self.begin_input(C::METHOD)?;
         let cdp = self.cdp;
         let dialogs = &mut self.attachment.dialogs;
         let watch = async {
@@ -762,6 +931,18 @@ impl<'a> Act<'a> {
         }
     }
 
+    /// Asks the interrupt one last time before the action's first change to the page, with nothing awaited
+    /// between the answer and sending `method`, so that no change begins after the interrupt said stop.
+    fn begin_input(&mut self, method: &'static str) -> Result<(), ActionError> {
+        if let Input::Cleared(bound) = self.input {
+            if bound.interrupt.interrupted() {
+                return Err(bound.interrupted("its first input".to_string()));
+            }
+            self.input = Input::Sent(method);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn release(&mut self) {
         for session in std::mem::take(&mut self.holding) {
             let _released_or_left_for_the_next_action = self.cdp.session(&session, &ReleaseObjectGroup { object_group: OBJECT_GROUP.into() }).await;
@@ -770,7 +951,6 @@ impl<'a> Act<'a> {
 
     fn forget_frames(&mut self) {
         self.hosts.clear();
-        self.worlds.clear();
     }
 
     async fn host_frames(&mut self, host: &Host) -> Result<Option<&HostFrames>, ActionError> {
@@ -809,11 +989,15 @@ impl<'a> Act<'a> {
 
     async fn world(&mut self, session: &SessionId, frame: &FrameId) -> Result<i64, ActionError> {
         let key = (session.clone(), frame.clone());
-        if let Some(context) = self.worlds.get(&key) {
+        let document = self.hosts.values().find(|frames| frames.session == *session).and_then(|frames| frames.documents.get(frame)).cloned();
+        let Some(document) = document else { return Err(ActionError::Helper { reason: format!("frame {frame} was not read before its world was asked for") }) };
+        if let Some((made_in, context)) = self.worlds.get(&key)
+            && *made_in == document
+        {
             return Ok(*context);
         }
         let context = self.call(session, &CreateIsolatedWorld { frame_id: frame.clone(), world_name: WORLD.into() }).await?.execution_context_id;
-        self.worlds.insert(key, context);
+        self.worlds.insert(key, (document, context));
         Ok(context)
     }
 
@@ -1074,8 +1258,11 @@ impl<'a> Act<'a> {
         Ok(Node { host: doc.host.clone(), scope: doc.scope.clone(), held: Held { session: doc.session.clone(), object }, element: None })
     }
 
-    async fn actionable(&mut self, node: &Node, locator: &Locator, needs_enabled: bool) -> Result<(), ActionError> {
-        let state = self.inspect(&node.held, "the actionability check", ACTIONABLE, vec![json::Value::Bool(needs_enabled)]).await?;
+    async fn actionable(&mut self, node: &Node, locator: &Locator, need: Need) -> Result<(), ActionError> {
+        if need == Need::Attached {
+            return Ok(());
+        }
+        let state = self.inspect(&node.held, "the actionability check", ACTIONABLE, vec![json::Value::Bool(need == Need::Enabled)]).await?;
         let locator = locator.to_string();
         match as_str(&state) {
             Some("ok") => Ok(()),
@@ -1160,7 +1347,7 @@ impl<'a> Act<'a> {
         match self.value("the settle check", settled)? {
             json::Value::String(s) if s == "settled" => {}
             json::Value::String(s) if s == "moving" => {
-                return Err(ActionError::NotActionable { locator: locator.to_string(), reason: "kept moving for 10 frames".into() });
+                return Err(ActionError::Unstable { locator: locator.to_string(), reason: "it kept moving for 10 animation frames".into() });
             }
             other => return Err(helper_reply("the settle check", &other)),
         }
@@ -1211,24 +1398,54 @@ impl<'a> Act<'a> {
         self.dispatch(&page, &event).await.map(drop)
     }
 
-    async fn click(&mut self, node: &Node, (x, y): (f64, f64), count: ClickCount, locator: &Locator) -> Result<(), ActionError> {
+    /// The point to send pointer input to: the element scrolled into view, still for two animation frames, and
+    /// the topmost element there in every frame up to the page's.
+    async fn pointer(&mut self, node: &Node, locator: &Locator) -> Result<(f64, f64), ActionError> {
+        let point = self.hit_point(node, locator).await?;
         let Some(page_frames) = self.host_frames(&Host::Page).await? else { unreachable!("the page always has a session") };
         if !(node.host == Host::Page && node.scope.frame == page_frames.root) {
             let age = self.inspect(&node.held, "the frame's age", DOCUMENT_AGE, Vec::new()).await?;
             let age = as_f64(&age).ok_or_else(|| helper_reply("the frame's age", &age))?;
-            if let Some(wait) = FRAME_INPUT_GRACE.checked_sub(Duration::from_secs_f64(age.max(0.0) / 1000.0)) {
-                Timer::after(wait).await;
+            if Duration::from_secs_f64(age.max(0.0) / 1000.0) < FRAME_INPUT_GRACE {
+                return Err(ActionError::Unstable {
+                    locator: locator.to_string(),
+                    reason: format!("its frame appeared {} ms ago, and the browser drops input to a frame for its first {} ms", age as u64, FRAME_INPUT_GRACE.as_millis()),
+                });
             }
         }
+        Ok(point)
+    }
+
+    async fn click(&mut self, node: &Node, (x, y): (f64, f64), count: ClickCount, locator: &Locator) -> Result<(), ActionError> {
         let armed = self.inspect(&node.held, "arming the press check", ARM_PRESS, Vec::new()).await?;
         if as_str(&armed) != Some("armed") {
             return Err(helper_reply("arming the press check", &armed));
         }
+        let cdp = self.cdp;
+        let asked = InspectObject {
+            on: node.held.object.clone(),
+            function_declaration: PRESS_VERDICT.into(),
+            arguments: Vec::new(),
+            return_by_value: true,
+            await_promise: true,
+            object_group: OBJECT_GROUP.into(),
+        };
+        let mut verdict = pin!(cdp.session(&node.held.session, &asked));
+        if let Some(early) = future::poll_once(&mut verdict).await {
+            return Err(early.map_or_else(|e| self.lost(e), |early| helper_reply("the press check", &early.result.value.unwrap_or(json::Value::Null))));
+        }
         self.mouse("mouseMoved", x, y, false, 0).await?;
         self.mouse("mousePressed", x, y, true, 1).await?;
-        let landed = self.inspect(&node.held, "the press check", PRESS_LANDED, Vec::new()).await;
+        let settled = self.inspect(&node.held, "the press check", PRESS_MISSED, Vec::new()).await;
+        let landed = match verdict.await {
+            Ok(evaluated) => self.value("the press check", evaluated),
+            Err(error) => Err(self.lost(error)),
+        };
         self.mouse("mouseReleased", x, y, false, 1).await?;
-        let landed = landed?;
+        let landed = match (landed, settled) {
+            (Ok(landed), _) => landed,
+            (Err(error), _) => return Err(error),
+        };
         match as_str(&landed) {
             Some("landed") => {}
             Some("nothing") => {
@@ -1369,9 +1586,43 @@ impl<'a> Act<'a> {
         })
     }
 
-    async fn wait(&mut self, condition: &Condition, timeout: Duration, interrupt: &dyn Interrupt) -> Result<Outcome, ActionError> {
-        let started = Instant::now();
-        let deadline = started + timeout;
+    /// Waits for the page to change: a DOM mutation, an event that follows layout or navigation, the main
+    /// document going away, or at most `quiet` without any of them.
+    async fn changed(&mut self, quiet: Duration) -> Result<(), ActionError> {
+        let (session, context) = match self.main_world().await {
+            Ok(world) => world,
+            Err(ActionError::Cdp(CallError::Protocol { .. })) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let command = InspectContext {
+            on: context,
+            function_declaration: CHANGED.into(),
+            arguments: vec![argument(number(quiet.as_millis() as f64))],
+            return_by_value: true,
+            await_promise: true,
+            object_group: OBJECT_GROUP.into(),
+        };
+        match self.call(&session, &command).await {
+            Ok(_) | Err(ActionError::Cdp(CallError::Protocol { .. })) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Between two checks: waits for the page to change, at most until the deadline, then forgets what the
+    /// last check read of its frames.
+    async fn next_check(&mut self, bound: Bound<'_>, waiting_for: &dyn Fn() -> String) -> Result<(), ActionError> {
+        let quiet = bound.deadline.saturating_duration_since(Instant::now()).min(MAX_QUIET);
+        match bound.unless_interrupted(self.changed(quiet)).await {
+            Some(changed) => changed?,
+            None => return Err(bound.interrupted(waiting_for())),
+        }
+        self.release().await;
+        self.forget_frames();
+        self.attachment.sync(self.cdp).await?;
+        Ok(())
+    }
+
+    async fn wait(&mut self, condition: &Condition, bound: Bound<'_>) -> Result<Outcome, ActionError> {
         let waiting_for = || match condition {
             Condition::Present(query) => format!("an element matching {query}"),
             Condition::Absent(query) => format!("no element matching {query}"),
@@ -1384,31 +1635,24 @@ impl<'a> Act<'a> {
             if let Some(dialog) = self.attachment.current_dialog().await.map_err(subscription_end)? {
                 return Err(ActionError::DialogOpen(dialog));
             }
-            let held = match self.holds(condition).await {
-                Ok(held) => held,
-                Err(ActionError::Cdp(CallError::Protocol { .. })) => None,
-                Err(error) => return Err(error),
+            let held = match bound.unless_interrupted(self.holds(condition)).await {
+                None => return Err(bound.interrupted(waiting_for())),
+                Some(Ok(held)) => held,
+                Some(Err(ActionError::Cdp(CallError::Protocol { .. }))) => None,
+                Some(Err(error)) => return Err(error),
             };
             if let Some(outcome) = held {
                 return Ok(outcome);
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(ActionError::Timeout { waiting_for: waiting_for(), waited: now - started });
+            if Instant::now() >= bound.deadline {
+                return Err(ActionError::Timeout { waiting_for: waiting_for(), waited: bound.started.elapsed() });
             }
-            if interrupt.interrupted() {
-                return Err(ActionError::Interrupted { waiting_for: waiting_for(), waited: now - started });
-            }
-            Timer::at(deadline.min(now + POLL)).await;
-            self.release().await;
-            self.forget_frames();
-            self.attachment.sync(self.cdp).await?;
+            self.next_check(bound, &waiting_for).await?;
         }
     }
 
-    async fn navigate(&mut self, url: &str, readiness: Readiness, timeout: Duration, interrupt: &dyn Interrupt) -> Result<Outcome, ActionError> {
-        let started = Instant::now();
-        let deadline = started + timeout;
+    async fn navigate(&mut self, url: &str, readiness: Readiness, bound: Bound<'_>) -> Result<Outcome, ActionError> {
+        let Bound { started, deadline, interrupt } = bound;
         let page = self.attachment.page.clone();
         let filter = EventFilter::new(&[LifecycleEvent::METHOD, DetachedFromTarget::METHOD], EventScope::Any);
         let mut events = self.cdp.connection.subscribe(filter).map_err(ActionError::Cdp)?;
@@ -1421,7 +1665,7 @@ impl<'a> Act<'a> {
         let awaited = || format!("the {wanted} event of the navigation to {}", SafeUrl::new(url));
         loop {
             let next = future::or(async { Some(events.next().await) }, async {
-                Timer::at(deadline.min(Instant::now() + POLL)).await;
+                Timer::at(deadline.min(Instant::now() + INTERRUPT_POLL)).await;
                 None
             });
             let dialogs = &mut self.attachment.dialogs;
@@ -1465,37 +1709,58 @@ impl<'a> Act<'a> {
         }
     }
 
-    async fn fill(&mut self, node: &Node, locator: &Locator, text: &str) -> Result<(), ActionError> {
-        let prepared = self.change(&node.held, "fill", FILL_PREPARE, Vec::new()).await?;
+    async fn fill_kind(&mut self, node: &Node, locator: &Locator) -> Result<FillKind, ActionError> {
+        let kind = self.inspect(&node.held, "fill", FILL_KIND, Vec::new()).await?;
         let not = |reason: String| ActionError::NotActionable { locator: locator.to_string(), reason };
-        match as_str(&prepared) {
-            Some("text") if text.is_empty() => {
-                let delete = Chord::parse("Delete").expect("Delete is a key");
-                self.press_chord(&delete).await
-            }
-            Some("text") => self.insert(text).await,
-            Some("value") => {
-                let set = self.change(&node.held, "fill", SET_VALUE, vec![string(text)]).await?;
-                match as_str(&set) {
-                    Some("ok") => Ok(()),
-                    Some("rejected") => Err(not(format!("does not accept the value {}", json::to_string(text)))),
-                    _ => Err(helper_reply("fill", &set)),
-                }
-            }
-            Some("readonly") => Err(not("is read-only".into())),
+        match as_str(&kind) {
+            Some("text") => Ok(FillKind::Text),
+            Some("value") => Ok(FillKind::Value),
+            Some("readonly") => Err(ActionError::NotEditable { locator: locator.to_string() }),
             Some(other) if other.starts_with("type:") => Err(not(format!("is an <input type={}>, which takes no text", &other[5..]))),
             Some(other) if other.starts_with("element:") => {
                 Err(not(format!("is a <{}>, not an input, textarea, or contenteditable element", &other[8..])))
             }
-            _ => Err(helper_reply("fill", &prepared)),
+            _ => Err(helper_reply("fill", &kind)),
         }
     }
 
-    async fn select(&mut self, node: &Node, locator: &Locator, values: &[String]) -> Result<Vec<String>, ActionError> {
+    async fn fill(&mut self, node: &Node, locator: &Locator, kind: FillKind, text: &str) -> Result<(), ActionError> {
+        match kind {
+            FillKind::Text => {
+                let selected = self.change(&node.held, "fill", SELECT_CONTENT, Vec::new()).await?;
+                match as_str(&selected) {
+                    Some("selected") => {}
+                    Some("readonly") => return Err(ActionError::NotEditable { locator: locator.to_string() }),
+                    _ => return Err(helper_reply("fill", &selected)),
+                }
+                if text.is_empty() {
+                    let delete = Chord::parse("Delete").expect("Delete is a key");
+                    self.press_chord(&delete).await
+                } else {
+                    self.insert(text).await
+                }
+            }
+            FillKind::Value => {
+                let set = self.change(&node.held, "fill", SET_VALUE, vec![string(text)]).await?;
+                match as_str(&set) {
+                    Some("ok") => Ok(()),
+                    Some("rejected") => {
+                        Err(ActionError::NotActionable { locator: locator.to_string(), reason: format!("does not accept the value {}", json::to_string(text)) })
+                    }
+                    _ => Err(helper_reply("fill", &set)),
+                }
+            }
+        }
+    }
+
+    /// Chooses the options, or with `apply` false only checks that it could.
+    async fn select(&mut self, node: &Node, locator: &Locator, values: &[String], apply: bool) -> Result<Vec<String>, ActionError> {
         let wanted = json::Value::Array(values.iter().map(String::as_str).map(string).collect());
-        let result = self.change(&node.held, "select", SELECT, vec![wanted]).await?;
+        let arguments = vec![wanted, json::Value::Bool(apply)];
+        let result = if apply { self.change(&node.held, "select", SELECT, arguments).await? } else { self.inspect(&node.held, "select", SELECT, arguments).await? };
         let not = |reason: String| ActionError::NotActionable { locator: locator.to_string(), reason };
         match &result {
+            json::Value::String(ok) if ok == "ok" && !apply => Ok(Vec::new()),
             json::Value::Array(chosen) => chosen.iter().map(|v| as_str(v).map(str::to_string).ok_or_else(|| helper_reply("select", &result))).collect(),
             json::Value::String(error) => Err(match error.split_once(':') {
                 Some(("element", name)) => not(format!("is a <{name}>, not a <select>")),
@@ -1510,46 +1775,201 @@ impl<'a> Act<'a> {
         }
     }
 
-    async fn run(&mut self, action: &Action, counter: &dyn RefCounter, interrupt: &dyn Interrupt) -> Result<(Option<Node>, Outcome), ActionError> {
+    async fn element(&mut self, locator: &Locator, need: Need, counter: &dyn RefCounter) -> Result<Node, ActionError> {
+        let node = self.locate(locator, counter).await?;
+        self.actionable(&node, locator, need).await?;
+        Ok(node)
+    }
+
+    /// Whether the page shows its document yet, which input needs: until then the browser drops it.
+    async fn painted(&mut self) -> Result<(), ActionError> {
+        let (session, context) = self.main_world().await?;
+        let age = self.inspect_in(&session, context, "the paint check", UNPAINTED_AGE, Vec::new()).await?;
+        let age = as_f64(&age).ok_or_else(|| helper_reply("the paint check", &age))?;
+        if age >= 0.0 && Duration::from_secs_f64(age / 1000.0) < PAINT_HOLDING {
+            return Err(ActionError::Unstable {
+                locator: "the page".into(),
+                reason: format!(
+                    "it has shown no content {} ms after loading, and the browser drops input to a page until it does or {} ms pass",
+                    age as u64,
+                    PAINT_HOLDING.as_millis()
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// One check of everything the action needs before it sends input, which fails with the first that is not
+    /// met yet.
+    async fn attempt(&mut self, action: &Action, locator: Option<&Locator>, counter: &dyn RefCounter) -> Result<Prepared, ActionError> {
         if action.sends_input() {
+            self.painted().await?;
+        }
+        let Some(locator) = locator else { return Ok(Prepared::Nothing) };
+        Ok(match action {
+            Action::Click { .. } => {
+                let node = self.element(locator, Need::Enabled, counter).await?;
+                let point = self.pointer(&node, locator).await?;
+                Prepared::Point(node, point)
+            }
+            Action::Hover(_) => {
+                let node = self.element(locator, Need::Visible, counter).await?;
+                let point = self.pointer(&node, locator).await?;
+                Prepared::Point(node, point)
+            }
+            Action::Fill { .. } => {
+                let node = self.element(locator, Need::Enabled, counter).await?;
+                let kind = self.fill_kind(&node, locator).await?;
+                Prepared::Fill(node, kind)
+            }
+            Action::Type { .. } | Action::Press { .. } => Prepared::Element(self.element(locator, Need::Enabled, counter).await?),
+            Action::Scroll(_) => Prepared::Element(self.element(locator, Need::Visible, counter).await?),
+            Action::Select { values, .. } => {
+                let node = self.element(locator, Need::Enabled, counter).await?;
+                self.select(&node, locator, values, false).await?;
+                Prepared::Element(node)
+            }
+            Action::SetChecked { checked, .. } => {
+                let node = self.element(locator, Need::Enabled, counter).await?;
+                let (radio, before) = self.checked_state(&node, locator).await?;
+                if before == *checked {
+                    Prepared::Unchanged(node)
+                } else if radio && !checked {
+                    return Err(ActionError::NotActionable { locator: locator.to_string(), reason: "is a radio button, which is unchecked by checking another".into() });
+                } else {
+                    let point = self.pointer(&node, locator).await?;
+                    Prepared::Point(node, point)
+                }
+            }
+            Action::Read(_) => Prepared::Element(self.element(locator, Need::Attached, counter).await?),
+            _ => unreachable!("{} names no element", action.verb()),
+        })
+    }
+
+    fn seen_documents(&self) -> HashSet<(SessionId, FrameId, DocumentId)> {
+        self.hosts
+            .values()
+            .flat_map(|frames| frames.documents.iter().map(|(frame, document)| (frames.session.clone(), frame.clone(), document.clone())))
+            .collect()
+    }
+
+    /// Whether a failed check may pass later: the condition it names, to report if it never does, or the error
+    /// that ends the action now. A ref names one node for good, so its node leaving, or its document ending,
+    /// makes it stale rather than something to wait out.
+    async fn retryable(&mut self, error: ActionError, locator: Option<&Locator>, seen: &HashSet<(SessionId, FrameId, DocumentId)>) -> Result<ActionError, ActionError> {
+        match (error, locator) {
+            (ActionError::Detached { .. }, Some(Locator::Ref(element))) => {
+                self.refs.forget(*element);
+                Err(ActionError::Ref(RefError::Stale { element: *element, staleness: Staleness::NodeGone }))
+            }
+            (
+                error @ (ActionError::NotFound { .. }
+                | ActionError::NotVisible { .. }
+                | ActionError::Disabled { .. }
+                | ActionError::Covered { .. }
+                | ActionError::Unstable { .. }
+                | ActionError::NotEditable { .. }
+                | ActionError::Detached { .. }),
+                _,
+            ) => Ok(error),
+            (error @ ActionError::Cdp(CallError::Protocol { .. } | CallError::SessionDetached { .. }), Some(Locator::Ref(element))) => match self.resolve_ref(*element).await {
+                Err(stale @ ActionError::Ref(_)) => Err(stale),
+                _ => Err(error),
+            },
+            (error @ ActionError::Cdp(CallError::Protocol { .. } | CallError::SessionDetached { .. }), _) => {
+                let current: HashSet<_> = self.documents().await?.into_iter().map(|doc| (doc.session, doc.scope.frame, doc.scope.document)).collect();
+                let what = locator.map_or_else(|| "the page".to_string(), Locator::to_string);
+                if seen.is_subset(&current) { Err(error) } else { Ok(ActionError::Detached { locator: what }) }
+            }
+            (error, _) => Err(error),
+        }
+    }
+
+    /// Checks the action's element until everything it needs holds, waiting for the page to change between
+    /// checks, until the deadline. Nothing here sends input.
+    async fn prepare(&mut self, action: &Action, counter: &dyn RefCounter, bound: Bound<'_>) -> Result<Prepared, ActionError> {
+        let locator = action.element();
+        if locator.is_none() && !action.sends_input() {
+            return Ok(Prepared::Nothing);
+        }
+        let waiting_for = || match locator {
+            Some(locator) => format!("{locator} to be ready to {}", action.verb()),
+            None => format!("the page to be ready to {}", action.verb()),
+        };
+        loop {
+            let error = match bound.unless_interrupted(self.attempt(action, locator, counter)).await {
+                None => return Err(bound.interrupted(waiting_for())),
+                Some(Ok(prepared)) => return Ok(prepared),
+                Some(Err(error)) => error,
+            };
+            let seen = self.seen_documents();
+            self.release().await;
+            self.forget_frames();
+            self.attachment.sync(self.cdp).await?;
+            let unready = self.retryable(error, locator, &seen).await?;
+            if Instant::now() >= bound.deadline {
+                return Err(ActionError::Unready { last: Box::new(unready), waited: bound.started.elapsed() });
+            }
+            self.next_check(bound, &waiting_for).await?;
+        }
+    }
+
+    async fn run(&mut self, action: &Action, counter: &dyn RefCounter, bound: Bound<'a>) -> Result<(Option<Node>, Outcome), ActionError> {
+        let begin = || format!("the {} to begin", action.verb());
+        if action.sends_input() {
+            if bound.interrupt.interrupted() {
+                return Err(bound.interrupted(begin()));
+            }
             let page = self.attachment.page.clone();
             self.dispatch(&page, &BringToFront {}).await?;
         }
+        let prepared = self.prepare(action, counter, bound).await?;
+        if action.mutates() {
+            self.input = Input::Cleared(bound);
+        }
+        let performed = self.perform(action, prepared, bound).await;
+        match (self.input, performed) {
+            (Input::Sent(method), Err(error)) => Err(after_input(method, error)),
+            (_, performed) => performed,
+        }
+    }
+
+    async fn perform(&mut self, action: &Action, prepared: Prepared, bound: Bound<'_>) -> Result<(Option<Node>, Outcome), ActionError> {
         match action {
-            Action::Navigate { url, readiness, timeout } => Ok((None, self.navigate(url, *readiness, *timeout, interrupt).await?)),
+            Action::Navigate { url, readiness } => Ok((None, self.navigate(url, *readiness, bound).await?)),
             Action::Click { locator, count } => {
-                let node = self.locate(locator, counter).await?;
-                self.actionable(&node, locator, true).await?;
-                let point = self.hit_point(&node, locator).await?;
+                let Prepared::Point(node, point) = prepared else { unreachable!("a click is prepared with its point") };
                 self.click(&node, point, *count, locator).await?;
                 Ok((Some(node), Outcome::Done))
             }
-            Action::Hover(locator) => {
-                let node = self.locate(locator, counter).await?;
-                self.actionable(&node, locator, false).await?;
-                let (x, y) = self.hit_point(&node, locator).await?;
+            Action::Hover(_) => {
+                let Prepared::Point(node, (x, y)) = prepared else { unreachable!("a hover is prepared with its point") };
                 self.mouse("mouseMoved", x, y, false, 0).await?;
                 Ok((Some(node), Outcome::Done))
             }
             Action::Fill { locator, text } => {
-                let node = self.locate(locator, counter).await?;
-                self.actionable(&node, locator, true).await?;
-                self.fill(&node, locator, text).await?;
+                let Prepared::Fill(node, kind) = prepared else { unreachable!("a fill is prepared with its kind") };
+                self.fill(&node, locator, kind, text).await?;
                 Ok((Some(node), Outcome::Done))
             }
             Action::Type { into, text } => {
-                let node = self.focus_target(into.as_ref(), counter).await?;
+                let node = prepared.node();
+                if let (Some(node), Some(locator)) = (&node, into) {
+                    self.focus_end(node, locator).await?;
+                }
                 self.type_text(text).await?;
                 Ok((node, Outcome::Done))
             }
             Action::Press { into, chord } => {
-                let node = self.focus_target(into.as_ref(), counter).await?;
+                let node = prepared.node();
+                if let (Some(node), Some(locator)) = (&node, into) {
+                    self.focus_end(node, locator).await?;
+                }
                 self.press_chord(chord).await?;
                 Ok((node, Outcome::Done))
             }
-            Action::Scroll(Scroll::IntoView(locator)) => {
-                let node = self.locate(locator, counter).await?;
-                self.actionable(&node, locator, false).await?;
+            Action::Scroll(Scroll::IntoView(_)) => {
+                let Prepared::Element(node) = prepared else { unreachable!("a scroll into view is prepared with its element") };
                 self.dispatch(&node.held.session, &ScrollIntoView { object_id: node.held.object.clone() }).await?;
                 Ok((Some(node), Outcome::Done))
             }
@@ -1566,22 +1986,16 @@ impl<'a> Act<'a> {
                 Ok((None, Outcome::Done))
             }
             Action::Select { locator, values } => {
-                let node = self.locate(locator, counter).await?;
-                self.actionable(&node, locator, true).await?;
-                let selected = self.select(&node, locator, values).await?;
+                let Prepared::Element(node) = prepared else { unreachable!("a select is prepared with its element") };
+                let selected = self.select(&node, locator, values, true).await?;
                 Ok((Some(node), Outcome::Selected(selected)))
             }
             Action::SetChecked { locator, checked } => {
-                let node = self.locate(locator, counter).await?;
-                self.actionable(&node, locator, true).await?;
-                let (radio, before) = self.checked_state(&node, locator).await?;
-                if before == *checked {
-                    return Ok((Some(node), Outcome::Checked { changed: false }));
-                }
-                if radio && !checked {
-                    return Err(ActionError::NotActionable { locator: locator.to_string(), reason: "is a radio button, which is unchecked by checking another".into() });
-                }
-                let point = self.hit_point(&node, locator).await?;
+                let (node, point) = match prepared {
+                    Prepared::Unchanged(node) => return Ok((Some(node), Outcome::Checked { changed: false })),
+                    Prepared::Point(node, point) => (node, point),
+                    _ => unreachable!("a check is prepared with its point or as already done"),
+                };
                 self.click(&node, point, ClickCount::Single, locator).await?;
                 if let Some(dialog) = self.attachment.current_dialog().await.map_err(subscription_end)? {
                     return Err(ActionError::DialogOpen(dialog));
@@ -1592,8 +2006,8 @@ impl<'a> Act<'a> {
                 }
                 Ok((Some(node), Outcome::Checked { changed: true }))
             }
-            Action::Wait { condition, timeout } => Ok((None, self.wait(condition, *timeout, interrupt).await?)),
-            Action::Read(read) => self.read(read, counter).await,
+            Action::Wait { condition } => Ok((None, self.wait(condition, bound).await?)),
+            Action::Read(read) => self.read(read, prepared.node()).await,
             Action::Screenshot => {
                 let page = self.attachment.page.clone();
                 let shot = self.call(&page, &CaptureScreenshot { format: "png" }).await?;
@@ -1623,6 +2037,7 @@ impl<'a> Act<'a> {
                     DialogResponse::Dismiss => (false, String::new()),
                 };
                 let page = self.attachment.page.clone();
+                self.begin_input(HandleDialog::METHOD)?;
                 match self.call(&page, &HandleDialog { accept, prompt_text }).await {
                     Ok(_) => {
                         self.attachment.dialog = None;
@@ -1635,26 +2050,16 @@ impl<'a> Act<'a> {
         }
     }
 
-    async fn focus_target(&mut self, into: Option<&Locator>, counter: &dyn RefCounter) -> Result<Option<Node>, ActionError> {
-        let Some(locator) = into else { return Ok(None) };
-        let node = self.locate(locator, counter).await?;
-        self.actionable(&node, locator, true).await?;
-        self.focus_end(&node, locator).await?;
-        Ok(Some(node))
-    }
-
-    async fn read(&mut self, read: &Read, counter: &dyn RefCounter) -> Result<(Option<Node>, Outcome), ActionError> {
-        match read {
-            Read::Text(None) => Ok((None, self.read_text(None).await?)),
-            Read::Text(Some(locator)) => {
-                let node = self.locate(locator, counter).await?;
+    async fn read(&mut self, read: &Read, node: Option<Node>) -> Result<(Option<Node>, Outcome), ActionError> {
+        match (read, node) {
+            (Read::Text(_), None) => Ok((None, self.read_text(None).await?)),
+            (Read::Text(_), Some(node)) => {
                 let text = self.read_text(Some(&node)).await?;
                 Ok((Some(node), text))
             }
-            Read::Title => Ok((None, Outcome::Text { text: self.main_string("the title", TITLE).await?, truncated: false })),
-            Read::Url => Ok((None, Outcome::Text { text: self.main_string("the URL", LOCATION).await?, truncated: false })),
-            Read::Attribute { locator, name } => {
-                let node = self.locate(locator, counter).await?;
+            (Read::Title, _) => Ok((None, Outcome::Text { text: self.main_string("the title", TITLE).await?, truncated: false })),
+            (Read::Url, _) => Ok((None, Outcome::Text { text: self.main_string("the URL", LOCATION).await?, truncated: false })),
+            (Read::Attribute { name, .. }, Some(node)) => {
                 let value = self.inspect(&node.held, "the attribute", ATTRIBUTE, vec![string(name)]).await?;
                 let attribute = match &value {
                     json::Value::Null => None,
@@ -1663,8 +2068,7 @@ impl<'a> Act<'a> {
                 };
                 Ok((Some(node), Outcome::Attribute(attribute)))
             }
-            Read::Value(locator) => {
-                let node = self.locate(locator, counter).await?;
+            (Read::Value(locator), Some(node)) => {
                 let value = self.inspect(&node.held, "the value", FIELD_VALUE, Vec::new()).await?;
                 let field = match &value {
                     json::Value::Array(parts) => match parts.as_slice() {
@@ -1679,17 +2083,43 @@ impl<'a> Act<'a> {
                 };
                 Ok((Some(node), Outcome::Value(field)))
             }
+            (Read::Attribute { .. } | Read::Value(_), None) => unreachable!("an element read is prepared with its element"),
         }
     }
 }
 
+/// Once input is sent, a connection that fails leaves the action's effect unknown, whichever command it failed
+/// on.
+fn after_input(method: &'static str, error: ActionError) -> ActionError {
+    let unknown = |cause| ActionError::Cdp(CallError::UnknownOutcome { method, cause });
+    match error {
+        ActionError::Cdp(CallError::Closed(termination) | CallError::Disconnected { termination, .. }) => unknown(Unobserved::Disconnected(termination)),
+        ActionError::Cdp(CallError::Timeout { .. }) => unknown(Unobserved::Deadline),
+        error => error,
+    }
+}
+
 impl Pages {
-    /// Runs one action on `target`. A mutating action whose command was sent without an observed reply fails
-    /// with [`CallError::UnknownOutcome`] and is never retried. A dialog that is open, or that the action opens,
-    /// fails it with [`ActionError::DialogOpen`] until answered with [`Action::Dialog`]. A wait, or a navigation
-    /// waiting to load, ends with [`ActionError::Interrupted`] soon after `interrupt` asks.
-    pub async fn act(&mut self, target: &TargetScope, action: &Action, counter: &dyn RefCounter, interrupt: &dyn Interrupt) -> Result<Acted, ActionError> {
+    /// Runs one action on `target`, in two parts. Preparation checks the element the action names (that it
+    /// is there, visible, enabled, still, and the topmost element at the point input goes to) and checks again
+    /// each time the page changes, until `timeout` has passed since the action began; it then fails with
+    /// [`ActionError::Unready`], naming the check that failed last. A wait, and a navigation waiting to load,
+    /// share the same deadline. Then the action sends its input once: a command sent without an observed reply,
+    /// or a connection lost after input was sent, fails with [`CallError::UnknownOutcome`], and nothing is ever
+    /// sent again. A ref names one node for good: if it leaves its document while the action waits, the action
+    /// fails with [`Staleness`] rather than finding another. A dialog that is open, or that the action opens,
+    /// fails it with [`ActionError::DialogOpen`] until answered with [`Action::Dialog`]. The action ends with
+    /// [`ActionError::Interrupted`] soon after `interrupt` asks, at any point before its input begins.
+    pub async fn act(
+        &mut self,
+        target: &TargetScope,
+        action: &Action,
+        timeout: Duration,
+        counter: &dyn RefCounter,
+        interrupt: &dyn Interrupt,
+    ) -> Result<Acted, ActionError> {
         let started = Instant::now();
+        let bound = Bound { started, deadline: started + timeout, interrupt };
         if target.generation != self.connection.generation() {
             return Err(ActionError::OtherGeneration);
         }
@@ -1701,18 +2131,18 @@ impl Pages {
         let open = act.attachment.current_dialog().await.map_err(subscription_end)?;
         let result = match open {
             Some(dialog) if !matches!(action, Action::Dialog(_)) => Err(ActionError::DialogOpen(dialog)),
-            _ => act.run(action, counter, interrupt).await,
+            _ => act.run(action, counter, bound).await,
         };
-        let open = act.attachment.current_dialog().await.map_err(subscription_end)?;
-        let result = match (result, open) {
-            (Ok(_), Some(dialog)) if action.mutates() => Err(ActionError::DialogOpen(dialog)),
-            (result, open) => {
-                if open.is_none() {
-                    act.release().await;
-                }
-                result
-            }
+        let result = match (result, act.attachment.current_dialog().await) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(end)) => Err(subscription_end(end)),
+            (Ok(_), Ok(Some(dialog))) if action.mutates() => Err(ActionError::DialogOpen(dialog)),
+            (Ok(done), Ok(_)) => Ok(done),
         };
+        let unknown = matches!(result, Err(ActionError::Cdp(CallError::UnknownOutcome { .. })));
+        if act.attachment.dialog.is_none() && !unknown {
+            act.release().await;
+        }
         let (node, outcome) = result?;
         let on = node.map(|node| ActedOn { frame: node.scope.frame, element: node.element });
         Ok(Acted { target: target.clone(), on, outcome, cdp_calls: cdp.calls(), elapsed: started.elapsed() })

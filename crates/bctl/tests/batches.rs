@@ -133,7 +133,7 @@ fn n5_a_batch_runs_its_steps_in_order_and_stops_at_the_first_failure_without_und
         &home,
         s,
         r##"[{"action": "click", "role": "button", "name": "Go"},
-            {"action": "click", "css": "#missing"},
+            {"action": "click", "css": "#missing", "timeout_ms": 300},
             {"action": "click", "role": "button", "name": "Go"}]"##,
     );
     assert!(!ok, "a failed step fails the batch");

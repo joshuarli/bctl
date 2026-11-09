@@ -93,17 +93,18 @@ fn drive(control_url: &str, url: &str) -> Result<(), String> {
     let result = block_on(async {
         tabs.open(url).await.map_err(|e| e.to_string())?;
         let target = tabs.selected().await.map_err(|e| e.to_string())?;
-        let loaded = Action::Wait { condition: Condition::Loaded(LoadState::Load), timeout: Duration::from_secs(30) };
-        pages.act(&target, &loaded, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?;
+        let patience = Duration::from_secs(30);
+        let loaded = Action::Wait { condition: Condition::Loaded(LoadState::Load) };
+        pages.act(&target, &loaded, patience, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?;
         let options = SnapshotOptions { coverage: Coverage::Interactive, depth: None, scope: None };
         let snapshot = pages.snapshot(&target, &options, &counter).await.map_err(|e| e.to_string())?;
         print!("{}", snapshot.text());
         let Some(link) = first_link(&snapshot.nodes) else { return Ok(()) };
         let element = link.element.expect("first_link only returns nodes with refs");
         println!("clicking @{element} {:?}", link.name);
-        pages.act(&target, &Action::Click { locator: Locator::Ref(element), count: bctl_automation::ClickCount::Single }, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?;
-        pages.act(&target, &loaded, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?;
-        match pages.act(&target, &Action::Read(ReadWhat::Title), &counter, &Uninterrupted).await.map_err(|e| e.to_string())?.outcome {
+        pages.act(&target, &Action::Click { locator: Locator::Ref(element), count: bctl_automation::ClickCount::Single }, patience, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?;
+        pages.act(&target, &loaded, patience, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?;
+        match pages.act(&target, &Action::Read(ReadWhat::Title), patience, &counter, &Uninterrupted).await.map_err(|e| e.to_string())?.outcome {
             Outcome::Text { text, .. } => println!("landed on {text:?}"),
             other => return Err(format!("reading the title returned {other:?}")),
         }

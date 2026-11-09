@@ -268,7 +268,7 @@ fn n4_clicks_land_only_on_the_named_visible_enabled_uncovered_element_in_any_fra
     assert_eq!(events(&home, s), "\"go|go|fancy\"", "an ambiguous click clicks nothing");
     done(&home, "click", s, &[&format!("@{}", candidates[1].element)]);
     done(&home, "click", s, &["--role", "button", "--name", "Same", "--nth", "1"]);
-    assert_eq!(refused(&home, "click", s, &["--role", "button", "--name", "Same", "--nth", "3"]).code, "NOT_FOUND");
+    assert_eq!(refused(&home, "click", s, &["--role", "button", "--name", "Same", "--nth", "3", "--timeout", "300"]).code, "NOT_FOUND");
     assert_eq!(refused(&home, "click", s, &["--css", "button:nth-of-type(2)", "--label", "x"]).code, "BAD_REQUEST");
     assert_eq!(refused(&home, "click", s, &["--css", "[["]).code, "BAD_REQUEST");
     let css_ambiguous = refused(&home, "click", s, &["--css", "button"]);
@@ -276,10 +276,10 @@ fn n4_clicks_land_only_on_the_named_visible_enabled_uncovered_element_in_any_fra
     assert!(css_ambiguous.candidates.unwrap().iter().any(|c| c.summary == "button \"Go\""));
 
     for (css, code) in [("#hidden", "NOT_VISIBLE"), ("#invisible", "NOT_VISIBLE"), ("#off", "DISABLED"), ("#aria-off", "DISABLED"), ("#under", "COVERED")] {
-        let error = refused(&home, "click", s, &["--css", css]);
+        let error = refused(&home, "click", s, &["--css", css, "--timeout", "300"]);
         assert_eq!((error.code.as_str(), error.target.as_deref()), (code, Some(buttons.as_str())), "{css}: {error:?}");
     }
-    assert!(refused(&home, "click", s, &["--css", "#under"]).message.contains("div#overlay \"Overlay\""));
+    assert!(refused(&home, "click", s, &["--css", "#under", "--timeout", "300"]).message.contains("div#overlay \"Overlay\""));
     done(&home, "dblclick", s, &["--css", "#twice"]);
     done(&home, "hover", s, &["--css", "#hover"]);
     done(&home, "click", s, &["--css", "#far"]);
@@ -386,7 +386,7 @@ fn n4_forms_take_unicode_text_selections_and_checks_like_a_person_and_refuse_whi
     assert_eq!(selected.selected, Some(vec!["pro".to_string()]), "an option is chosen by its label");
     assert_eq!(value("Plan").as_deref(), Some("pro"));
     assert!(events(&home, s).contains("plan input untrusted|plan change untrusted"), "select fires input then change");
-    assert_eq!(refused(&home, "select", s, &["--label", "Plan", "enterprise"]).code, "NOT_FOUND");
+    assert_eq!(refused(&home, "select", s, &["--label", "Plan", "enterprise", "--timeout", "300"]).code, "NOT_FOUND");
     assert_eq!(refused(&home, "select", s, &["--label", "Name", "x"]).code, "NOT_ACTIONABLE");
 
     assert_eq!(done(&home, "check", s, &["--label", "I agree"]).changed, Some(true));
@@ -396,8 +396,8 @@ fn n4_forms_take_unicode_text_selections_and_checks_like_a_person_and_refuse_whi
     assert_eq!(done(&home, "uncheck", s, &["--label", "I agree"]).changed, Some(true));
     assert_eq!(evaluate(&home, s, "document.getElementById('agree').checked"), "false");
     assert_eq!(refused(&home, "uncheck", s, &["--label", "Small"]).code, "NOT_ACTIONABLE");
-    assert_eq!(refused(&home, "check", s, &["--label", "Locked"]).code, "DISABLED");
-    assert_eq!(refused(&home, "fill", s, &["--label", "Fixed", "x"]).code, "NOT_ACTIONABLE");
+    assert_eq!(refused(&home, "check", s, &["--label", "Locked", "--timeout", "300"]).code, "DISABLED");
+    assert_eq!(refused(&home, "fill", s, &["--label", "Fixed", "x", "--timeout", "300"]).code, "NOT_ACTIONABLE");
     assert_eq!(refused(&home, "fill", s, &["--label", "I agree", "x"]).code, "NOT_ACTIONABLE");
     let secret = done(&home, "get", s, &["value", "--label", "Secret"]);
     assert_eq!((secret.text, secret.redacted), (None, Some(true)), "a password is never read back");

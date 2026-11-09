@@ -151,7 +151,10 @@ impl Control {
         }
     }
 
-    /// Whether a person has asked for control since the command began. A command that waits stops when it is.
+    /// Whether a person has asked for control since the command began. A command stops when it is, and asks
+    /// once more right before it sends input: `take` counts the takeover in the same critical section that
+    /// leaves `Automation`, so a command told no here began its input under automation, and `Human` waits for
+    /// it to end.
     pub(crate) fn interrupts(&self, ticket: &Ticket) -> bool {
         self.takeovers > ticket.takeovers_seen
     }
@@ -302,6 +305,20 @@ mod tests {
         control.reset();
         assert_eq!(control.authority(), &Authority::Automation);
         assert!(control.begin(Effect::Mutates).is_ok());
+    }
+
+    #[test]
+    fn a_command_that_saw_a_takeover_stays_interrupted_after_automation_resumes() {
+        let (a, _) = viewers();
+        let mut control = Control::default();
+        let click = control.begin(Effect::Mutates).unwrap();
+        control.take(&a).unwrap();
+        control.resume(&a).unwrap();
+        assert_eq!(control.authority(), &Authority::Automation);
+        assert!(control.interrupts(&click), "a command still preparing when a person asked never sends its input");
+        control.end(click);
+        let next = control.begin(Effect::Mutates).unwrap();
+        assert!(!control.interrupts(&next), "a command begun after the resume runs");
     }
 
     #[test]

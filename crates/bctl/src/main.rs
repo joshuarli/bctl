@@ -63,7 +63,9 @@ const USAGE: &str = "usage:
   bctl page batch SESSION FILE|-                     run a JSON list of page actions in order, stopping at the first failure
       ELEMENT is a ref (@e12) or a QUERY: --css SELECTOR | --role ROLE [--name NAME] | --label TEXT |
       --placeholder TEXT | --testid ID, plus --nth N to pick a match; a query matching several fails AMBIGUOUS.
-      Page commands act on the target `bctl tab use` selected; every one takes --json.
+      An action waits up to --timeout MS (default 5000) for its element to be there, visible, enabled, still,
+      and not covered, then sends its input once. Page commands act on the target `bctl tab use` selected;
+      every one takes --json.
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
@@ -314,7 +316,7 @@ fn parse_page_action(op: Op, mut parser: lexopt::Parser) -> Result<Cli, lexopt::
             }
             Long("wait") if op == Op::PageGoto => action.load = Some(parser.value()?.string()?),
             Long("load") if op == Op::PageWait => action.load = Some(parser.value()?.string()?),
-            Long("timeout") if matches!(op, Op::PageGoto | Op::PageWait) => action.timeout_ms = Some(number("timeout", parser.value()?.string()?)?),
+            Long("timeout") if !matches!(op, Op::PageScreenshot | Op::PageEval | Op::PageDialog) => action.timeout_ms = Some(number("timeout", parser.value()?.string()?)?),
             Long("text") if matches!(op, Op::PageWait | Op::PageDialog) => action.text = Some(parser.value()?.string()?),
             Long("url") if op == Op::PageWait => action.url = Some(parser.value()?.string()?),
             Long("gone") if op == Op::PageWait => action.gone = true,

@@ -37,8 +37,8 @@ DOM node:
 
 - It keeps working across same-document changes while its node stays in the
   document.
-- It fails with `STALE_REF` once the node is removed, its frame navigates or
-  is gone, it is used on another target, or it came from another connection
+- It fails with `STALE_REF` once the node is removed or moved into another
+  document, its frame navigates or is gone, it is used on another target, or it came from another connection
   (an earlier generation or daemon). bctl never re-resolves a stale ref by
   similar role or text.
 - Its number is never handed out again: the daemon reserves numbers from
@@ -63,6 +63,42 @@ on one line and reads one JSON response line; the CLI is such a client, and
 response's `error`, when set, has a stable `code` that scripts match on, a
 `message` that may change, an optional `remedy`, and for page errors the
 `target` it concerns.
+
+## Actions
+
+An action that names an element runs in two parts.
+
+1. **Preparation** finds the element and checks what the action needs of it:
+   that it is there, visible, enabled (for everything but `hover`, `scroll`,
+   and `get`), editable (for `fill`), and for a click or hover, that it stays
+   in place for two animation frames once scrolled into view and is the
+   topmost element at the point the input goes to, in its frame and in every
+   frame above it. An action that sends input also waits until the page shows
+   its document: the browser drops input to a new page until it paints some
+   content or is 500 ms old. When a check fails, bctl waits for the page to change (a
+   DOM mutation, a transition or animation ending, a scroll, a resize, a
+   navigation, or at most 200 ms without any) and checks everything again.
+   Preparation sends no input.
+2. **Input** is sent once, when every check has passed. It is never retried.
+
+Preparation gives up at the action's deadline, `--timeout MS` after the
+action began (`timeout_ms` in a batch step or on the socket; 5000 by default,
+at most 300 000). The error carries the code of the check that failed last,
+such as `NOT_VISIBLE`, `DISABLED`, `COVERED`, `NOT_STABLE`, or `NOT_FOUND`,
+and says how long bctl waited. `goto` and `wait` use the same option for
+their own deadlines (30 s and 10 s by default); `screenshot`, `eval`, and
+`dialog` take none.
+
+A query is evaluated again at every check, so it follows the page: if its
+element is replaced, or its document navigates, the next check finds the new
+one. A ref names one node for good: if that node leaves its document, moves
+into another, or its document ends while the action waits, the action fails
+with `STALE_REF` at once.
+
+Once input has been sent, a lost reply, or a connection that ends before the
+action completes, fails it with `UNKNOWN_OUTCOME`: the input may have acted.
+A click that bctl sent but that the page did not receive where it was aimed
+fails with `MISSED` or `NOT_ACTIONABLE`, and is not sent again either.
 
 ## Batches
 
@@ -119,12 +155,19 @@ taking it, is refused with HTTP 409 and changes nothing. A native command is
   any such step, and the rest) fail with `HUMAN_IN_CONTROL` before doing
   anything. Reads (`snapshot`, `resolve`, `get`, `wait`, `screenshot`, `tab
   list`, `tab use`) still run.
-- **Commands in flight.** A takeover lets settling commands end on their own,
-  except where they wait: a `wait`, or a `goto` waiting for its page to load,
-  ends within about 100 ms with `TAKEN_OVER`, and a batch stops before its next
-  step with `TAKEN_OVER`. A `goto` that ends this way has already sent its
-  navigation. Nothing is retried. The browser, the selected tab, and the
-  profile are untouched.
+- **Commands in flight.** A takeover ends a settling command with
+  `TAKEN_OVER` anywhere before it sends input or changes the page: while an
+  action prepares (finding its element, checking it, scrolling it into view,
+  hit-testing it), during a `wait`, or between batch steps, within about
+  20 ms plus one CDP call. A command that has begun sending input runs to its
+  end, and a `goto` waiting for its page to load ends within 20 ms; it has
+  already sent its navigation. Nothing is retried. The browser, the selected
+  tab, and the profile are untouched.
+- **No input after a takeover.** Right before its first input, a command asks
+  the session's authority once more, under the lock that a takeover takes to
+  leave `automation`, with nothing awaited between the answer and sending the
+  input. So either the takeover came first and nothing is sent, or the input
+  began under `automation` and `human` waits for the command to end.
 - **The RFB input lease** is held exactly in `human`: until then the viewer's
   keyboard and pointer input is dropped, and the dashboard shows `Yielding`
   with the number of commands it waits for.
@@ -167,11 +210,7 @@ CLI already is. The capability is still the gateway's: `bctl cdp-revoke` or
 
 ## Known limits
 
-- Actions fail at once when their element is not actionable; they do not wait
-  for it. Use a `wait` first.
 - A popup an action opens is not reported; `bctl tab list` shows it.
-- Node liveness for refs is checked in the page's main world; a node moved
-  between two same-process frames is not detected.
 - One very large DOM read can exceed the 32 MiB CDP message cap.
 - A host program's own connection is not interrupted when a person takes
   control in the dashboard; the gateway only refuses new attachments.

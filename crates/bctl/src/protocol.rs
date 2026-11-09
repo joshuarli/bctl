@@ -61,6 +61,8 @@ pub struct ActionRequest {
     pub load: Option<String>,
     /// For `page-wait` with a locator: wait until nothing matches instead.
     pub gone: bool,
+    /// How long the action may wait for its element, its page to load, or its condition. Screenshot, eval, and
+    /// dialog take none.
     pub timeout_ms: Option<u64>,
     /// For `page-scroll` without a locator: wheel distances in CSS pixels.
     pub dx: Option<f64>,
@@ -320,6 +322,7 @@ pub enum ErrorCode {
     NotFound,
     NotVisible,
     Disabled,
+    NotStable,
     Covered,
     Missed,
     Detached,
@@ -367,6 +370,7 @@ impl ErrorCode {
             ErrorCode::NotFound => "NOT_FOUND",
             ErrorCode::NotVisible => "NOT_VISIBLE",
             ErrorCode::Disabled => "DISABLED",
+            ErrorCode::NotStable => "NOT_STABLE",
             ErrorCode::Covered => "COVERED",
             ErrorCode::Missed => "MISSED",
             ErrorCode::Detached => "DETACHED",
