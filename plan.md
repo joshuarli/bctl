@@ -18,11 +18,14 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   and the stale boot identity window found by G0.4. H. Probe native side
   (`mini_chromium` 47/47, raw 6/6 natively; 2/47 and 1/6 on Nanos).
   **Red:** none. **Parked:** none.
-- **Running lanes:** upstream suite on musl (`.work/wt/upstream`, G0.4);
-  G1.1 kernel, per-process page tables plus eager fork, owning `nanos/src`
-  (`.work/wt/g1.1`); G5 prep, Helium plus headless-compositor rootfs and
-  `guest_init` proven natively (`.work/wt/g5-prep`).
-- **Next:** integrate G0.4, then G1.1 when its acceptance holds, then G1.2.
+- **G5 prep accepted:** `dev/helium-rootfs.sh` (Helium plus weston 14
+  headless/kiosk from pinned Alpine 3.24.2 packages, 975 MB) and
+  `tests/helium/guest_init.c` (compositor, HTTP fixture, sandboxed Helium,
+  in-guest CDP client, `/proc` sandbox report, clean shutdown).
+  `dev/test.sh helium-native` passes 11/11; `dev/test.sh helium` boots the
+  1.06 GB image on Nanos, known-red 0/11 until G1 (no fork).
+- **Running lane:** G1.1 kernel (`.work/wt/g1.1`, owns `nanos/src`).
+- **Next:** accept G1.1, then G1.2 (COW, `wait4`/zombies, `vfork`).
 - **Gate matrix:** G0 PASS · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
