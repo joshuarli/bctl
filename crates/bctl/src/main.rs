@@ -23,6 +23,8 @@ const USAGE: &str = "usage:
   bctl status [--json]                               list sessions and why they are not ready
   bctl inspect NAME [--json]                         one session in detail
   bctl serve [--open] [--json]                        print (or open) a one-time dashboard login link
+  bctl cdp-url NAME [--json]                         mint a revocable CDP control URL for a ready session
+  bctl cdp-revoke NAME [--json]                      revoke every CDP control URL of a session
   bctl profile list [--json]                         profiles and the session holding each
   bctl profile login PROFILE [--image IMAGE]          start a session on PROFILE and open it to sign in by hand
   bctl doctor [--json]                               check the runtime and images
@@ -49,6 +51,8 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "status" => (Op::Status, false),
         "serve" => (Op::Serve, false),
         "inspect" => (Op::Inspect, true),
+        "cdp-url" => (Op::CdpUrl, true),
+        "cdp-revoke" => (Op::CdpRevoke, true),
         "profile" => match parser.next()? {
             Some(Value(v)) if v == "list" => (Op::Profiles, false),
             Some(Value(v)) if v == "login" => {
@@ -206,12 +210,12 @@ fn render(op: Op, response: &Response, json: bool) -> ExitCode {
             }
         }
         Op::Up | Op::Down | Op::Inspect => response.sessions.iter().for_each(print_session),
-        Op::Serve => {
+        Op::Serve | Op::CdpUrl => {
             if let Some(url) = &response.url {
                 println!("{url}");
             }
         }
-        Op::Rm | Op::Ping => {}
+        Op::Rm | Op::Ping | Op::CdpRevoke => {}
     }
     ExitCode::SUCCESS
 }

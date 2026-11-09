@@ -41,8 +41,16 @@ bctl status
 bctl down research                             # stop it; the profile stays
 ```
 
-Automation attaches to the `cdp` URL from `bctl inspect NAME` (for example
-Shadowdriver's `control_url`).
+Automation attaches to a CDP control URL from `bctl cdp-url NAME` (for example
+Shadowdriver's `control_url`, Playwright's `connectOverCDP`). The URL is a
+capability served by the gateway: its host is `<token>.localhost`, so clients
+that keep only a URL's host and port still present it. `bctl cdp-revoke NAME`
+(or `bctl down NAME`) revokes it and closes its DevTools connections. While a
+person holds the dashboard input lease, new attachments are refused.
+
+SmolVM publishes the guest CDP port only as `HOST:9222` with no bind-address
+option, so the `cdp` URL in `bctl status` is still reachable by any process of
+the same user on host loopback without a capability.
 
 ## Test
 
@@ -51,6 +59,7 @@ cargo test --workspace                                   # no VMs
 cargo test -p bctl-runtime-smolvm --test lifecycle -- --ignored
 cargo test -p bctl --test daemon -- --ignored
 cargo test -p bctl --test profiles -- --ignored
+cargo test -p bctl --test cdp -- --ignored
 cargo run -p bctl-proof -- m1 --runs 10
 pnpm --dir web exec playwright test                      # needs cargo build -p bctl
 ```

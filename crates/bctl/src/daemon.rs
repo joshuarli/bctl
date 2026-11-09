@@ -174,6 +174,18 @@ impl Daemon {
                 let url = gateway::serve(self).map_err(internal)?;
                 Ok(Response { url: Some(url), ..Response::empty() })
             }
+            Op::CdpUrl => {
+                let name = session()?;
+                if self.cdp_port(&name).is_none() {
+                    return Err(Response::failure(ErrorCode::Conflict, format!("session {name} is not ready"), Some(format!("run `bctl up {name}`"))));
+                }
+                let url = gateway::mint_cdp_url(self, &name).map_err(internal)?;
+                Ok(Response { url: Some(url), ..Response::empty() })
+            }
+            Op::CdpRevoke => {
+                gateway::revoke_cdp(self, &session()?);
+                Ok(Response::empty())
+            }
             Op::Up => self.up(&session()?, request.profile.as_deref(), request.image.as_deref()),
             Op::Down => self.down(&session()?),
             Op::Rm => {
@@ -389,6 +401,7 @@ impl Daemon {
     }
 
     fn down(&self, name: &SessionName) -> Outcome {
+        gateway::revoke_cdp(self, name);
         let record = self.store().session(name).map_err(store_failure)?;
         match record.state {
             SessionState::Stopped => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),

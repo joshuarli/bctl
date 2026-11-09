@@ -25,6 +25,8 @@ pub enum Op {
     Inspect,
     Profiles,
     Serve,
+    CdpUrl,
+    CdpRevoke,
 }
 
 impl Op {
@@ -38,11 +40,15 @@ impl Op {
             Op::Inspect => "inspect",
             Op::Profiles => "profiles",
             Op::Serve => "serve",
+            Op::CdpUrl => "cdp-url",
+            Op::CdpRevoke => "cdp-revoke",
         }
     }
 
     pub fn parse(s: &str) -> Option<Op> {
-        [Op::Ping, Op::Up, Op::Down, Op::Rm, Op::Status, Op::Inspect, Op::Profiles, Op::Serve].into_iter().find(|op| op.as_str() == s)
+        [Op::Ping, Op::Up, Op::Down, Op::Rm, Op::Status, Op::Inspect, Op::Profiles, Op::Serve, Op::CdpUrl, Op::CdpRevoke]
+            .into_iter()
+            .find(|op| op.as_str() == s)
     }
 }
 
@@ -128,7 +134,7 @@ pub struct Response {
     pub error: Option<Box<ErrorBody>>,
     pub sessions: Vec<SessionView>,
     pub profiles: Vec<ProfileView>,
-    /// For `serve`: a single-use dashboard login URL.
+    /// For `serve`: a single-use dashboard login URL. For `cdp-url`: a new CDP control URL for the session.
     pub url: Option<String>,
 }
 
