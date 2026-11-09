@@ -248,7 +248,7 @@ sstring string_from_mmap_type(int type)
         (vm->flags & VMAP_FLAG_EXEC) ? ss("executable ") : sstring_empty()      \
     )
 
-static boolean handle_protection_fault(context ctx, u64 vaddr, vmap vm)
+static boolean handle_protection_fault(process p, context ctx, u64 vaddr, vmap vm)
 {
     /* vmap found, with protection violation set --> send prot violation */
     u64 flags = VMAP_FLAG_MMAP | VMAP_FLAG_WRITABLE;
@@ -259,7 +259,7 @@ static boolean handle_protection_fault(context ctx, u64 vaddr, vmap vm)
         u64 node_offset = vm->node_offset + (vaddr_aligned - vm->node.r.start);
         pf_debug("copy-on-write for private map: vaddr 0x%lx, node %p, node_offset 0x%lx\n",
                  vaddr, vm->cache_node, node_offset);
-        if (!pagecache_node_do_page_cow(vm->cache_node, node_offset, vaddr_aligned,
+        if (!pagecache_node_do_page_cow(vm->cache_node, p->as, node_offset, vaddr_aligned,
                                         pageflags_from_vmflags(vm->flags)))
             halt("cannot get physical page for vaddr 0x%lx, ctx %p; OOM\n", vaddr, ctx);
         return true;
@@ -317,6 +317,10 @@ closure_func_basic(fault_handler, context, unix_fault_handler,
         }
     } else if (is_page_fault(f)) {
         u64 vaddr = frame_fault_address(f);
+        if (vaddr < USER_LIMIT && current_cpu()->current_as != p->as) {
+            errmsg = ss("fault on a user address with another process's address space loaded");
+            goto bug;
+        }
         vmap_lock(p);
         vmap vm;
         if (vaddr >= MIN(p->mmap_min_addr, PAGESIZE) && vaddr < USER_LIMIT)
@@ -359,7 +363,7 @@ closure_func_basic(fault_handler, context, unix_fault_handler,
          * PTE has been marked as non-present), do not page it in, and treat the fault as a
          * protection fault. */
         if (is_protection_fault(f) || !(vm->flags & VMAP_FLAG_PROT_MASK)) {
-            if (handle_protection_fault(ctx, vaddr, vm)) {
+            if (handle_protection_fault(p, ctx, vaddr, vm)) {
                 vmap_unlock(p);
                 if (!is_thread_context(ctx))
                     return ctx;   /* direct return */
@@ -535,7 +539,7 @@ process_context get_process_context(void)
     process_context pc = dequeue_single(ci->free_process_contexts);
     if (pc != INVALID_ADDRESS) {
         refcount_set_count(&pc->uc.kc.context.refcount, 1);
-        return pc;
+        goto bind_process;
     }
     heap h = heap_locked(get_kernel_heaps());
     u32 alloc_flags = 0;
@@ -547,11 +551,14 @@ process_context get_process_context(void)
         deallocate(h, pc, PROCESS_CONTEXT_SIZE);
         return INVALID_ADDRESS;
     }
-    pc->p = t->p;
     context c = &pc->uc.kc.context;
     c->pause = process_context_pause;
     c->resume = process_context_resume;
+  bind_process:
+    pc->p = t->p;
+    c = &pc->uc.kc.context;
     c->fault_handler = (fault_handler)&pc->p->fault_handler;
+    c->as = pc->p->as;
     return pc;
 }
 
@@ -574,9 +581,12 @@ process create_process(unix_heaps uh, tuple root, filesystem fs)
 
     /* don't need these for kernel process */
     if (p->pid > 1) {
+        p->as = allocate_address_space(locked);
+        assert(p->as != INVALID_ADDRESS);
         mmap_process_init(p, root);
         init_vdso(p);
     } else {
+        p->as = 0;
         p->virtual = 0;
         p->vmaps = INVALID_ADDRESS;
     }
@@ -682,6 +692,11 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
 	return INVALID_ADDRESS;
 
     u_heap = uh;
+    init_address_spaces(h);
+    mmap_init(root);
+#ifdef __x86_64__
+    init_vsyscall();
+#endif
     uh->processes = locking_heap_wrapper(h, (heap)create_id_heap(h, h, 1, 65535, 1, false));
     uh->file_cache = allocate_objcache(h, (heap)heap_page_backed(kh), sizeof(struct file),
                                        PAGESIZE, true);

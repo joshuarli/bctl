@@ -1843,7 +1843,7 @@ static sysreturn brk(void *addr)
             !adjust_process_heap(p, irange(p->heap_base, new_end)))
             goto out;
         smp_write_barrier();
-        unmap_and_free_phys(new_end, old_end - new_end);
+        address_space_unmap_and_free_phys(p->as, new_end, old_end - new_end);
     } else if (new_end > old_end) {
         u64 alloc = new_end - old_end;
         if (!memory_is_user(pointer_from_u64(old_end), alloc) ||
@@ -2574,6 +2574,7 @@ void syscall_handler(thread t)
     assert(is_syscall_context(ctx));
     sc->t = t;
     ctx->fault_handler = t->context.fault_handler;
+    ctx->as = t->context.as;
     sc->start_time = 0;
     sc->call = call;
     assert(ctx->refcount.c == 1);

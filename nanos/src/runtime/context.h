@@ -16,6 +16,7 @@ struct context {
     void (*pre_suspend)(struct context *);
     void (*schedule_return)(struct context *);
     fault_handler fault_handler;
+    struct address_space *as;
     heap transient_heap;
     void *waiting_on;           /* should use tag types here */
     struct list mutex_l;        /* mutex waiters */

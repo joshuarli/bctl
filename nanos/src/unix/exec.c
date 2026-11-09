@@ -14,34 +14,35 @@
 
 #define DEFAULT_PROG_ADDR       0x400000
 
-static void *stack_prealloc(void *start, u64 size)
+static void *stack_prealloc(process p, void *start, u64 size)
 {
     u64 sphys = mem_alloc_u64((heap)heap_physical(get_kernel_heaps()), size, MEM_NOFAIL);
     start -= size;
     exec_debug("stack prealloc at %p, size 0x%lx, phys 0x%lx\n", start, size, sphys);
-    map(u64_from_pointer(start), sphys, size, pageflags_writable(pageflags_default_user()));
+    address_space_map(p->as, u64_from_pointer(start), sphys, size,
+                      pageflags_writable(pageflags_default_user()));
     return start;
 }
 
-#define check_s(__s, __a) do { if ((void*)(__s) < (__a))                \
-            (__a) = stack_prealloc((__a), pad((__a) - (void*)(__s), PAGESIZE)); } while(0);
+#define check_s(__p, __s, __a) do { if ((void*)(__s) < (__a))                \
+            (__a) = stack_prealloc((__p), (__a), pad((__a) - (void*)(__s), PAGESIZE)); } while(0);
 
-#define spush(__s, __a, __w) do { (__s)--; check_s((__s), (__a)); *(__s) = (u64)(__w); } while(0)
+#define spush(__p, __s, __a, __w) do { (__s)--; check_s((__p), (__s), (__a)); *(__s) = (u64)(__w); } while(0)
 
-#define ppush(__s, __a, __b, __f, ...) ({buffer_clear(__b);             \
+#define ppush(__p, __s, __a, __b, __f, ...) ({buffer_clear(__b);       \
             bprintf((__b), (__f), __VA_ARGS__);                         \
             (__s) -= pad((buffer_length(__b) + 1), STACK_ALIGNMENT) >> 3; \
-            check_s((__s), (__a));                                      \
+            check_s((__p), (__s), (__a));                               \
             runtime_memcpy((__s), buffer_ref((__b), 0), buffer_length(__b)); \
             ((char *)(__s))[buffer_length(__b)] = '\0';                 \
             (char *)(__s);})
 
-closure_function(5, 2, boolean, environment_each,
-                 char **, envp, int *, envc, u64 **, s, void **, a, buffer, b,
+closure_function(6, 2, boolean, environment_each,
+                 process, p, char **, envp, int *, envc, u64 **, s, void **, a, buffer, b,
                  value n, value v)
 {
     assert(is_symbol(n));
-    bound(envp)[(*bound(envc))++] = ppush(*bound(s), *bound(a), bound(b), "%b=%b", symbol_string(n), v);
+    bound(envp)[(*bound(envc))++] = ppush(bound(p), *bound(s), *bound(a), bound(b), "%b=%b", symbol_string(n), v);
     return true;
 }
 
@@ -76,7 +77,7 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
     assert(p->stack_map != INVALID_ADDRESS);
 
     u64 *s = (pointer_from_u64(stack_start) + stack_size);
-    void *as = stack_prealloc((void*)s, PROCESS_STACK_PREALLOC_SIZE);
+    void *stack_low = stack_prealloc(p, (void*)s, PROCESS_STACK_PREALLOC_SIZE);
 
     /* 16 bytes of random data for userspace (e.g. SSP guard init) */
     for (int i = 0; i < 2; i++) {
@@ -115,7 +116,7 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
             argv_len += buffer_length(a) + 1;
     }
     s -= pad(argv_len, STACK_ALIGNMENT) >> 3;
-    check_s(s, as);
+    check_s(p, s, stack_low);
     int argc = 0;
     char * sp = (char *) s;
     p->saved_args_begin = sp;
@@ -139,12 +140,12 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
     if (environment) {
         envp = stack_allocate(tuple_count(environment) * sizeof(u64));
         buffer b = allocate_buffer(transient, 128);
-        iterate(environment, stack_closure(environment_each, envp, &envc, &s, &as, b));
+        iterate(environment, stack_closure(environment_each, p, envp, &envc, &s, &stack_low, b));
     }
 
     // stack padding
     if ((envc + 1 + argc + 1 + 1) % 2 == 1) {
-        spush(s, as, 0);
+        spush(p, s, stack_low, 0);
     }
 
     // auxiliary vector
@@ -167,23 +168,23 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
         {AT_SYSINFO_EHDR, p->vdso_base}
     };
     for (int i = 0; i < sizeof(auxp) / sizeof(auxp[0]); i++) {
-        spush(s, as, auxp[i].val);
-        spush(s, as, auxp[i].tag);
+        spush(p, s, stack_low, auxp[i].val);
+        spush(p, s, stack_low, auxp[i].tag);
     }
     runtime_memcpy(p->saved_aux, s, MIN(sizeof(auxp), sizeof(p->saved_aux)));
 
     // envp
-    spush(s, as, 0);
+    spush(p, s, stack_low, 0);
     for (int i = envc - 1; i >= 0; i--)
-        spush(s, as, envp[i]);
+        spush(p, s, stack_low, envp[i]);
 
     // argv
-    spush(s, as, 0);
+    spush(p, s, stack_low, 0);
     for (int i = argc - 1; i >= 0; i--)
-        spush(s, as, argv[i]);
+        spush(p, s, stack_low, argv[i]);
 
     // argc
-    spush(s, as, argc);
+    spush(p, s, stack_low, argc);
 
     // stack should be 16-byte aligned
     assert(pad(u64_from_pointer(s), STACK_ALIGNMENT) == u64_from_pointer(s));
@@ -233,7 +234,7 @@ closure_function(4, 5, boolean, static_map,
         struct vmap k = ivmap(vmflags, bound(allowed_flags), 0, 0, 0);
         if (allocate_vmap(bound(p), r, k) == INVALID_ADDRESS)
             goto alloc_fail;
-        map(map_start, paddr, data_size, pageflags_user(flags));
+        address_space_map(bound(p)->as, map_start, paddr, data_size, pageflags_user(flags));
         map_start += data_size;
     }
     if (bss_size > 0) {
@@ -241,7 +242,7 @@ closure_function(4, 5, boolean, static_map,
         u64 paddr = allocate_u64((heap)heap_physical(bound(kh)), maplen);
         if (paddr == INVALID_PHYSICAL)
             goto alloc_fail;
-        map(map_start, paddr, maplen, pageflags_user(flags));
+        address_space_map(bound(p)->as, map_start, paddr, maplen, pageflags_user(flags));
         u64 vmflags = VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE | VMAP_FLAG_BSS;
         range r = irangel(map_start, maplen);
         exec_debug("   add bss vmap: %R vmflags 0x%lx\n", r, vmflags);
@@ -297,7 +298,7 @@ closure_function(4, 5, boolean, faulting_map,
         if (!rw)
             /* Make the page cache aware of this mapping so that it can evict relevant pages on
              * memory pressure. */
-            pagecache_node_add_mapping(pn, r, offset, false);
+            pagecache_node_add_mapping(pn, bound(p)->as, r, offset, false);
         map_start += data_map_size;
         bss_size -= tail_bss;
     }
@@ -338,7 +339,9 @@ closure_function(7, 2, void, load_interp_complete,
         emh = stack_closure(static_map, p, kh, 0, b);
     else
         emh = stack_closure(faulting_map, p, kh, 0, bound(f));
+    address_space prev_as = use_address_space(p->as);
     void *start = load_elf(b, where, emh);
+    restore_address_space(prev_as);
     if (!bound(static_map))
         deallocate_buffer(b);
     exec_debug("starting process tid %d, start %p\n", t->tid, start);
@@ -415,6 +418,7 @@ static void exec_elf_finish(buffer ex, fsfile f, process kp,
         emh = stack_closure(static_map, proc, kh, allowed_flags, ex);
     else
         emh = stack_closure(faulting_map, proc, kh, allowed_flags, f);
+    address_space prev_as = use_address_space(proc->as);
     void * entry = load_elf(ex, load_offset, emh);
     u64 brk_offset = aslr ? get_aslr_offset(PROCESS_HEAP_ASLR_RANGE) : 0;
     u64 brk = pad(load_range.end, PAGESIZE) + brk_offset;
@@ -430,6 +434,7 @@ static void exec_elf_finish(buffer ex, fsfile f, process kp,
        eventually deal with this for issue #1269 */
     //current_cpu()->current_thread = (nanos_thread)t;
     build_exec_stack(proc, t, e, entry, load_range.start, interp_load_addr, root, aslr);
+    restore_address_space(prev_as);
 
     if (ingest_symbols) {
         exec_debug("ingesting program symbols\n");

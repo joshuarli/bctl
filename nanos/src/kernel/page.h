@@ -62,3 +62,44 @@ void dump_page_tables(u64 vaddr, u64 length);
 /* internal use */
 void *allocate_table_page(u64 *phys);
 void page_set_allowed_levels(u64 levelmask);
+
+typedef struct address_space *address_space;
+
+#ifdef KERNEL
+struct address_space {
+    u64 root;
+    struct refcount refcount;
+    bitmap cpus;
+    heap h;
+    closure_struct(thunk, free);
+};
+
+extern address_space kernel_address_space;
+
+void init_address_spaces(heap h);
+address_space allocate_address_space(heap h);
+void address_space_switch(address_space as);
+address_space use_address_space(address_space as);
+void restore_address_space(address_space prev);
+
+static inline void address_space_reserve(address_space as)
+{
+    refcount_reserve(&as->refcount);
+}
+
+static inline void address_space_release(address_space as)
+{
+    refcount_release(&as->refcount);
+}
+
+void address_space_map(address_space as, u64 v, physical p, u64 length, pageflags flags);
+void address_space_unmap(address_space as, u64 v, u64 length);
+void address_space_unmap_and_free_phys(address_space as, u64 v, u64 length);
+void address_space_update_map_flags(address_space as, u64 v, u64 length, pageflags flags);
+void address_space_remap_pages(address_space as, u64 vnew, u64 vold, u64 length);
+boolean address_space_traverse_ptes(address_space as, u64 v, u64 length, entry_handler eh);
+physical address_space_physical(address_space as, u64 v);
+physical address_space_physical_locked(address_space as, u64 v);
+void address_space_map_locked(address_space as, u64 v, physical p, u64 length, pageflags flags);
+void arch_load_address_space(u64 root);
+#endif

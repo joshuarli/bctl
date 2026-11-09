@@ -28,12 +28,24 @@ struct spinlock pt_lock;
 
 #define PAGEMEM_ALLOC_SIZE  PAGEHEAP_LOWMEM_PAGESIZE
 
+#ifdef KERNEL
+#define assert_kernel_range(v, len) do {                                            \
+        if (pagemem.kernel_root_sealed && ((v) < USER_LIMIT))                       \
+            halt("%s: user address 0x%lx (length 0x%lx) given to the kernel page table\n", \
+                 func_ss, (u64)(v), (u64)(len));                                    \
+    } while (0)
+#else
+#define assert_kernel_range(v, len)
+#endif
+
 static struct {
     range current_phys;
     heap pageheap;
     range pagevirt;
     u64 physbase;
     u64 levelmask;              /* bitmap of levels allowed to map */
+    u64 free_tables;
+    boolean kernel_root_sealed;
 } pagemem;
 
 #ifndef physical_from_virtual
@@ -71,6 +83,13 @@ void *allocate_table_page(u64 *phys)
     return p;
 #else
     page_init_debug("allocate_table_page:");
+    if (pagemem.free_tables) {
+        *phys = pagemem.free_tables;
+        u64 *p = pointer_from_pteaddr(*phys);
+        pagemem.free_tables = p[0];
+        zero(p, PAGESIZE);
+        return p;
+    }
     if (range_span(pagemem.current_phys) == 0) {
         page_init_debug(" [new alloc, pa: ");
         u64 pa = allocate_u64(pagemem.pageheap, PAGEMEM_ALLOC_SIZE);
@@ -133,16 +152,20 @@ static boolean recurse_ptes(u64 pbase, int level, u64 vstart, u64 len, u64 laddr
     return true;
 }
 
-boolean traverse_ptes(u64 vaddr, u64 length, entry_handler ph)
+static boolean traverse_ptes_root(u64 root, u64 vaddr, u64 length, entry_handler ph)
 {
 #ifdef PAGE_TRAVERSE_DEBUG
     rprintf("traverse_ptes vaddr 0x%lx, length 0x%lx\n", vaddr, length);
 #endif
     pagetable_lock();
-    boolean result = recurse_ptes(get_pagetable_base(vaddr), PT_FIRST_LEVEL,
-                                  vaddr, length, 0, ph);
+    boolean result = recurse_ptes(root, PT_FIRST_LEVEL, vaddr, length, 0, ph);
     pagetable_unlock();
     return result;
+}
+
+boolean traverse_ptes(u64 vaddr, u64 length, entry_handler ph)
+{
+    return traverse_ptes_root(get_pagetable_base(vaddr), vaddr, length, ph);
 }
 
 closure_func_basic(entry_handler, boolean, dump_entry,
@@ -173,6 +196,18 @@ void dump_page_tables(u64 addr, u64 length)
     early_debug("\n");
 }
 
+static u64 loaded_root(u64 vaddr)
+{
+#ifdef KERNEL
+    if (vaddr < USER_LIMIT && kernel_address_space) {
+        address_space as = current_cpu()->current_as;
+        if (as)
+            return as->root;
+    }
+#endif
+    return get_pagetable_base(vaddr);
+}
+
 /* called with lock held */
 closure_func_basic(entry_handler, boolean, validate_entry,
                    int level, u64 vaddr, pteptr entry)
@@ -187,8 +222,8 @@ boolean validate_virtual(void * base, u64 length)
     u64 p = u64_from_pointer(base) >> VIRTUAL_ADDRESS_BITS;
     if (p != 0 && p != MASK(64-VIRTUAL_ADDRESS_BITS))
         return false;
-    return traverse_ptes(u64_from_pointer(base), length,
-                         stack_closure_func(entry_handler, validate_entry));
+    return traverse_ptes_root(loaded_root(u64_from_pointer(base)), u64_from_pointer(base), length,
+                              stack_closure_func(entry_handler, validate_entry));
 }
 
 closure_func_basic(entry_handler, boolean, validate_entry_writable,
@@ -203,8 +238,8 @@ closure_func_basic(entry_handler, boolean, validate_entry_writable,
 boolean validate_virtual_writable(void * base, u64 length)
 {
     page_debug("base %p, length 0x%lx\n", base, length);
-    return traverse_ptes(u64_from_pointer(base), length,
-                         stack_closure_func(entry_handler, validate_entry_writable));
+    return traverse_ptes_root(loaded_root(u64_from_pointer(base)), u64_from_pointer(base), length,
+                              stack_closure_func(entry_handler, validate_entry_writable));
 }
 
 static pte pte_split(pteptr entry, range gap)
@@ -266,18 +301,25 @@ closure_function(4, 3, boolean, update_pte_flags,
     return true;
 }
 
-/* Update access protection flags for any pages mapped within a given area */
-void update_map_flags(u64 vaddr, u64 length, pageflags flags)
+static void update_map_flags_root(u64 root, u64 vaddr, u64 length, pageflags flags)
 {
     page_debug("vaddr 0x%lx, length 0x%lx, flags 0x%lx\n", vaddr, length, flags.w);
 
     flush_entry fe = get_page_flush_entry();
-    traverse_ptes(vaddr, length, stack_closure(update_pte_flags, vaddr, length, flags, fe));
+    traverse_ptes_root(root, vaddr, length,
+                       stack_closure(update_pte_flags, vaddr, length, flags, fe));
     page_invalidate_sync(fe, 0, false);
 #ifdef PAGE_DUMP_ALL
     early_debug("update_map_flags ");
     dump_page_tables(vaddr, length);
 #endif
+}
+
+/* Update access protection flags for any pages mapped within a given area */
+void update_map_flags(u64 vaddr, u64 length, pageflags flags)
+{
+    assert_kernel_range(vaddr, length);
+    update_map_flags_root(get_pagetable_base(vaddr), vaddr, length, flags);
 }
 
 /* Replaces a block mapping with a table of PTE-level mappings of the same memory; called with
@@ -290,8 +332,8 @@ boolean split_mapping(pteptr entry)
 static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, flush_entry fe);
 
 /* called with lock held */
-closure_function(4, 3, boolean, remap_entry,
-                 u64, new, u64, old, u64, len, flush_entry, fe,
+closure_function(5, 3, boolean, remap_entry,
+                 u64, root, u64, new, u64, old, u64, len, flush_entry, fe,
                  int level, u64 curr, pteptr entry)
 {
     u64 oldentry = pte_from_pteptr(entry);
@@ -318,7 +360,7 @@ closure_function(4, 3, boolean, remap_entry,
 #endif
 
     /* transpose mapped page */
-    assert(map_level(pointer_from_pteaddr(get_pagetable_base(new_curr)), PT_FIRST_LEVEL,
+    assert(map_level(pointer_from_pteaddr(bound(root)), PT_FIRST_LEVEL,
                      irangel(new_curr, remap_len),
                      &phys, flags, 0));
 
@@ -343,7 +385,7 @@ closure_function(4, 3, boolean, remap_entry,
    MREMAP_MAYMOVE), write a "traverse_ptes_reverse" to walk pages
    from high address to low (like memcpy).
 */
-void remap_pages(u64 vaddr_new, u64 vaddr_old, u64 length)
+static void remap_pages_root(u64 root, u64 vaddr_new, u64 vaddr_old, u64 length)
 {
     page_debug("vaddr_new 0x%lx, vaddr_old 0x%lx, length 0x%lx\n", vaddr_new, vaddr_old, length);
     if (vaddr_new == vaddr_old)
@@ -351,12 +393,20 @@ void remap_pages(u64 vaddr_new, u64 vaddr_old, u64 length)
     assert(range_empty(range_intersection(irange(vaddr_new, vaddr_new + length),
                                           irange(vaddr_old, vaddr_old + length))));
     flush_entry fe = get_page_flush_entry();
-    traverse_ptes(vaddr_old, length, stack_closure(remap_entry, vaddr_new, vaddr_old, length, fe));
+    traverse_ptes_root(root, vaddr_old, length,
+                       stack_closure(remap_entry, root, vaddr_new, vaddr_old, length, fe));
     page_invalidate_sync(fe, 0, false);
 #ifdef PAGE_DUMP_ALL
     early_debug("remap ");
     dump_page_tables(vaddr_new, length);
 #endif
+}
+
+void remap_pages(u64 vaddr_new, u64 vaddr_old, u64 length)
+{
+    assert_kernel_range(vaddr_new, length);
+    assert_kernel_range(vaddr_old, length);
+    remap_pages_root(get_pagetable_base(vaddr_old), vaddr_new, vaddr_old, length);
 }
 
 /* called with lock held */
@@ -376,6 +426,7 @@ closure_func_basic(entry_handler, boolean, zero_page,
 
 void zero_mapped_pages(u64 vaddr, u64 length)
 {
+    assert_kernel_range(vaddr, length);
     traverse_ptes(vaddr, length, stack_closure_func(entry_handler, zero_page));
 }
 
@@ -418,16 +469,22 @@ closure_function(4, 3, boolean, unmap_page,
     return true;
 }
 
-void unmap(u64 virtual, u64 length)
+static void unmap_root(u64 root, u64 virtual, u64 length)
 {
     assert(!((virtual & PAGEMASK) || (length & PAGEMASK)));
     flush_entry fe = get_page_flush_entry();
-    traverse_ptes(virtual, length, stack_closure(unmap_page, virtual, length, 0, fe));
+    traverse_ptes_root(root, virtual, length, stack_closure(unmap_page, virtual, length, 0, fe));
     page_invalidate_sync(fe, 0, false);
 #ifdef PAGE_DUMP_ALL
     early_debug("unmap ");
     dump_page_tables(virtual, length);
 #endif
+}
+
+void unmap(u64 virtual, u64 length)
+{
+    assert_kernel_range(virtual, length);
+    unmap_root(get_pagetable_base(virtual), virtual, length);
 }
 
 #define next_addr(a, mask) (a = (a + (mask) + 1) & ~(mask))
@@ -476,6 +533,10 @@ static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, 
         page_init_debug_u64(pte);
         page_init_debug("\n");
         if (!pte_is_present(pte)) {
+            if ((level == PT_FIRST_LEVEL) && (i >= PT_ROOT_KERNEL_INDEX) &&
+                pagemem.kernel_root_sealed)
+                halt("%s: kernel half root entry %d missing after address spaces exist\n",
+                     func_ss, i);
             if (level == PT_PTE_LEVEL) {
                 pte = page_pte(*p, flags);
                 next_addr(*p, mask);
@@ -540,7 +601,7 @@ static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, 
     return true;
 }
 
-void map(u64 v, physical p, u64 length, pageflags flags)
+static void map_root(u64 root, u64 v, physical p, u64 length, pageflags flags)
 {
     page_init_debug("map: v ");
     page_init_debug_u64(v);
@@ -559,7 +620,7 @@ void map(u64 v, physical p, u64 length, pageflags flags)
     range r = irangel(v, pad(length, PAGESIZE));
     flush_entry fe = get_page_flush_entry();
     pagetable_lock();
-    u64 *table_ptr = pointer_from_pteaddr(get_pagetable_base(v));
+    u64 *table_ptr = pointer_from_pteaddr(root);
     if (!map_level(table_ptr, PT_FIRST_LEVEL, r, &p, flags.w, fe)) {
         pagetable_unlock();
         print_frame_trace_from_here();
@@ -575,13 +636,24 @@ void map(u64 v, physical p, u64 length, pageflags flags)
 #endif
 }
 
+void map(u64 v, physical p, u64 length, pageflags flags)
+{
+    assert_kernel_range(v, length);
+    map_root(get_pagetable_base(v), v, p, length, flags);
+}
+
 /* Set up a mapping, like the map() function but without acquiring the page table lock; this
  * function is meant to be called by init code, when there is only one CPU running. */
-void map_nolock(u64 v, physical p, u64 length, pageflags flags)
+static void map_root_nolock(u64 root, u64 v, physical p, u64 length, pageflags flags)
 {
     range r = irangel(v, pad(length, PAGESIZE));
-    u64 *table_ptr = pointer_from_pteaddr(get_pagetable_base(v));
+    u64 *table_ptr = pointer_from_pteaddr(root);
     map_level(table_ptr, PT_FIRST_LEVEL, r, &p, flags.w, 0);
+}
+
+void map_nolock(u64 v, physical p, u64 length, pageflags flags)
+{
+    map_root_nolock(get_pagetable_base(v), v, p, length, flags);
 }
 
 #ifdef KERNEL
@@ -602,37 +674,43 @@ closure_function(2, 0, void, unmap_and_free_phys_complete,
     }
 }
 
-static void unmap_and_free_phys_sync(u64 virtual, u64 length)
+static void unmap_and_free_phys_sync(u64 root, u64 virtual, u64 length)
 {
     buffer phys_ranges = little_stack_buffer(context_stack_space() / 2);
     thunk completion = stack_closure(unmap_and_free_phys_complete, phys_ranges, true);
     boolean done, progress;
     do {
         flush_entry fe = get_page_flush_entry();
-        done = traverse_ptes(virtual, length,
-                             stack_closure(unmap_page, virtual, length, phys_ranges, fe));
+        done = traverse_ptes_root(root, virtual, length,
+                                  stack_closure(unmap_page, virtual, length, phys_ranges, fe));
         progress = buffer_length(phys_ranges) != 0;
         page_invalidate_sync(fe, completion, true);
     } while (!done && progress);
 }
 
-void unmap_and_free_phys(u64 virtual, u64 length)
+static void unmap_and_free_phys_root(u64 root, u64 virtual, u64 length)
 {
     heap h = heap_locked(get_kernel_heaps());
     buffer phys_ranges = allocate_buffer(h, 64 * sizeof(range));
     if (phys_ranges == INVALID_ADDRESS)
-        return unmap_and_free_phys_sync(virtual, length);
+        return unmap_and_free_phys_sync(root, virtual, length);
     thunk completion = closure(h, unmap_and_free_phys_complete, phys_ranges, false);
     if (completion == INVALID_ADDRESS) {
         deallocate_buffer(phys_ranges);
-        return unmap_and_free_phys_sync(virtual, length);
+        return unmap_and_free_phys_sync(root, virtual, length);
     }
     flush_entry fe = get_page_flush_entry();
-    boolean success = traverse_ptes(virtual, length,
-                                    stack_closure(unmap_page, virtual, length, phys_ranges, fe));
+    boolean success = traverse_ptes_root(root, virtual, length,
+                                         stack_closure(unmap_page, virtual, length, phys_ranges, fe));
     page_invalidate_sync(fe, completion, !success);
     if (!success)
-        unmap_and_free_phys_sync(virtual, length);
+        unmap_and_free_phys_sync(root, virtual, length);
+}
+
+void unmap_and_free_phys(u64 virtual, u64 length)
+{
+    assert_kernel_range(virtual, length);
+    unmap_and_free_phys_root(get_pagetable_base(virtual), virtual, length);
 }
 
 void page_free_phys(u64 phys)
@@ -739,5 +817,209 @@ void init_page_initial_map(void *initial_map, range phys)
     pagemem.pageheap = 0;
     pagemem.pagevirt = irangel(u64_from_pointer(initial_map), range_span(phys));
     pagemem.physbase = phys.start;
+}
+#endif
+
+#ifdef KERNEL
+static void free_table_page_locked(u64 phys)
+{
+    u64 *p = pointer_from_pteaddr(phys);
+    p[0] = pagemem.free_tables;
+    pagemem.free_tables = phys;
+}
+
+static void free_table_level_locked(u64 table, int level)
+{
+    if (level < PT_PTE_LEVEL) {
+        u64 *t = pointer_from_pteaddr(table);
+        for (int i = 0; i < PTE_ENTRIES; i++) {
+            pte e = t[i];
+            if (pte_is_present(e) && !pte_is_mapping(level, e))
+                free_table_level_locked(page_from_pte(e), level + 1);
+        }
+    }
+    free_table_page_locked(table);
+}
+
+BSS_RO_AFTER_INIT address_space kernel_address_space;
+
+closure_func_basic(thunk, void, address_space_free)
+{
+    address_space as = struct_from_closure(address_space, free);
+    assert(bitmap_range_get_first(as->cpus, 0, total_processors) == INVALID_PHYSICAL);
+    pagetable_lock();
+    u64 *root = pointer_from_pteaddr(as->root);
+    for (int i = 0; i < PT_ROOT_KERNEL_INDEX; i++) {
+        pte e = root[i];
+        if (pte_is_present(e) && !pte_is_mapping(PT_FIRST_LEVEL, e))
+            free_table_level_locked(page_from_pte(e), PT_FIRST_LEVEL + 1);
+    }
+    free_table_page_locked(as->root);
+    pagetable_unlock();
+    deallocate_bitmap(as->cpus);
+    deallocate(as->h, as, sizeof(*as));
+}
+
+void init_address_spaces(heap h)
+{
+    static struct address_space kas;
+    kas.root = get_pagetable_base(0);
+    kas.h = 0;
+    pagetable_lock();
+    u64 *root = pointer_from_pteaddr(kas.root);
+    for (int i = PT_ROOT_KERNEL_INDEX; i < PTE_ENTRIES; i++) {
+        if (pte_is_present(root[i]))
+            continue;
+        u64 phys;
+        assert(allocate_table_page(&phys) != INVALID_ADDRESS);
+        root[i] = new_level_pte(phys);
+    }
+    pagemem.kernel_root_sealed = true;
+    pagetable_unlock();
+    kernel_address_space = &kas;
+    cpuinfo ci;
+    vector_foreach(cpuinfos, ci)
+        ci->current_as = kernel_address_space;
+}
+
+address_space allocate_address_space(heap h)
+{
+    address_space as = allocate(h, sizeof(*as));
+    if (as == INVALID_ADDRESS)
+        return as;
+    as->cpus = allocate_bitmap(h, h, total_processors);
+    if (as->cpus == INVALID_ADDRESS) {
+        deallocate(h, as, sizeof(*as));
+        return INVALID_ADDRESS;
+    }
+    pagetable_lock();
+    u64 *root = allocate_table_page(&as->root);
+    if (root != INVALID_ADDRESS) {
+        u64 *kroot = pointer_from_pteaddr(kernel_address_space->root);
+        for (int i = PT_ROOT_KERNEL_INDEX; i < PTE_ENTRIES; i++)
+            root[i] = kroot[i];
+    }
+    pagetable_unlock();
+    if (root == INVALID_ADDRESS) {
+        deallocate_bitmap(as->cpus);
+        deallocate(h, as, sizeof(*as));
+        return INVALID_ADDRESS;
+    }
+    as->h = h;
+    init_refcount(&as->refcount, 1, init_closure_func(&as->free, thunk, address_space_free));
+    return as;
+}
+
+void address_space_switch(address_space as)
+{
+    if (!kernel_address_space)
+        return;
+    u64 flags = irq_disable_save();
+    cpuinfo ci = current_cpu();
+    address_space prev = ci->current_as;
+    if (prev != as) {
+        if (as != kernel_address_space) {
+            address_space_reserve(as);
+            bitmap_set_atomic(as->cpus, ci->id, 1);
+        }
+        ci->current_as = as;
+        arch_load_address_space(as->root);
+        if (prev != kernel_address_space) {
+            bitmap_set_atomic(prev->cpus, ci->id, 0);
+            address_space_release(prev);
+        }
+    }
+    irq_restore(flags);
+}
+
+address_space use_address_space(address_space as)
+{
+    context ctx = get_current_context(current_cpu());
+    address_space prev = ctx->as;
+    ctx->as = as;
+    if (as)
+        address_space_switch(as);
+    return prev;
+}
+
+void restore_address_space(address_space prev)
+{
+    context ctx = get_current_context(current_cpu());
+    ctx->as = prev;
+    if (prev)
+        address_space_switch(prev);
+}
+
+#define assert_user_range(v, len) do {                                              \
+        if (!((v) < USER_LIMIT && (len) <= USER_LIMIT - (v)))                       \
+            halt("%s: address 0x%lx (length 0x%lx) is not a user address\n",       \
+                 func_ss, (u64)(v), (u64)(len));                                    \
+    } while (0)
+
+void address_space_map(address_space as, u64 v, physical p, u64 length, pageflags flags)
+{
+    assert_user_range(v, length);
+    map_root(as->root, v, p, length, flags);
+}
+
+void address_space_map_locked(address_space as, u64 v, physical p, u64 length, pageflags flags)
+{
+    assert_user_range(v, length);
+    map_root_nolock(as->root, v, p, length, flags);
+}
+
+void address_space_unmap(address_space as, u64 v, u64 length)
+{
+    assert_user_range(v, length);
+    unmap_root(as->root, v, length);
+}
+
+void address_space_unmap_and_free_phys(address_space as, u64 v, u64 length)
+{
+    assert_user_range(v, length);
+    unmap_and_free_phys_root(as->root, v, length);
+}
+
+void address_space_update_map_flags(address_space as, u64 v, u64 length, pageflags flags)
+{
+    assert_user_range(v, length);
+    update_map_flags_root(as->root, v, length, flags);
+}
+
+void address_space_remap_pages(address_space as, u64 vnew, u64 vold, u64 length)
+{
+    assert_user_range(vnew, length);
+    assert_user_range(vold, length);
+    remap_pages_root(as->root, vnew, vold, length);
+}
+
+boolean address_space_traverse_ptes(address_space as, u64 v, u64 length, entry_handler eh)
+{
+    assert_user_range(v, length);
+    return traverse_ptes_root(as->root, v, length, eh);
+}
+
+physical address_space_physical_locked(address_space as, u64 v)
+{
+    assert_user_range(v, 0);
+    u64 table = as->root;
+    for (int level = PT_FIRST_LEVEL; level <= PT_PTE_LEVEL; level++) {
+        int shift = pt_level_shift(level);
+        pte e = *pointer_from_pteaddr(table + (((v >> shift) & MASK(9)) * sizeof(u64)));
+        if (!pte_is_present(e))
+            return INVALID_PHYSICAL;
+        if (pte_is_mapping(level, e))
+            return page_from_pte(e) | (v & MASK(shift));
+        table = page_from_pte(e);
+    }
+    return INVALID_PHYSICAL;
+}
+
+physical address_space_physical(address_space as, u64 v)
+{
+    pagetable_lock();
+    physical p = address_space_physical_locked(as, v);
+    pagetable_unlock();
+    return p;
 }
 #endif

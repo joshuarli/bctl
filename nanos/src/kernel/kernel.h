@@ -96,6 +96,7 @@ struct cpuinfo {
     timestamp last_timer_update;
     int targeted_irqs;
     u64 inval_gen; /* Generation number for invalidates */
+    address_space current_as;
 
     cpuinfo mcs_prev;
     cpuinfo mcs_next;
@@ -357,6 +358,7 @@ static inline void zero_context_frame(context_frame f)
 static inline boolean init_context(context c, int type, u32 alloc_flags)
 {
     c->type = type;
+    c->as = 0;
     c->transient_heap = 0;
     c->waiting_on = 0;
     list_init_member(&c->mutex_l);
@@ -410,6 +412,8 @@ static inline void __attribute__((always_inline)) context_resume(context ctx)
     cpuinfo ci = current_cpu();
     context_acquire(ctx, ci);
     set_current_context(ci, ctx);
+    if (ctx->as)
+        address_space_switch(ctx->as);
     if (ctx->resume)
         ctx->resume(ctx);
 }

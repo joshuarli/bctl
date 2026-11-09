@@ -74,6 +74,13 @@ void init_mmu(u64 device_base, u64 vtarget)
     enable_mmu(vtarget);
 }
 
+#ifdef KERNEL
+void arch_load_address_space(u64 root)
+{
+    asm volatile("dsb ishst; msr ttbr0_el1, %0; isb; tlbi vmalle1; dsb ish; isb" :: "r"(root) : "memory");
+}
+#endif
+
 void enable_mmu(u64 vtarget)
 {
     /* memory attributes */

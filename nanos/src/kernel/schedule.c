@@ -34,6 +34,7 @@ NOTRACE void __attribute__((noreturn)) kernel_sleep(void)
     // handler...we shouldn't return here if we do get interrupted
     cpuinfo ci = current_cpu();
     sched_debug("sleep\n");
+    address_space_switch(kernel_address_space);
     ci->state = cpu_idle;
     bitmap_set_atomic(idle_cpu_mask, ci->id, 1);
 

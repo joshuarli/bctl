@@ -28,7 +28,7 @@ void init_vdso(process p)
         size = vdso_raw_length;
         paddr = physical_from_virtual(vdso_raw);
         assert(paddr != INVALID_PHYSICAL);
-        map(vaddr, paddr, size, pageflags_exec(flags));
+        address_space_map(p->as, vaddr, paddr, size, pageflags_exec(flags));
     }
 
     /* map first vvar page, which contains various kernel data */
@@ -37,7 +37,7 @@ void init_vdso(process p)
         size = PAGESIZE;
         paddr = physical_from_virtual((void *)&vvar_page);
         assert(paddr != INVALID_PHYSICAL);
-        map(vaddr, paddr, size, pageflags_noexec(flags));
+        address_space_map(p->as, vaddr, paddr, size, pageflags_noexec(flags));
     }
 
     /* map pvclock page */
@@ -51,13 +51,8 @@ void init_vdso(process p)
 #endif
         if (paddr != INVALID_PHYSICAL) {
             __vdso_dat->pvclock_offset = paddr & PAGEMASK;
-            map(vaddr, paddr & ~PAGEMASK, size,
-                pageflags_user(pageflags_readonly(pageflags_dma())));
+            address_space_map(p->as, vaddr, paddr & ~PAGEMASK, size,
+                              pageflags_user(pageflags_readonly(pageflags_dma())));
         }
     }
-
-#ifdef __x86_64__
-    /* init legacy vsyscall mappings */
-    init_vsyscall();
-#endif
 }

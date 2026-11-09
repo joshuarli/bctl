@@ -94,6 +94,24 @@ void file_readahead(file f, u64 offset, u64 len)
     }
 }
 
+/* The physical address of a buffer as seen by the current context, which owns any user buffer. */
+static physical direct_io_physical(void *ptr)
+{
+    u64 va = u64_from_pointer(ptr);
+    if (va >= USER_LIMIT)
+        return physical_from_virtual(ptr);
+    address_space as = get_current_context(current_cpu())->as;
+    return as ? address_space_physical(as, va) : INVALID_PHYSICAL;
+}
+
+static void direct_io_sg_add_phys(sg_buf sgb, physical phys, u64 len)
+{
+    sgb->buf = pointer_from_u64(virt_from_linear_backed_phys(phys));
+    sgb->size = len;
+    sgb->offset = 0;
+    sgb->refcount = 0;
+}
+
 static sysreturn file_io_init_internal(file f, u64 offset, boolean direct_io,
                                        struct iovec *iov, int count, boolean user_iov, sg_list sg)
 {
@@ -134,32 +152,30 @@ static sysreturn file_io_init_internal(file f, u64 offset, boolean direct_io,
         if ((u64_from_pointer(ptr) & block_mask) || (len & block_mask))
             return -EINVAL;
         touch_memory(ptr, len);
-        u64 phys = physical_from_virtual(ptr);
+        u64 phys = direct_io_physical(ptr);
         if (phys == INVALID_PHYSICAL)
             return -EFAULT;
         void *end = ptr + len;
         /* ensure each SG buffer references a physically contiguous memory range */
-        void *contiguous_base = ptr;
+        physical contiguous_phys = phys;
         u64 contiguous_len;
         if ((u64_from_pointer(end - 1) & ~PAGEMASK) == (u64_from_pointer(ptr) & ~PAGEMASK)) {
             contiguous_len = end - ptr; /* range fits in a single page */
         } else {
+            void *contiguous_base = ptr;
             ptr = pointer_from_u64(pad(u64_from_pointer(ptr + 1), PAGESIZE));
             contiguous_len = ptr - contiguous_base;
             phys += contiguous_len;
             for (; ptr < end; ptr += PAGESIZE, phys += PAGESIZE) {
-                u64 next_phys = physical_from_virtual(ptr);
+                u64 next_phys = direct_io_physical(ptr);
                 if ((next_phys != phys) || (contiguous_len + PAGESIZE >= U64_FROM_BIT(32))) {
                     if (next_phys == INVALID_PHYSICAL)
                         return -EFAULT;
                     sg_buf sgb = sg_list_tail_add(sg, contiguous_len);
                     if (sgb == INVALID_ADDRESS)
                         return -ENOMEM;
-                    sgb->buf = contiguous_base;
-                    sgb->size = contiguous_len;
-                    sgb->offset = 0;
-                    sgb->refcount = 0;
-                    contiguous_base = ptr;
+                    direct_io_sg_add_phys(sgb, contiguous_phys, contiguous_len);
+                    contiguous_phys = next_phys;
                     contiguous_len = 0;
                     phys = next_phys;
                 }
@@ -169,10 +185,7 @@ static sysreturn file_io_init_internal(file f, u64 offset, boolean direct_io,
         sg_buf sgb = sg_list_tail_add(sg, contiguous_len);
         if (sgb == INVALID_ADDRESS)
             return -ENOMEM;
-        sgb->buf = contiguous_base;
-        sgb->size = contiguous_len;
-        sgb->offset = 0;
-        sgb->refcount = 0;
+        direct_io_sg_add_phys(sgb, contiguous_phys, contiguous_len);
     }
     return 0;
 }

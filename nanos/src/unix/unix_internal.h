@@ -523,6 +523,7 @@ typedef struct process {
     u64               heap_base;
     u64               vdso_base;
     heap              virtual; /* pagesized, default for mmaps */
+    address_space     as;
     id_heap           fdallocator;
     filesystem        root_fs;
     filesystem        cwd_fs;
@@ -741,6 +742,7 @@ boolean validate_user_memory_permissions(process p, const void *buf, bytes lengt
 boolean fault_in_memory(const void *buf, bytes length);
 boolean fault_in_user_memory(const void *buf, bytes length, boolean writable);
 
+void mmap_init(tuple root);
 void mmap_process_init(process p, tuple root);
 
 static inline boolean memory_is_user(const void *p, bytes length)

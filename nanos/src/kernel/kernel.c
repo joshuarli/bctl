@@ -253,6 +253,8 @@ void __attribute__((noreturn)) context_switch_finish(context prev, context next,
         cpuinfo ci = current_cpu();
         set_current_context(ci, next);
         context_release(prev);
+        if (next->as)
+            address_space_switch(next->as);
         if (next->resume)
             next->resume(next);
     }

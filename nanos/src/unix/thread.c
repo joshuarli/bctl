@@ -250,6 +250,8 @@ closure_func_basic(thunk, void, thread_return)
     if (t->p->trap)
         runloop(); // XXX pause?
 
+    address_space_switch(t->context.as);
+
     /* temporarily install fault handler to catch faults for stack pages */
     use_fault_handler(t->context.fault_handler);
     dispatch_signals(t);
@@ -413,6 +415,7 @@ thread create_thread(process p, u64 tid)
         goto fail_bq;
 
     t->p = p;
+    t->context.as = p->as;
     t->syscall = 0;
     runtime_memcpy(&t->uh, p->uh, sizeof(*p->uh));
     init_refcount(&t->context.refcount, 1, init_closure_func(&t->free, thunk, free_thread));

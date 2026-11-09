@@ -115,6 +115,16 @@ void init_mmu(void)
     mov_from_cr("cr3", pagebase);
 }
 
+#ifdef KERNEL
+void arch_load_address_space(u64 root)
+{
+    root |= page_encr_mask;
+    mov_to_cr("cr3", root);
+    if (current_cpu()->m.pvm)
+        pvm_switch_cr3(root);
+}
+#endif
+
 #else
 
 /* stage2 */

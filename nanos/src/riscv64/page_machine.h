@@ -24,6 +24,7 @@ static inline u64 get_pagetable_base(u64 vaddr)
 
 #define PAGE_FLAGS_MASK 0x3ff
 
+#define PT_ROOT_KERNEL_INDEX 256
 #define PT_FIRST_LEVEL 0
 #define PT_PTE_LEVEL   3
 

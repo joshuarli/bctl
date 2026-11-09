@@ -286,8 +286,8 @@ closure_func_basic(fdesc_mmap, sysreturn, iour_mmap,
     if (vm->flags & VMAP_FLAG_EXEC)
         return -EACCES;
     u64 virt = vm->node.r.start;
-    remap(virt, physical_from_virtual(iour->rings) + region_offset, len,
-          pageflags_from_vmflags(vm->flags));
+    address_space_map(current->p->as, virt, physical_from_virtual(iour->rings) + region_offset, len,
+                      pageflags_from_vmflags(vm->flags));
     vm->allowed_flags |= VMAP_FLAG_WRITABLE | VMAP_FLAG_READABLE;
 
     return virt;

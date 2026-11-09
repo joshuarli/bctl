@@ -69,3 +69,10 @@ void init_mmu(range init_pt, u64 vtarget, void *dtb)
     asm volatile ("csrw satp, %0; sfence.vma; jr %1" :: "r"(satp), "r"(vtarget) : "memory");
 }
 
+#ifdef KERNEL
+void arch_load_address_space(u64 root)
+{
+    u64 satp = Sv48 | (root >> 12);
+    asm volatile("csrw satp, %0; sfence.vma" :: "r"(satp) : "memory");
+}
+#endif

@@ -23,9 +23,11 @@ typedef struct aio_ring {
 
 struct aio {
     struct list elem;  /* must be first */
-    heap vh;
+    process p;
     kernel_heaps kh;
-    aio_ring ring;
+    aio_ring ring;              /* kernel mapping of the ring */
+    u64 user_ring;              /* the ring in the owner's address space */
+    u64 ring_phys;
     struct spinlock lock;
     blockq bq;
     unsigned int nr;
@@ -70,12 +72,10 @@ static inline struct aio *aio_from_ring_id(process p, unsigned int id)
 closure_func_basic(thunk, void, aio_free)
 {
     struct aio *aio = struct_from_closure(struct aio *, free);
-    aio_ring ring = aio->ring;
-    u64 phys = physical_from_virtual(ring);
-    u64 alloc_size = pad(sizeof(*ring) + aio->nr * sizeof(struct io_event), PAGESIZE);
-    unmap(u64_from_pointer(ring), alloc_size);
-    deallocate_u64((heap) heap_physical(aio->kh), phys, alloc_size);
-    deallocate(aio->vh, ring, alloc_size);
+    u64 alloc_size = pad(sizeof(*aio->ring) + aio->nr * sizeof(struct io_event), PAGESIZE);
+    address_space_unmap(aio->p->as, aio->user_ring, alloc_size);
+    deallocate_u64((heap) heap_physical(aio->kh), aio->ring_phys, alloc_size);
+    deallocate_u64(aio->p->virtual, aio->user_ring, alloc_size);
     deallocate(heap_locked(aio->kh), aio, sizeof(*aio));
 }
 
@@ -90,25 +90,28 @@ sysreturn io_setup(unsigned int nr_events, aio_context_t *ctx_idp)
 
     /* Allocate AIO ring structure and add it to process memory map.*/
     kernel_heaps kh = get_kernel_heaps();
-    aio_ring ctx;
+    aio_ring user_ring;
     nr_events += 1; /* needed because of head/tail management in ring buffer */
-    u64 alloc_size = pad(sizeof(*ctx) + nr_events * sizeof(struct io_event),
+    u64 alloc_size = pad(sizeof(*user_ring) + nr_events * sizeof(struct io_event),
             PAGESIZE);
     u64 phys = allocate_u64((heap) heap_physical(kh), alloc_size);
     if (phys == INVALID_PHYSICAL) {
         return -ENOMEM;
     }
-    ctx = (aio_ring)process_map_physical(current->p, phys, alloc_size,
+    user_ring = (aio_ring)process_map_physical(current->p, phys, alloc_size,
         VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE);
-    if (ctx == INVALID_ADDRESS) {
+    if (user_ring == INVALID_ADDRESS) {
         deallocate_u64((heap)heap_physical(kh), phys, alloc_size);
         return -ENOMEM;
     }
 
+    aio_ring ctx = pointer_from_u64(virt_from_linear_backed_phys(phys));
     struct aio *aio = aio_alloc(current->p, kh, &ctx->id);
     assert(aio);
-    aio->vh = current->p->virtual;
+    aio->p = current->p;
     aio->ring = ctx;
+    aio->user_ring = u64_from_pointer(user_ring);
+    aio->ring_phys = phys;
     spin_lock_init(&aio->lock);
     aio->bq = 0;
     aio->nr = nr_events;
@@ -121,7 +124,7 @@ sysreturn io_setup(unsigned int nr_events, aio_context_t *ctx_idp)
     ctx->compat_features = 1;   /* same as Linux kernel */
     ctx->incompat_features = 0; /* same as Linux kernel */
     ctx->header_length = sizeof(*ctx);
-    *ctx_idp = ctx;
+    *ctx_idp = user_ring;
     return 0;
 }
 

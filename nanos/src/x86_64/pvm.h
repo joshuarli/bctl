@@ -31,5 +31,6 @@ void pvm_frame_return(context_frame f) __attribute__((noreturn));
 void pvm_event_return(context_frame f) __attribute__((noreturn));
 
 extern boolean pvm_detected;
+void pvm_switch_cr3(u64 cr3);
 
 #endif

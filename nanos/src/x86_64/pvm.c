@@ -45,6 +45,11 @@ range pvm_get_addr_range(void)
                   (0x1fffe00 | pml4_index_end) << PT_SHIFT_L1);
 }
 
+void pvm_switch_cr3(u64 cr3)
+{
+    write_msr(MSR_PVM_SWITCH_CR3, cr3 | 1);
+}
+
 closure_func_basic(thunk, void, pvm_cpu_init)
 {
     /* the PVM vCPU struct must be page-aligned */

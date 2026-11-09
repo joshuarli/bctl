@@ -205,6 +205,7 @@ static inline u64 get_pagetable_base(u64 vaddr)
 #define PAGE_DEFAULT_PERMISSIONS (PAGE_READONLY | PAGE_NO_EXEC)
 
 #define PT_FIRST_LEVEL 0
+#define PT_ROOT_KERNEL_INDEX 512
 #define PT_PTE_LEVEL   3
 
 #define PT_SHIFT_L0 39

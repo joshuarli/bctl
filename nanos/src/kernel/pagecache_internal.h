@@ -68,8 +68,9 @@ typedef struct pagecache_node {
     struct list ops;
     u64 length;
 
-    /* shared and private mappings associated with this node; protected by pagecache global lock */
-    struct rangemap mappings;
+    /* shared and private mappings associated with this node, in any address space; protected by
+       pagecache global lock */
+    struct list mappings;
 
     sg_io cache_read;
     sg_io cache_write;
@@ -103,8 +104,10 @@ struct pagecache_node_op_complete {
 };
 
 typedef struct pagecache_map {
-    struct rmnode n;            /* pn->mappings */
+    range r;                    /* virtual, in as */
+    struct list node_l;         /* pn->mappings */
     struct list l;              /* pc->shared_maps or pc->private_maps */
+    address_space as;
     pagecache_node pn;
     u64 node_offset;            /* file offset of va.start */
     boolean shared;
