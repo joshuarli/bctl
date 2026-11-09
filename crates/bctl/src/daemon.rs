@@ -243,7 +243,7 @@ impl Daemon {
         let _ = writeln!(writer, "{}", json::to_string(&response));
     }
 
-    fn handle(self: &Arc<Self>, request: &Request) -> Outcome {
+    pub(crate) fn handle(self: &Arc<Self>, request: &Request) -> Outcome {
         let op = Op::parse(&request.op)
             .ok_or_else(|| Response::failure(ErrorCode::BadRequest, format!("unknown operation {:?}", request.op), None))?;
         let session = || -> Result<SessionName, Response> {
@@ -511,6 +511,10 @@ impl Daemon {
         fs::create_dir_all(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         Ok(path)
+    }
+
+    pub(crate) fn run_dir(&self, run: i64) -> PathBuf {
+        self.paths.run_dir(run)
     }
 
     pub(crate) fn session_views(&self) -> SessionsPayload {

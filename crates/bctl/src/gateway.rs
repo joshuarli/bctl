@@ -24,6 +24,8 @@ use miniserde::{Deserialize, Serialize, json};
 
 use crate::daemon::Daemon;
 
+mod runs;
+
 const LOGIN_TOKEN_LIFETIME: Duration = Duration::from_secs(120);
 const COOKIE: &str = "bctl_session";
 
@@ -204,6 +206,12 @@ fn handle(daemon: &Arc<Daemon>, port: u16, mut request: Request) -> Response<Box
             Ok(()) => respond(StatusCode::NO_CONTENT, "text/plain", ""),
             Err(e) => text(StatusCode::BAD_GATEWAY, &e),
         },
+        (Method::GET, ["api", "sessions", name, "runs"]) => runs::session_runs(daemon, name),
+        (Method::GET, ["api", "runs", id]) => runs::run(daemon, id),
+        (Method::GET, ["api", "runs", id, "log"]) => runs::log(daemon, id, request.uri().query().unwrap_or("")),
+        (Method::GET, ["api", "runs", id, "artifacts"]) => runs::artifacts(daemon, id),
+        (Method::GET, ["api", "runs", id, "artifacts", rest @ ..]) => runs::download(daemon, id, rest),
+        (Method::POST, ["api", "runs", id, "resume"]) => runs::resume(daemon, id, &viewer),
         (Method::GET, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Inspect),
         (Method::POST, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Acquire),
         (Method::POST, ["api", "sessions", name, "control", "release"]) => control(daemon, name, &viewer, ControlRequest::Release),
