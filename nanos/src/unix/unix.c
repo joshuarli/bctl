@@ -318,19 +318,30 @@ sstring string_from_mmap_type(int type)
 
 static boolean handle_protection_fault(process p, context ctx, u64 vaddr, vmap vm)
 {
-    /* vmap found, with protection violation set --> send prot violation */
-    u64 flags = VMAP_FLAG_MMAP | VMAP_FLAG_WRITABLE;
-    if (is_write_fault(ctx->frame) && (vm->flags & flags) == flags &&
-        (vm->flags & VMAP_MMAP_TYPE_MASK) == VMAP_MMAP_TYPE_FILEBACKED) {
-        /* copy on write */
+    int mmap_type = (vm->flags & VMAP_FLAG_MMAP) ? (vm->flags & VMAP_MMAP_TYPE_MASK) : 0;
+    if (is_write_fault(ctx->frame) && (vm->flags & VMAP_FLAG_WRITABLE) &&
+        !(vm->flags & VMAP_FLAG_SHARED) && (mmap_type != VMAP_MMAP_TYPE_CUSTOM)) {
         u64 vaddr_aligned = vaddr & ~MASK(PAGELOG);
-        u64 node_offset = vm->node_offset + (vaddr_aligned - vm->node.r.start);
-        pf_debug("copy-on-write for private map: vaddr 0x%lx, node %p, node_offset 0x%lx\n",
-                 vaddr, vm->cache_node, node_offset);
-        if (!pagecache_node_do_page_cow(vm->cache_node, p->vm->as, node_offset, vaddr_aligned,
-                                        pageflags_from_vmflags(vm->flags)))
-            halt("cannot get physical page for vaddr 0x%lx, ctx %p; OOM\n", vaddr, ctx);
-        return true;
+        if (mmap_type == VMAP_MMAP_TYPE_FILEBACKED) {
+            u64 node_offset = vm->node_offset + (vaddr_aligned - vm->node.r.start);
+            physical phys = address_space_physical(p->vm->as, vaddr_aligned);
+            if ((phys != INVALID_PHYSICAL) &&
+                pagecache_node_page_is_cached(vm->cache_node, node_offset, phys)) {
+                pf_debug("copy-on-write for private map: vaddr 0x%lx, node %p, node_offset 0x%lx\n",
+                         vaddr, vm->cache_node, node_offset);
+                if (!pagecache_node_do_page_cow(vm->cache_node, p->vm->as, node_offset,
+                                                vaddr_aligned, pageflags_from_vmflags(vm->flags)))
+                    halt("cannot get physical page for vaddr 0x%lx, ctx %p; OOM\n", vaddr, ctx);
+                return true;
+            }
+        }
+        if (mmap_cow_page(p->vm, vm, vaddr))
+            return true;
+        if (is_thread_context(ctx)) {
+            deliver_fault_signal(SIGKILL, (thread)ctx, vaddr, 0);
+            return true;
+        }
+        return false;
     }
 
     if (is_thread_context(ctx)) {
@@ -887,6 +898,7 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
     list_init(&processes);
     spin_lock_init(&processes_lock);
     init_address_spaces(h);
+    init_shared_pages(h);
     mmap_init(root);
 #ifdef __x86_64__
     init_vsyscall();

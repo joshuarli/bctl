@@ -48,6 +48,76 @@ static struct {
     boolean kernel_root_sealed;
 } pagemem;
 
+#ifdef KERNEL
+static struct {
+    u32 *extra_mappings;
+    u64 pages;
+} shared_pages;
+
+boolean page_share(physical phys)
+{
+    u64 n = phys >> PAGELOG;
+    if (n >= shared_pages.pages)
+        return false;
+    fetch_and_add_32(&shared_pages.extra_mappings[n], 1);
+    return true;
+}
+
+boolean page_is_shared(physical phys)
+{
+    u64 n = phys >> PAGELOG;
+    return (n < shared_pages.pages) && (*(volatile u32 *)&shared_pages.extra_mappings[n] != 0);
+}
+
+boolean page_unshare(physical phys)
+{
+    u64 n = phys >> PAGELOG;
+    if (n >= shared_pages.pages)
+        return true;
+    u32 *c = &shared_pages.extra_mappings[n];
+    u32 v = *(volatile u32 *)c;
+    while (v) {
+        if (compare_and_swap_32(c, v, v - 1))
+            return false;
+        v = *(volatile u32 *)c;
+    }
+    return true;
+}
+
+static void free_unshared_phys(heap h, range r)
+{
+    u64 run = r.start;
+    for (u64 p = r.start; p < r.end; p += PAGESIZE) {
+        if (!page_unshare(p)) {
+            if (p > run)
+                deallocate(h, run, p - run);
+            run = p + PAGESIZE;
+        }
+    }
+    if (r.end > run)
+        deallocate(h, run, r.end - run);
+}
+
+closure_function(1, 1, boolean, shared_pages_limit,
+                 u64 *, end,
+                 range r)
+{
+    if (r.end > *bound(end))
+        *bound(end) = r.end;
+    return true;
+}
+
+void init_shared_pages(heap h)
+{
+    u64 end = 0;
+    pageheap_range_foreach(stack_closure(shared_pages_limit, &end));
+    u64 pages = end >> PAGELOG;
+    shared_pages.extra_mappings = allocate_zero(h, pages * sizeof(u32));
+    assert(shared_pages.extra_mappings != INVALID_ADDRESS);
+    shared_pages.pages = pages;
+}
+#endif
+
 #ifndef physical_from_virtual
 physical physical_from_virtual(void *x)
 {
@@ -285,6 +355,11 @@ closure_function(4, 3, boolean, update_pte_flags,
     }
     u64 phys = page_from_pte(orig_pte);
     u64 flags = bound(flags).w;
+#ifdef KERNEL
+    if ((level == PT_PTE_LEVEL) && pageflags_is_writable((pageflags){.w = flags}) &&
+        page_is_shared(phys))
+        flags = pageflags_readonly((pageflags){.w = flags}).w;
+#endif
     u64 update_len = MIN(map_len - map_offset, bound(len) - offset);
     if (update_len == map_len) {
         pte_set(entry, (level == PT_PTE_LEVEL) ? page_pte(phys, flags) : block_pte(phys, flags));
@@ -664,7 +739,7 @@ closure_function(2, 0, void, unmap_and_free_phys_complete,
     buffer phys_ranges = bound(phys_ranges);
     range *r;
     while ((r = buffer_pop(phys_ranges, sizeof(*r))))
-        deallocate(h, r->start, range_span(*r));
+        free_unshared_phys(h, *r);
     if (bound(on_stack)) {
         /* clear the buffer so it can be reused if there are other iterations */
         buffer_clear(phys_ranges);
@@ -715,6 +790,8 @@ void unmap_and_free_phys(u64 virtual, u64 length)
 
 void page_free_phys(u64 phys)
 {
+    if (!page_unshare(phys))
+        return;
     u64 virt = pagemem.pagevirt.start + phys;
     deallocate_u64((heap)get_kernel_heaps()->pages, virt, PAGESIZE);
 }
@@ -997,6 +1074,56 @@ boolean address_space_traverse_ptes(address_space as, u64 v, u64 length, entry_h
 {
     assert_user_range(v, length);
     return traverse_ptes_root(as->root, v, length, eh);
+}
+
+closure_func_basic(thunk, void, address_space_sync_done)
+{
+}
+
+closure_function(4, 3, boolean, protect_pte,
+                 u64, vstart, u64, len, flush_entry, fe, boolean *, oom,
+                 int level, u64 addr, pteptr entry)
+{
+    pte e = pte_from_pteptr(entry);
+    if (!pte_is_present(e) || !pte_is_mapping(level, e))
+        return true;
+    if (level != PT_PTE_LEVEL) {
+        if (!split_mapping(entry)) {
+            *bound(oom) = true;
+            return false;
+        }
+        return true;
+    }
+    pageflags flags = {.w = flags_from_pte(e)};
+    if (!pageflags_is_writable(flags))
+        return true;
+    pte_set(entry, page_pte(page_from_pte(e), pageflags_readonly(flags).w));
+    page_invalidate(bound(fe), addr);
+    return true;
+}
+
+boolean address_space_protect(address_space as, u64 v, u64 length)
+{
+    assert_user_range(v, length);
+    boolean oom = false;
+    flush_entry fe = get_page_flush_entry();
+    traverse_ptes_root(as->root, v, length, stack_closure(protect_pte, v, length, fe, &oom));
+    page_invalidate_sync(fe, stack_closure_func(thunk, address_space_sync_done), true);
+    return !oom;
+}
+
+void address_space_replace_page(address_space as, u64 v, physical p, pageflags flags)
+{
+    assert_user_range(v, PAGESIZE);
+    flush_entry fe = get_page_flush_entry();
+    pagetable_lock();
+    u64 phys = p;
+    boolean ok = map_level(pointer_from_pteaddr(as->root), PT_FIRST_LEVEL, irangel(v, PAGESIZE),
+                           &phys, flags.w, fe);
+    pagetable_unlock();
+    if (!ok)
+        halt("%s: map failed for v 0x%lx, p 0x%lx\n", func_ss, v, p);
+    page_invalidate_sync(fe, stack_closure_func(thunk, address_space_sync_done), true);
 }
 
 physical address_space_physical_locked(address_space as, u64 v)

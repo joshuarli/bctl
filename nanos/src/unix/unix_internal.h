@@ -469,11 +469,14 @@ sysreturn ioctl_generic(fdesc f, unsigned long request, vlist ap);
 
 void epoll_finish(epoll e);
 
+typedef struct shared_anon *shared_anon;
+
 typedef struct vmap {
     struct rmnode node;
     u32 flags;
     u32 allowed_flags;
     pagecache_node cache_node;
+    shared_anon shared_anon;
     u64 node_offset;
     union {
         fdesc fd;
@@ -905,6 +908,7 @@ sysreturn getgid();
 status do_demand_page(process p, context ctx, u64 vaddr, vmap vm, boolean *done);
 void demand_page_done(context ctx, u64 vaddr, status s);
 vmap vmap_from_vaddr(process p, u64 vaddr);
+boolean mmap_cow_page(process_vm pvm, vmap vm, u64 vaddr);
 void vmap_iterator(process p, vmap_handler vmh);
 boolean vmap_validate_range(process p, range q, u32 flags);
 void truncate_file_maps(process p, fsfile f, u64 new_length);

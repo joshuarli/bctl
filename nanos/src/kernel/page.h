@@ -102,4 +102,12 @@ physical address_space_physical(address_space as, u64 v);
 physical address_space_physical_locked(address_space as, u64 v);
 void address_space_map_locked(address_space as, u64 v, physical p, u64 length, pageflags flags);
 void arch_load_address_space(u64 root);
+
+boolean address_space_protect(address_space as, u64 v, u64 length);
+void address_space_replace_page(address_space as, u64 v, physical p, pageflags flags);
+
+void init_shared_pages(heap h);
+boolean page_share(physical phys);
+boolean page_is_shared(physical phys);
+boolean page_unshare(physical phys);
 #endif
