@@ -802,7 +802,7 @@ static void netsock_test_fault(void)
     memset(msg, 0, sizeof(*msg));
     msg->msg_iov = &iov;
     msg->msg_iovlen = 1;
-    test_assert((recvmsg(fd, msg, 0) == -1) && (errno == EFAULT));
+    test_assert((syscall(SYS_recvmsg, fd, msg, 0) == -1) && (errno == EFAULT));
     test_assert(pthread_join(pt, NULL) == 0);
     test_assert((syscall(SYS_sendmsg, fd, msg, 0) == -1) && (errno == EFAULT));
     close(fd);

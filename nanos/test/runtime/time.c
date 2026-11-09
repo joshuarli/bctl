@@ -912,7 +912,7 @@ static void test_utime(void)
         timetest_msg("failed at %d (%d, %d)\n", __LINE__, rv, errno);
         goto close_fd;
     }
-    rv = futimens(fd, FAULT_ADDR);
+    rv = syscall(SYS_utimensat, fd, NULL, FAULT_ADDR, 0);
     if ((rv != -1) || (errno != EFAULT)) {
         timetest_msg("failed at %d (%d, %d)\n", __LINE__, rv, errno);
         goto close_fd;

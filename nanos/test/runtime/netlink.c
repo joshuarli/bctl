@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -143,7 +144,7 @@ static void test_fault(void)
     test_assert(errno == EFAULT);
 
     test_assert(write(fd, &nlh, sizeof(nlh)) == sizeof(nlh));
-    test_assert((recvmsg(fd, fault_addr, 0) == -1) && (errno == EFAULT));
+    test_assert((syscall(SYS_recvmsg, fd, fault_addr, 0) == -1) && (errno == EFAULT));
 
     memset(&msg, 0, sizeof(msg));
     msg.msg_iov = fault_addr;
