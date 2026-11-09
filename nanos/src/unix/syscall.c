@@ -154,7 +154,7 @@ void iov_op(fdesc f, boolean write, struct iovec *iov, int iovcnt, u64 offset,
     p->initialized = false;
     p->blocking = blocking;
     p->file_offset = offset;
-    p->curr = 0;
+    p->curr = -1;
     p->curr_len = 0;
     p->total_len = 0;
     p->ctx = ctx;
