@@ -11,22 +11,22 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** probe baseline (see `git log`).
-- **Accepted:** G0.1 (fork at `nanos/`, pinned vendoring, bootstrap/doctor/build;
-  byte-identical clean rebuilds). G0.2 (`dev/image.sh`, `dev/run.sh`,
-  `dev/test.sh harness`: every false-pass channel rejected; musl stdio
-  fixtures known-red on the console `writev` bug). G0.5 (`dev/build.sh
-  --debug`, `dev/debug.sh`, crash symbolization, `dev/test.sh metrics`).
-  Probe, native side of G4.1 and the raw variant: `dev/test.sh probe`, 38/38
-  and 6/6 natively; on unmodified Nanos 1/38 (`kernel_address_fault`) and
-  0/6, known-red.
+- **Last accepted revision:** G0.3 (see `git log`).
+- **Accepted:** G0.1 (fork, pinned vendoring, bootstrap/doctor/build,
+  byte-identical rebuilds, ccache: warm clean build 2 s). G0.2 (image/run
+  harness rejecting every false-pass channel). G0.3 (vectored io skipped
+  iovec 0 on console/pipes, so musl stdio hung: fixed; `wait4`/`waitid`
+  answer `ECHILD`/`EINVAL` instead of 0/`ENOSYS`). G0.5 (debug kernel, GDB,
+  symbolized crashes, metrics). H (`docs/chromium-contract.md`). Probe
+  native side: `mini_chromium` 47/47 and raw 6/6 natively; on Nanos 2/47 and
+  1/6, known-red until G1.
   **Red:** none. **Parked:** none.
-- **Not yet run:** G0.4 needs G0.3 first: most upstream runtime tests print
-  through stdio and hang on the `writev` bug.
-- **Next:** **owner decision** before G0.3, the first kernel change (owner
-  decision 7). Lanes: `H` (`.work/wt/h`), upstream suite on musl
-  (`.work/wt/upstream`), G1.1 design note (`.work/wt/g1-design`).
-- **Gate matrix:** G0 NOT RUN (3/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Running lanes:** upstream suite on musl (`.work/wt/upstream`, rebasing
+  onto the `writev` fix); G1.1 design note (`.work/wt/g1-design`).
+- **Next:** integrate both lanes (G0.4 baseline table), then the owner
+  reviews the G1.1 design before G1 kernel work. Open owner question: G5
+  display, because the Helium archive is Wayland-only (§ Needs environment).
+- **Gate matrix:** G0 NOT RUN (4/5 slices) · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 BLOCKED (no headless Ozone in the archive) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -113,10 +113,10 @@ only when every slice in it is accepted on `main`.
 6. **Performance gates are waived.** Only feature completeness counts.
    Measurements are still taken and reported, but they never gate a slice and
    `perf-gate-ready` is not consulted.
-7. **Kernel changes as late as possible.** Do the work that needs no change
-   under `nanos/src` or `nanos/klib` first (harness, debug workflow, Chromium
-   contract, the native side of the probe). Stop for the owner before the
-   first kernel change.
+7. **Kernel changes are authorized** (owner, 2026-11-09, after the
+   non-kernel work landed): fix the baseline bugs in the fork. Larger
+   architectural kernel work (G1 onward) starts after the owner has seen the
+   G1.1 design note.
 
 ### Prescribed
 
@@ -432,8 +432,15 @@ record, on Nanos and natively.
 
 ## Needs environment
 
-None. Every proof runs on this host. A second host and real hardware are not
-required for any gate.
+- **G5 display.** `helium-0.20.3.1-linux-x86_64-musl.tar.xz` is built with
+  `ozone_platform_headless=False`; `--headless`, `--headless=new` and
+  `--ozone-platform=headless` abort with `Invalid ozone platform: headless`
+  (`docs/chromium-contract.md`, Decisions). G5 needs either a Wayland
+  compositor process in the guest (a headless userspace compositor such as
+  weston's headless backend over `wl_shm`, which uses memfd and
+  `SCM_RIGHTS`, no DRM) or a Helium build with headless Ozone. Both need an
+  owner decision: the first touches the draft's "no Wayland" non-goal, the
+  second needs a build the campaign may not run.
 
 ## Execution boundary and non-goals
 
