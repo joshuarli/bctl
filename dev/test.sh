@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium..."; }
+usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -183,6 +183,32 @@ suite_helium() {
 	esac
 }
 
+EXTERNAL=$WORK/build/external
+EXTERNAL_BINS='gvisor_dup gvisor_fcntl gvisor_lseek gvisor_fork gvisor_exec gvisor_wait gvisor_socket_unix_cmsg gvisor_socket_unix_peercred'
+EXTERNAL_PASSING_ON_NANOS='gvisor_fcntl_DupAfterO_ASYNC gvisor_lseek_EtcPasswdDup gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_BasicFDPass gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_FDPassRecvEFAULT'
+
+suite_external() {
+	make -s -C "$ROOT/tests/external"
+	for bin in $EXTERNAL_BINS; do
+		line=$("$ROOT/dev/run.sh" --native --timeout 120 --label "external-$bin" "$EXTERNAL/$bin" || :)
+		case $line in
+		"RUN verdict=PASS "*) printf 'PASS      %-30s native\n' "$bin" ;;
+		*) failures=$((failures + 1)); printf 'FAIL      %-30s native  %s\n' "$bin" "${line%% dir=*}"; continue ;;
+		esac
+		"$ROOT/dev/image.sh" -o "$IMAGES/$bin.img" "$EXTERNAL/$bin" >/dev/null
+		for smp in 1 2; do
+			line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 120 --label "external-$bin-smp$smp" "$IMAGES/$bin.img" || :)
+			dir=${line##* dir=}
+			pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
+			total=$(jaq '.tests | length' "$dir/result.json")
+			lost=$(jaq -r --arg keep "$EXTERNAL_PASSING_ON_NANOS" '($keep | split(" ")) as $k | [.tests[] | select(.status != "PASS") | .name | select(. as $n | $k | any(. == $n or ($n | startswith(. + "_"))))] | join(",")' "$dir/result.json")
+			if [ -n "$lost" ]; then failures=$((failures + 1)); printf 'FAIL      %-30s smp=%s  regressed: %s\n          log: %s\n' "$bin" "$smp" "$lost" "$dir"
+			elif [ "$pass" = "$total" ]; then printf 'PASS      %-30s smp=%s  %s/%s\n' "$bin" "$smp" "$pass" "$total"
+			else printf 'KNOWN-RED %-30s smp=%s  %s/%s pass\n' "$bin" "$smp" "$pass" "$total"; fi
+		done
+	done
+}
+
 [ $# -ge 1 ] || usage
 mkdir -p "$IMAGES"
 "$ROOT/dev/build.sh" >/dev/null
@@ -195,6 +221,7 @@ for suite in "$@"; do
 	upstream) suite_upstream ;;
 	helium-native) suite_helium_native ;;
 	helium) suite_helium ;;
+	external) suite_external ;;
 	g0) suite_harness; suite_upstream; "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	*) usage ;;
