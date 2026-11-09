@@ -24,9 +24,14 @@ D1 and `bctl profile login` (`0f3b8c1`), D2's input lease (`59fa9c8`), proved by
 `pnpm --dir web exec playwright test` against a real VM. T2 (`cb8dccd`,
 `docs/compositor-contract.md`). J2 (`ac9b005`, lane). T0 (`8f3e21f`, lane:
 `sh guest/harness/smolvm-proof.sh`).
-J1 (shadowdriver `6568107`). T1 (`7418ce2`).
-Running lanes: J3, T3, R0, H2 (CDP capability gateway only), each in
-`.work/wt/<item>`, all on `ref-alpine-chromium`.
+J1 (shadowdriver `6568107`). T1 (`7418ce2`). R0 (`8ea5874`, on
+`ref-alpine-chromium` only: 207 gaps, `docs/userland.md`). H2's CDP gateway
+(`c931e2f`, `cargo test -p bctl --test cdp -- --ignored`): capabilities,
+revocation, and refusal of new attachments while a person holds the lease.
+H2 still open: SmolVM publishes the raw guest CDP port on host loopback with
+no bind option, so it bypasses the capability; and egress, which SmolVM's
+`--block-private`/`--allow-private` flags can cover.
+Running lanes: J3, T3, N1, each in `.work/wt/<item>`, on `ref-alpine-chromium`.
 Next: D2's run views after J3; then M3N (native automation), whose N1
 transport has no bctl prereq and can start now.
 Resume: `implement M3N from docs/CAMPAIGN-ROADMAP.md`.
