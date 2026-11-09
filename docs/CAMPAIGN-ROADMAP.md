@@ -41,8 +41,13 @@ J3 open: Grab has no pause or login classifier (pause is cancel at a page
 boundary plus a new attempt; `login-required` needs Grab to report it); Grab's
 events file and own log are not capped by bctl; the guest Chromium exits when
 its last tab closes (H3).
-Next: D2's run views; N2 (targets); D2's acceptance on `ref-alpine-tinyland`.
-Resume: `implement D2 and N2 from docs/CAMPAIGN-ROADMAP.md`.
+N2 (`286a96b`, `cargo test -p bctl --test tabs -- --ignored`): `bctl tab`
+list/new/use/close, the selected target per generation, `TARGET_GONE`, and
+refusal of new/close under a person's lease. Its `2021087` clears Chromium's
+stale profile lock at start, which had stalled every second `up` of a profile.
+Next: D2's run views (running); N3 (snapshots and refs); D2's acceptance on
+`ref-alpine-tinyland`.
+Resume: `implement N3 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
