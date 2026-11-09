@@ -11,7 +11,9 @@ name = "bctl-bench"
 path = "src/main.rs"
 
 [dependencies]
+bctl-core = { path = "../core" }
 bctl-rfb = { path = "../rfb" }
+bctl-runtime-smolvm = { path = "../runtime-smolvm" }
 miniserde = "0.1"
 
 [lints]
