@@ -8,7 +8,7 @@ out="$root/.work/images"
 mkdir -p "$out"
 cp "$root/images/bctl-guest" "$dir/bctl-guest"
 trap 'rm -f "$dir/bctl-guest"' EXIT
-docker build -q --platform linux/arm64 -t "bctl/$name" "$dir" >/dev/null
+docker build -q --platform linux/arm64 --build-context guest="$root/guest" -t "bctl/$name" "$dir" >/dev/null
 docker save "bctl/$name" -o "$out/$name.tar.part"
 mv "$out/$name.tar.part" "$out/$name.tar"
 echo "$out/$name.tar"

@@ -9,6 +9,7 @@ cdp_socket=${BCTL_CDP_SOCKET:-/run/bctl/cdp.sock}
 cdp_tcp_port=${BCTL_CDP_PORT:-}
 browser_cdp_port=9221
 start_url=${BCTL_START_URL:-about:blank}
+compositor_kind=${BCTL_COMPOSITOR:-sway}
 
 fail() { echo "bctl-guest: $*" >&2; exit 1; }
 
@@ -35,6 +36,9 @@ wait_for() {
 }
 
 stop() {
+    if [ -z "${browser:-}" ] && [ -n "${compositor:-}" ]; then
+        browser=$(pgrep -P "$compositor" || true)
+    fi
     if [ -n "${browser:-}" ]; then
         kill -TERM "$browser" 2>/dev/null || true
         for _ in $(seq 1 150); do
@@ -50,16 +54,14 @@ stop() {
 wayland_socket() { [ -S "$runtime_dir/wayland-1" ]; }
 cdp_ready() { wget -qO- "http://127.0.0.1:$browser_cdp_port/json/version" >/dev/null 2>&1; }
 
-run() {
-    trap stop TERM INT
-    mkdir -p "$state" "$runtime_dir" "$profile"
-    chown "$browser_user" "$runtime_dir" "$profile"
-    chmod 700 "$runtime_dir"
-    expose_devices
+browser() {
+    exec chromium --ozone-platform=wayland \
+        --remote-debugging-port="$browser_cdp_port" \
+        --user-data-dir="$profile" --no-first-run --no-default-browser-check \
+        --start-maximized "$start_url" > "$state/browser.log" 2>&1
+}
 
-    SEATD_VTBOUND=0 seatd -g video > "$state/seatd.log" 2>&1 &
-    wait_for seatd test -S /run/seatd.sock
-
+start_sway() {
     no_input=0
     ls /dev/input/event* >/dev/null 2>&1 || no_input=1
     printf 'xwayland disable\noutput * bg #000000 solid_color\n' > "$state/sway.cfg"
@@ -70,18 +72,45 @@ run() {
     wait_for compositor wayland_socket
 
     su-exec "$browser_user" env XDG_RUNTIME_DIR="$runtime_dir" WAYLAND_DISPLAY=wayland-1 \
-        chromium --ozone-platform=wayland \
-        --remote-debugging-port="$browser_cdp_port" \
-        --user-data-dir="$profile" --no-first-run --no-default-browser-check \
-        --start-maximized "$start_url" > "$state/browser.log" 2>&1 &
+        /usr/local/bin/bctl-guest browser &
     browser=$!
+    session=$browser
+}
+
+start_tinyland() {
+    su-exec "$browser_user" env XDG_RUNTIME_DIR="$runtime_dir" LIBSEAT_BACKEND=seatd SEATD_SOCK=/run/seatd.sock \
+        TINYLAND_XKB_ROOT=/usr/share/X11/xkb \
+        tinyland --seat --socket wayland-1 -- /usr/local/bin/bctl-guest browser \
+        > "$state/compositor.log" 2>&1 &
+    compositor=$!
+    session=$compositor
+    wait_for compositor wayland_socket
+}
+
+run() {
+    trap stop TERM INT
+    mkdir -p "$state" "$runtime_dir" "$profile"
+    chown "$browser_user" "$runtime_dir" "$profile"
+    chmod 700 "$runtime_dir"
+    : > "$state/browser.log"
+    chown "$browser_user" "$state/browser.log"
+    expose_devices
+
+    SEATD_VTBOUND=0 seatd -g video > "$state/seatd.log" 2>&1 &
+    wait_for seatd test -S /run/seatd.sock
+
+    case $compositor_kind in
+        sway) start_sway ;;
+        tinyland) start_tinyland ;;
+        *) fail "unknown BCTL_COMPOSITOR $compositor_kind" ;;
+    esac
     socat UNIX-LISTEN:"$cdp_socket",fork,unlink-early TCP:127.0.0.1:"$browser_cdp_port" > "$state/relay.log" 2>&1 &
     if [ -n "$cdp_tcp_port" ]; then
         socat TCP-LISTEN:"$cdp_tcp_port",fork,reuseaddr TCP:127.0.0.1:"$browser_cdp_port" > "$state/relay-tcp.log" 2>&1 &
     fi
     wait_for browser cdp_ready
     echo "bctl-guest: ready"
-    wait "$browser" || true
+    wait "$session" || true
     stop
 }
 
@@ -114,5 +143,6 @@ check() {
 case ${1:-run} in
     run) run ;;
     check) check ;;
-    *) fail "usage: bctl-guest [run|check]" ;;
+    browser) browser ;;
+    *) fail "usage: bctl-guest [run|check|browser]" ;;
 esac
