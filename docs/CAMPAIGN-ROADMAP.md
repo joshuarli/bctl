@@ -109,6 +109,15 @@ SmolVM; 7 of 16 guest Speedometer runs stalled on a lost module-script
 request while the container never did, which points at request loss in the
 guest network path (H3 owns it); the dashboard lease race on viewer reconnect
 was not retested after N6.
+T5 (`fc4b329`, `guest/tinyland/harness/wlcs/run.sh --sweep`,
+`docs/research/tinyland-wlcs.md`): WLCS v1.8.1 drives tinyland through a
+test-only headless feature and musl adapter; 79 pass, 767 unsupported, 379
+fail, mostly because WLCS commits buffers before acking the first configure
+(which xdg-shell forbids and tinyland rejects) and because tinyland maximizes
+every toplevel; one real bug fixed (a shrunk shm file now raises
+`wl_shm.invalid_fd`). Decided: patch WLCS's clients to ack configures rather
+than loosen tinyland, and stop reusing `wl_surface` error 0 for unrelated
+client errors.
 Next: D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).
