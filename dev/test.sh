@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe..."; }
+usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -39,6 +39,7 @@ suite_harness() {
 		case_verdict hello_pthread "$smp" 20 PASS '' "$FIXTURES/hello_pthread"
 		case_verdict writev_iov "$smp" 20 PASS '' "$FIXTURES/writev_iov"
 		case_verdict wait_nochild "$smp" 20 PASS '' "$FIXTURES/wait_nochild"
+		case_verdict low_user_va "$smp" 20 PASS '' "$FIXTURES/low_user_va"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
@@ -110,6 +111,40 @@ suite_probe() {
 	probe_nanos mini_chromium_raw "$no_processes"
 }
 
+upstream_known() {
+	case $1 in
+	filesystem@*) echo 'faccessat2 is missing, so musl faccessat(AT_SYMLINK_NOFOLLOW) fails (links.c:92)' ;;
+	io_uring@*) echo 'mmap of the rings does not give EINVAL where expected (io_uring.c:553)' ;;
+	mmap@*) echo 'user write fault in memset at an odd address' ;;
+	netsock@*) echo 'crash reading the msghdr in sendmsg (netsock_test_msg)' ;;
+	sigloop@*) echo 'sigaction rejects SIG_DFL/SIG_IGN without SA_RESTORER, which musl abort() uses' ;;
+	signal@*) echo 'silent hang' ;;
+	tun@*) echo 'TUNGETIFF does not return EBADFD (tun.c:49)' ;;
+	tlbshootdown@2) echo 'futex op 3 (FUTEX_REQUEUE) not implemented, hangs' ;;
+	esac
+}
+
+suite_upstream() {
+	"$ROOT/dev/upstream.sh" >"$WORK/tmp/upstream.txt" 2>&1 || :
+	if ! grep -q '^upstream: ' "$WORK/tmp/upstream.txt"; then
+		failures=$((failures + 1))
+		printf 'FAIL      upstream suite did not finish: %s\n' "$(tail -n 3 "$WORK/tmp/upstream.txt" | tr '\n' ' ')"
+		return
+	fi
+	while read -r verdict name smp rest; do
+		case $verdict in PASS | FAIL | TIMEOUT | CRASH | NOT_RUN) ;; *) continue ;; esac
+		key=$name@${smp#smp=}
+		known=$(upstream_known "$key")
+		if [ -n "$known" ] && [ "$verdict" = PASS ]; then status=FAIL note="known-red case now passes: delete its marker"
+		elif [ -n "$known" ]; then status=KNOWN-RED note="$verdict; $known"
+		elif [ "$verdict" = PASS ]; then status=PASS note=''
+		else status=FAIL note="$verdict $rest"; fi
+		[ "$status" != FAIL ] || failures=$((failures + 1))
+		printf '%-9s upstream %-14s %s  %s\n' "$status" "$name" "$smp" "$note"
+	done <"$WORK/tmp/upstream.txt"
+	grep '^upstream: ' "$WORK/tmp/upstream.txt"
+}
+
 [ $# -ge 1 ] || usage
 mkdir -p "$IMAGES"
 for suite in "$@"; do
@@ -118,6 +153,7 @@ for suite in "$@"; do
 	metrics) suite_metrics ;;
 	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;
+	upstream) suite_upstream ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	*) usage ;;
 	esac

@@ -56,13 +56,13 @@ run_guest() {
 	[ "$(guest_net "$t")" -eq 0 ] || netflag=--net
 	image=$IMGDIR/$t.smp$smp.img
 	cp "$IMGDIR/$t.img" "$image"
-	line=$("$ROOT/dev/run.sh" --smp "$smp" --mem 2G --timeout "$(guest_timeout "$t")" --label "upstream-$t-smp$smp" $netflag "$image" || :)
+	line=$("$ROOT/dev/run.sh" --exit-only --smp "$smp" --mem 2G --timeout "$(guest_timeout "$t")" --label "upstream-$t-smp$smp" $netflag "$image" || :)
 	rm -f "$image"
 	dir=${line##* dir=}
 	head=${line%% dir=*}
 	head=${head#RUN verdict=}
 	case $head in
-	'FAIL detail=missing-record' | PASS*) verdict=PASS detail=exit=0 ;;
+	PASS*) verdict=PASS detail=exit=0 ;;
 	TIMEOUT*) verdict=TIMEOUT detail=${head#TIMEOUT detail=} ;;
 	CRASH*) verdict=CRASH detail=${head#CRASH detail=} ;;
 	*) verdict=FAIL detail=${head#* detail=} ;;

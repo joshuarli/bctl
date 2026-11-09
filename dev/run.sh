@@ -3,11 +3,11 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--label NAME] IMAGE
+	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--exit-only] [--label NAME] IMAGE
        dev/run.sh --native [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--label NAME] BINARY [ARG...]"
 }
 
-smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0
+smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0
 expected=$(mktemp "$WORK/tmp/run-expected.XXXXXX")
 trap 'rm -f "$expected"' EXIT
 while [ $# -gt 0 ]; do
@@ -20,6 +20,7 @@ while [ $# -gt 0 ]; do
 	--net) net=1; shift ;;
 	--label) label=$2; shift 2 ;;
 	--native) native=1; shift ;;
+	--exit-only) exit_only=1; shift ;;
 	-*) usage ;;
 	*) image=$1; shift; break ;;
 	esac
@@ -90,7 +91,8 @@ fi
 
 results=$(grep -c '^MINI_CHROMIUM_RESULT ' "$log" || :)
 tests=$(grep '^MINI_CHROMIUM_TEST ' "$log" || :)
-if [ "$results" -eq 0 ]; then fail FAIL missing-record
+if [ "$exit_only" -eq 1 ]; then :
+elif [ "$results" -eq 0 ]; then fail FAIL missing-record
 elif [ "$results" -gt 1 ]; then fail FAIL duplicate-record
 fi
 if [ -n "$tests" ]; then
