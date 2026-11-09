@@ -765,7 +765,7 @@ closure_function(8, 1, sysreturn, nl_read_bh,
     nl_lock(s);
     struct nlmsghdr *hdr = dequeue(s->data);
     if (hdr == INVALID_ADDRESS) {
-        if (s->sock.f.flags & SOCK_NONBLOCK) {
+        if ((s->sock.f.flags & SOCK_NONBLOCK) || (bound(flags) & MSG_DONTWAIT)) {
             rv = -EAGAIN;
             goto unlock;
         }

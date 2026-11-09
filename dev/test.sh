@@ -74,12 +74,14 @@ suite_harness() {
 		case_verdict session_signal "$smp" 30 PASS '' "$FIXTURES/session_signal"
 		case_verdict netns "$smp" 60 PASS '' "$FIXTURES/netns"
 		case_verdict unix_abstract "$smp" 30 PASS '' "$FIXTURES/unix_abstract"
+		case_verdict netlink_route "$smp" 30 PASS '' "$FIXTURES/netlink_route"
 	done
 	fixture_native userns unshare -Ur
 	fixture_native pidns env
 	fixture_native session_signal env
 	fixture_native netns env
 	fixture_native unix_abstract env
+	fixture_native netlink_route env
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
 	case_verdict duplicate_result 1 20 'FAIL detail=duplicate-record' '' "$FIXTURES/duplicate_result"
