@@ -237,7 +237,7 @@ void coredump(thread t, struct siginfo *si, status_handler complete)
         s = timm("result", "no core generated: failed to allocate vector");
         goto error;
     }
-    rangemap_foreach(p->vmaps, n)
+    rangemap_foreach(p->vm->vmaps, n)
         vector_push(v, n);
 
     u64 hdr_size = sizeof(Elf64_Phdr) * (vector_length(v) + 1) + sizeof(Elf64_Ehdr);

@@ -22,7 +22,7 @@
         if (!(x)) {                                                     \
             print_frame_trace_from_here();                              \
             if (current)                                                \
-                vmap_dump(current->p->vmaps);                           \
+                vmap_dump(current->p->vm->vmaps);                           \
             halt("assertion " #x " failed at " __FILE__ ":%d  in %s(); halt\n", \
                  __LINE__, func_ss);                                    \
         }                                                               \
@@ -30,7 +30,7 @@
 
 typedef struct vmap_heap {
     struct heap h;  /* must be first */
-    process p;
+    process_vm vm;
     boolean randomize;
 } *vmap_heap;
 
@@ -186,7 +186,7 @@ static boolean new_zeroed_pages(process p, u64 v, vmap vm, pageflags flags, void
     }
     pf_debug("%s: v 0x%lx, vmap %R, page_addr 0x%lx, page_size 0x%lx\n", func_ss, v, vm->node.r,
              page_addr, page_size);
-    address_space_traverse_ptes(p->as, page_addr, page_size,
+    address_space_traverse_ptes(p->vm->as, page_addr, page_size,
                                 stack_closure(vmap_anon_ptes, v, &page_addr, &page_size));
     pf_debug("  after traversing PTEs: page_addr 0x%lx, page_size 0x%lx\n", page_addr, page_size);
     if (page_size == 0) {
@@ -209,7 +209,7 @@ static boolean new_zeroed_pages(process p, u64 v, vmap vm, pageflags flags, void
     }
     zero(m, page_size);
     smp_write_barrier();
-    address_space_map(p->as, page_addr, physical_from_virtual(m), page_size, flags);
+    address_space_map(p->vm->as, page_addr, physical_from_virtual(m), page_size, flags);
     return true;
 }
 
@@ -257,7 +257,7 @@ static status mmap_filebacked_page(process p, vmap vm, u64 page_addr, pageflags 
     void *kv = pointer_from_u64(kvirt.start);
     pagetable_lock();
     for (u64 off = 0; off < len; off += PAGESIZE)
-        if (address_space_physical_locked(p->as, page_addr + off) != INVALID_PHYSICAL) {
+        if (address_space_physical_locked(p->vm->as, page_addr + off) != INVALID_PHYSICAL) {
             /* The mapping must have been done in parallel by another CPU. */
             pagecache_map = false;
             break;
@@ -270,7 +270,7 @@ static status mmap_filebacked_page(process p, vmap vm, u64 page_addr, pageflags 
                 zero(kv + bss_start, len - bss_start);
             }
         }
-        address_space_map_locked(p->as, page_addr, physical_from_virtual(kv), len, flags);
+        address_space_map_locked(p->vm->as, page_addr, physical_from_virtual(kv), len, flags);
     }
     pagetable_unlock();
     if (!pagecache_map)
@@ -448,7 +448,7 @@ status do_demand_page(process p, context ctx, u64 vaddr, vmap vm, boolean *done)
 
 vmap vmap_from_vaddr(process p, u64 vaddr)
 {
-    rangemap rm = p->vmaps;
+    rangemap rm = p->vm->vmaps;
     vmap vm = (vmap)rangemap_lookup_at_or_next(rm, vaddr);
     if ((vm != INVALID_ADDRESS) && (vm->node.r.start > vaddr)) {
         /* vm does not cover this address; if it is a stack mapping, check whether it can be
@@ -470,11 +470,11 @@ vmap vmap_from_vaddr(process p, u64 vaddr)
 void vmap_iterator(process p, vmap_handler vmh)
 {
     vmap_lock(p);
-    vmap vm = (vmap) rangemap_first_node(p->vmaps);
+    vmap vm = (vmap) rangemap_first_node(p->vm->vmaps);
     while (vm != INVALID_ADDRESS) {
         if (!apply(vmh, vm))
             break;
-        vm = (vmap) rangemap_next_node(p->vmaps, &vm->node);
+        vm = (vmap) rangemap_next_node(p->vm->vmaps, &vm->node);
     }
     vmap_unlock(p);
 }
@@ -498,20 +498,20 @@ closure_func_basic(range_handler, boolean, vmap_validate_gap,
  * If `allow_gaps` is false, the presence of any gap in the memory map over the given range makes
  * this function return RM_ABORT; otherwise, this function returns RM_MATCH if at least (part of)
  * one mapping exists in the given range, RM_NOMATCH of no mapping exists. */
-static int vmap_range_walk(process p, range q, vmap_handler node_handler, boolean allow_gaps)
+static int vmap_range_walk(process_vm vm, range q, vmap_handler node_handler, boolean allow_gaps)
 {
     range_handler gap_handler = allow_gaps ?
                                 0 : stack_closure_func(range_handler, vmap_validate_gap);
-    vmap_lock(p);
-    int res = rangemap_range_lookup_with_gaps(p->vmaps, q, (rmnode_handler)node_handler,
+    process_vm_lock(vm);
+    int res = rangemap_range_lookup_with_gaps(vm->vmaps, q, (rmnode_handler)node_handler,
                                               gap_handler);
-    vmap_unlock(p);
+    process_vm_unlock(vm);
     return res;
 }
 
 boolean vmap_validate_range(process p, range q, u32 flags)
 {
-    return (vmap_range_walk(p, q, stack_closure(vmap_validate_node, flags), false) == RM_MATCH);
+    return (vmap_range_walk(p->vm, q, stack_closure(vmap_validate_node, flags), false) == RM_MATCH);
 }
 
 closure_func_basic(rmnode_handler, boolean, vmap_dump_node,
@@ -659,14 +659,14 @@ vmap allocate_vmap(process p, range q, struct vmap k)
 {
     k.node.r = q;
     vmap_lock(p);
-    vmap v = allocate_vmap_locked(p->vmaps, &k);
+    vmap v = allocate_vmap_locked(p->vm->vmaps, &k);
     vmap_unlock(p);
     return v;
 }
 
 static inline boolean validate_mmap_range(process p, range q)
 {
-    return range_valid(q) && q.start >= p->mmap_min_addr && q.end <= USER_LIMIT;
+    return range_valid(q) && q.start >= p->vm->mmap_min_addr && q.end <= USER_LIMIT;
 }
 
 closure_function(1, 1, boolean, proc_virt_gap_handler,
@@ -708,13 +708,13 @@ closure_function(3, 1, boolean, proc_virt_node_handler,
 }
 
 /* Does NOT mark the returned address as allocated in the virtual heap. */
-static u64 process_get_virt_range_locked(process p, u64 size, range region)
+static u64 process_get_virt_range_locked(process_vm vm, u64 size, range region)
 {
     assert(!(size & PAGEMASK));
-    vmap_heap vmh = (vmap_heap)p->virtual;
+    vmap_heap vmh = (vmap_heap)vm->virtual;
     u64 addr = INVALID_PHYSICAL;
     boolean randomize = vmh->randomize;
-    int res = rangemap_range_lookup_with_gaps(p->vmaps, region,
+    int res = rangemap_range_lookup_with_gaps(vm->vmaps, region,
                                               stack_closure(proc_virt_node_handler, size, randomize,
                                                             &addr),
                                               stack_closure(proc_virt_gap_handler, &addr));
@@ -729,21 +729,21 @@ static u64 process_get_virt_range_locked(process p, u64 size, range region)
 u64 process_get_virt_range(process p, u64 size, range region)
 {
     vmap_lock(p);
-    u64 ret = process_get_virt_range_locked(p, size, region);
+    u64 ret = process_get_virt_range_locked(p->vm, size, region);
     vmap_unlock(p);
     return ret;
 }
 
-static u64 process_allocate_range_locked(process p, u64 size, struct vmap k, range region)
+static u64 process_allocate_range_locked(process_vm pvm, u64 size, struct vmap k, range region)
 {
-    u64 virt_addr = process_get_virt_range_locked(p, size, region);
+    u64 virt_addr = process_get_virt_range_locked(pvm, size, region);
     if (virt_addr != INVALID_PHYSICAL) {
         k.node.r = irangel(virt_addr, size);
-        vmap vm = allocate_vmap_locked(p->vmaps, &k);
+        vmap vm = allocate_vmap_locked(pvm->vmaps, &k);
         if (vm == INVALID_ADDRESS)
             virt_addr = INVALID_PHYSICAL;
     }
-    vmap_paranoia_locked(p->vmaps);
+    vmap_paranoia_locked(pvm->vmaps);
     return virt_addr;
 }
 
@@ -754,19 +754,19 @@ void *process_map_physical(process p, u64 phys_addr, u64 size, u64 vmflags)
     vmap_debug("%s: phys_addr 0x%lx, size 0x%lx, vmflags 0x%lx\n",
                func_ss, phys_addr, size, vmflags);
     vmap_lock(p);
-    u64 virt_addr = process_allocate_range_locked(p, size, ivmap(vmflags, 0, 0, 0, 0),
+    u64 virt_addr = process_allocate_range_locked(p->vm, size, ivmap(vmflags, 0, 0, 0, 0),
                                                   PROCESS_VIRTUAL_MMAP_RANGE);
     vmap_unlock(p);
     if (virt_addr == INVALID_PHYSICAL)
         return INVALID_ADDRESS;
-    address_space_map(p->as, virt_addr, phys_addr, size, pageflags_from_vmflags(vmflags));
+    address_space_map(p->vm->as, virt_addr, phys_addr, size, pageflags_from_vmflags(vmflags));
     return pointer_from_u64(virt_addr);
 }
 
 boolean adjust_process_heap(process p, range new)
 {
     vmap_lock(p);
-    boolean inserted = rangemap_reinsert(p->vmaps, &p->heap_map->node, new);
+    boolean inserted = rangemap_reinsert(p->vm->vmaps, &p->vm->heap_map->node, new);
     vmap_unlock(p);
     return inserted;
 }
@@ -787,7 +787,7 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
 
     /* begin locked portion...no direct returns */
     vmap_lock(p);
-    vmap old_vmap = (vmap)rangemap_lookup(p->vmaps, old.start);
+    vmap old_vmap = (vmap)rangemap_lookup(p->vm->vmaps, old.start);
     if (old_vmap == INVALID_ADDRESS || !range_contains(old_vmap->node.r, old)) {
         vmap_debug("no match, old_vmap %p, old %R\n", old_vmap, old);
         rv = -EFAULT;
@@ -831,13 +831,13 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
             /* grow check */
             new = irangel(old.start, new_size);
             range delta = irange(old.end, new.end);
-            if (rangemap_range_intersects(p->vmaps, delta)) {
+            if (rangemap_range_intersects(p->vm->vmaps, delta)) {
                 /* collision; allocate new */
                 if ((flags & MREMAP_MAYMOVE) == 0) {
                     rv = -ENOMEM;
                     goto unlock_out;
                 }
-                u64 vnew = process_get_virt_range_locked(p, new_size, PROCESS_VIRTUAL_MMAP_RANGE);
+                u64 vnew = process_get_virt_range_locked(p->vm, new_size, PROCESS_VIRTUAL_MMAP_RANGE);
                 if (vnew == (u64)INVALID_ADDRESS) {
                     msg_err("%s: failed to allocate virtual memory, size %ld", func_ss, new_size);
                     rv = -ENOMEM;
@@ -868,7 +868,7 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
 
     /* create new vmap with old attributes */
     k.node.r = new;
-    if (allocate_vmap_locked(p->vmaps, &k) == INVALID_ADDRESS) {
+    if (allocate_vmap_locked(p->vm->vmaps, &k) == INVALID_ADDRESS) {
         msg_err("%s: failed to allocate vmap", func_ss);
         rv = -ENOMEM;
         goto unlock_out;
@@ -879,7 +879,7 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
         /* remap existing portion */
         thread_log(current, "   remapping existing portion at 0x%lx (old %R)",
                    new.start, old);
-        address_space_remap_pages(p->as, new.start, old.start, range_span(old));
+        address_space_remap_pages(p->vm->as, new.start, old.start, range_span(old));
     }
   unlock_out:
     vmap_unlock(p);
@@ -936,7 +936,7 @@ static sysreturn mincore(void *addr, u64 length, u8 *vec)
     /* -ENOMEM if any unmapped gaps in range */
     process p = current->p;
     vmap_lock(p);
-    boolean found = rangemap_range_find_gaps(p->vmaps, irangel(start, length),
+    boolean found = rangemap_range_find_gaps(p->vm->vmaps, irangel(start, length),
                                              stack_closure_func(range_handler, mincore_vmap_gap)) ==
             RM_ABORT;
     vmap_unlock(p);
@@ -944,7 +944,7 @@ static sysreturn mincore(void *addr, u64 length, u8 *vec)
         return -ENOMEM;
 
     runtime_memset(vec, 0, nr_pgs);
-    address_space_traverse_ptes(p->as, start, length,
+    address_space_traverse_ptes(p->vm->as, start, length,
                                 stack_closure(mincore_fill_vec, start, nr_pgs, vec));
     return 0;
 }
@@ -1067,7 +1067,7 @@ static sysreturn vmap_update_protections_locked(process p, range q, u32 newflags
     assert(range_span(q) > 0);
 
     vmap_debug("%s: q %R newflags 0x%x\n", func_ss, q, newflags);
-    rangemap pvmap = p->vmaps;
+    rangemap pvmap = p->vm->vmaps;
     if (!memory_is_user(pointer_from_u64(q.start), range_span(q)) ||
         (rangemap_range_find_gaps(pvmap, q,
                                   stack_closure_func(range_handler, vmap_update_protections_gap))
@@ -1089,7 +1089,7 @@ static sysreturn vmap_update_protections_locked(process p, range q, u32 newflags
         vmap_update_flags_intersection(pvmap, q, VMAP_FLAG_PROT_MASK, newflags, vm);
         r.start = MIN(r.end, vm->node.r.end);
     }
-    address_space_update_map_flags(p->as, q.start, range_span(q), pageflags_from_vmflags(newflags));
+    address_space_update_map_flags(p->vm->as, q.start, range_span(q), pageflags_from_vmflags(newflags));
     vmap_paranoia_locked(pvmap);
     return 0;
 }
@@ -1168,20 +1168,20 @@ closure_function(3, 1, boolean, vmap_remove_intersection,
     return true;
 }
 
-static void vmap_unmap_page_range(process p, vmap k, boolean del_mappings)
+static void vmap_unmap_page_range(process_vm vm, vmap k, boolean del_mappings)
 {
     range r = k->node.r;
     int type = k->flags & VMAP_MMAP_TYPE_MASK;
     u64 len = range_span(r);
     switch (type) {
     case VMAP_MMAP_TYPE_ANONYMOUS:
-        address_space_unmap_and_free_phys(p->as, r.start, len);
+        address_space_unmap_and_free_phys(vm->as, r.start, len);
         break;
     case VMAP_MMAP_TYPE_FILEBACKED:
-        pagecache_node_unmap_pages(k->cache_node, p->as, r, k->node_offset, del_mappings);
+        pagecache_node_unmap_pages(k->cache_node, vm->as, r, k->node_offset, del_mappings);
         break;
     case VMAP_MMAP_TYPE_CUSTOM:
-        address_space_unmap(p->as, r.start, len);
+        address_space_unmap(vm->as, r.start, len);
         break;
     }
 }
@@ -1190,7 +1190,7 @@ closure_function(1, 1, boolean, vmap_unmap,
                  process, p,
                  vmap v)
 {
-    vmap_unmap_page_range(bound(p), v, true);
+    vmap_unmap_page_range(bound(p)->vm, v, true);
     return true;
 }
 
@@ -1198,8 +1198,8 @@ static void process_remove_range_locked(process p, range q, boolean unmap)
 {
     vmap_debug("%s: q %R\n", func_ss, q);
     vmap_handler vh = unmap ? stack_closure(vmap_unmap, p) : 0;
-    rangemap_range_lookup(p->vmaps, q,
-                          (rmnode_handler)stack_closure(vmap_remove_intersection, p->vmaps, q, vh));
+    rangemap_range_lookup(p->vm->vmaps, q,
+                          (rmnode_handler)stack_closure(vmap_remove_intersection, p->vm->vmaps, q, vh));
 }
 
 /* don't truncate vmap; just unmap truncated pages */
@@ -1208,7 +1208,7 @@ void truncate_file_maps(process p, fsfile f, u64 new_length)
     vmap_lock(p);
     u64 padlen = pad(new_length, PAGESIZE);
     pagecache_node pn = fsfile_get_cachenode(f);
-    rangemap_foreach(p->vmaps, n) {
+    rangemap_foreach(p->vm->vmaps, n) {
         vmap vm = (vmap)n;
         /* an invalidate would be preferable to a sync... */
         if (vm->cache_node != pn)
@@ -1222,7 +1222,7 @@ void truncate_file_maps(process p, fsfile f, u64 new_length)
         u64 node_offset = vm->node_offset + (v.start - n->r.start);
         pf_debug("%s: vmap %p, %R, delta 0x%lx, remove v %R, node_offset 0x%lx\n",
                  func_ss, vm, n->r, delta, v, node_offset);
-        pagecache_node_unmap_pages(pn, p->as, v, node_offset, false);
+        pagecache_node_unmap_pages(pn, p->vm->as, v, node_offset, false);
     }
     vmap_unlock(p);
 }
@@ -1234,7 +1234,7 @@ closure_func_basic(vmap_handler, boolean, msync_vmap,
         (vm->flags & VMAP_FLAG_MMAP) &&
         (vm->flags & VMAP_MMAP_TYPE_MASK) == VMAP_MMAP_TYPE_FILEBACKED) {
         vmap_assert(vm->cache_node);
-        pagecache_node_scan(vm->cache_node, current->p->as, vm->node.r, 0);
+        pagecache_node_scan(vm->cache_node, current->p->vm->as, vm->node.r, 0);
     }
     return true;
 }
@@ -1250,7 +1250,7 @@ static sysreturn msync(void *addr, u64 length, int flags)
     if (flags & MS_SYNC) {
         process p = current->p;
         range q = irangel(u64_from_pointer(addr), pad(length, PAGESIZE));
-        have_gap = (vmap_range_walk(p, q, stack_closure_func(vmap_handler, msync_vmap), false) ==
+        have_gap = (vmap_range_walk(p->vm, q, stack_closure_func(vmap_handler, msync_vmap), false) ==
                 RM_ABORT);
     }
 
@@ -1328,14 +1328,14 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             goto out_unlock;
         }
         if ((flags & MAP_FIXED_NOREPLACE) &&
-            rangemap_range_intersects(p->vmaps, q)) {
+            rangemap_range_intersects(p->vm->vmaps, q)) {
             msg_info("%s: MAP_FIXED_NOREPLACE and collision in range %R", func_ss, q);
             ret = -EEXIST;
             goto out_unlock;
         }
     } else if (q.start != 0) {
         q = irangel(pad(q.start, PAGESIZE), len);
-        if (rangemap_range_intersects(p->vmaps, q)) {
+        if (rangemap_range_intersects(p->vm->vmaps, q)) {
             thread_log(current, "   hint %R collides, reverting to allocation", q);
             q.start = 0;
         }
@@ -1412,7 +1412,7 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             (flags & MAP_32BIT) ? PROCESS_VIRTUAL_32BIT_RANGE :
 #endif
             PROCESS_VIRTUAL_MMAP_RANGE;
-        u64 vaddr = process_get_virt_range_locked(p, len, alloc_region);
+        u64 vaddr = process_get_virt_range_locked(p->vm, len, alloc_region);
         if (vaddr == INVALID_PHYSICAL) {
             ret = -ENOMEM;
             msg_warn("%s failed to get virtual address range", func_ss);
@@ -1431,13 +1431,13 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
     if (fixed)
         process_remove_range_locked(p, q, vmap_mmap_type != VMAP_MMAP_TYPE_CUSTOM);
     k.node.r = q;
-    vmap vm = allocate_vmap_locked(p->vmaps, &k);
+    vmap vm = allocate_vmap_locked(p->vm->vmaps, &k);
     vmap_assert(vm != INVALID_ADDRESS);
     vm->fault = k.fault;
     vmap_unlock(p);
 
     if (vmap_mmap_type == VMAP_MMAP_TYPE_FILEBACKED)
-        pagecache_node_add_mapping(node, p->as, irangel(q.start, len), offset,
+        pagecache_node_add_mapping(node, p->vm->as, irangel(q.start, len), offset,
                                    !!(vmflags & VMAP_FLAG_SHARED));
 
     /* as man page suggests, ignore MAP_POPULATE if MAP_NONBLOCK is specified */
@@ -1494,7 +1494,7 @@ sysreturn madvise(void *addr, s64 length, int advice)
         return 0;   /* ignore non-supported advice values */
     }
     process p = current->p;
-    rangemap vmaps = p->vmaps;
+    rangemap vmaps = p->vm->vmaps;
     range q = irangel(u64_from_pointer(addr), pad(length, PAGESIZE));
     sysreturn rv = 0;
     rmnode_handler vmap_handler = stack_closure(madvise_vmap_validate, advice, &rv);
@@ -1509,7 +1509,7 @@ sysreturn madvise(void *addr, s64 length, int advice)
                 struct vmap k;
                 alter_vmap_key(&k, vm, vm->flags, ri.start - vm->node.r.start);
                 k.node.r = ri;
-                vmap_unmap_page_range(p, &k, false);
+                vmap_unmap_page_range(p->vm, &k, false);
             } else {
                 vmap_update_flags_intersection(vmaps, q, clear_mask, set_mask, vm);
             }
@@ -1529,20 +1529,20 @@ extern void * START;
 
 static u64 vmh_alloc(struct heap *h, bytes b)
 {
-    process p = ((vmap_heap)h)->p;
-    vmap_lock(p);
-    u64 ret = process_allocate_range_locked(p, b, ivmap(0, 0, 0, 0, 0),
+    process_vm vm = ((vmap_heap)h)->vm;
+    process_vm_lock(vm);
+    u64 ret = process_allocate_range_locked(vm, b, ivmap(0, 0, 0, 0, 0),
                                             PROCESS_VIRTUAL_MMAP_RANGE);
-    vmap_unlock(p);
+    process_vm_unlock(vm);
     return ret;
 }
 
 void vmh_dealloc(struct heap *h, u64 a, bytes b)
 {
     vmap_heap vmh = (vmap_heap)h;
-    process p = vmh->p;
+    process_vm vm = vmh->vm;
     range q = irangel(a, b);
-    vmap_range_walk(p, q, stack_closure(vmap_remove_intersection, p->vmaps, q, 0), true);
+    vmap_range_walk(vm, q, stack_closure(vmap_remove_intersection, vm->vmaps, q, 0), true);
 }
 
 closure_function(1, 1, boolean, vmh_allocated_handler,
@@ -1556,9 +1556,8 @@ closure_function(1, 1, boolean, vmh_allocated_handler,
 bytes vmh_allocated(struct heap *h)
 {
     vmap_heap vmh = (vmap_heap)h;
-    process p = vmh->p;
     bytes allocated = 0;
-    vmap_range_walk(p, irange(0, PROCESS_VIRTUAL_HEAP_LIMIT),
+    vmap_range_walk(vmh->vm, irange(0, PROCESS_VIRTUAL_HEAP_LIMIT),
                     stack_closure(vmh_allocated_handler, &allocated), true);
     return allocated;
 }
@@ -1581,7 +1580,7 @@ boolean validate_user_memory_permissions(process p, const void *buf, bytes lengt
 {
     u64 addr = u64_from_pointer(buf);
     range q = irange(addr, pad(addr + length, PAGESIZE));
-    int res = vmap_range_walk(p, q, stack_closure(check_vmap_permissions, required_flags,
+    int res = vmap_range_walk(p->vm, q, stack_closure(check_vmap_permissions, required_flags,
                                                   disallowed_flags),
                               false);
     return res == RM_MATCH;
@@ -1631,27 +1630,66 @@ void mmap_init(tuple root)
     spin_lock_init(&mmap_info.pf_lock);
 }
 
-void mmap_process_init(process p, tuple root)
+closure_func_basic(thunk, void, process_vm_free)
+{
+    process_vm vm = struct_from_closure(process_vm, free);
+    process_vm_free_mappings(vm);
+    deallocate_futices(vm);
+    deallocate_rangemap(vm->vmaps, 0);
+    deallocate(mmap_info.h, vm->virtual, sizeof(struct vmap_heap));
+    address_space_release(vm->as);
+    deallocate(mmap_info.h, vm, sizeof(*vm));
+}
+
+static process_vm process_vm_alloc(address_space as, u64 mmap_min_addr, boolean randomize)
 {
     heap h = mmap_info.h;
-    boolean aslr = !get(root, sym(noaslr));
-    spin_lock_init(&p->vmap_lock);
-    u64 min_addr;
-    if (get_u64(root, sym(mmap_min_addr), &min_addr))
-        p->mmap_min_addr = min_addr;
-    else
-        p->mmap_min_addr = PAGESIZE;
-    p->vmaps = allocate_rangemap(h);
-    assert(p->vmaps != INVALID_ADDRESS);
-    vmap_heap vmh = mem_alloc(h, sizeof(struct vmap_heap), MEM_NOFAIL);
+    process_vm vm = allocate(h, sizeof(*vm));
+    if (vm == INVALID_ADDRESS)
+        return vm;
+    vm->vmaps = allocate_rangemap(h);
+    if (vm->vmaps == INVALID_ADDRESS)
+        goto fail_vm;
+    vmap_heap vmh = allocate(h, sizeof(struct vmap_heap));
+    if (vmh == INVALID_ADDRESS)
+        goto fail_vmaps;
+    if (!init_futices(vm))
+        goto fail_vmh;
     vmh->h.alloc = vmh_alloc;
     vmh->h.dealloc = vmh_dealloc;
     vmh->h.allocated = vmh_allocated;
     vmh->h.pagesize = PAGESIZE;
     vmh->h.total = vmh_total;
-    vmh->p = p;
-    vmh->randomize = aslr;
-    p->virtual = &vmh->h;
+    vmh->vm = vm;
+    vmh->randomize = randomize;
+    vm->virtual = &vmh->h;
+    vm->as = as;
+    spin_lock_init(&vm->vmap_lock);
+    vm->mmap_min_addr = mmap_min_addr;
+    vm->stack_map = vm->heap_map = 0;
+    vm->brk = 0;
+    vm->heap_base = 0;
+    vm->vdso_base = 0;
+    init_refcount(&vm->refcount, 1, init_closure_func(&vm->free, thunk, process_vm_free));
+    return vm;
+  fail_vmh:
+    deallocate(h, vmh, sizeof(struct vmap_heap));
+  fail_vmaps:
+    deallocate_rangemap(vm->vmaps, 0);
+  fail_vm:
+    deallocate(h, vm, sizeof(*vm));
+    return INVALID_ADDRESS;
+}
+
+process_vm mmap_process_init(tuple root)
+{
+    u64 min_addr;
+    if (!get_u64(root, sym(mmap_min_addr), &min_addr))
+        min_addr = PAGESIZE;
+    address_space as = allocate_address_space(heap_locked(get_kernel_heaps()));
+    assert(as != INVALID_ADDRESS);
+    process_vm vm = process_vm_alloc(as, min_addr, !get(root, sym(noaslr)));
+    assert(vm != INVALID_ADDRESS);
 
     /* randomly determine vdso/vvar base and track it */
     u64 vdso_size, vvar_size;
@@ -1659,22 +1697,23 @@ void mmap_process_init(process p, tuple root)
     vdso_size = vdso_raw_length;
     vvar_size = VVAR_NR_PAGES * PAGESIZE;
 
-    p->vdso_base = process_get_virt_range_locked(p, vdso_size + vvar_size, PROCESS_VIRTUAL_MMAP_RANGE);
+    vm->vdso_base = process_get_virt_range_locked(vm, vdso_size + vvar_size, PROCESS_VIRTUAL_MMAP_RANGE);
     struct vmap k = ivmap(VMAP_FLAG_EXEC, 0, 0, 0, 0);
-    k.node.r = irangel(p->vdso_base, vdso_size);
-    vmap_assert(allocate_vmap_locked(p->vmaps, &k) != INVALID_ADDRESS);
+    k.node.r = irangel(vm->vdso_base, vdso_size);
+    vmap_assert(allocate_vmap_locked(vm->vmaps, &k) != INVALID_ADDRESS);
 
     /* vvar goes right after the vdso */
     k = ivmap(0, 0, 0, 0, 0);
-    k.node.r = irangel(p->vdso_base + vdso_size, vvar_size);
-    vmap_assert(allocate_vmap_locked(p->vmaps, &k) != INVALID_ADDRESS);
+    k.node.r = irangel(vm->vdso_base + vdso_size, vvar_size);
+    vmap_assert(allocate_vmap_locked(vm->vmaps, &k) != INVALID_ADDRESS);
 
 #ifdef __x86_64__
     /* Track vsyscall page */
     k = ivmap(VMAP_FLAG_EXEC, 0, 0, 0, 0);
     k.node.r = irangel(VSYSCALL_BASE, PAGESIZE);
-    vmap_assert(allocate_vmap_locked(p->vmaps, &k) != INVALID_ADDRESS);
+    vmap_assert(allocate_vmap_locked(vm->vmaps, &k) != INVALID_ADDRESS);
 #endif
+    return vm;
 }
 
 void register_mmap_syscalls(struct syscall *map)
@@ -1739,7 +1778,7 @@ static enum fork_page_action fork_page_action(vmap vm, u64 vaddr, physical phys)
     return FORK_PAGE_COPY;
 }
 
-static boolean fork_vmap_pages(process child, process parent, vmap vm)
+static boolean fork_vmap_pages(process_vm child, process_vm parent, vmap vm)
 {
     struct fork_pte batch[FORK_PTE_BATCH];
     range r = vm->node.r;
@@ -1779,7 +1818,7 @@ static boolean fork_vmap_pages(process child, process parent, vmap vm)
     }
 }
 
-static boolean vmap_forkable(process p, vmap vm)
+static boolean vmap_forkable(process_vm pvm, vmap vm)
 {
     u64 type = vm->flags & VMAP_MMAP_TYPE_MASK;
     if (vm->flags & VMAP_FLAG_MMAP)
@@ -1787,52 +1826,50 @@ static boolean vmap_forkable(process p, vmap vm)
                ((type == VMAP_MMAP_TYPE_ANONYMOUS) && !(vm->flags & VMAP_FLAG_SHARED));
     if (vm->flags & (VMAP_FLAG_STACK | VMAP_FLAG_HEAP | VMAP_FLAG_BSS | VMAP_FLAG_PROG))
         return true;
-    return (vm->node.r.start == p->vdso_base) ||
-           (vm->node.r.start == p->vdso_base + vdso_raw_length)
+    return (vm->node.r.start == pvm->vdso_base) ||
+           (vm->node.r.start == pvm->vdso_base + vdso_raw_length)
 #ifdef __x86_64__
            || (vm->node.r.start == VSYSCALL_BASE)
 #endif
            ;
 }
 
-static boolean vmap_is_special(process p, vmap vm)
+static boolean vmap_is_special(vmap vm)
 {
     return !(vm->flags & (VMAP_FLAG_MMAP | VMAP_FLAG_STACK | VMAP_FLAG_HEAP | VMAP_FLAG_BSS |
                           VMAP_FLAG_PROG));
 }
 
-static void mmap_process_init_common(process child, process parent)
+/* Eagerly copies the private memory of parent into a new address space. Pages of the page cache
+   are left for the child to fault in again. */
+process_vm mmap_process_fork(process_vm parent, sysreturn *rv)
 {
-    heap h = mmap_info.h;
-    spin_lock_init(&child->vmap_lock);
-    child->mmap_min_addr = parent->mmap_min_addr;
-    child->vmaps = allocate_rangemap(h);
-    assert(child->vmaps != INVALID_ADDRESS);
-    vmap_heap vmh = mem_alloc(h, sizeof(struct vmap_heap), MEM_NOFAIL);
-    vmh->h.alloc = vmh_alloc;
-    vmh->h.dealloc = vmh_dealloc;
-    vmh->h.allocated = vmh_allocated;
-    vmh->h.pagesize = PAGESIZE;
-    vmh->h.total = vmh_total;
-    vmh->p = child;
-    vmh->randomize = ((vmap_heap)parent->virtual)->randomize;
-    child->virtual = &vmh->h;
-}
-
-/* Eagerly copies the private memory of parent into child, which must have an empty address
-   space. Pages of the page cache are left for the child to fault in again. */
-sysreturn mmap_process_fork(process child, process parent)
-{
-    mmap_process_init_common(child, parent);
-    sysreturn rv = 0;
-    vmap_lock(parent);
+#ifdef VM_ISOLATION_SELFTEST_BREAK
+    address_space as = parent->as;
+    address_space_reserve(as);
+#else
+    address_space as = allocate_address_space(heap_locked(get_kernel_heaps()));
+    if (as == INVALID_ADDRESS) {
+        *rv = -ENOMEM;
+        return INVALID_ADDRESS;
+    }
+#endif
+    process_vm child = process_vm_alloc(as, parent->mmap_min_addr,
+                                        ((vmap_heap)parent->virtual)->randomize);
+    if (child == INVALID_ADDRESS) {
+        address_space_release(as);
+        *rv = -ENOMEM;
+        return INVALID_ADDRESS;
+    }
+    *rv = 0;
+    process_vm_lock(parent);
     child->vdso_base = parent->vdso_base;
     child->brk = parent->brk;
     child->heap_base = parent->heap_base;
     rangemap_foreach(parent->vmaps, n) {
         if (!vmap_forkable(parent, (vmap)n)) {
             msg_warn("fork: unsupported mapping %R (flags 0x%x)", n->r, ((vmap)n)->flags);
-            rv = -ENOSYS;
+            *rv = -ENOSYS;
             goto out;
         }
     }
@@ -1842,7 +1879,7 @@ sysreturn mmap_process_fork(process child, process parent)
         runtime_memcpy(&k, vm, sizeof(k));
         vmap cvm = allocate_vmap_locked(child->vmaps, &k);
         if (cvm == INVALID_ADDRESS) {
-            rv = -ENOMEM;
+            *rv = -ENOMEM;
             goto out;
         }
         cvm->fault = vm->fault;
@@ -1850,7 +1887,7 @@ sysreturn mmap_process_fork(process child, process parent)
             child->heap_map = cvm;
         if (vm == parent->stack_map)
             child->stack_map = cvm;
-        if (vmap_is_special(parent, vm) || (child->as == parent->as))
+        if (vmap_is_special(vm) || (child->as == parent->as))
             continue;
         if (vm->cache_node &&
             (((vm->flags & VMAP_FLAG_MMAP) &&
@@ -1859,46 +1896,45 @@ sysreturn mmap_process_fork(process child, process parent)
             pagecache_node_add_mapping(vm->cache_node, child->as, n->r, vm->node_offset,
                                        !!(vm->flags & VMAP_FLAG_SHARED));
         if (!fork_vmap_pages(child, parent, vm)) {
-            rv = -ENOMEM;
+            *rv = -ENOMEM;
             goto out;
         }
     }
   out:
-    vmap_unlock(parent);
-    return rv;
+    process_vm_unlock(parent);
+    if (*rv < 0) {
+        process_vm_release(child);
+        return INVALID_ADDRESS;
+    }
+    return child;
 }
 
-/* Releases every mapping of an exiting process, including those that munmap leaves alone. */
-void mmap_process_exit(process p)
+/* Releases every mapping of an address space that is going away, including those that munmap
+   leaves alone. */
+void process_vm_free_mappings(process_vm pvm)
 {
-    vmap_lock(p);
+    process_vm_lock(pvm);
     vmap vm;
-    while ((vm = (vmap)rangemap_first_node(p->vmaps)) != INVALID_ADDRESS) {
+    while ((vm = (vmap)rangemap_first_node(pvm->vmaps)) != INVALID_ADDRESS) {
         range r = vm->node.r;
-        rangemap_remove_node(p->vmaps, &vm->node);
+        rangemap_remove_node(pvm->vmaps, &vm->node);
         if (range_span(r) && (r.end <= USER_LIMIT)) {
             if (vm->flags & VMAP_FLAG_MMAP) {
-                vmap_unmap_page_range(p, vm, true);
+                vmap_unmap_page_range(pvm, vm, true);
             } else if ((vm->flags & VMAP_FLAG_PROG) && !(vm->flags & VMAP_FLAG_WRITABLE)) {
                 if (vm->cache_node)
-                    pagecache_node_unmap_pages(vm->cache_node, p->as, r, vm->node_offset, true);
+                    pagecache_node_unmap_pages(vm->cache_node, pvm->as, r, vm->node_offset, true);
                 else
-                    address_space_unmap(p->as, r.start, range_span(r));
+                    address_space_unmap(pvm->as, r.start, range_span(r));
             } else if (vm->flags & (VMAP_FLAG_PROG | VMAP_FLAG_STACK | VMAP_FLAG_HEAP |
                                     VMAP_FLAG_BSS)) {
-                address_space_unmap_and_free_phys(p->as, r.start, range_span(r));
+                address_space_unmap_and_free_phys(pvm->as, r.start, range_span(r));
             } else {
-                address_space_unmap(p->as, r.start, range_span(r));
+                address_space_unmap(pvm->as, r.start, range_span(r));
             }
         }
-        deallocate_vmap_locked(p->vmaps, vm);
+        deallocate_vmap_locked(pvm->vmaps, vm);
     }
-    p->heap_map = p->stack_map = 0;
-    vmap_unlock(p);
-}
-
-void mmap_process_free(process p)
-{
-    deallocate_rangemap(p->vmaps, 0);
-    deallocate(mmap_info.h, p->virtual, sizeof(struct vmap_heap));
+    pvm->heap_map = pvm->stack_map = 0;
+    process_vm_unlock(pvm);
 }

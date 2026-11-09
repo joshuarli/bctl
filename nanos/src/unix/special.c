@@ -163,9 +163,9 @@ closure_function(1, 1, boolean, maps_handler,
             (map->flags & VMAP_FLAG_EXEC) ? 'x' : '-');
 
     /* File path is unknown; only stack and heap pseudo-paths are known. */
-    if (map == current->p->stack_map) {
+    if (map == current->p->vm->stack_map) {
         buffer_write_cstring(b, "\t[stack]");
-    } else if (map == current->p->heap_map) {
+    } else if (map == current->p->vm->heap_map) {
         buffer_write_cstring(b, "\t[heap]");
     }
 

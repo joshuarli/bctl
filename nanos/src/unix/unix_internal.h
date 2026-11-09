@@ -98,6 +98,8 @@ boolean netsyscall_init(unix_heaps uh, tuple cfg);
 
 typedef struct process *process;
 typedef struct thread *thread;
+typedef struct process_vm *process_vm;
+typedef struct fdtable *fdtable;
 
 thread create_thread(process, u64 tid);
 boolean exit_thread(thread);
@@ -105,9 +107,10 @@ sysreturn fork_process(thread t);
 void process_kill(process p);
 boolean process_is_init(process p);
 void process_teardown(process p);
-void mmap_process_exit(process p);
-void mmap_process_free(process p);
-sysreturn mmap_process_fork(process child, process parent);
+process_vm mmap_process_fork(process_vm parent, sysreturn *rv);
+void process_vm_free_mappings(process_vm vm);
+fdtable fdtable_alloc(void);
+fdtable fdtable_copy(fdtable parent);
 void unix_timers_process_exit(process p);
 void aio_process_exit(process p);
 
@@ -524,6 +527,31 @@ typedef struct file *file;
 
 struct syscall;
 
+struct process_vm {
+    struct refcount   refcount; /* one per process using it */
+    closure_struct(thunk, free);
+    address_space     as;
+    heap              virtual;  /* pagesized, default for mmaps */
+    struct spinlock   vmap_lock;
+    rangemap          vmaps;
+    vmap              stack_map;
+    vmap              heap_map;
+    void             *brk;
+    u64               heap_base;
+    u64               vdso_base;
+    u64               mmap_min_addr;
+    struct spinlock   futex_lock;
+    table             futices;
+};
+
+struct fdtable {
+    struct refcount   refcount; /* one per process using it */
+    closure_struct(thunk, free);
+    struct spinlock   lock;
+    id_heap           fdallocator;
+    vector            files;
+};
+
 typedef struct process {
     unix_heaps        uh;       /* non-thread-specific */
     int               pid;
@@ -534,27 +562,16 @@ typedef struct process {
     boolean           exiting;
     boolean           dumpable;
     u32               uid, gid;
-    void             *brk;
-    u64               heap_base;
-    u64               vdso_base;
-    heap              virtual; /* pagesized, default for mmaps */
-    address_space     as;
-    id_heap           fdallocator;
+    process_vm        vm;
+    fdtable           fdtable;
     filesystem        root_fs;
     filesystem        cwd_fs;
     tuple             process_root;
     inode             cwd;
-    table             futices;
     closure_struct(fault_handler, fault_handler);
     rbtree            threads;
     struct spinlock   threads_lock;
     struct syscall   *syscalls;
-    vector            files;
-    u64               mmap_min_addr;
-    struct spinlock   vmap_lock;
-    rangemap          vmaps;    /* process mappings */
-    vmap              stack_map;
-    vmap              heap_map;
     struct aux        saved_aux[NAUX];
     char             *saved_args_begin;
     char             *saved_args_end;
@@ -591,6 +608,26 @@ static inline void process_reserve(process p)
 static inline void process_release(process p)
 {
     refcount_release(&p->refcount);
+}
+
+static inline void process_vm_reserve(process_vm vm)
+{
+    refcount_reserve(&vm->refcount);
+}
+
+static inline void process_vm_release(process_vm vm)
+{
+    refcount_release(&vm->refcount);
+}
+
+static inline void fdtable_reserve(fdtable fdt)
+{
+    refcount_reserve(&fdt->refcount);
+}
+
+static inline void fdtable_release(fdtable fdt)
+{
+    refcount_release(&fdt->refcount);
 }
 
 typedef struct sigaction *sigaction;
@@ -730,11 +767,12 @@ static inline int fdesc_type(fdesc f)
 
 static inline fdesc fdesc_get(process p, int fd)
 {
-    process_lock(p);
-    fdesc f = vector_get(p->files, fd);
+    fdtable fdt = p->fdtable;
+    spin_lock(&fdt->lock);
+    fdesc f = vector_get(fdt->files, fd);
     if (f)
         fetch_and_add(&f->refcnt, 1);
-    process_unlock(p);
+    spin_unlock(&fdt->lock);
     return f;
 }
 
@@ -768,7 +806,7 @@ boolean fault_in_memory(const void *buf, bytes length);
 boolean fault_in_user_memory(const void *buf, bytes length, boolean writable);
 
 void mmap_init(tuple root);
-void mmap_process_init(process p, tuple root);
+process_vm mmap_process_init(tuple root);
 
 static inline boolean memory_is_user(const void *p, bytes length)
 {
@@ -857,8 +895,10 @@ boolean unix_timers_init(unix_heaps uh);
 
 #define sysreturn_from_pointer(__x) ((s64)u64_from_pointer(__x));
 
-#define vmap_lock(p) u64 _savedflags = spin_lock_irq_flush(&(p)->vmap_lock)
-#define vmap_unlock(p) spin_unlock_irq(&(p)->vmap_lock, _savedflags)
+#define process_vm_lock(vm) u64 _savedflags = spin_lock_irq_flush(&(vm)->vmap_lock)
+#define process_vm_unlock(vm) spin_unlock_irq(&(vm)->vmap_lock, _savedflags)
+#define vmap_lock(p) process_vm_lock((p)->vm)
+#define vmap_unlock(p) process_vm_unlock((p)->vm)
 
 extern sysreturn syscall_ignore();
 sysreturn getgid();
@@ -989,7 +1029,8 @@ static inline u64 iov_total_len(struct iovec *iov, int iovcnt)
 
 void init_syscalls(process p);
 void init_threads(process p);
-void init_futices(process p);
+boolean init_futices(process_vm vm);
+void deallocate_futices(process_vm vm);
 
 sysreturn futex(int *uaddr, int futex_op, int val, u64 val2, int *uaddr2, int val3);
 sysreturn get_robust_list(int pid, void *head, u64 *len);

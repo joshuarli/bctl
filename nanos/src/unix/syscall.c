@@ -999,9 +999,9 @@ sysreturn dup2(int oldfd, int newfd)
     if (newfd != oldfd) {
         fdesc newf = fdesc_get(p, newfd);
         if (newf) {
-            process_lock(p);
-            assert(vector_set(p->files, newfd, f));
-            process_unlock(p);
+            spin_lock(&p->fdtable->lock);
+            assert(vector_set(p->fdtable->files, newfd, f));
+            spin_unlock(&p->fdtable->lock);
             if (fetch_and_add(&newf->refcnt, -2) == 2) {
                 if (newf->close)
                     apply(newf->close, get_current_context(current_cpu()), io_completion_ignore);
@@ -1765,7 +1765,7 @@ sysreturn getrlimit(int resource, struct rlimit *rlim)
         rlim->rlim_max = 65536;
         break;
     case RLIMIT_AS:
-        rlim->rlim_cur = rlim->rlim_max = heap_total(current->p->virtual);
+        rlim->rlim_cur = rlim->rlim_max = heap_total(current->p->vm->virtual);
         break;
     default:
         rv = -EINVAL;
@@ -1833,26 +1833,26 @@ static sysreturn brk(void *addr)
     process_lock(p);
 
     /* on failure, return the current break */
-    if (!addr || p->brk == addr)
+    if (!addr || p->vm->brk == addr)
         goto out;
 
-    u64 old_end = pad(u64_from_pointer(p->brk), PAGESIZE);
+    u64 old_end = pad(u64_from_pointer(p->vm->brk), PAGESIZE);
     u64 new_end = pad(u64_from_pointer(addr), PAGESIZE);
     if (old_end > new_end) {
-        if (u64_from_pointer(addr) < p->heap_base ||
-            !adjust_process_heap(p, irange(p->heap_base, new_end)))
+        if (u64_from_pointer(addr) < p->vm->heap_base ||
+            !adjust_process_heap(p, irange(p->vm->heap_base, new_end)))
             goto out;
         smp_write_barrier();
-        address_space_unmap_and_free_phys(p->as, new_end, old_end - new_end);
+        address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
     } else if (new_end > old_end) {
         u64 alloc = new_end - old_end;
         if (!memory_is_user(pointer_from_u64(old_end), alloc) ||
-            !adjust_process_heap(p, irange(p->heap_base, new_end)))
+            !adjust_process_heap(p, irange(p->vm->heap_base, new_end)))
             goto out;
     }
-    p->brk = addr;
+    p->vm->brk = addr;
   out:
-    addr = p->brk;
+    addr = p->vm->brk;
     process_unlock(p);
     return sysreturn_from_pointer(addr);
 }

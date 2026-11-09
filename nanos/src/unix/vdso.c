@@ -23,12 +23,12 @@ void init_vdso(process p)
 
     /* map single VDSO PT_LOAD segment, which contains the raw ELF binary */
     {
-        vaddr = p->vdso_base;
+        vaddr = p->vm->vdso_base;
         assert((vdso_raw_length & PAGEMASK) == 0);
         size = vdso_raw_length;
         paddr = physical_from_virtual(vdso_raw);
         assert(paddr != INVALID_PHYSICAL);
-        address_space_map(p->as, vaddr, paddr, size, pageflags_exec(flags));
+        address_space_map(p->vm->as, vaddr, paddr, size, pageflags_exec(flags));
     }
 
     /* map first vvar page, which contains various kernel data */
@@ -37,7 +37,7 @@ void init_vdso(process p)
         size = PAGESIZE;
         paddr = physical_from_virtual((void *)&vvar_page);
         assert(paddr != INVALID_PHYSICAL);
-        address_space_map(p->as, vaddr, paddr, size, pageflags_noexec(flags));
+        address_space_map(p->vm->as, vaddr, paddr, size, pageflags_noexec(flags));
     }
 
     /* map pvclock page */
@@ -51,7 +51,7 @@ void init_vdso(process p)
 #endif
         if (paddr != INVALID_PHYSICAL) {
             __vdso_dat->pvclock_offset = paddr & PAGEMASK;
-            address_space_map(p->as, vaddr, paddr & ~PAGEMASK, size,
+            address_space_map(p->vm->as, vaddr, paddr & ~PAGEMASK, size,
                               pageflags_user(pageflags_readonly(pageflags_dma())));
         }
     }

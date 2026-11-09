@@ -444,7 +444,7 @@ thread create_thread(process p, u64 tid)
 
     t->p = p;
     process_reserve(p);
-    t->context.as = p->as;
+    t->context.as = p->vm ? p->vm->as : 0;
     t->syscall = 0;
     runtime_memcpy(&t->uh, p->uh, sizeof(*p->uh));
     init_refcount(&t->context.refcount, 1, init_closure_func(&t->free, thunk, free_thread));
@@ -582,5 +582,4 @@ void init_threads(process p)
     p->threads = allocate_rbtree(h, closure_func(h, rb_key_compare, thread_tid_compare),
                                  closure_func(h, rbnode_handler, tid_print_key));
     spin_lock_init(&p->threads_lock);
-    init_futices(p);
 }

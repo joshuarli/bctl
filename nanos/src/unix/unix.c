@@ -30,44 +30,111 @@ unix_heaps get_unix_heaps()
 
 u64 allocate_fd(process p, void *f)
 {
-    process_lock(p);
-    u64 fd = allocate_u64((heap)p->fdallocator, 1);
+    fdtable fdt = p->fdtable;
+    spin_lock(&fdt->lock);
+    u64 fd = allocate_u64((heap)fdt->fdallocator, 1);
     if (fd == INVALID_PHYSICAL) {
         msg_err("fd allocation failed");
         goto out;
     }
-    if (!vector_set(p->files, fd, f)) {
-        deallocate_u64((heap)p->fdallocator, fd, 1);
+    if (!vector_set(fdt->files, fd, f)) {
+        deallocate_u64((heap)fdt->fdallocator, fd, 1);
         fd = INVALID_PHYSICAL;
     }
   out:
-    process_unlock(p);
+    spin_unlock(&fdt->lock);
     return fd;
 }
 
 u64 allocate_fd_gte(process p, u64 min, void *f)
 {
-    process_lock(p);
-    u64 fd = id_heap_alloc_gte(p->fdallocator, 1, min);
+    fdtable fdt = p->fdtable;
+    spin_lock(&fdt->lock);
+    u64 fd = id_heap_alloc_gte(fdt->fdallocator, 1, min);
     if (fd == INVALID_PHYSICAL) {
         msg_err("fd allocation failed");
     }
     else {
-        if (!vector_set(p->files, fd, f)) {
-            deallocate_u64((heap)p->fdallocator, fd, 1);
+        if (!vector_set(fdt->files, fd, f)) {
+            deallocate_u64((heap)fdt->fdallocator, fd, 1);
             fd = INVALID_PHYSICAL;
         }
     }
-    process_unlock(p);
+    spin_unlock(&fdt->lock);
     return fd;
 }
 
 void deallocate_fd(process p, int fd)
 {
-    process_lock(p);
-    assert(vector_set(p->files, fd, 0));
-    deallocate_u64((heap)p->fdallocator, fd, 1);
-    process_unlock(p);
+    fdtable fdt = p->fdtable;
+    spin_lock(&fdt->lock);
+    assert(vector_set(fdt->files, fd, 0));
+    deallocate_u64((heap)fdt->fdallocator, fd, 1);
+    spin_unlock(&fdt->lock);
+}
+
+closure_func_basic(thunk, void, fdtable_free)
+{
+    fdtable fdt = struct_from_closure(fdtable, free);
+    for (int fd = 0; fd < vector_length(fdt->files); fd++) {
+        spin_lock(&fdt->lock);
+        fdesc f = vector_get(fdt->files, fd);
+        if (f) {
+            assert(vector_set(fdt->files, fd, 0));
+            deallocate_u64((heap)fdt->fdallocator, fd, 1);
+        }
+        spin_unlock(&fdt->lock);
+        if (f)
+            fdesc_put(f);
+    }
+    heap locked = heap_locked(get_kernel_heaps());
+    destroy_heap((heap)fdt->fdallocator);
+    deallocate_vector(fdt->files);
+    deallocate(locked, fdt, sizeof(*fdt));
+}
+
+fdtable fdtable_alloc(void)
+{
+    heap locked = heap_locked(get_kernel_heaps());
+    fdtable fdt = allocate(locked, sizeof(*fdt));
+    if (fdt == INVALID_ADDRESS)
+        return fdt;
+    fdt->fdallocator = create_id_heap(locked, locked, 0, infinity, 1, false);
+    if (fdt->fdallocator == INVALID_ADDRESS)
+        goto fail;
+    fdt->files = allocate_vector(locked, 64);
+    if (fdt->files == INVALID_ADDRESS) {
+        destroy_heap((heap)fdt->fdallocator);
+        goto fail;
+    }
+    spin_lock_init(&fdt->lock);
+    init_refcount(&fdt->refcount, 1, init_closure_func(&fdt->free, thunk, fdtable_free));
+    return fdt;
+  fail:
+    deallocate(locked, fdt, sizeof(*fdt));
+    return INVALID_ADDRESS;
+}
+
+fdtable fdtable_copy(fdtable parent)
+{
+    fdtable fdt = fdtable_alloc();
+    if (fdt == INVALID_ADDRESS)
+        return fdt;
+    spin_lock(&parent->lock);
+    for (int fd = 0; fd < vector_length(parent->files); fd++) {
+        fdesc f = vector_get(parent->files, fd);
+        if (!f)
+            continue;
+        if (!id_heap_set_area(fdt->fdallocator, fd, 1, true, true) ||
+            !vector_set(fdt->files, fd, f)) {
+            spin_unlock(&parent->lock);
+            fdtable_release(fdt);
+            return INVALID_ADDRESS;
+        }
+        fetch_and_add(&f->refcnt, 1);
+    }
+    spin_unlock(&parent->lock);
+    return fdt;
 }
 
 closure_func_basic(io_completion, void, fdesc_io_complete,
@@ -260,7 +327,7 @@ static boolean handle_protection_fault(process p, context ctx, u64 vaddr, vmap v
         u64 node_offset = vm->node_offset + (vaddr_aligned - vm->node.r.start);
         pf_debug("copy-on-write for private map: vaddr 0x%lx, node %p, node_offset 0x%lx\n",
                  vaddr, vm->cache_node, node_offset);
-        if (!pagecache_node_do_page_cow(vm->cache_node, p->as, node_offset, vaddr_aligned,
+        if (!pagecache_node_do_page_cow(vm->cache_node, p->vm->as, node_offset, vaddr_aligned,
                                         pageflags_from_vmflags(vm->flags)))
             halt("cannot get physical page for vaddr 0x%lx, ctx %p; OOM\n", vaddr, ctx);
         return true;
@@ -318,13 +385,13 @@ closure_func_basic(fault_handler, context, unix_fault_handler,
         }
     } else if (is_page_fault(f)) {
         u64 vaddr = frame_fault_address(f);
-        if (vaddr < USER_LIMIT && current_cpu()->current_as != p->as) {
+        if (vaddr < USER_LIMIT && current_cpu()->current_as != p->vm->as) {
             errmsg = ss("fault on a user address with another process's address space loaded");
             goto bug;
         }
         vmap_lock(p);
         vmap vm;
-        if (vaddr >= MIN(p->mmap_min_addr, PAGESIZE) && vaddr < USER_LIMIT)
+        if (vaddr >= MIN(p->vm->mmap_min_addr, PAGESIZE) && vaddr < USER_LIMIT)
             vm = vmap_from_vaddr(p, vaddr);
         else
             vm = INVALID_ADDRESS;
@@ -559,7 +626,7 @@ process_context get_process_context(void)
     pc->p = t->p;
     c = &pc->uc.kc.context;
     c->fault_handler = (fault_handler)&pc->p->fault_handler;
-    c->as = pc->p->as;
+    c->as = pc->p->vm->as;
     return pc;
 }
 
@@ -576,13 +643,11 @@ closure_func_basic(thunk, void, process_free)
     spin_lock(&processes_lock);
     list_delete(&p->l);
     spin_unlock(&processes_lock);
-    if (p->vmaps != INVALID_ADDRESS)
-        mmap_process_free(p);
-    if (p->as)
-        address_space_release(p->as);
+    if (p->vm)
+        process_vm_release(p->vm);
+    if (p->fdtable)
+        fdtable_release(p->fdtable);
     filesystem_release(p->cwd_fs);
-    destroy_heap((heap)p->fdallocator);
-    deallocate_vector(p->files);
     deallocate_rbtree(p->threads, 0);
     deallocate_notify_set(p->signalfds);
     destroy_heap((heap)p->posix_timer_ids);
@@ -603,15 +668,13 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs)
 
     spin_lock_init(&p->lock);
     p->uh = uh;
-    p->brk = 0;
     p->pid = mem_alloc_u64((heap)uh->processes, 1, MEM_NOFAIL);
     p->ppid = 0;
     p->exiting = false;
     p->dumpable = true;
     init_refcount(&p->refcount, 1, init_closure_func(&p->free, thunk, process_free));
-    p->as = 0;
-    p->virtual = 0;
-    p->vmaps = INVALID_ADDRESS;
+    p->vm = 0;
+    p->fdtable = 0;
     filesystem_reserve(fs); /* because it hosts the current working directory */
     p->root_fs = p->cwd_fs = fs;
     p->cwd = fs->get_inode(fs, filesystem_getroot(fs));
@@ -620,9 +683,6 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs)
     u64 id;
     p->uid = get_u64(root, sym(uid), &id) ? id : 0;
     p->gid = get_u64(root, sym(gid), &id) ? id : 0;
-    p->fdallocator = create_id_heap(locked, locked, 0, infinity, 1, false);
-    p->files = allocate_vector(locked, 64);
-    zero(p->files, sizeof(p->files));
     init_threads(p);
     init_closure_func(&p->fault_handler, fault_handler, unix_fault_handler);
     p->syscalls = linux_syscalls;
@@ -651,11 +711,11 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs)
 process create_process(unix_heaps uh, tuple root, filesystem fs)
 {
     process p = process_alloc(uh, root, fs);
+    p->fdtable = fdtable_alloc();
+    assert(p->fdtable != INVALID_ADDRESS);
     /* don't need these for kernel process */
     if (p->pid > 1) {
-        p->as = allocate_address_space(heap_locked(get_kernel_heaps()));
-        assert(p->as != INVALID_ADDRESS);
-        mmap_process_init(p, root);
+        p->vm = mmap_process_init(root);
         init_vdso(p);
         if (!init_process)
             init_process = p;
@@ -672,20 +732,6 @@ process unix_process(void)
 boolean process_is_init(process p)
 {
     return p == init_process;
-}
-
-static void process_fork_files(process child, process parent)
-{
-    process_lock(parent);
-    for (int fd = 0; fd < vector_length(parent->files); fd++) {
-        fdesc f = vector_get(parent->files, fd);
-        if (!f)
-            continue;
-        fetch_and_add(&f->refcnt, 1);
-        assert(id_heap_set_area(child->fdallocator, fd, 1, true, true));
-        assert(vector_set(child->files, fd, f));
-    }
-    process_unlock(parent);
 }
 
 sysreturn fork_process(thread t)
@@ -706,25 +752,20 @@ sysreturn fork_process(thread t)
     runtime_memcpy(c->saved_aux, parent->saved_aux, sizeof(c->saved_aux));
     c->saved_args_begin = parent->saved_args_begin;
     c->saved_args_end = parent->saved_args_end;
-#ifdef VM_ISOLATION_SELFTEST_BREAK
-    address_space_reserve(parent->as);
-    c->as = parent->as;
-#else
-    c->as = allocate_address_space(heap_locked(get_kernel_heaps()));
-#endif
-    if (c->as == INVALID_ADDRESS) {
-        c->as = 0;
-        process_release(c);
-        return -ENOMEM;
-    }
-    sysreturn rv = mmap_process_fork(c, parent);
-    if (rv < 0) {
-        mmap_process_exit(c);
+    sysreturn rv;
+    c->vm = mmap_process_fork(parent->vm, &rv);
+    if (c->vm == INVALID_ADDRESS) {
+        c->vm = 0;
         process_release(c);
         return rv;
     }
     init_vdso(c);
-    process_fork_files(c, parent);
+    c->fdtable = fdtable_copy(parent->fdtable);
+    if (c->fdtable == INVALID_ADDRESS) {
+        c->fdtable = 0;
+        process_release(c);
+        return -ENOMEM;
+    }
 
     thread ct = create_thread(c, c->pid);
     if (ct == INVALID_ADDRESS) {
@@ -755,18 +796,12 @@ void process_teardown(process p)
     p->exiting = true;
     unix_timers_process_exit(p);
     aio_process_exit(p);
-    for (int fd = 0; fd < vector_length(p->files); fd++) {
-        process_lock(p);
-        fdesc f = vector_get(p->files, fd);
-        if (f) {
-            assert(vector_set(p->files, fd, 0));
-            deallocate_u64((heap)p->fdallocator, fd, 1);
-        }
-        process_unlock(p);
-        if (f)
-            fdesc_put(f);
-    }
-    mmap_process_exit(p);
+    fdtable fdt = p->fdtable;
+    p->fdtable = 0;
+    fdtable_release(fdt);
+    process_vm vm = p->vm;
+    p->vm = 0;
+    process_vm_release(vm);
     process_release(p);
 }
 

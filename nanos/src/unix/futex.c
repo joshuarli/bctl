@@ -23,10 +23,11 @@ static struct futex * soft_create_futex(process p, u64 key)
 {
     heap h = heap_locked(get_kernel_heaps());
     struct futex * f;
+    process_vm vm = p->vm;
 
-    process_lock(p);
+    spin_lock(&vm->futex_lock);
 
-    f = table_find(p->futices, pointer_from_u64(key));
+    f = table_find(vm->futices, pointer_from_u64(key));
     if (f)
         goto out;
 
@@ -46,9 +47,9 @@ static struct futex * soft_create_futex(process p, u64 key)
     }
 
     spin_lock_init(&f->lock);
-    table_set(p->futices, pointer_from_u64(key), f);
+    table_set(vm->futices, pointer_from_u64(key), f);
   out:
-    process_unlock(p);
+    spin_unlock(&vm->futex_lock);
     return f;
 }
 
@@ -82,9 +83,10 @@ boolean futex_wake_many_by_uaddr(process p, int *uaddr, int val)
 {
     struct futex * f;
 
-    process_lock(p);
-    f = table_find(p->futices, (void *)uaddr);
-    process_unlock(p);
+    process_vm vm = p->vm;
+    spin_lock(&vm->futex_lock);
+    f = table_find(vm->futices, (void *)uaddr);
+    spin_unlock(&vm->futex_lock);
     if (!f)
         return false;
 
@@ -313,13 +315,23 @@ sysreturn futex(int *uaddr, int futex_op, int val,
     return set_syscall_error(current, ENOSYS);
 }
 
-void
-init_futices(process p)
+boolean init_futices(process_vm vm)
 {
     heap h = heap_locked(get_kernel_heaps());
-    p->futices = allocate_table(h, futex_key_function, futex_key_equal);
-    if (p->futices == INVALID_ADDRESS)
-        halt("failed to allocate futex table\n");
+    spin_lock_init(&vm->futex_lock);
+    vm->futices = allocate_table(h, futex_key_function, futex_key_equal);
+    return vm->futices != INVALID_ADDRESS;
+}
+
+void deallocate_futices(process_vm vm)
+{
+    table_foreach(vm->futices, k, v) {
+        (void)k;
+        struct futex *f = v;
+        deallocate_blockq(f->bq);
+        deallocate(f->h, f, sizeof(struct futex));
+    }
+    deallocate_table(vm->futices);
 }
 
 /* robust mutex handling */

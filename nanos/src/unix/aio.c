@@ -73,9 +73,9 @@ closure_func_basic(thunk, void, aio_free)
 {
     struct aio *aio = struct_from_closure(struct aio *, free);
     u64 alloc_size = pad(sizeof(*aio->ring) + aio->nr * sizeof(struct io_event), PAGESIZE);
-    address_space_unmap(aio->p->as, aio->user_ring, alloc_size);
+    address_space_unmap(aio->p->vm->as, aio->user_ring, alloc_size);
     deallocate_u64((heap) heap_physical(aio->kh), aio->ring_phys, alloc_size);
-    deallocate_u64(aio->p->virtual, aio->user_ring, alloc_size);
+    deallocate_u64(aio->p->vm->virtual, aio->user_ring, alloc_size);
     process_release(aio->p);
     deallocate(heap_locked(aio->kh), aio, sizeof(*aio));
 }

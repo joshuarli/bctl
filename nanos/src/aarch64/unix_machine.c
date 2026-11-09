@@ -93,7 +93,7 @@ boolean setup_sigframe(thread t, int signum, struct siginfo *si)
     f[FRAME_ESR_SPSR] &= ~SPSR_TCO;
     f[FRAME_X29] = u64_from_pointer(&rec->fp);
     f[FRAME_X30] = (sa->sa_flags & SA_RESTORER) ?
-        u64_from_pointer(sa->sa_restorer) : t->p->vdso_base + VDSO_OFFSET_RT_SIGRETURN;
+        u64_from_pointer(sa->sa_restorer) : t->p->vm->vdso_base + VDSO_OFFSET_RT_SIGRETURN;
 
     /* TODO address BTI if supported */
     return true;

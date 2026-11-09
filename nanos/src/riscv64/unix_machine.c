@@ -73,7 +73,7 @@ boolean setup_sigframe(thread t, int signum, struct siginfo *si)
     f[FRAME_PC] = u64_from_pointer(sa->sa_handler);
     f[FRAME_A0] = signum;
     f[FRAME_RA] = (sa->sa_flags & SA_RESTORER) ?
-        u64_from_pointer(sa->sa_restorer) : t->p->vdso_base + VDSO_OFFSET_RT_SIGRETURN;
+        u64_from_pointer(sa->sa_restorer) : t->p->vm->vdso_base + VDSO_OFFSET_RT_SIGRETURN;
     return true;
 }
 

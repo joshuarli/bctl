@@ -19,7 +19,7 @@ static void *stack_prealloc(process p, void *start, u64 size)
     u64 sphys = mem_alloc_u64((heap)heap_physical(get_kernel_heaps()), size, MEM_NOFAIL);
     start -= size;
     exec_debug("stack prealloc at %p, size 0x%lx, phys 0x%lx\n", start, size, sphys);
-    address_space_map(p->as, u64_from_pointer(start), sphys, size,
+    address_space_map(p->vm->as, u64_from_pointer(start), sphys, size,
                       pageflags_writable(pageflags_default_user()));
     return start;
 }
@@ -71,10 +71,10 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
         stack_start = (stack_start - PROCESS_STACK_ASLR_RANGE) +
             get_aslr_offset(PROCESS_STACK_ASLR_RANGE);
 
-    p->stack_map = allocate_vmap(p, irangel(stack_start, stack_size),
+    p->vm->stack_map = allocate_vmap(p, irangel(stack_start, stack_size),
                                  ivmap(VMAP_FLAG_STACK | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
                                        0, 0, 0, 0));
-    assert(p->stack_map != INVALID_ADDRESS);
+    assert(p->vm->stack_map != INVALID_ADDRESS);
 
     u64 *s = (pointer_from_u64(stack_start) + stack_size);
     void *stack_low = stack_prealloc(p, (void*)s, PROCESS_STACK_PREALLOC_SIZE);
@@ -165,7 +165,7 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
 #if defined(__x86_64__)
         {AT_HWCAP2, get_hwcap2()},
 #endif
-        {AT_SYSINFO_EHDR, p->vdso_base}
+        {AT_SYSINFO_EHDR, p->vm->vdso_base}
     };
     for (int i = 0; i < sizeof(auxp) / sizeof(auxp[0]); i++) {
         spush(p, s, stack_low, auxp[i].val);
@@ -234,7 +234,7 @@ closure_function(4, 5, boolean, static_map,
         struct vmap k = ivmap(vmflags, bound(allowed_flags), 0, 0, 0);
         if (allocate_vmap(bound(p), r, k) == INVALID_ADDRESS)
             goto alloc_fail;
-        address_space_map(bound(p)->as, map_start, paddr, data_size, pageflags_user(flags));
+        address_space_map(bound(p)->vm->as, map_start, paddr, data_size, pageflags_user(flags));
         map_start += data_size;
     }
     if (bss_size > 0) {
@@ -242,7 +242,7 @@ closure_function(4, 5, boolean, static_map,
         u64 paddr = allocate_u64((heap)heap_physical(bound(kh)), maplen);
         if (paddr == INVALID_PHYSICAL)
             goto alloc_fail;
-        address_space_map(bound(p)->as, map_start, paddr, maplen, pageflags_user(flags));
+        address_space_map(bound(p)->vm->as, map_start, paddr, maplen, pageflags_user(flags));
         u64 vmflags = VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE | VMAP_FLAG_BSS;
         range r = irangel(map_start, maplen);
         exec_debug("   add bss vmap: %R vmflags 0x%lx\n", r, vmflags);
@@ -298,7 +298,7 @@ closure_function(4, 5, boolean, faulting_map,
         if (!rw)
             /* Make the page cache aware of this mapping so that it can evict relevant pages on
              * memory pressure. */
-            pagecache_node_add_mapping(pn, bound(p)->as, r, offset, false);
+            pagecache_node_add_mapping(pn, bound(p)->vm->as, r, offset, false);
         map_start += data_map_size;
         bss_size -= tail_bss;
     }
@@ -339,7 +339,7 @@ closure_function(7, 2, void, load_interp_complete,
         emh = stack_closure(static_map, p, kh, 0, b);
     else
         emh = stack_closure(faulting_map, p, kh, 0, bound(f));
-    address_space prev_as = use_address_space(p->as);
+    address_space prev_as = use_address_space(p->vm->as);
     void *start = load_elf(b, where, emh);
     restore_address_space(prev_as);
     if (!bound(static_map))
@@ -418,17 +418,17 @@ static void exec_elf_finish(buffer ex, fsfile f, process kp,
         emh = stack_closure(static_map, proc, kh, allowed_flags, ex);
     else
         emh = stack_closure(faulting_map, proc, kh, allowed_flags, f);
-    address_space prev_as = use_address_space(proc->as);
+    address_space prev_as = use_address_space(proc->vm->as);
     void * entry = load_elf(ex, load_offset, emh);
     u64 brk_offset = aslr ? get_aslr_offset(PROCESS_HEAP_ASLR_RANGE) : 0;
     u64 brk = pad(load_range.end, PAGESIZE) + brk_offset;
-    proc->brk = pointer_from_u64(brk);
-    proc->heap_base = brk;
-    proc->heap_map = allocate_vmap(proc, irange(brk, brk),
+    proc->vm->brk = pointer_from_u64(brk);
+    proc->vm->heap_base = brk;
+    proc->vm->heap_map = allocate_vmap(proc, irange(brk, brk),
                                    ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
                                          0, 0, 0, 0));
-    assert(proc->heap_map != INVALID_ADDRESS);
-    exec_debug("entry %p, brk %p (offset 0x%lx)\n", entry, proc->brk, brk_offset);
+    assert(proc->vm->heap_map != INVALID_ADDRESS);
+    exec_debug("entry %p, brk %p (offset 0x%lx)\n", entry, proc->vm->brk, brk_offset);
 
     /* XXX temporarily disable because it breaks ftrace. Will need to 
        eventually deal with this for issue #1269 */

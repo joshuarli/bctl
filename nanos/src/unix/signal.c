@@ -1022,7 +1022,7 @@ closure_function(2, 2, void, coredump_shutdown_handler,
 {
     thread t = bound(t);
     struct siginfo *si = bound(si);
-    use_address_space(t->p->as);
+    use_address_space(t->p->vm->as);
     coredump(t, si, apply_merge(m));
     clear_fault_handler();
 }
