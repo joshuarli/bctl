@@ -117,7 +117,9 @@ dependencies = [
 name = "bctl-bench"
 version = "0.1.0"
 dependencies = [
+ "bctl-core",
  "bctl-rfb",
+ "bctl-runtime-smolvm",
  "miniserde",
 ]
 
