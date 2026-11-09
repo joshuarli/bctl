@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bctl-cdp = { path = "../cdp" }
+futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
 miniserde = "0.1"
 
 [dev-dependencies]
@@ -15,7 +16,6 @@ async-channel = { package = "laputa-async-channel", version = "0.3" }
 async-io = { package = "laputa-async-io", version = "0.3" }
 async-lock = "3"
 async-net = { package = "laputa-async-net", version = "0.3" }
-futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
 h12tiny = { version = "0.9", default-features = false, features = ["server", "http1", "web", "websocket", "websocket-client"] }
 
 [lints]
