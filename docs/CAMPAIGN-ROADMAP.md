@@ -20,8 +20,13 @@ aarch64-unknown-linux-musl --all-targets`.
 C1 (`f539b0f`), C2 (`e1ac445`), C3 (`4979a9d`), C4 (`b1e3de2`), each proved by
 its VM-backed test (`cargo test -p <crate> --test <name> -- --ignored`).
 X2 Nanos lane (`248a1db`): not viable; see `docs/research/unikernel-nanos.md`.
-Next: D1 (with `bctl profile login`), then J2 and J1.
-Resume: `implement D1 from docs/CAMPAIGN-ROADMAP.md`.
+D1 and `bctl profile login` (`0f3b8c1`), D2's input lease (`59fa9c8`), proved by
+`pnpm --dir web exec playwright test` against a real VM. T2 (`cb8dccd`,
+`docs/compositor-contract.md`). J2 (`ac9b005`, lane). T0 (`8f3e21f`, lane:
+`sh guest/harness/smolvm-proof.sh`).
+Running lanes: J1 (shadowdriver `grab/`), T1 (`guest/`), R3 (kbvm fork).
+Next: J3 (exec runs now, grab runs after J1), then D2's run views.
+Resume: `implement J3 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
