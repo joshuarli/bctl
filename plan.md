@@ -18,11 +18,16 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   G1.4 `process_stress`: 1000 fork/exec/wait, 64 concurrent children,
   whole-process fatal signals, 20/20 on 2 and 4 vCPUs). X1 corpus. G5 prep.
   Probe on Nanos: 18/55, raw 5/6 (only seccomp left).
-  **Red:** none. **Parked:** none.
+  **Red:** none.
+  **Parked:** G2.1 (SCM data and Unix-socket credentials). Work on it was
+  stopped twice by an automated safety check, so it waits for the owner;
+  slices that need it (G3.4's credential translation, the probe's
+  `scm_rights`/`peer_credentials` checks, the zygote checks) wait with it.
 - **Running lanes:** G2.2 shared futex keys, robust lists, seals
   (`.work/wt/g2.2`); G3.1 credentials, `prctl`, procfs (`.work/wt/g3.1`).
-- **Next:** G2.1 SCM data and credentials, G2.3, G3.2 seccomp (needs G3.1),
-  then G3.3/G3.4 namespaces, by `nanos/docs/sandbox-design.md` §5.
+- **Next:** G2.3 (shutdown, `EPOLLRDHUP`, `SIGPIPE`, `membarrier`), G3.2
+  seccomp (after G3.1), G3.3 user namespaces and chroot, by
+  `nanos/docs/sandbox-design.md` §5. G2.1 stays parked for the owner.
 - **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
