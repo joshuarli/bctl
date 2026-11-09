@@ -336,12 +336,12 @@ impl Daemon {
         self.ready_endpoints(name).map(|e| e.cdp_port)
     }
 
-    /// The VNC port to proxy and whether viewer input may reach the guest; a view-only runtime never accepts input.
-    pub(crate) fn vnc_target(&self, name: &SessionName) -> Option<(u16, bctl_rfb::InputPolicy)> {
+    /// The VNC port to proxy and whether this runtime has input devices at all.
+    pub(crate) fn vnc_target(&self, name: &SessionName) -> Option<(u16, bool)> {
         let endpoints = self.ready_endpoints(name)?;
         let observed = self.observed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let interactive = observed.get(name).and_then(|o| o.input) == Some(InputSupport::Interactive);
-        Some((endpoints.vnc_port, gateway::input_policy(interactive)))
+        Some((endpoints.vnc_port, interactive))
     }
 
     pub(crate) fn down_session(&self, name: &SessionName) -> Result<(), String> {

@@ -43,3 +43,17 @@ export async function stop(session: string): Promise<void> {
 export function vncUrl(session: string): string {
   return `ws://${location.host}/api/sessions/${encodeURIComponent(session)}/vnc`;
 }
+
+export type Control = { held: boolean; mine: boolean };
+
+export async function control(session: string): Promise<Control> {
+  return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control`)).json()) as Control;
+}
+
+export async function takeControl(session: string): Promise<Control> {
+  return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control`, { method: "POST" })).json()) as Control;
+}
+
+export async function releaseControl(session: string): Promise<Control> {
+  return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control/release`, { method: "POST" })).json()) as Control;
+}

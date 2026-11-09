@@ -90,6 +90,8 @@ test("the live view follows the browser and carries typing into the page", async
   await guestPage.evaluate(() => { document.body.style.background = "#c03"; (document.getElementById("t") as HTMLTextAreaElement).style.background = "#c03"; });
   await expect.poll(async () => Buffer.compare(await viewerShot(page), before) !== 0, { timeout: 10_000 }).toBe(true);
 
+  await page.getByRole("button", { name: "Take control" }).click();
+  await expect(page.getByRole("button", { name: "Release control" })).toBeVisible();
   await page.getByTestId("viewer").locator("canvas").click({ position: { x: 200, y: 200 } });
   await page.keyboard.type("hello dashboard");
   await expect.poll(() => guestPage.evaluate(() => (document.getElementById("t") as HTMLTextAreaElement).value), { timeout: 10_000 }).toBe("hello dashboard");
@@ -104,4 +106,56 @@ test("a login link can open a session directly but never redirects off the dashb
   await page.context().clearCookies();
   await page.goto(`${bctl("serve").trim()}&next=//evil.example/`);
   await expect(page).toHaveURL(`${origin}/`);
+});
+
+async function rawKeys(page: Page, name: string, text: string): Promise<void> {
+  await page.evaluate(async ({ name, text }) => {
+    const ws = new WebSocket(`ws://${location.host}/api/sessions/${name}/vnc`);
+    ws.binaryType = "arraybuffer";
+    let received = 0;
+    await new Promise<void>((done, fail) => {
+      ws.onerror = () => fail(new Error("websocket failed"));
+      ws.onmessage = (event) => {
+        received += (event.data as ArrayBuffer).byteLength;
+        if (received >= 12 && ws.readyState === WebSocket.OPEN && !(ws as unknown as { sent?: boolean }).sent) {
+          (ws as unknown as { sent?: boolean }).sent = true;
+          ws.send(new TextEncoder().encode("RFB 003.008\n"));
+          ws.send(new Uint8Array([1]));
+          ws.send(new Uint8Array([1]));
+          for (const char of text) {
+            const sym = char.charCodeAt(0);
+            for (const down of [1, 0]) ws.send(new Uint8Array([4, down, 0, 0, 0, 0, (sym >> 8) & 255, sym & 255]));
+          }
+          setTimeout(() => { ws.close(); done(); }, 500);
+        }
+      };
+    });
+  }, { name, text });
+}
+
+test("only the viewer holding control can send input", async ({ browser }) => {
+  const holder = await (await browser.newContext()).newPage();
+  await holder.goto(`${bctl("serve").trim()}&next=/sessions/${session}`);
+  await expect(holder.getByTestId("stream")).toHaveText("live", { timeout: 30_000 });
+  await guestPage.goto("data:text/html,<textarea id=t autofocus style='width:100vw;height:100vh'></textarea>");
+  await holder.getByRole("button", { name: "Take control" }).click();
+  await expect(holder.getByRole("button", { name: "Release control" })).toBeVisible();
+
+  const watcher = await (await browser.newContext()).newPage();
+  await watcher.goto(`${bctl("serve").trim()}&next=/sessions/${session}`);
+  await expect(watcher.getByText("Another viewer has control")).toBeVisible({ timeout: 10_000 });
+  await expect(watcher.getByRole("button", { name: "Take control" })).toBeVisible();
+  const refused = await watcher.evaluate(async (name) => (await fetch(`/api/sessions/${name}/control`, { method: "POST" })).status, session);
+  expect(refused).toBe(409);
+
+  await guestPage.bringToFront();
+  await guestPage.focus("#t");
+  await rawKeys(watcher, session, "zz");
+  await rawKeys(holder, session, "ok");
+  await expect.poll(() => guestPage.evaluate(() => (document.getElementById("t") as HTMLTextAreaElement).value), { timeout: 10_000 }).toBe("ok");
+
+  await holder.getByRole("button", { name: "Release control" }).click();
+  await expect(watcher.getByRole("button", { name: "Take control" })).toBeVisible();
+  const taken = await watcher.evaluate(async (name) => (await fetch(`/api/sessions/${name}/control`, { method: "POST" })).status, session);
+  expect(taken).toBe(200);
 });

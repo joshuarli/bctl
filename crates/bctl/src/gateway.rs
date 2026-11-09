@@ -31,6 +31,8 @@ pub struct Gateway {
     port: Option<u16>,
     login_tokens: HashMap<String, Instant>,
     sessions: HashSet<String>,
+    /// The dashboard session holding each browser session's input lease.
+    controllers: HashMap<SessionName, String>,
 }
 
 pub type SharedGateway = Mutex<Gateway>;
@@ -128,7 +130,8 @@ fn handle(daemon: &Arc<Daemon>, port: u16, mut request: Request) -> Response<Box
         return login(daemon, &request);
     }
 
-    let authenticated = cookie(&request, COOKIE).is_some_and(|c| daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).sessions.contains(c));
+    let viewer = cookie(&request, COOKIE).map(str::to_string).unwrap_or_default();
+    let authenticated = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).sessions.contains(&viewer);
     if !authenticated {
         return text(StatusCode::UNAUTHORIZED, "Not signed in. Run `bctl serve --open`.");
     }
@@ -150,14 +153,17 @@ fn handle(daemon: &Arc<Daemon>, port: u16, mut request: Request) -> Response<Box
             Ok(()) => respond(StatusCode::NO_CONTENT, "text/plain", ""),
             Err(e) => text(StatusCode::BAD_GATEWAY, &e),
         },
+        (Method::GET, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Inspect),
+        (Method::POST, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Acquire),
+        (Method::POST, ["api", "sessions", name, "control", "release"]) => control(daemon, name, &viewer, ControlRequest::Release),
         (Method::POST, ["api", "sessions", name, "down"]) => match SessionName::new(name) {
-            Ok(name) => match daemon.down_session(&name) {
+            Ok(name) => match stop_session(daemon, &name) {
                 Ok(()) => respond(StatusCode::NO_CONTENT, "text/plain", ""),
                 Err(e) => text(StatusCode::CONFLICT, &e),
             },
             Err(e) => text(StatusCode::BAD_REQUEST, &e.to_string()),
         },
-        (Method::GET, ["api", "sessions", name, "vnc"]) if upgrading => proxy_vnc(daemon, name, &mut request),
+        (Method::GET, ["api", "sessions", name, "vnc"]) if upgrading => proxy_vnc(daemon, name, &mut request, viewer),
         (Method::GET, _) => match asset(&path) {
             Some((content_type, body)) => respond(StatusCode::OK, content_type, body),
             None => text(StatusCode::NOT_FOUND, "Not found."),
@@ -257,11 +263,11 @@ fn activate(daemon: &Daemon, name: &str, id: &str) -> Result<(), String> {
     cdp_get(session_cdp_port(daemon, name)?, &format!("/json/activate/{id}")).map(drop)
 }
 
-fn proxy_vnc(daemon: &Daemon, name: &str, request: &mut Request) -> Response<BoxBody> {
+fn proxy_vnc(daemon: &Arc<Daemon>, name: &str, request: &mut Request, viewer: String) -> Response<BoxBody> {
     let Ok(session) = SessionName::new(name) else {
         return text(StatusCode::BAD_REQUEST, "Invalid session name.");
     };
-    let Some((vnc_port, policy)) = daemon.vnc_target(&session) else {
+    let Some((vnc_port, interactive)) = daemon.vnc_target(&session) else {
         return text(StatusCode::CONFLICT, "That session has no display right now.");
     };
     let upgrade = match WebSocketUpgrade::try_from_request(request) {
@@ -269,17 +275,26 @@ fn proxy_vnc(daemon: &Daemon, name: &str, request: &mut Request) -> Response<Box
         Err(e) => return text(StatusCode::BAD_REQUEST, &e.to_string()),
     };
     let response = upgrade.response();
+    let daemon = Arc::clone(daemon);
     thread::spawn(move || {
         futures_lite::future::block_on(async move {
-            let Ok(vnc) = TcpStream::connect(("127.0.0.1", vnc_port)).await else { return };
-            let Ok(connection) = upgrade.into_connection().await else { return };
-            relay(connection, vnc, policy).await;
+            let policy = || {
+                let holds = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).controllers.get(&session) == Some(&viewer);
+                if interactive && holds { InputPolicy::Forward } else { InputPolicy::Drop }
+            };
+            if let (Ok(vnc), Ok(connection)) = (TcpStream::connect(("127.0.0.1", vnc_port)).await, upgrade.into_connection().await) {
+                relay(connection, vnc, policy).await;
+            }
+            let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
+            if gateway.controllers.get(&session) == Some(&viewer) {
+                gateway.controllers.remove(&session);
+            }
         });
     });
     response
 }
 
-async fn relay(connection: h12tiny::web::WebSocketConnection, vnc: TcpStream, policy: InputPolicy) {
+async fn relay(connection: h12tiny::web::WebSocketConnection, vnc: TcpStream, policy: impl Fn() -> InputPolicy) {
     let (mut reader, writer) = connection.split();
     let writer = Arc::new(AsyncMutex::new(writer));
     let (mut vnc_read, mut vnc_write) = (vnc.clone(), vnc);
@@ -320,7 +335,7 @@ async fn relay(connection: h12tiny::web::WebSocketConnection, vnc: TcpStream, po
                 _ => continue,
             }
             out.clear();
-            if filter.push(&frame.payload, policy, &mut out).is_err() || vnc_write.write_all(&out).await.is_err() {
+            if filter.push(&frame.payload, policy(), &mut out).is_err() || vnc_write.write_all(&out).await.is_err() {
                 break;
             }
         }
@@ -330,6 +345,58 @@ async fn relay(connection: h12tiny::web::WebSocketConnection, vnc: TcpStream, po
     futures_lite::future::zip(to_viewer, to_guest).await;
 }
 
-pub fn input_policy(interactive: bool) -> InputPolicy {
-    if interactive { InputPolicy::Forward } else { InputPolicy::Drop }
+
+#[derive(Clone, Copy)]
+enum ControlRequest {
+    Inspect,
+    Acquire,
+    Release,
+}
+
+#[derive(Serialize)]
+struct ControlState {
+    held: bool,
+    mine: bool,
+}
+
+/// The input lease: one dashboard session at a time may send keyboard and pointer input to a browser session.
+fn control(daemon: &Daemon, name: &str, viewer: &str, request: ControlRequest) -> Response<BoxBody> {
+    let Ok(session) = SessionName::new(name) else {
+        return text(StatusCode::BAD_REQUEST, "Invalid session name.");
+    };
+    let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
+    let holder = gateway.controllers.get(&session).cloned();
+    match request {
+        ControlRequest::Inspect => {}
+        ControlRequest::Acquire => match holder.as_deref() {
+            Some(other) if other != viewer => return text(StatusCode::CONFLICT, "Another viewer has control of this browser."),
+            _ => {
+                drop(gateway);
+                if daemon.vnc_target(&session).is_none_or(|(_, interactive)| !interactive) {
+                    return text(StatusCode::CONFLICT, "This runtime is view-only: it has no input devices.");
+                }
+                gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
+                if gateway.controllers.get(&session).is_some_and(|h| h != viewer) {
+                    return text(StatusCode::CONFLICT, "Another viewer has control of this browser.");
+                }
+                gateway.controllers.insert(session.clone(), viewer.to_string());
+            }
+        },
+        ControlRequest::Release => {
+            if holder.as_deref() == Some(viewer) {
+                gateway.controllers.remove(&session);
+            }
+        }
+    }
+    let holder = gateway.controllers.get(&session);
+    json_response(&ControlState { held: holder.is_some(), mine: holder.is_some_and(|h| h == viewer) })
+}
+
+fn release_control(daemon: &Daemon, session: &SessionName) {
+    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).controllers.remove(session);
+}
+
+fn stop_session(daemon: &Daemon, session: &SessionName) -> Result<(), String> {
+    release_control(daemon, session);
+    daemon.down_session(session)
 }
