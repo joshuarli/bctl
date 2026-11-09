@@ -74,9 +74,17 @@ with a takeover (Grab and exec cannot pause without ending the attempt);
 a host program's own library connection is not interrupted; authority resets
 to Automation on daemon restart; native actions fail at once instead of
 waiting for actionability.
-Next: H1 (running); D2's acceptance on `ref-alpine-tinyland`; R1 (scratch
-rootfs); H3 (failure injection; includes the guest browser exiting on its
-last tab).
+R1 (`94b122e`, B1 3/3 and T0 on `ref-scratch-chromium`, `FROM scratch` with
+a Rust `bctl-guest` supervising seatd, tinyland, and the browser and relaying
+CDP): census gaps are the browser's 141-library closure plus `libxkbcommon`
+(R3) and `xkb-data`, which tinyland reads at start. Decided: tinyland carries
+a built-in compiled keymap and reads xkb-data only when present, so the
+product image ships no xkb-data. `bctl-guest` exits non-zero when a
+supervised child dies on its own. Mesa ships but is never loaded (its GBM
+backend is looked for only at `/usr/lib/gbm`); P2 decides with Helium.
+Next: H1 (running); the built-in keymap; D2's acceptance on
+`ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
+exiting on its last tab).
 Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
