@@ -27,5 +27,6 @@ miniserde = "0.1"
 workspace = true
 
 [dev-dependencies]
+bctl-cdp = { path = "../cdp" }
 shadowdriver = { git = "https://github.com/joshuarli/shadowdriver", rev = "b69409e3034a478b0e8a3703e6dee84332eec90c" }
 async-io = "2"

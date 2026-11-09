@@ -81,6 +81,7 @@ version = "0.1.0"
 dependencies = [
  "async-io",
  "async-lock",
+ "bctl-cdp",
  "bctl-core",
  "bctl-rfb",
  "bctl-runtime-smolvm",
