@@ -18,7 +18,7 @@ use miniserde::json;
 
 use crate::authority::{Authorities, Control};
 use crate::gateway::{self, SharedGateway};
-use crate::paths::Paths;
+use crate::paths::{DEFAULT_IMAGE, Paths};
 use crate::protocol::{
     AttemptView, ErrorCode, InteractionView, JobRequest, LogView, Op, ProfileView, ProgressView, Request, ResourcesView, Response, RunView, SessionView, SessionsPayload,
 };
@@ -415,11 +415,7 @@ impl Daemon {
             Err(StoreError::NoSuchSession(_)) => None,
             Err(e) => return Err(internal(e).into()),
         };
-        let image = match (image, &existing) {
-            (Some(image), _) => image.to_string(),
-            (None, Some(record)) => record.image.clone(),
-            (None, None) => return Err(self.image_required().into()),
-        };
+        let image = image_for_up(image, existing.as_ref().map(|record| record.image.as_str()));
         let allow_private = allow_private.map(|mut ranges| {
             ranges.sort();
             ranges.dedup();
@@ -660,20 +656,6 @@ impl Daemon {
         self.down(name).map(drop).map_err(|refusal| refusal.0.error.map(|e| e.message).unwrap_or_default())
     }
 
-    fn image_required(&self) -> Response {
-        let available: Vec<String> = fs::read_dir(self.paths.images())
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".tar").map(str::to_string))
-            .collect();
-        Response::failure(
-            ErrorCode::ImageRequired,
-            "a new session needs --image; there is no default image until the Helium image exists",
-            Some(if available.is_empty() { "no images installed".into() } else { format!("installed: {}", available.join(", ")) }),
-        )
-    }
-
     fn await_ready(&self, machine: &MachineName, endpoints: Endpoints) {
         let session = &machine.session;
         let result = self.runtime.wait_ready(machine, endpoints, &self.paths.cdp_socket(&machine.to_string()), READY_TIMEOUT, |stage| self.observe(session, |o| o.stage = Some(stage.as_str())));
@@ -759,7 +741,7 @@ impl Daemon {
                     StoreError::NoSuchSession(_) => Response::failure(
                         ErrorCode::NoSuchSession,
                         format!("no session named {session}"),
-                        Some(format!("start one with `bctl up {session} --image IMAGE` first")),
+                        Some(format!("start one with `bctl up {session}` first")),
                     ),
                     other => store_failure(other),
                 })?;
@@ -1026,4 +1008,21 @@ fn free_port() -> std::io::Result<u16> {
 pub fn open_log(paths: &Paths) -> std::io::Result<File> {
     fs::create_dir_all(&paths.home)?;
     OpenOptions::new().create(true).append(true).mode(0o600).open(paths.log())
+}
+
+/// The image `up` starts: the one named, else the one the session was created with, else the default.
+fn image_for_up(requested: Option<&str>, recorded: Option<&str>) -> String {
+    requested.or(recorded).unwrap_or(DEFAULT_IMAGE).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn up_takes_the_named_image_then_the_recorded_one_then_helium() {
+        assert_eq!(image_for_up(Some("ref-alpine-chromium"), Some("helium")), "ref-alpine-chromium");
+        assert_eq!(image_for_up(None, Some("ref-scratch-chromium")), "ref-scratch-chromium");
+        assert_eq!(image_for_up(None, None), "helium");
+    }
 }

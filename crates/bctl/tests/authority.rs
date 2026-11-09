@@ -115,7 +115,7 @@ fn acted(home: &Home, args: &[&str]) -> ActionView {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n6_taking_control_yields_to_a_native_wait_which_ends_taken_over_and_resuming_keeps_the_browser() {
     let fixture = Fixture::start(site);
     let home = Home::new("n5-a");
@@ -212,7 +212,7 @@ fn seen(home: &Home, session: &str) -> Vec<Seen> {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_follows() {
     let fixture = Fixture::start(site);
     let home = Home::new("n7-a");

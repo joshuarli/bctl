@@ -16,7 +16,7 @@ nightly-2026-09-15 aarch64-unknown-linux-musl`.
 
 ```sh
 runtime/build.sh                       # SmolVM, libkrun, libkrunfw and the guest agent, from source
-images/build.sh ref-alpine-chromium    # the reference appliance, into .work/images
+BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium   # the product appliance, into .work/images
 pnpm --dir web install && pnpm --dir web build   # the dashboard, embedded by the next step
 cargo build -p bctl
 ```
@@ -31,6 +31,11 @@ the build is pinned, what it verifies, and how to refresh it
 The kernel and the guest agent are built in a pinned Debian container, because
 this host is macOS.
 
+`DIR` holds chromium-build's `helium-*-linux-aarch64-musl.tar.xz` with its
+`.sha256` and `.acceptance.json` (`docs/image-contract.md`). The reference
+images (`images/build.sh ref-alpine-chromium` and the others under `images/`)
+stay as diagnostics; select one with `bctl up NAME --image IMAGE`.
+
 `bctl` keeps its state in `~/Library/Application Support/bctl` (or
 `$BCTL_HOME`). Put the runtime and images there:
 
@@ -38,16 +43,16 @@ this host is macOS.
 home="$HOME/Library/Application Support/bctl"
 mkdir -p "$home/runtime" "$home/images"
 ln -sfn "$PWD/.work/runtime/smolvm" "$home/runtime/smolvm"
-ln -sf "$PWD/.work/images/ref-alpine-chromium.tar" "$home/images/"
+ln -sf "$PWD/.work/images/helium.tar" "$home/images/"
 target/debug/bctl doctor
 ```
 
 ## Use
 
 ```sh
-bctl up research --image ref-alpine-chromium   # start a browser session
+bctl up research                               # start a browser session on helium
 bctl serve --open                              # open the dashboard
-bctl profile login personal --image ref-alpine-chromium   # sign in to sites by hand
+bctl profile login personal                    # sign in to sites by hand
 bctl status
 bctl grab https://example.com/ --session research   # crawl it with Grab
 bctl run mirror-docs --session docs            # run a job from ./bctl.toml

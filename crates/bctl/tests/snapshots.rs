@@ -221,7 +221,7 @@ fn run_script(outside: &Connection, target: &str, expression: &str) {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n3_snapshots_show_roles_names_states_and_refs_across_frames_and_never_a_password() {
     let fixture = Fixture::start(site);
     let home = Home::new("n3-s");
@@ -343,7 +343,7 @@ fn n3_snapshots_show_roles_names_states_and_refs_across_frames_and_never_a_passw
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n3_a_ref_resolves_only_while_its_node_document_target_and_daemon_last() {
     let fixture = Fixture::start(site);
     let home = Home::new("n3-r");

@@ -25,7 +25,7 @@ use protocol::{
 
 const USAGE: &str = "usage:
   bctl up NAME [--profile PROFILE] [--image IMAGE] [--allow-private CIDR]... [--json]
-                                                              start or reuse a browser session
+                                                              start or reuse a browser session (image default: helium)
   bctl down NAME [--json]                                     stop it, keeping its profile
   bctl rm NAME [--json]                                       forget a stopped session
   bctl status [--json]                               list sessions and why they are not ready

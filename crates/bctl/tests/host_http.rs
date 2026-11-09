@@ -93,7 +93,7 @@ fn title(home: &Home, session: &str) -> String {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn the_guest_fetches_every_large_response_over_reused_connections_to_the_host() {
     let port = serve_keep_alive();
     let home = Home::new("netloss");

@@ -30,7 +30,7 @@ fn guest_connects(home: &Home, machine: &str, command: &str) -> bool {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn the_guest_reaches_the_public_internet_but_not_private_or_loopback_addresses() {
     let home = Home::new("h2e");
     let session = format!("{}-s", home.prefix());

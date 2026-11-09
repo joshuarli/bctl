@@ -45,7 +45,7 @@ function SessionsPage(props: { list: SessionView[] }) {
   return <>
     <PageHeader title="Sessions" />
     <Show when={props.list.length > 0} fallback={
-      <EmptyState title="No sessions" detail="Start one with `bctl up NAME --image IMAGE`." />
+      <EmptyState title="No sessions" detail="Start one with `bctl up NAME`." />
     }>
       <Panel title="Browsers" flush>
         <table class="ui-table sessions">

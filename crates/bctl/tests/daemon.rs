@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use common::{Home, assert_ok, image, status_of};
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn the_daemon_owns_sessions_across_restarts() {
     let home = Home::new("c3");
     let p = home.prefix();

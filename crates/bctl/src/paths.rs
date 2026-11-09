@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+/// The image `bctl up` starts when neither the command nor the session names one.
+pub const DEFAULT_IMAGE: &str = "helium";
+
 /// Where one bctl installation keeps its state. `BCTL_HOME` overrides the per-user default so independent
 /// installations (tests, a second checkout) never share a daemon, database, or socket.
 #[derive(Debug, Clone)]

@@ -33,7 +33,7 @@ fn main() -> ExitCode {
     let smolvm = root.join(".work/runtime/smolvm/smolvm");
     let image = std::env::var_os("BCTL_PROOF_IMAGE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| root.join(".work/images/ref-alpine-chromium.tar"));
+        .unwrap_or_else(|| root.join(".work/images/helium.tar"));
     let build_image = format!("images/build.sh {}", image.file_stem().map_or("<image>".into(), |stem| stem.to_string_lossy()));
     for (what, path, how) in [("runtime", &smolvm, "runtime/build.sh"), ("image", &image, build_image.as_str())] {
         if !path.exists() {

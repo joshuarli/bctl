@@ -38,9 +38,9 @@ pub struct Machine {
     pub name: String,
 }
 
-/// The image every VM test boots: `BCTL_TEST_IMAGE`, or ref-alpine-chromium.
+/// The image every VM test boots: `BCTL_TEST_IMAGE`, or helium, the default image.
 pub fn image() -> String {
-    std::env::var("BCTL_TEST_IMAGE").unwrap_or_else(|_| "ref-alpine-chromium".to_string())
+    std::env::var("BCTL_TEST_IMAGE").unwrap_or_else(|_| "helium".to_string())
 }
 
 pub struct Home {

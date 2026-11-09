@@ -47,7 +47,7 @@ async fn evaluate(control_url: &str, expression: &str) -> Result<String, String>
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn cdp_is_reachable_only_through_a_live_capability() {
     let home = Home::new("h2");
     let session = format!("{}-s", home.prefix());
@@ -109,7 +109,7 @@ fn cdp_is_reachable_only_through_a_live_capability() {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn a_person_holding_the_input_lease_blocks_new_cdp_attachments() {
     let home = Home::new("h2l");
     let session = format!("{}-s", home.prefix());

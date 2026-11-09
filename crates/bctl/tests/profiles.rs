@@ -49,7 +49,7 @@ fn browser_log_problems(home: &Home, machine: &str) -> String {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn a_profile_keeps_its_cookies_across_twenty_down_up_cycles() {
     let home = Home::new("c4");
     let session = format!("{}-s", home.prefix());

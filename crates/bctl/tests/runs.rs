@@ -317,7 +317,7 @@ fn browser_answers(control_url: &str) -> bool {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh, images/build.sh ref-alpine-chromium, and BCTL_GRAB"]
+#[ignore = "boots real VMs: needs runtime/build.sh, the BCTL_TEST_IMAGE image (default helium) in .work/images, and BCTL_GRAB"]
 fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_in_the_same_browser() {
     require_grab();
     let home = Home::new("j3-l");
@@ -362,7 +362,7 @@ fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh, images/build.sh ref-alpine-chromium, and BCTL_GRAB"]
+#[ignore = "boots real VMs: needs runtime/build.sh, the BCTL_TEST_IMAGE image (default helium) in .work/images, and BCTL_GRAB"]
 fn a_crawl_interrupted_by_a_daemon_kill_or_paused_continues_from_grab_state_on_resume() {
     require_grab();
     let home = Home::new("j3-c");
@@ -429,7 +429,7 @@ fn a_crawl_interrupted_by_a_daemon_kill_or_paused_continues_from_grab_state_on_r
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn exec_runs_end_with_categorized_outcomes_and_never_outlive_cancel_timeout_or_a_daemon_kill() {
     let home = Home::new("j3-e");
     let session = format!("{}-exec", home.prefix());

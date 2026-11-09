@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 
 const workspace = resolve(import.meta.dirname, "../..");
-const image = process.env.BCTL_TEST_IMAGE ?? "ref-alpine-chromium";
+const image = process.env.BCTL_TEST_IMAGE ?? "helium";
 const bctlBinary = resolve(workspace, "target/debug/bctl");
 const home = resolve(workspace, `.work/tmp/bctl-d1-${process.pid}`);
 const session = `d1${process.pid}`;

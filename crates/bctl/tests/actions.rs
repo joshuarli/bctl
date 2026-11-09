@@ -271,7 +271,7 @@ fn timed(home: &Home, verb: &str, session: &str, args: &[&str], runs: usize) -> 
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n4_clicks_land_only_on_the_named_visible_enabled_uncovered_element_in_any_frame() {
     let fixture = Fixture::start(site);
     let home = Home::new("n4-c");
@@ -381,7 +381,7 @@ fn n4_clicks_land_only_on_the_named_visible_enabled_uncovered_element_in_any_fra
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n4_forms_take_unicode_text_selections_and_checks_like_a_person_and_refuse_while_a_person_has_control() {
     let fixture = Fixture::start(site);
     let home = Home::new("n4-f");
@@ -528,7 +528,7 @@ impl CdpCommand for DeviceMetrics {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n7_actions_wait_for_late_layout_and_overlays_and_hit_fractional_boxes_at_any_device_scale() {
     let fixture = Fixture::start(site);
     let home = Home::new("n7-l");
@@ -588,7 +588,7 @@ fn n7_actions_wait_for_late_layout_and_overlays_and_hit_fractional_boxes_at_any_
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n7_a_ref_stays_stale_when_its_node_leaves_while_a_query_follows_the_page_to_its_new_element() {
     let fixture = Fixture::start(site);
     let home = Home::new("n7-d");
@@ -678,7 +678,7 @@ fn n7_a_ref_stays_stale_when_its_node_leaves_while_a_query_follows_the_page_to_i
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n7_input_whose_reply_or_connection_is_lost_is_unknown_and_never_sent_again() {
     let fixture = Fixture::start(site);
     let home = Home::new("n7-u");

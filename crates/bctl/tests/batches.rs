@@ -97,7 +97,7 @@ fn events(home: &Home, session: &str) -> String {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n5_a_batch_runs_its_steps_in_order_and_stops_at_the_first_failure_without_undoing_any() {
     let fixture = Fixture::start(site);
     let home = Home::new("n5-b");

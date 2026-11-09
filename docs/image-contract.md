@@ -96,7 +96,7 @@ passes B1 with no SmolVM file of its own.
 |---|---|---|---|---|
 | `ref-alpine-chromium` | Alpine 3.22 | Alpine `chromium` | Sway (pixman) | Diagnostic with a shell and the Sway stack; never a default |
 | `ref-alpine-tinyland` | Alpine 3.22 | Alpine `chromium` | `guest/tinyland` with `guest/seatd` | Diagnostic with a shell on tinyland; never a default |
-| `helium` | scratch: no base, busybox, or shell | chromium-build's Helium linux-aarch64-musl archive | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | The product image |
+| `helium` | scratch: no base, busybox, or shell | chromium-build's Helium linux-aarch64-musl archive | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | The product image and the default: `bctl up NAME` without `--image` starts it |
 | `ref-scratch-chromium` | scratch: no base, busybox, or shell | Alpine `chromium` and its runtime closure, packed in the Helium archive layout | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | Diagnostic: the scratch layout around Alpine `chromium`; never a default |
 
 Build one with `images/build.sh <image>`; the archive lands in
@@ -134,6 +134,11 @@ the receipt: `lib/libxkbcommon.so.0` is deleted, and kbvm's
 `libxkbcommon.so.0` (the `kbvm-xkbcommon` crate at the kbvm revision
 `guest/Cargo.lock` pins) is at `/usr/local/lib`, which musl searches after
 `LD_LIBRARY_PATH`.
+
+Helium archives before r5 lack two chromium-build sandbox fixes that musl
+1.2.6 needs (`pwritev2`, and `sched_getparam` on a thread id); their renderers
+die with SIGSYS and the pages they host stop answering CDP. The build does
+not check the revision; use r5 or later.
 
 musl's loader comes from the Alpine 3.24.1 image chromium-build builds the
 arm64 archive on (musl 1.2.6), not from Alpine 3.22.

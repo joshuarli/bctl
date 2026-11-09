@@ -29,7 +29,7 @@ fn browser_endpoint(control_url: &str) -> Endpoint {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn the_cdp_transport_drives_a_ready_session() {
     let home = Home::new("n1-");
     let session = format!("{}-s", home.prefix());

@@ -84,7 +84,7 @@ impl CdpCommand for Evaluate {
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n2_targets_are_listed_opened_selected_and_closed_without_the_binding_ever_moving_on_its_own() {
     let home = Home::new("n2-t");
     let session = format!("{}-s", home.prefix());
@@ -126,7 +126,7 @@ fn n2_targets_are_listed_opened_selected_and_closed_without_the_binding_ever_mov
 }
 
 #[test]
-#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n2_the_binding_survives_a_daemon_kill_but_not_a_new_generation_and_waits_for_a_person_to_release_control() {
     let home = Home::new("n2-r");
     let session = format!("{}-s", home.prefix());
