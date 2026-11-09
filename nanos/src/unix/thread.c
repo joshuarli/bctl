@@ -7,13 +7,13 @@ BSS_RO_AFTER_INIT thread dummy_thread;
 
 sysreturn gettid()
 {
-    return current->tid;
+    return thread_pid_nr_ns(current, current->p->pid_ns);
 }
 
 sysreturn set_tid_address(int *a)
 {
     current->clear_tid = a;
-    return current->tid;
+    return gettid();
 }
 
 #ifdef __x86_64__
@@ -47,7 +47,7 @@ sysreturn arch_prctl(int code, unsigned long addr)
 #endif
 
 #define CLONE_UNSUPPORTED_NAMESPACES    (CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | \
-                                         CLONE_NEWIPC | CLONE_NEWPID)
+                                         CLONE_NEWIPC)
 
 static sysreturn clone_validate(u64 flags)
 {
@@ -73,6 +73,19 @@ static sysreturn clone_validate(u64 flags)
         u32 level = p->creds.user_ns->level;
         process_unlock(p);
         if (level >= USER_NS_LEVEL_MAX)
+            return -EUSERS;
+    }
+    if (flags & CLONE_NEWPID) {
+        process p = current->p;
+        if (!(flags & CLONE_NEWUSER) && !capable(p, CAP_SYS_ADMIN))
+            return -EPERM;
+        process_lock(p);
+        boolean same_ns = (p->pid_ns_for_children == p->pid_ns);
+        u32 level = p->pid_ns->level;
+        process_unlock(p);
+        if (!same_ns)
+            return -EINVAL;
+        if (level >= PID_NS_LEVEL_MAX)
             return -EUSERS;
     }
     if (flags & CLONE_PIDFD) {
@@ -129,10 +142,11 @@ static sysreturn clone_internal(struct clone_args_internal *args)
          exit_thread(t);
          return -EFAULT;
      }
+     int child_tid = thread_pid_nr_ns(t, current->p->pid_ns);
      if (flags & CLONE_PARENT_SETTID)
-	  *(args->parent_tid) = t->tid;
+	  *(args->parent_tid) = child_tid;
      if (flags & CLONE_CHILD_SETTID)
-	  *(args->child_tid) = t->tid;
+	  *(args->child_tid) = child_tid;
      context_clear_err(ctx);
      if (flags & CLONE_CHILD_CLEARTID)
 	  t->clear_tid = args->child_tid;
@@ -140,7 +154,7 @@ static sysreturn clone_internal(struct clone_args_internal *args)
      f[FRAME_FULL] = true;
      thread_reserve(t);
      schedule_thread(t);
-     return t->tid;
+     return child_tid;
 }
 
 #ifdef __x86_64__
@@ -363,7 +377,7 @@ closure_func_basic(thunk, void, thread_return)
     /* temporarily install fault handler to catch faults for stack pages */
     use_fault_handler(t->context.fault_handler);
     if (t->set_child_tid) {
-        int tid = t->tid;
+        int tid = thread_pid_nr_ns(t, t->p->pid_ns);
         set_user_value(t->set_child_tid, tid);
         t->set_child_tid = 0;
     }
@@ -524,7 +538,7 @@ closure_func_basic(thunk, void, free_thread)
      * need different handling */
     process p = t->p;
     if (p->pid != t->tid)
-        deallocate_u64((heap)get_unix_heaps()->processes, t->tid, 1);
+        pid_numbers_free(p->pid_ns, &t->tids);
     deallocate(heap_locked(get_kernel_heaps()), t, sizeof(struct thread));
     process_release(p);
     /* TODO: Intentionally leaking tracelog_attrs; no accounting for attrs lifetime... */
@@ -600,10 +614,14 @@ thread create_thread(process p, u64 tid)
 
     /* install gdb fault handler if gdb is inited */
     gdb_check_fault_handler(t);
-    if (tid != INVALID_PHYSICAL)
+    if (tid != INVALID_PHYSICAL) {
         t->tid = tid;
-    else
-        t->tid = allocate_pid(p->uh);
+        t->tids = p->pids;
+    } else {
+        if (!pid_numbers_alloc(&t->tids, p->pid_ns))
+            goto fail_affinity;
+        t->tid = t->tids.nr[0];
+    }
     assert(t->tid != INVALID_PHYSICAL);
     spin_lock(&p->threads_lock);
     rbtree_insert_node(p->threads, &t->n);

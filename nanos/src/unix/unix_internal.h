@@ -109,6 +109,12 @@ sysreturn execve(const char *path, char *const argv[], char *const envp[]);
 sysreturn execveat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags);
 void process_kill(process p, int wait_status);
 process process_get(int pid);
+process process_get_ns(int nr, pid_namespace ns);
+int process_getppid(process p);
+int process_ppid_nr_ns(process p, pid_namespace ns);
+int pid_nr_from_kernel(int root_nr, pid_namespace ns);
+int pid_kernel_nr(int nr, pid_namespace ns);
+thread thread_from_tid_ns(process p, int tid, pid_namespace ns);
 
 static inline int wait_status_exited(int code)
 {
@@ -421,6 +427,7 @@ typedef struct thread {
     int *clear_tid;
     int *set_child_tid;
     int tid;
+    struct pid_numbers tids;
     struct rbnode n;
 
     /* set by set_robust_list syscall */
@@ -632,6 +639,9 @@ enum process_state {
 typedef struct process {
     unix_heaps        uh;       /* non-thread-specific */
     int               pid;
+    struct pid_numbers pids;
+    pid_namespace     pid_ns;
+    pid_namespace     pid_ns_for_children;
     int               pgid;
     int               sid;
     struct list       l;        /* live processes */

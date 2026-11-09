@@ -2,6 +2,7 @@
 
 static struct user_namespace init_ns;
 static struct net_namespace initial_net_ns;
+static struct pid_namespace init_pid_ns;
 static u32 init_inums[NAMESPACE_KIND_COUNT];
 static struct spinlock inum_lock;
 static u32 next_inum;
@@ -65,7 +66,155 @@ user_namespace user_ns_create(user_namespace parent, u32 owner, u32 group)
     return user_ns_alloc(parent, owner, group);
 }
 
-void namespace_init(void)
+closure_func_basic(thunk, void, pid_ns_free)
+{
+    pid_namespace ns = struct_from_closure(pid_namespace, free);
+    if (ns->ids)
+        destroy_heap((heap)ns->ids);
+    if (ns->parent)
+        pid_ns_release(ns->parent);
+    deallocate(heap_locked(get_kernel_heaps()), ns, sizeof(struct pid_namespace));
+}
+
+pid_namespace pid_ns_root(void)
+{
+    return &init_pid_ns;
+}
+
+void pid_ns_reserve(pid_namespace ns)
+{
+    refcount_reserve(&ns->refcount);
+}
+
+void pid_ns_release(pid_namespace ns)
+{
+    refcount_release(&ns->refcount);
+}
+
+pid_namespace pid_ns_create(pid_namespace parent)
+{
+    if (!parent)
+        return INVALID_ADDRESS;
+    if (parent->level >= PID_NS_LEVEL_MAX)
+        return INVALID_ADDRESS;
+    heap h = heap_locked(get_kernel_heaps());
+    id_heap ids = create_id_heap(h, h, 1, PID_NS_ID_END, 1, false);
+    if (ids == INVALID_ADDRESS)
+        return INVALID_ADDRESS;
+    heap ids_heap = locking_heap_wrapper(h, (heap)ids);
+    if (ids_heap == INVALID_ADDRESS) {
+        destroy_heap((heap)ids);
+        return INVALID_ADDRESS;
+    }
+    pid_namespace ns = allocate(h, sizeof(struct pid_namespace));
+    if (ns == INVALID_ADDRESS) {
+        destroy_heap(ids_heap);
+        return INVALID_ADDRESS;
+    }
+    zero(ns, sizeof(*ns));
+    spin_lock_init(&ns->lock);
+    init_refcount(&ns->refcount, 1, init_closure_func(&ns->free, thunk, pid_ns_free));
+    pid_ns_reserve(parent);
+    ns->parent = parent;
+    ns->level = parent->level + 1;
+    ns->inum = namespace_alloc_inum();
+    ns->ids = ids_heap;
+    return ns;
+}
+
+void pid_ns_set_reaper(pid_namespace ns, process reaper)
+{
+    spin_lock(&ns->lock);
+    assert(!ns->reaper);
+    ns->reaper = reaper;
+    spin_unlock(&ns->lock);
+}
+
+static u64 pid_ns_alloc_nr(pid_namespace ns)
+{
+    if (!ns->parent)
+        return allocate_pid(get_unix_heaps());
+    u64 nr = allocate_u64(ns->ids, 1);
+    return nr == INVALID_PHYSICAL ? 0 : nr;
+}
+
+static void pid_ns_free_nr(pid_namespace ns, u32 nr)
+{
+    deallocate_u64(ns->ids, nr, 1);
+}
+
+boolean pid_numbers_alloc(struct pid_numbers *nums, pid_namespace leaf)
+{
+    pid_namespace chain[PID_NS_LEVEL_MAX + 1];
+    pid_namespace ns = leaf;
+    for (u32 level = leaf->level + 1; level-- > 0;) {
+        chain[level] = ns;
+        ns = ns->parent;
+    }
+    nums->level = leaf->level;
+    for (u32 level = 0; level <= leaf->level; level++) {
+        u64 nr = pid_ns_alloc_nr(chain[level]);
+        if (!nr || (nr == INVALID_PHYSICAL)) {
+            for (u32 done = 0; done < level; done++)
+                pid_ns_free_nr(chain[done], nums->nr[done]);
+            return false;
+        }
+        nums->nr[level] = nr;
+    }
+    return true;
+}
+
+void pid_numbers_free(pid_namespace leaf, struct pid_numbers *nums)
+{
+    pid_namespace ns = leaf;
+    for (u32 level = nums->level + 1; level-- > 0;) {
+        if (nums->nr[level])
+            pid_ns_free_nr(ns, nums->nr[level]);
+        ns = ns->parent;
+    }
+}
+
+static pid_namespace pid_ns_ancestor(pid_namespace own, u32 level)
+{
+    while (own->level > level)
+        own = own->parent;
+    return own;
+}
+
+int pid_nr_ns(process p, pid_namespace ns)
+{
+    if (!p || !ns)
+        return 0;
+    pid_namespace own = p->pid_ns;
+    if (!own || ns->level > own->level)
+        return 0;
+    if (pid_ns_ancestor(own, ns->level) != ns)
+        return 0;
+    return p->pids.nr[ns->level];
+}
+
+int thread_pid_nr_ns(thread t, pid_namespace ns)
+{
+    if (!t || !ns)
+        return 0;
+    pid_namespace own = t->p->pid_ns;
+    if (!own || ns->level > own->level)
+        return 0;
+    if (pid_ns_ancestor(own, ns->level) != ns)
+        return 0;
+    return t->tids.nr[ns->level];
+}
+
+pid_namespace process_pid_ns(process p)
+{
+    process_lock(p);
+    pid_namespace ns = p->pid_ns;
+    pid_ns_reserve(ns);
+    process_unlock(p);
+    return ns;
+}
+
+void namespace_init(heap root_pid_ids)
 {
     spin_lock_init(&inum_lock);
     next_inum = 0xf0000000;
@@ -85,16 +234,22 @@ void namespace_init(void)
     init_ns.gid_map.e[0] = (struct id_extent){ 0, 0, 0xffffffff };
     init_ns.setgroups_allowed = true;
 
+    zero(&init_pid_ns, sizeof(init_pid_ns));
+    spin_lock_init(&init_pid_ns.lock);
+    init_refcount(&init_pid_ns.refcount, 1, 0);
+    init_pid_ns.level = 0;
+    init_pid_ns.inum = namespace_alloc_inum();
+    init_pid_ns.ids = root_pid_ids;
+
     init_inums[NAMESPACE_USER] = init_ns.inum;
     zero(&initial_net_ns, sizeof(initial_net_ns));
     init_refcount(&initial_net_ns.refcount, 1, 0);
     initial_net_ns.user_ns = &init_ns;
     initial_net_ns.inum = namespace_alloc_inum();
     init_inums[NAMESPACE_NET] = initial_net_ns.inum;
-    for (int kind = NAMESPACE_PID; kind < NAMESPACE_KIND_COUNT; kind++) {
-        if (kind != NAMESPACE_NET)
-            init_inums[kind] = namespace_alloc_inum();
-    }
+    init_inums[NAMESPACE_PID] = init_pid_ns.inum;
+    for (int kind = NAMESPACE_IPC; kind < NAMESPACE_KIND_COUNT; kind++)
+        init_inums[kind] = namespace_alloc_inum();
 }
 
 static struct id_map *user_ns_id_map(user_namespace ns, boolean group)
@@ -190,6 +345,11 @@ u32 namespace_inum(process p, enum namespace_kind kind)
     case NAMESPACE_USER:
         process_lock(p);
         inum = p->creds.user_ns->inum;
+        process_unlock(p);
+        return inum;
+    case NAMESPACE_PID:
+        process_lock(p);
+        inum = p->pid_ns->inum;
         process_unlock(p);
         return inum;
     case NAMESPACE_NET:

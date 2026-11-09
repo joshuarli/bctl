@@ -278,17 +278,71 @@ static void procfs_tids(process p, vector v)
     spin_unlock(&p->threads_lock);
 }
 
+static pid_namespace procfs_current_pid_ns(void)
+{
+    thread t = current;
+    return (t && t->p && t->p->pid_ns) ? t->p->pid_ns : pid_ns_root();
+}
+
+static void procfs_refresh_pids(procfs_node dir, pid_namespace ns)
+{
+    heap h = procfs_heap();
+    vector roots = allocate_vector(h, 16);
+    vector want_locals = allocate_vector(h, 16);
+    vector want_roots = allocate_vector(h, 16);
+    vector existing = allocate_vector(h, 8);
+    assert(roots != INVALID_ADDRESS && want_locals != INVALID_ADDRESS &&
+           want_roots != INVALID_ADDRESS && existing != INVALID_ADDRESS);
+    process_list_pids(roots);
+    void *x;
+    vector_foreach(roots, x) {
+        int root = (int)u64_from_pointer(x);
+        process p = process_get(root);
+        if (!p)
+            continue;
+        int local = pid_nr_ns(p, ns);
+        process_release(p);
+        if (!local)
+            continue;
+        vector_push(want_locals, pointer_from_u64((u64)local));
+        vector_push(want_roots, pointer_from_u64((u64)root));
+    }
+    deallocate_vector(roots);
+    iterate(children(dir->md), stack_closure(procfs_prune_each, existing));
+    procfs_node cn;
+    vector_foreach(existing, cn) {
+        if (cn->kind != PROCFS_PID)
+            continue;
+        boolean keep = false;
+        for (u64 i = 0; i < vector_length(want_locals); i++) {
+            if ((int)u64_from_pointer(vector_get(want_locals, i)) == cn->n &&
+                (int)u64_from_pointer(vector_get(want_roots, i)) == cn->pid) {
+                keep = true;
+                break;
+            }
+        }
+        if (!keep)
+            procfs_node_destroy(cn);
+    }
+    deallocate_vector(existing);
+    for (u64 i = 0; i < vector_length(want_locals); i++) {
+        int local = (int)u64_from_pointer(vector_get(want_locals, i));
+        int root = (int)u64_from_pointer(vector_get(want_roots, i));
+        symbol name = intern_u64(local);
+        if (!procfs_child(dir, name))
+            procfs_node_new(dir, name, PROCFS_PID, root, local);
+    }
+    deallocate_vector(want_locals);
+    deallocate_vector(want_roots);
+}
+
 static void procfs_refresh(procfs_node node)
 {
     vector want;
     process p;
     switch (node->kind) {
     case PROCFS_ROOT:
-        want = allocate_vector(procfs_heap(), 16);
-        assert(want != INVALID_ADDRESS);
-        process_list_pids(want);
-        procfs_sync_numbered(node, want, PROCFS_PID, 0);
-        deallocate_vector(want);
+        procfs_refresh_pids(node, procfs_current_pid_ns());
         break;
     case PROCFS_FD_DIR:
     case PROCFS_FDINFO_DIR:
@@ -313,12 +367,14 @@ static void procfs_refresh(procfs_node node)
         break;
     case PROCFS_SELF:
     case PROCFS_THREAD_SELF: {
+        process self = current->p;
+        pid_namespace ns = self->pid_ns;
         buffer b = allocate_string(24);
         assert(b != INVALID_ADDRESS);
-        procfs_buffer_append_number(b, current->p->pid);
+        procfs_buffer_append_number(b, pid_nr_ns(self, ns));
         if (node->kind == PROCFS_THREAD_SELF) {
             buffer_write_cstring(b, "/task/");
-            procfs_buffer_append_number(b, current->tid);
+            procfs_buffer_append_number(b, thread_pid_nr_ns(current, ns));
         }
         procfs_set_linktarget(node, b);
         break;
@@ -431,28 +487,46 @@ static void procfs_status(buffer b, process p, int tid)
     char name[16];
     procfs_thread_name(p, tid, name);
     boolean zombie = (p->state == PROCESS_ZOMBIE);
-    int ppid = process_getppid(p);
-    user_namespace viewer_ns = process_user_ns(current->p);
+    process viewer = current->p;
+    pid_namespace viewer_ns = viewer->pid_ns;
+    int ppid = process_ppid_nr_ns(p, viewer_ns);
+    thread tt = (tid == p->pid) ? INVALID_ADDRESS : thread_from_tid(p, tid);
+    int pid = tt != INVALID_ADDRESS ? thread_pid_nr_ns(tt, viewer_ns) : pid_nr_ns(p, viewer_ns);
+    u32 level = tt != INVALID_ADDRESS ? tt->tids.level : p->pids.level;
+    u32 *nrs = tt != INVALID_ADDRESS ? tt->tids.nr : p->pids.nr;
+    int tgid = pid_nr_ns(p, viewer_ns);
+    boolean visible = (p->pids.level >= viewer_ns->level) && (tgid != 0);
+    user_namespace viewer_user_ns = process_user_ns(viewer);
     bprintf(b, "Name:\t%s\n", sstring_from_cstring(name, sizeof(name)));
     bprintf(b, "State:\t%s\n", zombie ? ss("Z (zombie)") : ss("R (running)"));
-    bprintf(b, "Tgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n", p->pid, tid, ppid);
+    bprintf(b, "Tgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n", tgid, pid, ppid);
     process_lock(p);
     struct creds *c = &p->creds;
-    bprintf(b, "Uid:\t%d\t%d\t%d\t%d\n", user_ns_from_kuid(viewer_ns, c->uid),
-            user_ns_from_kuid(viewer_ns, c->euid), user_ns_from_kuid(viewer_ns, c->suid),
-            user_ns_from_kuid(viewer_ns, c->fsuid));
-    bprintf(b, "Gid:\t%d\t%d\t%d\t%d\n", user_ns_from_kgid(viewer_ns, c->gid),
-            user_ns_from_kgid(viewer_ns, c->egid), user_ns_from_kgid(viewer_ns, c->sgid),
-            user_ns_from_kgid(viewer_ns, c->fsgid));
+    bprintf(b, "Uid:\t%d\t%d\t%d\t%d\n", user_ns_from_kuid(viewer_user_ns, c->uid),
+            user_ns_from_kuid(viewer_user_ns, c->euid), user_ns_from_kuid(viewer_user_ns, c->suid),
+            user_ns_from_kuid(viewer_user_ns, c->fsuid));
+    bprintf(b, "Gid:\t%d\t%d\t%d\t%d\n", user_ns_from_kgid(viewer_user_ns, c->gid),
+            user_ns_from_kgid(viewer_user_ns, c->egid), user_ns_from_kgid(viewer_user_ns, c->sgid),
+            user_ns_from_kgid(viewer_user_ns, c->fsgid));
     buffer_write_cstring(b, "Groups:\t");
     for (u32 i = 0; i < c->ngroups; i++)
-        bprintf(b, "%d ", user_ns_from_kgid(viewer_ns, c->groups[i]));
+        bprintf(b, "%d ", user_ns_from_kgid(viewer_user_ns, c->groups[i]));
     push_u8(b, '\n');
     u64 inh = c->cap_inheritable, prm = c->cap_permitted, eff = c->cap_effective;
     u64 bnd = c->cap_bset, amb = c->cap_ambient;
     int pgid = p->pgid;
+    int sid = p->sid;
     process_unlock(p);
-    bprintf(b, "NStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\n", p->pid, tid, pgid, p->sid);
+    bprintf(b, "NStgid:\t%d", tgid);
+    if (visible)
+        for (u32 l = viewer_ns->level + 1; l <= p->pids.level; l++)
+            bprintf(b, "\t%d", p->pids.nr[l]);
+    bprintf(b, "\nNSpid:\t%d", pid);
+    if (visible)
+        for (u32 l = viewer_ns->level + 1; l <= level; l++)
+            bprintf(b, "\t%d", nrs[l]);
+    bprintf(b, "\nNSpgid:\t%d\nNSsid:\t%d\n", pid_nr_from_kernel(pgid, viewer_ns),
+            pid_nr_from_kernel(sid, viewer_ns));
     bprintf(b, "Threads:\t%d\n", zombie ? 1 : procfs_thread_count(p));
     u64 ign = 0, cgt = 0;
     for (int sig = 1; sig <= NSIG; sig++) {
@@ -472,15 +546,22 @@ static void procfs_status(buffer b, process p, int tid)
     u8 sec_mode = 0;
     u32 sec_filters = 0;
     boolean nnp = false;
-    thread tt = thread_from_tid(p, tid);
     if (tt != INVALID_ADDRESS) {
         nnp = tt->no_new_privs;
         sec_mode = tt->seccomp_mode;
         sec_filters = seccomp_filter_count(tt->seccomp);
         thread_release(tt);
+    } else {
+        thread t = thread_from_tid(p, tid);
+        if (t != INVALID_ADDRESS) {
+            nnp = t->no_new_privs;
+            sec_mode = t->seccomp_mode;
+            sec_filters = seccomp_filter_count(t->seccomp);
+            thread_release(t);
+        }
     }
     bprintf(b, "NoNewPrivs:\t%d\nSeccomp:\t%d\nSeccomp_filters:\t%d\n", nnp ? 1 : 0, sec_mode, sec_filters);
-    user_ns_release(viewer_ns);
+    user_ns_release(viewer_user_ns);
 }
 
 static void procfs_stat(buffer b, process p)
@@ -488,8 +569,11 @@ static void procfs_stat(buffer b, process p)
     char name[16];
     procfs_thread_name(p, p->pid, name);
     boolean zombie = (p->state == PROCESS_ZOMBIE);
-    bprintf(b, "%d (%s) %c %d %d %d", p->pid, sstring_from_cstring(name, sizeof(name)),
-            zombie ? 'Z' : 'R', process_getppid(p), p->pgid, p->sid);
+    pid_namespace viewer_ns = current->p->pid_ns;
+    bprintf(b, "%d (%s) %c %d %d %d", pid_nr_ns(p, viewer_ns),
+            sstring_from_cstring(name, sizeof(name)), zombie ? 'Z' : 'R',
+            process_ppid_nr_ns(p, viewer_ns), pid_nr_from_kernel(p->pgid, viewer_ns),
+            pid_nr_from_kernel(p->sid, viewer_ns));
     for (int field = 7; field <= 52; field++) {
         if (field == 20)
             bprintf(b, " %d", zombie ? 1 : procfs_thread_count(p));

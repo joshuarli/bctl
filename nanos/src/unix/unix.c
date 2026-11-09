@@ -753,8 +753,16 @@ closure_func_basic(thunk, void, process_free)
     if (p->exe)
         deallocate_buffer(p->exe);
     creds_free(&p->creds);
-    if (p->pid)
-        deallocate_u64((heap)p->uh->processes, p->pid, 1);
+    if (p->pid_ns) {
+        pid_namespace ns = p->pid_ns;
+        spin_lock(&ns->lock);
+        if (ns->reaper == p)
+            ns->reaper = 0;
+        spin_unlock(&ns->lock);
+        pid_numbers_free(ns, &p->pids);
+        pid_ns_release(p->pid_ns_for_children);
+        pid_ns_release(ns);
+    }
     deallocate(locked, p, sizeof(struct process));
 }
 
@@ -844,13 +852,21 @@ process create_process(unix_heaps uh, tuple root, filesystem fs)
     assert(pid != INVALID_PHYSICAL);
     process p = process_alloc(uh, root, fs, pid);
     assert(p != INVALID_ADDRESS);
+    p->pid_ns = pid_ns_root();
+    pid_ns_reserve(p->pid_ns);
+    p->pid_ns_for_children = p->pid_ns;
+    pid_ns_reserve(p->pid_ns_for_children);
+    p->pids.level = 0;
+    p->pids.nr[0] = pid;
     p->fdtable = fdtable_alloc();
     assert(p->fdtable != INVALID_ADDRESS);
     if (!kernel) {
         p->vm = mmap_process_init(root);
         init_vdso(p);
-        if (!init_process)
+        if (!init_process) {
             init_process = p;
+            pid_ns_set_reaper(p->pid_ns, p);
+        }
     }
     spin_lock(&processes_lock);
     list_insert_before(&processes, &p->l);
@@ -892,6 +908,48 @@ process process_get(int pid)
     return found;
 }
 
+process process_get_ns(int nr, pid_namespace ns)
+{
+    process found = 0;
+    if (nr <= 0 || !ns)
+        return found;
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (pid_nr_ns(p, ns) == nr) {
+            process_reserve(p);
+            found = p;
+            break;
+        }
+    }
+    spin_unlock(&processes_lock);
+    return found;
+}
+
+int pid_nr_from_kernel(int root_nr, pid_namespace ns)
+{
+    if (root_nr <= 0)
+        return 0;
+    process p = process_get(root_nr);
+    if (!p)
+        return 0;
+    int nr = pid_nr_ns(p, ns);
+    process_release(p);
+    return nr;
+}
+
+int pid_kernel_nr(int nr, pid_namespace ns)
+{
+    if (nr <= 0)
+        return 0;
+    process p = process_get_ns(nr, ns);
+    if (!p)
+        return 0;
+    int root_nr = p->pid;
+    process_release(p);
+    return root_nr;
+}
+
 void process_list_pids(vector pids)
 {
     spin_lock(&processes_lock);
@@ -906,7 +964,15 @@ void process_list_pids(vector pids)
 int process_getppid(process p)
 {
     spin_lock(&processes_lock);
-    int ppid = p->parent ? p->parent->pid : 0;
+    int ppid = (p->parent && p->pid_ns) ? pid_nr_ns(p->parent, p->pid_ns) : 0;
+    spin_unlock(&processes_lock);
+    return ppid;
+}
+
+int process_ppid_nr_ns(process p, pid_namespace ns)
+{
+    spin_lock(&processes_lock);
+    int ppid = p->parent ? pid_nr_ns(p->parent, ns) : 0;
     spin_unlock(&processes_lock);
     return ppid;
 }
@@ -984,7 +1050,7 @@ sysreturn setsid(void)
     } else {
         p->sid = p->pid;
         p->pgid = p->pid;
-        rv = p->sid;
+        rv = pid_nr_ns(p, p->pid_ns);
     }
     spin_unlock(&processes_lock);
     return rv;
@@ -994,22 +1060,36 @@ sysreturn getsid(int pid)
 {
     if (pid < 0)
         return -EINVAL;
+    process self = current->p;
+    pid_namespace ns = self->pid_ns;
+    int root_pid = pid ? pid_kernel_nr(pid, ns) : self->pid;
+    if (pid && !root_pid)
+        return -ESRCH;
     spin_lock(&processes_lock);
-    process p = pid ? process_by_pid_locked(pid) : current->p;
-    sysreturn rv = p ? p->sid : -ESRCH;
+    process p = pid ? process_by_pid_locked(root_pid) : self;
+    int sid = p ? p->sid : 0;
     spin_unlock(&processes_lock);
-    return rv;
+    if (!p)
+        return -ESRCH;
+    return pid_nr_from_kernel(sid, ns);
 }
 
 sysreturn getpgid(int pid)
 {
     if (pid < 0)
         return -EINVAL;
+    process self = current->p;
+    pid_namespace ns = self->pid_ns;
+    int root_pid = pid ? pid_kernel_nr(pid, ns) : self->pid;
+    if (pid && !root_pid)
+        return -ESRCH;
     spin_lock(&processes_lock);
-    process p = pid ? process_by_pid_locked(pid) : current->p;
-    sysreturn rv = p ? p->pgid : -ESRCH;
+    process p = pid ? process_by_pid_locked(root_pid) : self;
+    int pgid = p ? p->pgid : 0;
     spin_unlock(&processes_lock);
-    return rv;
+    if (!p)
+        return -ESRCH;
+    return pid_nr_from_kernel(pgid, ns);
 }
 
 sysreturn getpgrp(void)
@@ -1022,24 +1102,34 @@ sysreturn setpgid(int pid, int pgid)
     if (pid < 0 || pgid < 0)
         return -EINVAL;
     process self = current->p;
+    pid_namespace ns = self->pid_ns;
+    int root_pid = pid ? pid_kernel_nr(pid, ns) : self->pid;
+    if (pid && !root_pid)
+        return -ESRCH;
+    int root_pgid;
+    if (pgid) {
+        root_pgid = pid_kernel_nr(pgid, ns);
+        if (!root_pgid)
+            return -EPERM;
+    } else {
+        root_pgid = root_pid;
+    }
     spin_lock(&processes_lock);
     sysreturn rv = 0;
-    process p = pid ? process_by_pid_locked(pid) : self;
+    process p = pid ? process_by_pid_locked(root_pid) : self;
     if (!p || (p != self && p->parent != self)) {
         rv = -ESRCH;
         goto out;
     }
-    if (!pgid)
-        pgid = p->pid;
     if (p->sid == p->pid || p->sid != self->sid) {
         rv = -EPERM;
         goto out;
     }
-    if (pgid != p->pid && !pgrp_in_session_locked(pgid, self->sid)) {
+    if (root_pgid != p->pid && !pgrp_in_session_locked(root_pgid, self->sid)) {
         rv = -EPERM;
         goto out;
     }
-    p->pgid = pgid;
+    p->pgid = root_pgid;
   out:
     spin_unlock(&processes_lock);
     return rv;
@@ -1080,14 +1170,39 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
 #ifdef __x86_64__
     u64 flags = args->flags;
     process parent = t->p;
-    u64 pid = allocate_pid(parent->uh);
-    if (pid == INVALID_PHYSICAL)
-        return -EAGAIN;
-    process c = process_alloc(parent->uh, parent->process_root, parent->root_fs, pid);
-    if (c == INVALID_ADDRESS) {
-        deallocate_u64((heap)parent->uh->processes, pid, 1);
+    pid_namespace child_ns;
+    if (flags & CLONE_NEWPID) {
+        child_ns = pid_ns_create(parent->pid_ns);
+        if (child_ns == INVALID_ADDRESS)
+            return parent->pid_ns->level >= PID_NS_LEVEL_MAX ? -EUSERS : -ENOMEM;
+    } else {
+        child_ns = parent->pid_ns_for_children;
+        pid_ns_reserve(child_ns);
+    }
+    spin_lock(&child_ns->lock);
+    boolean dying = child_ns->dying;
+    spin_unlock(&child_ns->lock);
+    if (dying) {
+        pid_ns_release(child_ns);
         return -ENOMEM;
     }
+    struct pid_numbers nums;
+    if (!pid_numbers_alloc(&nums, child_ns)) {
+        pid_ns_release(child_ns);
+        return -EAGAIN;
+    }
+    process c = process_alloc(parent->uh, parent->process_root, parent->root_fs, nums.nr[0]);
+    if (c == INVALID_ADDRESS) {
+        pid_numbers_free(child_ns, &nums);
+        pid_ns_release(child_ns);
+        return -ENOMEM;
+    }
+    c->pids = nums;
+    c->pid_ns = child_ns;
+    pid_ns_reserve(child_ns);
+    c->pid_ns_for_children = child_ns;
+    if (child_ns->level > 0 && nums.nr[child_ns->level] == 1)
+        pid_ns_set_reaper(child_ns, c);
     fs_struct pfs = parent->fs;
     fs_struct cfs;
     if (flags & CLONE_FS) {
@@ -1225,7 +1340,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     if (flags & CLONE_CHILD_SETTID)
         ct->set_child_tid = args->child_tid;
     if (flags & CLONE_PARENT_SETTID) {
-        int child_pid = c->pid;
+        int child_pid = pid_nr_ns(c, parent->pid_ns);
         if (!set_user_value(args->parent_tid, child_pid)) {
             exit_thread(ct);
             rv = -EFAULT;
@@ -1242,7 +1357,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     schedule_thread(ct);
     if (flags & CLONE_VFORK)
         return thread_maybe_sleep_uninterruptible(t);
-    return c->pid;
+    return pid_nr_ns(c, parent->pid_ns);
   fail:
     spin_lock(&processes_lock);
     process_unlink_child_locked(c);
@@ -1298,12 +1413,56 @@ static void process_send_exit_signal(process parent, process child)
         .si_signo = sig,
         .si_code = wait_status_is_exit(status) ? CLD_EXITED : CLD_KILLED,
     };
-    si.sifields.sigchld.pid = child->pid;
+    si.sifields.sigchld.pid = pid_nr_ns(child, parent->pid_ns);
     si.sifields.sigchld.uid = child->creds.uid;
     si.sifields.sigchld.status = wait_status_is_exit(status) ? (status >> 8) & 0xff : status & 0x7f;
     si.sifields.sigchld.utime = proc_utime(child) / (TIMESTAMP_SECOND / CLOCKS_PER_SEC);
     si.sifields.sigchld.stime = proc_stime(child) / (TIMESTAMP_SECOND / CLOCKS_PER_SEC);
     deliver_signal_to_process(parent, &si);
+}
+
+static void pid_ns_kill_members(pid_namespace ns, process init)
+{
+    vector targets = allocate_vector(heap_locked(get_kernel_heaps()), 8);
+    assert(targets != INVALID_ADDRESS);
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (p == init || process_is_kernel(p) || !pid_nr_ns(p, ns))
+            continue;
+        process_reserve(p);
+        vector_push(targets, p);
+    }
+    spin_unlock(&processes_lock);
+    process p;
+    vector_foreach(targets, p) {
+        process_kill(p, wait_status_signaled(SIGKILL));
+        process_release(p);
+    }
+    deallocate_vector(targets);
+}
+
+static process process_ns_reaper(process p)
+{
+    pid_namespace ns = p->pid_ns;
+    while (ns) {
+        spin_lock(&ns->lock);
+        process r = ns->reaper;
+        if (r)
+            process_reserve(r);
+        spin_unlock(&ns->lock);
+        if (r) {
+            process_lock(r);
+            boolean usable = (r != p) && !r->exiting;
+            process_unlock(r);
+            if (usable)
+                return r;
+            process_release(r);
+        }
+        ns = ns->parent;
+    }
+    process_reserve(init_process);
+    return init_process;
 }
 
 /* Runs once the last thread of a non-init process is gone. */
@@ -1323,7 +1482,18 @@ void process_teardown(process p)
     process_vm_release(vm);
     process_vfork_release(p);
 
-    process init = init_process;
+    pid_namespace pns = p->pid_ns;
+    spin_lock(&pns->lock);
+    boolean is_reaper = (pns->reaper == p);
+    if (is_reaper) {
+        pns->dying = true;
+        pns->reaper = 0;
+    }
+    spin_unlock(&pns->lock);
+    if (is_reaper)
+        pid_ns_kill_members(pns, p);
+
+    process reaper = process_ns_reaper(p);
     vector orphaned_zombies = allocate_vector(heap_locked(get_kernel_heaps()), 4);
     assert(orphaned_zombies != INVALID_ADDRESS);
     vector parent_death_notified = allocate_vector(heap_locked(get_kernel_heaps()), 4);
@@ -1334,8 +1504,8 @@ void process_teardown(process p)
         next = l->next;
         process c = struct_from_list(l, process, sibling);
         list_delete(&c->sibling);
-        c->parent = init;
-        list_insert_before(&init->children, &c->sibling);
+        c->parent = reaper;
+        list_insert_before(&reaper->children, &c->sibling);
         if (c->state == PROCESS_ZOMBIE) {
             process_reserve(c);
             vector_push(orphaned_zombies, c);
@@ -1356,9 +1526,9 @@ void process_teardown(process p)
     spin_unlock(&processes_lock);
     process c;
     vector_foreach(orphaned_zombies, c) {
-        if (process_autoreaps(init, c->exit_signal)) {
+        if (process_autoreaps(reaper, c->exit_signal)) {
             spin_lock(&processes_lock);
-            boolean still_ours = c->parent == init;
+            boolean still_ours = c->parent == reaper;
             if (still_ours) {
                 process_unlink_child_locked(c);
                 list_delete(&c->l);
@@ -1368,16 +1538,16 @@ void process_teardown(process p)
             if (still_ours)
                 process_release(c);
         } else {
-            process_send_exit_signal(init, c);
+            process_send_exit_signal(reaper, c);
         }
         process_release(c);
     }
     if (vector_length(orphaned_zombies))
-        blockq_wake_all(init->child_bq);
+        blockq_wake_all(reaper->child_bq);
     deallocate_vector(orphaned_zombies);
     vector_foreach(parent_death_notified, c) {
         struct siginfo si = { .si_signo = c->pdeathsig, .si_code = SI_USER };
-        si.sifields.kill.pid = p->pid;
+        si.sifields.kill.pid = pid_nr_ns(p, c->pid_ns);
         si.sifields.kill.uid = p->creds.uid;
         deliver_signal_to_process(c, &si);
         process_release(c);
@@ -1386,12 +1556,14 @@ void process_teardown(process p)
     if (reaped) {
         if (parent)
             blockq_wake_all(parent->child_bq);
+        process_release(reaper);
         process_release(p);
         return;
     }
     process_send_exit_signal(parent, p);
     blockq_wake_all(parent->child_bq);
     process_release(parent);
+    process_release(reaper);
 }
 
 static process wait_find_child_locked(process p, int idtype, int id, int options,
@@ -1413,19 +1585,21 @@ static process wait_find_child_locked(process p, int idtype, int id, int options
     return 0;
 }
 
-static sysreturn wait_report(process c, int *wstatus, struct siginfo *infop, struct rusage *ru)
+static sysreturn wait_report(process c, process viewer, int *wstatus, struct siginfo *infop,
+                             struct rusage *ru)
 {
     context ctx = get_current_context(current_cpu());
     if (context_set_err(ctx))
         return -EFAULT;
     int status = c->wait_status;
+    int pid = pid_nr_ns(c, viewer->pid_ns);
     if (wstatus)
         *wstatus = status;
     if (infop) {
         infop->si_signo = SIGCHLD;
         infop->si_errno = 0;
         infop->si_code = wait_status_is_exit(status) ? CLD_EXITED : CLD_KILLED;
-        infop->sifields.sigchld.pid = c->pid;
+        infop->sifields.sigchld.pid = pid;
         infop->sifields.sigchld.uid = c->creds.uid;
         infop->sifields.sigchld.status = wait_status_is_exit(status) ? (status >> 8) & 0xff :
                                                                        status & 0x7f;
@@ -1436,7 +1610,7 @@ static sysreturn wait_report(process c, int *wstatus, struct siginfo *infop, str
         timeval_from_time(&ru->ru_stime, proc_stime(c) + c->cstime);
     }
     context_clear_err(ctx);
-    return c->pid;
+    return pid;
 }
 
 static sysreturn wait_report_none(struct siginfo *infop)
@@ -1489,7 +1663,7 @@ closure_function(8, 1, sysreturn, wait_bh,
     }
     spin_unlock(&processes_lock);
     if (c) {
-        rv = wait_report(c, bound(wstatus), bound(infop), bound(ru));
+        rv = wait_report(c, p, bound(wstatus), bound(infop), bound(ru));
         if (!bound(report_pid) && (rv > 0))
             rv = 0;
         process_release(c);
@@ -1542,10 +1716,19 @@ static boolean process_may_signal(process sender, process target, int sig)
 {
     if (process_is_kernel(target))
         return false;
-    if (process_is_init(target) && (sender != target)) {
-        if ((sig == SIGKILL) || (sig == SIGSTOP) ||
-            (target->sigactions[sig - 1].sa_handler == SIG_DFL))
+    pid_namespace ns = target->pid_ns;
+    spin_lock(&ns->lock);
+    boolean is_reaper = (ns->reaper == target);
+    spin_unlock(&ns->lock);
+    if (is_reaper) {
+        void *handler = target->sigactions[sig - 1].sa_handler;
+        if (handler == SIG_IGN)
             return false;
+        if (handler == SIG_DFL) {
+            boolean outside = !pid_nr_ns(sender, ns);
+            if (!(outside && ((sig == SIGKILL) || (sig == SIGSTOP))))
+                return false;
+        }
     }
     return true;
 }
@@ -1562,8 +1745,9 @@ static boolean process_signal_permitted(process sender, process target)
 sysreturn process_signal(process sender, int pid, struct siginfo *si)
 {
     int sig = si->si_signo;
+    pid_namespace ns = sender->pid_ns;
     if (pid > 0) {
-        process target = process_get(pid);
+        process target = process_get_ns(pid, ns);
         if (!target)
             return -ESRCH;
         sysreturn rv = 0;
@@ -1575,8 +1759,15 @@ sysreturn process_signal(process sender, int pid, struct siginfo *si)
         process_release(target);
         return rv;
     }
-    int pgid = (pid == 0) ? sender->pgid : -pid;
+    int pgid = 0;
     boolean all = (pid == -1);
+    if (pid == 0) {
+        pgid = sender->pgid;
+    } else if (pid < -1) {
+        pgid = pid_kernel_nr(-pid, ns);
+        if (!pgid)
+            return -ESRCH;
+    }
     int found = 0, permitted = 0;
     vector targets = allocate_vector(heap_locked(get_kernel_heaps()), 8);
     if (targets == INVALID_ADDRESS)
@@ -1586,8 +1777,13 @@ sysreturn process_signal(process sender, int pid, struct siginfo *si)
         process p = struct_from_list(l, process, l);
         if (process_is_kernel(p))
             continue;
-        if (all ? (process_is_init(p) || (p == sender)) : (p->pgid != pgid))
+        if (all) {
+            if (process_is_init(p) || (p == sender) || !pid_nr_ns(p, ns) ||
+                (pid_nr_ns(p, ns) == 1))
+                continue;
+        } else if (p->pgid != pgid) {
             continue;
+        }
         found++;
         if (!process_signal_permitted(sender, p))
             continue;
@@ -1609,8 +1805,25 @@ sysreturn process_signal(process sender, int pid, struct siginfo *si)
     return permitted ? 0 : -EPERM;
 }
 
-static process process_of_tid(int tid)
+thread thread_from_tid_ns(process p, int tid, pid_namespace ns)
 {
+    thread found = INVALID_ADDRESS;
+    spin_lock(&p->threads_lock);
+    for (rbnode n = rbtree_find_first(p->threads); n != INVALID_ADDRESS; n = rbnode_get_next(n)) {
+        thread t = struct_from_field(n, thread, n);
+        if (thread_pid_nr_ns(t, ns) == tid) {
+            thread_reserve(t);
+            found = t;
+            break;
+        }
+    }
+    spin_unlock(&p->threads_lock);
+    return found;
+}
+
+static process process_of_tid_ns(int tid, pid_namespace ns, thread *tp)
+{
+    *tp = INVALID_ADDRESS;
     vector candidates = allocate_vector(heap_locked(get_kernel_heaps()), 8);
     if (candidates == INVALID_ADDRESS)
         return 0;
@@ -1625,15 +1838,17 @@ static process process_of_tid(int tid)
     spin_unlock(&processes_lock);
     process found = 0, p;
     vector_foreach(candidates, p) {
-        if (!found) {
-            thread t = thread_from_tid(p, tid);
-            if (t != INVALID_ADDRESS) {
-                thread_release(t);
-                found = p;
-                continue;
-            }
+        if (found) {
+            process_release(p);
+            continue;
         }
-        process_release(p);
+        thread t = thread_from_tid_ns(p, tid, ns);
+        if (t != INVALID_ADDRESS) {
+            found = p;
+            *tp = t;
+        } else {
+            process_release(p);
+        }
     }
     deallocate_vector(candidates);
     return found;
@@ -1641,21 +1856,30 @@ static process process_of_tid(int tid)
 
 sysreturn thread_signal(process sender, int tgid, int tid, struct siginfo *si)
 {
-    process target = tgid > 0 ? process_get(tgid) : process_of_tid(tid);
-    if (!target)
-        return -ESRCH;
+    pid_namespace ns = sender->pid_ns;
+    process target;
+    thread t;
+    if (tgid > 0) {
+        target = process_get_ns(tgid, ns);
+        if (!target)
+            return -ESRCH;
+        t = thread_from_tid_ns(target, tid, ns);
+        if (t == INVALID_ADDRESS) {
+            process_release(target);
+            return -ESRCH;
+        }
+    } else {
+        target = process_of_tid_ns(tid, ns, &t);
+        if (!target)
+            return -ESRCH;
+    }
     int sig = si->si_signo;
     sysreturn rv = 0;
-    thread t = thread_from_tid(target, tid);
-    if (t == INVALID_ADDRESS) {
-        rv = -ESRCH;
-    } else {
-        if (!process_signal_permitted(sender, target))
-            rv = -EPERM;
-        else if (sig && (target->state == PROCESS_RUNNING) && process_may_signal(sender, target, sig))
-            deliver_signal_to_thread(t, si);
-        thread_release(t);
-    }
+    if (!process_signal_permitted(sender, target))
+        rv = -EPERM;
+    else if (sig && (target->state == PROCESS_RUNNING) && process_may_signal(sender, target, sig))
+        deliver_signal_to_thread(t, si);
+    thread_release(t);
     process_release(target);
     return rv;
 }
@@ -1726,7 +1950,6 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
     u_heap = uh;
     list_init(&processes);
     spin_lock_init(&processes_lock);
-    namespace_init();
     fs_set_path_root(filesystem_path_root);
     init_address_spaces(h);
     init_shared_pages(h);
@@ -1735,6 +1958,7 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
     init_vsyscall();
 #endif
     uh->processes = locking_heap_wrapper(h, (heap)create_id_heap(h, h, 1, 65535, 1, false));
+    namespace_init((heap)uh->processes);
     uh->file_cache = allocate_objcache(h, (heap)heap_page_backed(kh), sizeof(struct file),
                                        PAGESIZE, true);
     if (uh->file_cache == INVALID_ADDRESS)

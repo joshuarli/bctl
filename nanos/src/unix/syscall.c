@@ -1423,15 +1423,38 @@ static sysreturn unshare_net_ns(process p)
     return rv;
 }
 
+static sysreturn unshare_pid_ns(process p)
+{
+    user_namespace owner = process_user_ns(p);
+    boolean admin = ns_capable(p, owner, CAP_SYS_ADMIN);
+    user_ns_release(owner);
+    if (!admin)
+        return -EPERM;
+    pid_namespace ns = pid_ns_create(p->pid_ns);
+    if (ns == INVALID_ADDRESS)
+        return (p->pid_ns->level >= PID_NS_LEVEL_MAX) ? -EUSERS : -ENOMEM;
+    process_lock(p);
+    pid_namespace old = p->pid_ns_for_children;
+    p->pid_ns_for_children = ns;
+    process_unlock(p);
+    pid_ns_release(old);
+    return 0;
+}
+
 sysreturn unshare(int flags)
 {
     process p = current->p;
     if (flags == 0)
         return 0;
-    if (flags & CLONE_NEWPID)
-        return -ENOSYS;
-    if (flags & ~(CLONE_NEWUSER | CLONE_NEWNET))
+    if (flags & ~(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWPID))
         return -EINVAL;
+    if (flags & CLONE_NEWPID) {
+        process_lock(p);
+        boolean same_ns = (p->pid_ns_for_children == p->pid_ns);
+        process_unlock(p);
+        if (!same_ns)
+            return -EINVAL;
+    }
     spin_lock(&p->threads_lock);
     int nthreads = rbtree_get_count(p->threads);
     spin_unlock(&p->threads_lock);
@@ -1443,8 +1466,13 @@ sysreturn unshare(int flags)
         if (rv)
             return rv;
     }
-    if (flags & CLONE_NEWNET)
-        return unshare_net_ns(p);
+    if (flags & CLONE_NEWNET) {
+        rv = unshare_net_ns(p);
+        if (rv)
+            return rv;
+    }
+    if (flags & CLONE_NEWPID)
+        return unshare_pid_ns(p);
     return 0;
 }
 
@@ -1991,6 +2019,12 @@ sysreturn getrlimit(int resource, struct rlimit *rlim)
 
 sysreturn prlimit64(int pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit)
 {
+    if (pid != 0) {
+        process target = process_get_ns(pid, current->p->pid_ns);
+        if (!target)
+            return -ESRCH;
+        process_release(target);
+    }
     if (old_limit) {
         sysreturn ret = getrlimit(resource, old_limit);
         if (ret < 0)
@@ -2384,7 +2418,8 @@ sysreturn syscall_ignore()
 
 sysreturn getpid()
 {
-    return current->p->pid;
+    process p = current->p;
+    return pid_nr_ns(p, p->pid_ns);
 }
 
 sysreturn getppid()
@@ -2855,7 +2890,7 @@ static thread lookup_thread(int pid)
         t = current;
         thread_reserve(t);
     } else {
-        if ((t = thread_from_tid(current->p, pid)) == INVALID_ADDRESS)
+        if ((t = thread_from_tid_ns(current->p, pid, current->p->pid_ns)) == INVALID_ADDRESS)
             return 0;
     }
     return t;
@@ -2960,10 +2995,10 @@ static sysreturn capget(cap_user_header_t hdrp, cap_user_data_t datap)
         return -EINVAL;
     process p = current->p;
     struct creds c;
-    if (pid == 0 || pid == p->pid) {
+    if (pid == 0) {
         creds_snapshot(p, &c);
     } else {
-        process target = process_get(pid);
+        process target = process_get_ns(pid, p->pid_ns);
         if (!target)
             return -ESRCH;
         creds_snapshot(target, &c);
@@ -2987,7 +3022,7 @@ static sysreturn capset(cap_user_header_t hdrp, const cap_user_data_t datap)
     if (rv)
         return rv;
     process p = current->p;
-    if (pid != 0 && pid != p->pid)
+    if (pid != 0 && pid != pid_nr_ns(p, p->pid_ns))
         return -EPERM;
     struct user_cap_data data[2];
     zero(data, sizeof(data));
@@ -3025,13 +3060,13 @@ static sysreturn wait4(int pid, int *wstatus, int options, struct rusage *rusage
     int idtype = P_ALL, id = 0;
     if (pid > 0) {
         idtype = P_PID;
-        id = pid;
+        id = pid_kernel_nr(pid, current->p->pid_ns);
     } else if (pid == 0) {
         idtype = P_PGID;
         id = current->p->pgid;
     } else if (pid < -1) {
         idtype = P_PGID;
-        id = -pid;
+        id = pid_kernel_nr(-pid, current->p->pid_ns);
     }
     return process_wait(idtype, id, options | WEXITED, wstatus, 0, rusage, true);
 }
@@ -3051,10 +3086,13 @@ static sysreturn waitid(int idtype, int id, struct siginfo *infop, int options,
             return -EINVAL;
         if (id == 0)
             id = current->p->pgid;
+        else
+            id = pid_kernel_nr(id, current->p->pid_ns);
         break;
     case P_PID:
         if (id <= 0)
             return -EINVAL;
+        id = pid_kernel_nr(id, current->p->pid_ns);
         break;
     case P_PIDFD:
         return -EBADF;
@@ -3075,11 +3113,11 @@ static sysreturn prctl_set_ptracer(u64 arg2)
     } else {
         if (arg2 > S32_MAX)
             return -EINVAL;
-        process tracer = process_get(arg2);
+        process tracer = process_get_ns(arg2, current->p->pid_ns);
         if (!tracer)
             return -EINVAL;
+        ptracer = tracer->pid;
         process_release(tracer);
-        ptracer = arg2;
     }
     process p = current->p;
     process_lock(p);

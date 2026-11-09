@@ -67,6 +67,7 @@ suite_harness() {
 		case_verdict seccomp "$smp" 60 PASS '' "$FIXTURES/seccomp"
 		case_verdict seccomp_strace "$smp" 60 PASS '' --klib strace "$FIXTURES/seccomp"
 		case_verdict userns "$smp" 90 PASS '' "$FIXTURES/userns"
+		case_verdict pidns "$smp" 90 PASS '' "$FIXTURES/pidns"
 		case_verdict mmap_bad_fd "$smp" 20 PASS '' "$FIXTURES/mmap_bad_fd"
 		case_verdict scm_rights "$smp" 60 PASS '' "$FIXTURES/scm_rights"
 		case_verdict crashpad_cmsg "$smp" 60 PASS '' "$FIXTURES/crashpad_cmsg"
@@ -75,6 +76,7 @@ suite_harness() {
 		case_verdict unix_abstract "$smp" 30 PASS '' "$FIXTURES/unix_abstract"
 	done
 	fixture_native userns unshare -Ur
+	fixture_native pidns env
 	fixture_native session_signal env
 	fixture_native netns env
 	fixture_native unix_abstract env

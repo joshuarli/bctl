@@ -936,12 +936,12 @@ static void exec_become_leader(thread t)
         return;
     spin_lock(&p->threads_lock);
     rbtree_remove_by_key(p->threads, &t->n);
-    u64 old_tid = t->tid;
+    pid_numbers_free(p->pid_ns, &t->tids);
+    t->tids = p->pids;
     t->tid = p->pid;
     init_rbnode(&t->n);
     assert(rbtree_insert_node(p->threads, &t->n));
     spin_unlock(&p->threads_lock);
-    deallocate_u64((heap)p->uh->processes, old_tid, 1);
 }
 
 static void exec_reset_frame(thread t, void *entry)

@@ -495,7 +495,7 @@ sysreturn get_robust_list(int pid, void *head, u64 *len)
     if (pid == 0) {
         t = current;
     } else {
-        t = thread_from_tid(current->p, pid);
+        t = thread_from_tid_ns(current->p, pid, current->p->pid_ns);
         if (t == INVALID_ADDRESS)
             return -ESRCH;
     }

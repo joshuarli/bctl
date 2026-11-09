@@ -304,7 +304,7 @@ void raise_sigpipe(context writer)
     thread t = ((syscall_context)writer)->t;
     struct siginfo si;
     init_siginfo(&si, SIGPIPE, SI_USER);
-    si.sifields.kill.pid = t->p->pid;
+    si.sifields.kill.pid = pid_nr_ns(t->p, t->p->pid_ns);
     si.sifields.kill.uid = t->p->creds.uid;
     deliver_signal_to_thread(t, &si);
 }
@@ -616,7 +616,7 @@ sysreturn tgkill(int tgid, int tid, int sig)
     process p = current->p;
     struct siginfo si;
     init_siginfo(&si, sig, SI_TKILL);
-    si.sifields.rt.pid = p->pid;
+    si.sifields.rt.pid = pid_nr_ns(p, p->pid_ns);
     si.sifields.rt.uid = p->creds.uid;
     return thread_signal(p, tgid, tid, &si);
 }
@@ -633,7 +633,7 @@ sysreturn kill(int pid, int sig)
     process p = current->p;
     struct siginfo si;
     init_siginfo(&si, sig, SI_USER);
-    si.sifields.kill.pid = p->pid;
+    si.sifields.kill.pid = pid_nr_ns(p, p->pid_ns);
     si.sifields.kill.uid = p->creds.uid;
     return process_signal(p, pid, &si);
 }
@@ -645,7 +645,8 @@ static sysreturn sigqueueinfo_copy(int tgid, int sig, siginfo_t *uinfo, struct s
     if (!copy_from_user(uinfo, si, sizeof(*si)))
         return -EFAULT;
     si->si_signo = sig;
-    if (tgid != current->p->pid && (si->si_code >= 0 || si->si_code == SI_TKILL))
+    process p = current->p;
+    if (tgid != pid_nr_ns(p, p->pid_ns) && (si->si_code >= 0 || si->si_code == SI_TKILL))
         return -EPERM;
     return 0;
 }
@@ -682,7 +683,7 @@ sysreturn tkill(int tid, int sig)
     process p = current->p;
     struct siginfo si;
     init_siginfo(&si, sig, SI_TKILL);
-    si.sifields.rt.pid = p->pid;
+    si.sifields.rt.pid = pid_nr_ns(p, p->pid_ns);
     si.sifields.rt.uid = p->creds.uid;
     return thread_signal(p, 0, tid, &si);
 }
