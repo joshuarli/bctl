@@ -24,9 +24,9 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 - **Running lanes:** upstream suite on musl (`.work/wt/upstream`, rebasing
   onto the `writev` fix); G1.1 design note (`.work/wt/g1-design`).
 - **Next:** integrate both lanes (G0.4 baseline table), then the owner
-  reviews the G1.1 design before G1 kernel work. Open owner question: G5
-  display, because the Helium archive is Wayland-only (§ Needs environment).
-- **Gate matrix:** G0 NOT RUN (4/5 slices) · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 BLOCKED (no headless Ozone in the archive) · P NOT RUN.
+  reviews the G1.1 design before G1 kernel work. G5 uses a headless Wayland
+  compositor until the headless-Ozone Helium arrives (owner decision 8).
+- **Gate matrix:** G0 NOT RUN (4/5 slices) · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -116,7 +116,16 @@ only when every slice in it is accepted on `main`.
 7. **Kernel changes are authorized** (owner, 2026-11-09, after the
    non-kernel work landed): fix the baseline bugs in the fork. Larger
    architectural kernel work (G1 onward) starts after the owner has seen the
-   G1.1 design note.
+   G1.1 design note. The owner then delegated the G1 go/no-go to the
+   executor (2026-11-09): start G1 unless the design note proves a hard
+   blocker.
+8. **G5 display** (owner, 2026-11-09). Stopgap: run Helium against a
+   headless Wayland compositor as a separate userspace process in the guest
+   (`wl_shm` over memfd and `SCM_RIGHTS`; no DRM, KMS, evdev, virtio-gpu or
+   kernel graphics). The "no Wayland" non-goal is narrowed to kernel and
+   device work. The owner is getting a Helium build with headless Ozone from
+   `docs/handoff-helium-headless-ozone.md`; when it arrives, G5 switches to
+   `--headless=new` and the stopgap is deleted.
 
 ### Prescribed
 
@@ -379,7 +388,7 @@ corroboration, never as proof.
 
 | ID | Slice | Owns | Prereq | Acceptance |
 | --- | --- | --- | --- | --- |
-| G5.1 | Package `~/d/chromium-build/.work/artifacts/helium-0.20.3.1/helium-0.20.3.1-linux-x86_64-musl.tar.xz` (verify sha256 `6853af22b60345c92e0cbe69181aebd8af3fa79842c7f0135d20c9656c5918c6`; copy it, never modify it in place) with its runtime closure from Alpine 3.24.2 (`~/d/chromium-build/config/helium.packages.amd64.lock`; pinned `.apk` files under `.work/dl/`). `tests/helium/guest_init.c` is the Nanos program: it starts Helium with `--headless=new --remote-debugging-port=9222 --user-data-dir=/profile` and the sandbox on (no `--no-sandbox`, `--single-process` or `--no-zygote`), then reports each process's role from `/proc/<pid>/cmdline` and its `/proc/<pid>/status`. | `tests/helium/`, `dev/image.sh` (rootfs input) | G4 | `dev/test.sh helium boot` reaches a live browser process plus separate zygote and renderer processes on serial, or stops with the earliest causal failure written in the slice's commit body |
+| G5.1 | Package `~/d/chromium-build/.work/artifacts/helium-0.20.3.1/helium-0.20.3.1-linux-x86_64-musl.tar.xz` (verify sha256 `6853af22b60345c92e0cbe69181aebd8af3fa79842c7f0135d20c9656c5918c6`; copy it, never modify it in place) with its runtime closure from Alpine 3.24.2 (`~/d/chromium-build/config/helium.packages.amd64.lock`; pinned `.apk` files under `.work/dl/`), plus the smallest headless Wayland compositor available as pinned Alpine 3.24.2 packages (delegated: weston with its headless backend unless a smaller packaged one works; record the choice and its closure size). `tests/helium/guest_init.c` is the Nanos program: it starts the compositor, waits for `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, starts Helium with `--ozone-platform=wayland --remote-debugging-port=9222 --user-data-dir=/profile` and the sandbox on (no `--no-sandbox`, `--single-process` or `--no-zygote`), then reports each process's role from `/proc/<pid>/cmdline` and its `/proc/<pid>/status`. When the headless-Ozone archive arrives (owner decision 8), the compositor is removed and Helium runs with `--headless=new`. | `tests/helium/`, `dev/image.sh` (rootfs input) | G4 | `dev/test.sh helium boot` reaches a live browser process plus separate zygote and renderer processes on serial, or stops with the earliest causal failure written in the slice's commit body |
 | G5.2+ | One slice per causal failure Helium hits, with the root cause found by tracing (`--trace`, guest `strace` klib, Helium's `--enable-logging=stderr --v=1`): the smallest kernel fix plus a standalone regression test in `nanos/test/runtime/`. Never patch Helium to hide unsupported kernel semantics. | the kernel area at fault, `nanos/test/runtime/` | G5.1 | that test, plus `dev/test.sh probe` and `dev/test.sh helium boot` progressing past the failure |
 | G5.N | Full validation over CDP from the host (QEMU user network, dynamically chosen forwarded port): `/json/version`; navigate to an HTTP fixture served by the host harness; `Runtime.evaluate` returns the fixture's computed value; `DOM.getDocument` contains its marker; `guest_init` reports `NoNewPrivs: 1` and `Seccomp: 2` for every renderer; a sandbox confinement check, where the fixture page triggers a renderer-side operation the policy forbids and the browser keeps running while the denied action does not occur; `Browser.close`, and then `guest_init` sees every child reaped and guest free memory back to within 5% of its pre-launch value before it exits with code 0. | `tests/helium/` | G5.1… | `dev/test.sh helium` passes 5 consecutive cold boots |
 
@@ -432,15 +441,9 @@ record, on Nanos and natively.
 
 ## Needs environment
 
-- **G5 display.** `helium-0.20.3.1-linux-x86_64-musl.tar.xz` is built with
-  `ozone_platform_headless=False`; `--headless`, `--headless=new` and
-  `--ozone-platform=headless` abort with `Invalid ozone platform: headless`
-  (`docs/chromium-contract.md`, Decisions). G5 needs either a Wayland
-  compositor process in the guest (a headless userspace compositor such as
-  weston's headless backend over `wl_shm`, which uses memfd and
-  `SCM_RIGHTS`, no DRM) or a Helium build with headless Ozone. Both need an
-  owner decision: the first touches the draft's "no Wayland" non-goal, the
-  second needs a build the campaign may not run.
+- **Headless-Ozone Helium.** The owner is obtaining it through
+  `docs/handoff-helium-headless-ozone.md`. Until then G5 uses the Wayland
+  stopgap (owner decision 8).
 
 ## Execution boundary and non-goals
 
@@ -465,7 +468,7 @@ fake sandbox state or syscalls that report success without effect; Nix,
 systemd, Ansible or other heavy orchestration; `ops` (`mkfs` from the fork
 builds images); glibc in any form.
 
-**Non-goals:** graphics, DRM/KMS, evdev, Wayland, seatd and virtio-gpu/input;
+**Non-goals:** kernel or device graphics: DRM/KMS, evdev, seatd and virtio-gpu/input (a userspace headless Wayland compositor is allowed as the G5 stopgap);
 aarch64, macOS and HVF; the setuid `chrome-sandbox` layer and filesystem
 mode-bit security; general process management beyond what the probe and
 Helium require; a kernel build with LLVM; PCID and other performance work
