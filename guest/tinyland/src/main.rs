@@ -1,14 +1,4 @@
-mod input;
-mod seat;
-mod selection;
-mod shutdown;
-mod output;
-mod positioner;
-mod server;
-mod shell;
-mod shm;
-mod surface;
-
+use tinyland::{output, server, shutdown};
 use std::ffi::OsString;
 use std::path::PathBuf;
 fn usage() -> &'static str {

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 
+[lib]
+name = "tinyland"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tinyland"
 path = "src/main.rs"
@@ -26,3 +30,4 @@ tempfile = "3"
 
 [features]
 oracle = ["dep:xkbcommon"]
+headless = []

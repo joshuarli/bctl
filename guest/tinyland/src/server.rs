@@ -764,6 +764,16 @@ pub struct ServerConfig<'a> {
     pub seat_mode: bool,
 }
 
+fn create_globals(dh: &DisplayHandle) {
+    dh.create_global::<State, wl_compositor::WlCompositor, ()>(4, ());
+    dh.create_global::<State, wl_subcompositor::WlSubcompositor, ()>(1, ());
+    dh.create_global::<State, wl_shm::WlShm, ()>(1, ());
+    dh.create_global::<State, wl_output::WlOutput, ()>(2, ());
+    dh.create_global::<State, wl_seat::WlSeat, ()>(5, ());
+    dh.create_global::<State, wl_data_device_manager::WlDataDeviceManager, ()>(3, ());
+    dh.create_global::<State, xdg_wm_base::XdgWmBase, ()>(1, ());
+}
+
 pub fn run(config: &ServerConfig<'_>) -> i32 {
     let mode = config.mode;
     let device = config.device;
@@ -839,13 +849,7 @@ pub fn run(config: &ServerConfig<'_>) -> i32 {
         }
     };
     let mut dh = display.handle();
-    dh.create_global::<State, wl_compositor::WlCompositor, ()>(4, ());
-    dh.create_global::<State, wl_subcompositor::WlSubcompositor, ()>(1, ());
-    dh.create_global::<State, wl_shm::WlShm, ()>(1, ());
-    dh.create_global::<State, wl_output::WlOutput, ()>(2, ());
-    dh.create_global::<State, wl_seat::WlSeat, ()>(5, ());
-    dh.create_global::<State, wl_data_device_manager::WlDataDeviceManager, ()>(3, ());
-    dh.create_global::<State, xdg_wm_base::XdgWmBase, ()>(1, ());
+    create_globals(&dh);
 
     let socket_name_str = socket_name.to_string_lossy().into_owned();
     let socket = match ListeningSocket::bind(socket_name_str.as_str()) {
@@ -1228,6 +1232,9 @@ mod pointer;
 mod popup;
 
 pub use pointer::PointerState;
+
+#[cfg(feature = "headless")]
+pub mod headless;
 
 #[cfg(test)]
 mod tests;
