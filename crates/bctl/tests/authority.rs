@@ -123,6 +123,7 @@ fn n6_taking_control_yields_to_a_native_wait_which_ends_taken_over_and_resuming_
     let s = session.as_str();
     up_with_fixtures(&home, s, "n5-a");
     let tab = reply(&home, &["tab", "new", s, &fixture.url("/")]).tabs.and_then(|t| t.selected).expect("a new tab is selected");
+    acted(&home, &["page", "wait", s, "--url", &fixture.url("/")]);
     acted(&home, &["page", "wait", s, "--load", "load"]);
     acted(&home, &["page", "eval", s, "document.cookie = 'kept=yes; max-age=3600'"]);
     let generation = status_of(&home.json(&["inspect", s]), s).generation;
@@ -219,6 +220,7 @@ fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_foll
     let s = session.as_str();
     up_with_fixtures(&home, s, "n7-a");
     let tab = reply(&home, &["tab", "new", s, &fixture.url("/phases")]).tabs.and_then(|t| t.selected).expect("a new tab is selected");
+    acted(&home, &["page", "wait", s, "--url", &fixture.url("/phases")]);
     acted(&home, &["page", "wait", s, "--load", "load"]);
     let outside = outside_client(&home, s);
     let page = attach(&outside, &tab);
