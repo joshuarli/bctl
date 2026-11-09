@@ -30,8 +30,11 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   stopped twice by an automated safety check, so it waits for the owner;
   slices that need it (G3.4's credential translation, the probe's
   `scm_rights`/`peer_credentials` checks, the zygote checks) wait with it.
+  G3.2 (seccomp-BPF) is parked for the same reason: its lane brief was
+  stopped by the same automated check. The probe's seccomp checks and the
+  raw probe's last check wait with it.
 - **Running lane:** G3.1 credentials, `prctl`, procfs (`.work/wt/g3.1`).
-- **Next:** G3.2 seccomp (after G3.1), G3.3 user namespaces and chroot, by
+- **Next:** integrate G3.1; then G3.3 user namespaces and chroot, G3.3 user namespaces and chroot, by
   `nanos/docs/sandbox-design.md` §5. G2.1 stays parked for the owner.
 - **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 NOT RUN (G2.2, G2.3 accepted; G2.1 parked) · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
