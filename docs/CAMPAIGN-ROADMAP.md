@@ -644,14 +644,41 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
 
 ### M5: hardening and measurement
 
-- **H1 Gates and baselines.** Owns `docs/performance.md`,
-  `tests/bench/`. Prereq: M3. Measure and record: cold `up` to ready, first
-  visible frame, input-to-pixel latency through the gateway, M3N's command
-  and snapshot measures, RSS per session,
-  idle host CPU per session, viewer overhead, `down` latency, and `bctl`
-  binary size. Set the gates from these with their observed spread. Set the
-  log, artifact, and disk bounds. Time gates follow the `perf-gate-ready`
-  rule.
+- **H1 Gates and baselines.** Owns `docs/performance.md`, `tests/bench/`,
+  and a `bctl-bench` runner. Prereq: none for the harness and the lifecycle
+  and browser measures (owner 2026-11-08: track performance as the POC
+  matures, competitive with other browser runtimes); the run and takeover
+  measures follow M3. One command runs a named suite and writes a dated
+  JSON result with the host, image identity, browser version, and commit;
+  `docs/performance.md` holds the latest table and the gates. Measures:
+  - Lifecycle: cold `up` to ready, split by readiness stage (machine, agent,
+    compositor, CDP, first non-black frame); warm `up` (image cached,
+    profile warm); `down` latency; `smolvm machine pause` and `resume`
+    latency and the page state after resume (same tab, same JS heap, CDP
+    reattaches); checkpoint restore once X1 exists.
+  - Browser: Speedometer 3.x run headed in the guest (score and spread),
+    plus JetStream and MotionMark as secondary scores; page-load timing of
+    a local fixture from the Navigation Timing API. Comparisons on the same
+    Mac: native macOS Chromium of the same major version, and Linux arm64
+    Chromium in a container, so the VM and the guest stack's cost is
+    visible. Rerun on Helium (P2) and on each image (Sway, Tinyland).
+  - Interaction: input-to-pixel latency through the gateway (RFB input to a
+    changed framebuffer), viewer frame rate and bandwidth, CDP round trip
+    through the capability gateway versus inside the guest.
+  - Automation: `crates/cdp` transport counters modelled on Shadowdriver's
+    `src/cdp/metrics.rs` (commands started, completed, timed out,
+    cancelled; pending high-water; bytes and messages each way; largest
+    message; JSON parse time; late responses; subscription overflows), M3N's
+    warm command p50/p95 and CDP calls and bytes per snapshot and action,
+    and Grab pages per second on a local fixture site.
+  - Resources: host RSS and idle CPU per session (VMM plus guest), daemon
+    RSS, profile disk growth, image size, and `bctl` binary size.
+  Gates come from the observed spread; time gates follow the
+  `perf-gate-ready` rule with interleaved baseline and candidate runs, and
+  memory and size gates always run. Also set the log, artifact, and disk
+  bounds. External numbers (for example Kernel's published 30 ms
+  snapshot resume on Unikraft Cloud) are cited as targets, never as
+  measurements of bctl.
 - **H2 Authority.** Prereq: M3. Put CDP behind the gateway with a per-run
   capability; the gateway rewrites `/json/version`'s `webSocketDebuggerUrl`
   so `control_url` attachment works unchanged. Restrict guest egress to the public internet by default, with an
