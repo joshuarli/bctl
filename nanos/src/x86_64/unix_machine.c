@@ -257,7 +257,6 @@ void fpreg_copy_out(void *b, thread t)
 
 void register_other_syscalls(struct syscall *map)
 {
-    register_syscall(map, wait4, syscall_ignore);
     register_syscall(map, flock, syscall_ignore);
     register_syscall(map, chmod, syscall_ignore);
     register_syscall(map, fchmod, syscall_ignore);

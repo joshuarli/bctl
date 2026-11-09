@@ -637,6 +637,21 @@ struct tms {
     clock_t tms_cstime;
 };
 
+#define WNOHANG     0x00000001
+#define WUNTRACED   0x00000002
+#define WSTOPPED    WUNTRACED
+#define WEXITED     0x00000004
+#define WCONTINUED  0x00000008
+#define WNOWAIT     0x01000000
+#define __WNOTHREAD 0x20000000
+#define __WALL      0x40000000
+#define __WCLONE    0x80000000
+
+#define P_ALL   0
+#define P_PID   1
+#define P_PGID  2
+#define P_PIDFD 3
+
 #define CSIGNAL		0x000000ff	/* signal mask to be sent at exit */
 #define CLONE_VM	0x00000100	/* set if VM shared between processes */
 #define CLONE_FS	0x00000200	/* set if fs info shared between processes */

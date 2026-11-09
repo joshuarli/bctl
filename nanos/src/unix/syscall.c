@@ -2301,6 +2301,35 @@ sysreturn capget(cap_user_header_t hdrp, cap_user_data_t datap)
     return 0;
 }
 
+static sysreturn wait4(int pid, int *wstatus, int options, void *rusage)
+{
+    if (options & ~(WNOHANG | WUNTRACED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL))
+        return -EINVAL;
+    return -ECHILD;
+}
+
+static sysreturn waitid(int idtype, int id, void *infop, int options, void *rusage)
+{
+    if (options & ~(WNOHANG | WNOWAIT | WEXITED | WSTOPPED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL))
+        return -EINVAL;
+    if (!(options & (WEXITED | WSTOPPED | WCONTINUED)))
+        return -EINVAL;
+    switch (idtype) {
+    case P_ALL:
+    case P_PGID:
+        break;
+    case P_PID:
+        if (id <= 0)
+            return -EINVAL;
+        break;
+    case P_PIDFD:
+        return -EBADF;
+    default:
+        return -EINVAL;
+    }
+    return -ECHILD;
+}
+
 sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
 {
     switch (option) {
@@ -2463,6 +2492,8 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, capget, capget);
     register_syscall(map, capset, syscall_ignore);
     register_syscall(map, prctl, prctl);
+    register_syscall(map, wait4, wait4);
+    register_syscall(map, waitid, waitid);
     register_syscall(map, sysinfo, sysinfo);
     register_syscall(map, umask, umask);
     register_syscall(map, statfs, statfs);

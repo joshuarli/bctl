@@ -38,6 +38,7 @@ suite_harness() {
 		case_verdict hello_stdio "$smp" 20 PASS '' "$FIXTURES/hello_stdio"
 		case_verdict hello_pthread "$smp" 20 PASS '' "$FIXTURES/hello_pthread"
 		case_verdict writev_iov "$smp" 20 PASS '' "$FIXTURES/writev_iov"
+		case_verdict wait_nochild "$smp" 20 PASS '' "$FIXTURES/wait_nochild"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
