@@ -516,6 +516,50 @@ status do_demand_page(process p, context ctx, u64 vaddr, vmap vm, boolean *done)
     return s;
 }
 
+sysreturn futex_key_lookup(process p, u64 uaddr, boolean private, futex_key k)
+{
+    k->kind = FUTEX_KEY_PRIVATE;
+    k->object = p->vm;
+    k->offset = uaddr;
+    if (private)
+        return 0;
+    sysreturn rv = 0;
+    vmap_lock(p);
+    vmap vm = vmap_from_vaddr(p, uaddr);
+    if (vm == INVALID_ADDRESS) {
+        rv = -EFAULT;
+    } else if (vm->flags & VMAP_FLAG_SHARED) {
+        u64 offset = vm->node_offset + (uaddr - vm->node.r.start);
+        if (vm->shared_anon) {
+            k->kind = FUTEX_KEY_SHARED_ANON;
+            k->object = vm->shared_anon;
+            k->offset = offset;
+            refcount_reserve(&vm->shared_anon->refcount);
+        } else if (vm->cache_node) {
+            k->kind = FUTEX_KEY_PAGECACHE;
+            k->object = vm->cache_node;
+            k->offset = offset;
+            pagecache_node_ref(vm->cache_node);
+        }
+    }
+    vmap_unlock(p);
+    return rv;
+}
+
+void futex_key_release(futex_key k)
+{
+    switch (k->kind) {
+    case FUTEX_KEY_SHARED_ANON:
+        refcount_release(&((shared_anon)k->object)->refcount);
+        break;
+    case FUTEX_KEY_PAGECACHE:
+        pagecache_node_unref(k->object);
+        break;
+    case FUTEX_KEY_PRIVATE:
+        break;
+    }
+}
+
 vmap vmap_from_vaddr(process p, u64 vaddr)
 {
     rangemap rm = p->vm->vmaps;
@@ -1708,6 +1752,7 @@ void mmap_init(tuple root)
 {
     kernel_heaps kh = get_kernel_heaps();
     mmap_info.h = heap_locked(kh);
+    init_futices(mmap_info.h);
     value transparent_hugepage = get(root, sym(transparent_hugepage));
     if (transparent_hugepage) {
         if (is_string(transparent_hugepage)) {
@@ -1728,7 +1773,6 @@ closure_func_basic(thunk, void, process_vm_free)
 {
     process_vm vm = struct_from_closure(process_vm, free);
     process_vm_free_mappings(vm);
-    deallocate_futices(vm);
     if (vm->image)
         fsfile_release(vm->image);
     if (vm->interp)
@@ -1751,8 +1795,6 @@ static process_vm process_vm_alloc(address_space as, u64 mmap_min_addr, boolean 
     vmap_heap vmh = allocate(h, sizeof(struct vmap_heap));
     if (vmh == INVALID_ADDRESS)
         goto fail_vmaps;
-    if (!init_futices(vm))
-        goto fail_vmh;
     vmh->h.alloc = vmh_alloc;
     vmh->h.dealloc = vmh_dealloc;
     vmh->h.allocated = vmh_allocated;
@@ -1771,8 +1813,6 @@ static process_vm process_vm_alloc(address_space as, u64 mmap_min_addr, boolean 
     vm->image = vm->interp = 0;
     init_refcount(&vm->refcount, 1, init_closure_func(&vm->free, thunk, process_vm_free));
     return vm;
-  fail_vmh:
-    deallocate(h, vmh, sizeof(struct vmap_heap));
   fail_vmaps:
     deallocate_rangemap(vm->vmaps, 0);
   fail_vm:

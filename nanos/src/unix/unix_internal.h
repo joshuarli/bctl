@@ -571,8 +571,6 @@ struct process_vm {
     u64               heap_base;
     u64               vdso_base;
     u64               mmap_min_addr;
-    struct spinlock   futex_lock;
-    table             futices;
     fsfile            image;
     fsfile            interp;
 };
@@ -1097,8 +1095,21 @@ static inline u64 iov_total_len(struct iovec *iov, int iovcnt)
 
 void init_syscalls(process p);
 void init_threads(process p);
-boolean init_futices(process_vm vm);
-void deallocate_futices(process_vm vm);
+enum futex_key_kind {
+    FUTEX_KEY_PRIVATE,
+    FUTEX_KEY_PAGECACHE,
+    FUTEX_KEY_SHARED_ANON,
+};
+
+typedef struct futex_key {
+    enum futex_key_kind kind;
+    void *object;
+    u64 offset;
+} *futex_key;
+
+sysreturn futex_key_lookup(process p, u64 uaddr, boolean private, futex_key k);
+void futex_key_release(futex_key k);
+void init_futices(heap h);
 
 sysreturn futex(int *uaddr, int futex_op, int val, u64 val2, int *uaddr2, int val3);
 sysreturn get_robust_list(int pid, void *head, u64 *len);
