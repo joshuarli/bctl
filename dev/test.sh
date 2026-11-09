@@ -116,7 +116,7 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no seccomp, namespaces, credentials, procfs, SCM data, shared futex keys or membarrier yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium 'no seccomp, namespaces, credentials, procfs, SCM data or membarrier yet' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw 'no seccomp yet'
 }
 
@@ -129,7 +129,6 @@ upstream_known() {
 	sigloop@*) echo 'sigaction rejects SIG_DFL/SIG_IGN without SA_RESTORER, which musl abort() uses' ;;
 	signal@*) echo 'silent hang' ;;
 	tun@*) echo 'TUNGETIFF does not return EBADFD (tun.c:49)' ;;
-	tlbshootdown@2) echo 'futex op 3 (FUTEX_REQUEUE) not implemented, hangs' ;;
 	esac
 }
 
