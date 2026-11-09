@@ -1,82 +1,136 @@
 # Verification reference
 
-Host is Linux x86_64 with KVM; `harness/run-proof.sh` passes `-cpu host
--enable-kvm`. Guest-only root on `/dev/dri` and evdev is test harness, not
-a production seat claim.
+Host is macOS Apple Silicon. The proof runs a Linux arm64 guest on SmolVM,
+not on the x86_64 virtual-machine harness laputa keeps. SmolVM must be the
+patched build that accepts classic 2D virtio-gpu resources; the stock
+release does not, and tinyland's scanout needs them. The harness defaults
+to the main checkout's `.work/runtime/smolvm/smolvm` and accepts
+`SMOLVM=<path>`.
 
-Guest is Alpine 3.20.3. `guest/packages.sha256` pins 49 APKs including
-foot 1.17.2, strace 6.9, seatd 0.8.0, and libseat 0.8.0. `harness/prepare-guest.sh` checks the rootfs
-hash, each APK hash, and signatures, then installs with `--no-network`.
-`harness/test-guest-lock.py` rejects a corrupt cached APK.
+## Harness
 
-`make drm-proof` proves real scanout through `src/output.rs`.
-`make wayland-pixels` proves real foot shm pixels through `src/server.rs`.
-`make smoke` additionally injects `laputa` plus Enter through QMP and
-requires `GUEST_TEXT_OK` before the magenta `POST_INPUT_MARKER`, so the
-screenshot proves input to foot to changed pixels to presentation; see
-`guest/test-app`.
-`make drm-parity` decodes the atomic and legacy screenshots byte for byte
-and reruns the full input smoke through legacy fallback; see
-`harness/drm-parity.sh`. `make negative` boots the five live faults in
-`harness/negative-runtime.sh`.
+`guest/harness/smolvm-proof.sh` builds `guest/harness/image/Dockerfile` for
+`linux/arm64`, saves the image archive, creates a machine with `--gpu`,
+starts it with `SMOLVM_DISPLAY` and `SMOLVM_VNC` on loopback, and always
+stops and deletes it. The image's `/usr/local/bin/tinyland-session`
+entrypoint:
+
+- creates `/dev/input/event*` from `/sys/class/input/*/dev` with `mknod`;
+  the container gets no input nodes otherwise;
+- keeps `/dev/dri/card0` and the event nodes `root:root 0600`;
+- starts `SEATD_VTBOUND=0 seatd -g seat` as root and waits for
+  `/run/seatd.sock`;
+- runs `/usr/local/bin/tinyland --seat --smoke --width 1024 --height 768
+  --socket wayland-0 -- foot /usr/local/bin/guest-test smoke` as the
+  unprivileged `tiny` user (uid 1000, group `seat` only), with
+  `LIBSEAT_BACKEND=seatd`, `XDG_RUNTIME_DIR=/run/user/1000`, and
+  `TINYLAND_XKB_ROOT=/usr/share/X11/xkb`.
+
+The connector's preferred mode from `SMOLVM_DISPLAY` controls scanout; the
+requested 1024x768 is a lower bound. The image carries Alpine's foot,
+seatd, libseat, libgcc, fonts, and XKB data. Tinyland links libseat
+dynamically, so the musl binary needs the guest's `libseat.so.1` and
+`libgcc_s.so.1`.
+
+`guest/harness/rfb.py` is a stdlib RFB 3.8 client. It negotiates security
+type None, requests Raw encodings, accumulates a 1280x800 framebuffer,
+types the laputa handshake word as discrete keysym press/release events,
+and compares frames.
+
+## Gates
+
+The proof passes only when all of these hold:
+
+- `TINYLAND_SEAT_OPEN`, `TINYLAND_DRM_ORIGIN seat:/dev/dri/card0`,
+  `TINYLAND_DRM_OK`, `TINYLAND_COMPOSITOR_READY`, `TINYLAND_SURFACE_MAPPED`,
+  and `TINYLAND_PRESENTED` appear in the compositor log, with no
+  `TINYLAND_SESSION_END`, `TINYLAND_CHILD_EXIT`,
+  `present failed`, `seat open failed`, `brokered display init failed`,
+  `foot spawn failed`, or `seat dispatch failed`.
+- The first captured frame has at least 0.5% non-black pixels
+  (`R+G+B > 24`).
+- Sending `laputa` plus Return over VNC changes at least 200 pixels and
+  raises the magenta fraction (`R > 180, B > 180, G < 120`) by at least
+  0.0002. The marker appears only after `guest/test-app` reads the exact
+  `laputa` line, so this ties the pixel change to the handshake word.
+- The running `tinyland` process has uid 1000.
+- `su tiny -c 'exec 3<>/dev/dri/card0'` fails with `Permission denied`
+  while tinyland holds the card through seatd.
+
+Readiness allows 90 seconds, keyboard confirmation 20 seconds, and the VNC
+connection 30 seconds. Frames and logs land under `.work/harness/`. The
+last accepted run printed:
+
+```text
+VNC_FIRST_FRAME nonblack_frac=1.000000 avg_rgb=108.7 magenta_frac=0.000000
+VNC_KEY_CHANGE changed_pixels=5228 magenta_frac=0.001174 magenta_delta=0.001174
+SEAT_MEDIATED_DRM_OK TINYLAND_SEAT_OPEN TINYLAND_DRM_OK
+TINYLAND_UNPRIVILEGED uid=1000
+DIRECT_OPEN rc=1 output=sh: can't create /dev/dri/card0: Permission denied
+SMOLVM_TINYLAND_PROOF_OK
+```
+
+## Cargo tests
+
+Both crates test inside a linux/arm64 Alpine image with the pinned
+`nightly-2026-09-15` toolchain and prefetched locked dependencies:
+
+```sh
+docker build --platform linux/arm64 --target tests \
+  -f guest/harness/image/Dockerfile -t bctl/tinyland-smolvm-tests:local guest
+docker run --rm --platform linux/arm64 --network none -w /src/seatd \
+  bctl/tinyland-smolvm-tests:local cargo test --locked
+docker run --rm --platform linux/arm64 --network none -w /src/tinyland \
+  bctl/tinyland-smolvm-tests:local cargo test --locked
+```
+
+The last run passed all seatd suites (58 library, 31 adversarial, 2
+differential, 4 storm with the idle timing case ignored) and all tinyland
+suites (43 library, 1 CLI). The idle timing case stays ignored; it needs a
+`perf-gate-ready` host measurement.
+
+## Presentation
 
 Modeset tries atomic then legacy. Capability fallback allows ENOSYS,
 EOPNOTSUPP, and EINVAL; commit fallback allows only ENOSYS and EOPNOTSUPP.
 Both paths share the `page_flip` presentation in `src/output.rs`.
-`guest/init` forces the legacy path with strace ENOSYS injection.
 
 The compositor keeps two scanout buffers, writes the back buffer, requests
 a flip event, and completes it in the shared poll loop within two seconds
 for the matching kernel event before reusing the front buffer and firing
 frame callbacks. Display, socket, DRM, and input are polled together, so
 seat disable, shutdown, and device failure stay responsive during flip
-wait. `TINYLAND_PRESENTED` marks completion. Client shm is copied at commit in
-`src/server.rs`, then the buffer is released, so scanout never depends on
-client-writable memory.
-
-QMP input in `harness/qmp.py` sends 7 keys as one 14-event transaction.
-An uncertain send exits 75 and is never retried; an explicit rejection is
-a separate failure.
-
-`harness/check-proof.sh` requires mapping, confirmed presentation, input
-confirmation for smoke, and no protocol error, child exit, session end, or
-early exit.
-`harness/check-screenshot.py` requires 5% nonblack (`R+G+B > 24`) and
-0.01% magenta (`R > 180, B > 180, G < 120`) with no crop; `drm-proof`
-requires 30% nonblack instead. Proofs write console, compositor, QEMU,
-and PNG artifacts under `.work/`. Readiness is 90 seconds, input
-confirmation 20 seconds, quit 15 seconds, and each QMP operation 20
-seconds.
-
-`make test` runs `cargo test --locked` plus `harness/test-qmp.py` and
-`harness/test-guest-lock.py`; coverage is owned by `src/server/tests.rs`
-and `tests/cli.rs`. Bad CLI exits 2 before opening devices.
-`make audit` in `harness/audit.sh` rejects forbidden features, forbidden
-linked libraries, and any `unsafe` in `src/`.
+wait. `TINYLAND_PRESENTED` marks completion. Client shm is copied at commit
+in `src/server.rs`, then the buffer is released, so scanout never depends
+on client-writable memory.
 
 Seat is keyboard-only with a US keymap (`src/input.rs`); globals and
 version handling are owned by `src/server.rs`. HUP, INT, TERM, and QUIT
 shut down the loop and reap foot (`src/shutdown.rs`, `src/main.rs`).
 Normal sessions validate user-owned `XDG_RUNTIME_DIR`, emit
 `TINYLAND_COMPOSITOR_READY` after socket, keyboard, discovery, and spawn,
-and end with `TINYLAND_SESSION_END` when the primary client exits. Proof
-fallback without `-- COMMAND...` remains harness-only. Laputa boundaries,
-seat seams, and replacement gates are in `docs/laputa-integration.md`.
+and end with `TINYLAND_SESSION_END` when the primary client exits. The
+proof fallback without `-- COMMAND...` remains harness-only. Laputa
+boundaries, seat seams, and replacement gates are in
+`docs/laputa-integration.md`.
 
-On a fresh checkout run `bash harness/build-guest.sh` first: it prepares
-the native library and XKB data that `.cargo/config.toml` points at.
+## Build and audit
 
-Host builds link libseat (`apk add libseat-dev` on Alpine); the musl
-binary links it dynamically with pure-Rust KBVM for XKB and no
-libxkbcommon link, so the guest carries libseat, libelogind, libcap,
-and libgcc plus XKB data lookups. `make audit` allows
-`unsafe` only in `src/seat.rs`, the reviewed libseat FFI surface,
-and rejects any libxkbcommon link or runtime xkbcommon crate.
+The aarch64 musl target is configured in `.cargo/config.toml`:
+`mold` as the linker, `/usr/lib` for the native `libseat`, and
+`-Ctarget-feature=-crt-static` because a static musl binary cannot use
+libseat. `make audit` still checks the x86_64 release binary path
+(`target/x86_64-unknown-linux-musl/release/tinyland`) and rejects forbidden
+dependencies, linked libraries, and `unsafe` outside `src/seat.rs`; build
+that binary first when running the audit.
 
-`make seat` runs the brokered proof in `harness/seat-proof.sh`: seatd
-mediates as root while tinyland and foot run as the unprivileged `tiny`
-user. The guest asserts direct DRM open fails for that user
-(`TINYLAND_DIRECT_DENIED`), opens the seat through libseat
-(`TINYLAND_SEAT_OPEN`), then reuses the smoke input marker and screenshot
-gates. Disable and resume paths are implemented in `src/server.rs` but
-qualified separately from daemon loss, which is a hard error here.
+`make test` runs `cargo test --locked`; coverage is owned by
+`src/server/tests.rs` and `tests/cli.rs`. Bad CLI exits 2 before opening
+devices.
+
+## Laputa history
+
+Laputa's x86_64 proof used its own QEMU/KVM and QMP harness, which lives in
+laputa. It is not part of this repository and this repository does not run
+it. `docs/laputa-integration.md`, `docs/size-perf.md`, and
+`docs/opengl-probe.md` record that laputa-side profile.

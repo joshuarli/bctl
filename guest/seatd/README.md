@@ -41,9 +41,10 @@ ping. The exact byte sequences are pinned in
 raw-protocol guest client with no C dependencies. Read
 [validation](doc/validation.md) for what the checks cover.
 
-VT-bound operation, virtio DRM/evdev handoff, and dwl/foot input have also
-passed disposable-guest qualification. See [VM qualification](harness/VM.md)
-for the tested environment and reproduction commands.
+VT-bound operation, virtio DRM/evdev handoff, and compositor input were
+qualified on laputa's disposable x86_64 guest; that harness lives in laputa.
+This repository's compositor path is tinyland's SmolVM arm64 proof in
+[../tinyland/docs/verification.md](../tinyland/docs/verification.md).
 
 ## License
 

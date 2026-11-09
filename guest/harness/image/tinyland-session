@@ -1,0 +1,79 @@
+#!/bin/sh
+set -u
+
+state=/run/tinyland
+runtime=/run/user/1000
+session_log=$state/session.log
+compositor_log=$state/compositor.log
+
+mkdir -p "$state"
+: > "$session_log"
+
+say() {
+    printf '%s\n' "$*" >> "$session_log"
+}
+
+fail() {
+    say "TINYLAND_SESSION_FAILED $*"
+    printf 'TINYLAND_SESSION_FAILED %s\n' "$*" >&2
+    exit 1
+}
+
+expose_devices() {
+    mkdir -p /dev/input
+    [ -e /dev/dri/card0 ] || fail "no /dev/dri/card0"
+    for dev in /sys/class/input/event*/dev; do
+        [ -e "$dev" ] || continue
+        node=/dev/input/$(basename "$(dirname "$dev")")
+        major_minor=$(cat "$dev")
+        major=${major_minor%%:*}
+        minor=${major_minor#*:}
+        [ -e "$node" ] || mknod "$node" c "$major" "$minor" || fail "mknod $node"
+    done
+    ls /dev/input/event* > /dev/null 2>&1 || fail "no VNC input devices"
+    chown root:root /dev/dri/card0 /dev/input/event*
+    chmod 600 /dev/dri/card0 /dev/input/event*
+    say "TINYLAND_DEVICES_READY dri=/dev/dri/card0 input=$(ls /dev/input | wc -l)"
+}
+
+start_seatd() {
+    SEATD_VTBOUND=0 seatd -g seat -l info > "$state/seatd.log" 2>&1 &
+    seatd_pid=$!
+    for _ in $(seq 1 100); do
+        [ -S /run/seatd.sock ] && break
+        kill -0 "$seatd_pid" 2>/dev/null || fail "seatd exited before the socket"
+        sleep 0.1
+    done
+    [ -S /run/seatd.sock ] || fail "seatd socket missing"
+    say "TINYLAND_SEATD_READY"
+}
+
+run_session() {
+    mkdir -p "$runtime"
+    chown tiny "$runtime"
+    chmod 700 "$runtime"
+    cat > "$runtime/run.sh" <<'EOF'
+#!/bin/sh
+export XDG_RUNTIME_DIR=/run/user/1000
+export LIBSEAT_BACKEND=seatd
+export SEATD_SOCK=/run/seatd.sock
+export TINYLAND_XKB_ROOT=/usr/share/X11/xkb
+exec /usr/local/bin/tinyland --seat --smoke --width 1024 --height 768 \
+    --socket wayland-0 -- foot /usr/local/bin/guest-test smoke
+EOF
+    chown tiny "$runtime/run.sh"
+    chmod 755 "$runtime/run.sh"
+    say "TINYLAND_SESSION_START uid=$(id -u tiny)"
+    su tiny -s /bin/sh -c "$runtime/run.sh" >> "$compositor_log" 2>&1
+    result=$?
+    say "TINYLAND_SESSION_EXIT rc=$result"
+    return "$result"
+}
+
+expose_devices
+start_seatd
+run_session
+result=$?
+kill "$seatd_pid" 2>/dev/null
+wait "$seatd_pid" 2>/dev/null
+exit "$result"
