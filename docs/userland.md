@@ -23,6 +23,14 @@ ships, so this image has far more gaps than the Helium image will. Rerun on
 the Helium image and replace this section; nothing in `guest/audit` is
 specific to Alpine except the optional apk-database attribution.
 
+R1 added a second stand-in, `bctl/ref-scratch-chromium`
+(`images/ref-scratch-chromium`): no base image, busybox, or shell; the Rust
+`bctl-guest`, `guest/tinyland`, `guest/seatd`, musl's loader, XKB data, and
+the same Alpine `chromium` 142.0.7444.59 packed with its runtime closure in
+the Helium archive layout under `/opt/browser`. Its results are in
+**Results on ref-scratch-chromium**. When the Helium archive exists, the same
+image built around it (`docs/image-contract.md`) replaces both stand-ins.
+
 ## Running it
 
 ```sh
@@ -30,6 +38,9 @@ cargo build -p bctl-proof
 guest/audit/trace.sh bctl/ref-alpine-chromium .work/tmp/trace.tsv
 CHROMIUM_BUILD_SCRIPTS=../chromium-build/scripts guest/audit/audit.sh bctl/ref-alpine-chromium --trace .work/tmp/trace.tsv --json .work/tmp/report.json
 ```
+
+The same two commands take `bctl/ref-scratch-chromium` (build it first with
+`images/build.sh ref-scratch-chromium`).
 
 `audit.sh` exports the image rootfs into a throwaway Docker volume and runs
 `census.py` in an Alpine container with `python3` and `binutils` (GNU
@@ -50,14 +61,21 @@ rejects the absolute symlinks an image rootfs legitimately contains.
 
 - **Walk.** Every regular file and symlink in the rootfs, without following
   symlinks. Bytes count each inode once. `exclude` in the table drops
-  container-export artifacts (`/.dockerenv`, `/dev`, `/proc`, `/sys`).
+  container-export artifacts (`/.dockerenv`, `/dev`, `/proc`, `/sys`, and the
+  `/etc/hostname`, `/etc/hosts`, `/etc/resolv.conf`, and `/etc/mtab` that
+  `docker export` writes into every container, an image from scratch
+  included).
 - **Attribution.** `guest/audit/attribution.toml` holds ordered rules, first
   match wins. A rule matches `paths` (glob over the absolute path) or
   `packages` (the owning apk package from `/lib/apk/db/installed`; a symlink
   with no owner takes its target's owner, which covers busybox applets). A
   `rust` rule must name its `source`; every rule names a `reason`. Gap rules
   group packages by why they are gaps; the census still reports each package
-  as its own unit.
+  as its own unit. A rule with `elf = true` (or `false`) matches only ELF (or
+  only non-ELF) files, which separates the Rust `bctl-guest` from the shell
+  script at the same path in the Alpine images. A rule with `unit = "file"`
+  reports each file as its own unit, which keeps the browser's library
+  closure itemized in a rootfs with no package database.
 - **ELF.** For each ELF file: DT_NEEDED, interpreter, SONAME, and kind
   (`dynamic` executable with an interpreter, `library`, `static`, `loader`).
   Findings flag glibc dependencies, NEEDED libraries absent from the image,
@@ -79,18 +97,20 @@ rejects the absolute symlinks an image rootfs legitimately contains.
   glibc-only. Limits: a mapping that comes and goes between samples is
   missed, failed `dlopen` attempts are invisible, and the snapshot stops at
   the last copy before the VM stops.
-  The trace requires a shell in the image, so the lean product image (R1) needs
-  a different tap. The VM that `bctl-proof` creates is named
+  An image without `/bin/sh` gets a different tap: `trace.sh` derives an
+  image that only sets `BCTL_TRACE_MAPS=1`, the Rust `bctl-guest run` then
+  samples the same pairs every 0.3 s into `/run/bctl/maps.tsv`, and the host
+  reads them with `smolvm machine exec -- bctl-guest maps`. The VM that `bctl-proof` creates is named
   `bctl-proof-<pid>-1`, not `r0-`, because the runner chooses it.
 
-## Results on the stand-in image
+## Results on ref-alpine-chromium
 
 | class | units | files | bytes |
 |---|---:|---:|---:|
 | rust | 0 | 0 | 0 B |
 | exception | 19 | 266 | 508.4 MiB |
-| gap | 207 | 2834 | 208.8 MiB |
-| total | 226 | 3100 | 717.2 MiB |
+| gap | 207 | 2830 | 208.8 MiB |
+| total | 226 | 3096 | 717.2 MiB |
 
 ### Rust-owned
 
@@ -389,12 +409,261 @@ Data files mapped by `exe`, by unit:
 - `/usr/bin/sway`: created at run time 6, font-dejavu 1
 - `/usr/lib/chromium/chromium`: chromium 5, created at run time 156, font-dejavu 1, glib-and-system-libs 1
 
+## Results on ref-scratch-chromium
+
+Docker image `44a8a768f73b`, traced with the `bctl-guest` tap during one B1
+run.
+
+| class | units | files | bytes |
+|---|---:|---:|---:|
+| rust | 4 | 5 | 6.1 MiB |
+| exception | 5 | 92 | 450.1 MiB |
+| gap | 143 | 434 | 101.9 MiB |
+| total | 152 | 531 | 558.1 MiB |
+
+### Rust-owned
+
+| unit | rule | bytes | files | ELF | basis |
+|---|---|---:|---:|---:|---|
+| tinyland | tinyland | 4.6 MiB | 1 | 1 | guest/tinyland (crate tinyland) |
+| bctl-guest | bctl-guest | 881.6 KiB | 1 | 1 | guest/appliance (crate bctl-guest) |
+| seatd | seatd | 658.5 KiB | 1 | 1 | guest/seatd (crate seatd) |
+| bctl-guest-accounts | bctl-guest-accounts | 117 B | 2 | 0 | guest/appliance/rootfs/etc |
+
+### Named exceptions
+
+| unit | rule | bytes | files | ELF | basis |
+|---|---|---:|---:|---:|---|
+| browser-archive | browser-archive | 256.9 MiB | 68 | 6 | the browser archive with its fonts and fontconfig; here Alpine chromium packed in Helium's layout (images/ref-scratch-chromium) |
+| mesa | mesa | 186.6 MiB | 10 | 10 | named exception with its library closure (owner 2026-11-08) |
+| nss | nss | 4.9 MiB | 11 | 11 | Mozilla Network Security Services, named exception |
+| alsa | alsa | 1.0 MiB | 1 | 1 | named exception (use_alsa=true) |
+| musl | musl | 706.5 KiB | 2 | 1 | retained by laputa LAP-51 |
+
+### Gaps
+
+| unit | bytes | files | ELF | in trace | consumers | why it is a gap |
+|---|---:|---:|---:|---|---|---|
+| libavcodec.so.60 | 13.1 MiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgtk-3.so.0 | 7.1 MiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libx265.so.209 | 6.4 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libaom.so.3 | 6.4 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libcrypto.so.3 | 4.4 MiB | 1 | 1 | yes | browser-archive, libavformat.so.60, libavutil.so.58, libsrt.so.1.5, libssh.so.4, libssl.so.3 | a shared library the browser archive ships and loads at run time that no exception names |
+| libSvtAv1Enc.so.2 | 4.1 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| xkb-data | 3.1 MiB | 292 | 0 | no | none | xkeyboard-config data that tinyland's kbvm compiles the US keymap from at start |
+| libstdc++.so.6 | 2.6 MiB | 1 | 1 | yes | browser-archive, libcrc32c.so.1, libdouble-conversion.so.3, libhwy.so.1, libjxl.so.0.10, libjxl_cms.so.0.10 (+8) | a shared library the browser archive ships and loads at run time that no exception names |
+| libavformat.so.60 | 2.5 MiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libvpx.so.9 | 2.4 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgnutls.so.30 | 2.0 MiB | 1 | 1 | yes | browser-archive, libcups.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgio-2.0.so.0 | 2.0 MiB | 1 | 1 | yes | browser-archive, libatspi.so.0, libgdk-3.so.0, libgdk_pixbuf-2.0.so.0, libgtk-3.so.0, libpango-1.0.so.0 (+1) | a shared library the browser archive ships and loads at run time that no exception names |
+| libunistring.so.5 | 1.9 MiB | 1 | 1 | yes | browser-archive, libgnutls.so.30, libidn2.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libjxl.so.0.10 | 1.8 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libx264.so.164 | 1.7 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libp11-kit.so.0 | 1.5 MiB | 1 | 1 | yes | browser-archive, libgnutls.so.30 | a shared library the browser archive ships and loads at run time that no exception names |
+| librav1e.so.0.7 | 1.4 MiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libglib-2.0.so.0 | 1.4 MiB | 1 | 1 | yes | browser-archive, libatk-1.0.so.0, libatk-bridge-2.0.so.0, libatspi.so.0, libcairo-gobject.so.2, libgdk-3.so.0 (+9) | a shared library the browser archive ships and loads at run time that no exception names |
+| libopenh264.so.8 | 1.4 MiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libopenmpt.so.0 | 1.2 MiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libX11.so.6 | 1.1 MiB | 1 | 1 | yes | browser-archive, libXcomposite.so.1, libXcursor.so.1, libXdamage.so.1, libXext.so.6, libXfixes.so.3 (+11) | a shared library the browser archive ships and loads at run time that no exception names |
+| libxml2.so.2 | 1.1 MiB | 1 | 1 | yes | browser-archive, libavformat.so.60, libxslt.so.1, mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libepoxy.so.0 | 1.1 MiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libharfbuzz.so.0 | 1.1 MiB | 1 | 1 | yes | browser-archive, libgtk-3.so.0, libharfbuzz-subset.so.0, libpango-1.0.so.0, libpangocairo-1.0.so.0, libpangoft2-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libcairo.so.2 | 966.5 KiB | 1 | 1 | yes | browser-archive, libcairo-gobject.so.2, libgdk-3.so.0, libgtk-3.so.0, libpangocairo-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgdk-3.so.0 | 966.2 KiB | 1 | 1 | yes | browser-archive, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libharfbuzz-subset.so.0 | 961.9 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libsrt.so.1.5 | 898.8 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libssl.so.3 | 847.9 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libavutil.so.58 | 834.0 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libavformat.so.60, libswresample.so.4 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpipewire-0.3.so.0 | 770.6 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libzmq.so.5 | 770.0 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libdav1d.so.7 | 769.7 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libfreetype.so.6 | 706.1 KiB | 1 | 1 | yes | browser-archive, libcairo.so.2, libfontconfig.so.1, libharfbuzz.so.0, libpangoft2-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpcre2-8.so.0 | 706.0 KiB | 1 | 1 | yes | browser-archive, libglib-2.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libbrotlienc.so.1 | 642.2 KiB | 1 | 1 | yes | browser-archive, libjxl.so.0.10 | a shared library the browser archive ships and loads at run time that no exception names |
+| libzstd.so.1 | 641.8 KiB | 1 | 1 | yes | browser-archive, mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libmbedcrypto.so.16 | 578.1 KiB | 1 | 1 | yes | browser-archive, librist.so.4 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpixman-1.so.0 | 577.9 KiB | 1 | 1 | yes | browser-archive, libcairo.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libcups.so.2 | 577.9 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libvorbisenc.so.2 | 577.8 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libsndfile.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpulsecommon-17.0.so | 514.0 KiB | 1 | 1 | yes | browser-archive, libpulse.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libjpeg.so.8 | 514.0 KiB | 1 | 1 | yes | browser-archive, libgdk_pixbuf-2.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libssh.so.4 | 455.1 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgobject-2.0.so.0 | 451.8 KiB | 1 | 1 | yes | browser-archive, libatk-1.0.so.0, libatk-bridge-2.0.so.0, libatspi.so.0, libcairo-gobject.so.2, libgdk-3.so.0 (+6) | a shared library the browser archive ships and loads at run time that no exception names |
+| libsndfile.so.1 | 451.1 KiB | 1 | 1 | yes | browser-archive, libpulsecommon-17.0.so | a shared library the browser archive ships and loads at run time that no exception names |
+| libgmp.so.10 | 449.8 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30, libhogweed.so.6 | a shared library the browser archive ships and loads at run time that no exception names |
+| liblcms2.so.2 | 396.7 KiB | 1 | 1 | yes | browser-archive, libjxl_cms.so.0.10 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpango-1.0.so.0 | 387.2 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libgtk-3.so.0, libpangocairo-1.0.so.0, libpangoft2-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxvidcore.so.4 | 386.6 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libopus.so.0 | 385.7 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libsndfile.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpulse.so.0 | 322.9 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libmount.so.1 | 322.6 KiB | 1 | 1 | yes | browser-archive, libgio-2.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgomp.so.1 | 322.5 KiB | 1 | 1 | yes | browser-archive, libsoxr.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libdbus-1.so.3 | 322.0 KiB | 1 | 1 | yes | browser-archive, libatk-bridge-2.0.so.0, libatspi.so.0, libavahi-client.so.3, libpulse.so.0, libpulsecommon-17.0.so | a shared library the browser archive ships and loads at run time that no exception names |
+| libhogweed.so.6 | 322.0 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30 | a shared library the browser archive ships and loads at run time that no exception names |
+| libnettle.so.8 | 322.0 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30, libhogweed.so.6 | a shared library the browser archive ships and loads at run time that no exception names |
+| libwebp.so.7 | 321.9 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libwebpdemux.so.2, libwebpmux.so.3 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxkbcommon | 321.9 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | C libxkbcommon; R3 replaces it with a kbvm-backed library |
+| libbluray.so.2 | 321.8 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libFLAC.so.12 | 321.8 KiB | 1 | 1 | yes | browser-archive, libsndfile.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libatk-bridge-2.0.so.0 | 261.5 KiB | 1 | 1 | yes | browser-archive, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libmpg123.so.0 | 259.2 KiB | 1 | 1 | yes | browser-archive, libopenmpt.so.0, libsndfile.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libsodium.so.26 | 259.1 KiB | 1 | 1 | yes | browser-archive, libzmq.so.5 | a shared library the browser archive ships and loads at run time that no exception names |
+| libatspi.so.0 | 258.2 KiB | 1 | 1 | yes | browser-archive, libatk-bridge-2.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxslt.so.1 | 258.0 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libsimdutf.so.24 | 258.0 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libmp3lame.so.0 | 257.8 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libsndfile.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libfontconfig.so.1 | 257.8 KiB | 1 | 1 | yes | browser-archive, libcairo.so.2, libgdk-3.so.0, libgtk-3.so.0, libpangocairo-1.0.so.0, libpangoft2-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| liblzma.so.5 | 257.7 KiB | 1 | 1 | yes | browser-archive, libxml2.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libblkid.so.1 | 194.8 KiB | 1 | 1 | yes | browser-archive, libmount.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgdk_pixbuf-2.0.so.0 | 194.0 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libidn2.so.0 | 194.0 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpng16.so.16 | 194.0 KiB | 1 | 1 | yes | browser-archive, libcairo.so.2, libfreetype.so.6, libgdk_pixbuf-2.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libtheoraenc.so.1 | 194.0 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libatk-1.0.so.0 | 193.8 KiB | 1 | 1 | yes | browser-archive, libatk-bridge-2.0.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| librist.so.4 | 193.8 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libva.so.2 | 193.8 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libavutil.so.58, libva-drm.so.2, libva-x11.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb.so.1 | 193.8 KiB | 1 | 1 | yes | browser-archive, libX11.so.6, libcairo.so.2, libpulsecommon-17.0.so, libva-x11.so.2, libxcb-dri3.so.0 (+7) | a shared library the browser archive ships and loads at run time that no exception names |
+| libintl.so.8 | 193.8 KiB | 1 | 1 | yes | browser-archive, libatk-1.0.so.0, libatspi.so.0, libavahi-common.so.3, libgdk-3.so.0, libgdk_pixbuf-2.0.so.0 (+6) | a shared library the browser archive ships and loads at run time that no exception names |
+| libbrotlicommon.so.1 | 193.7 KiB | 1 | 1 | yes | browser-archive, libbrotlidec.so.1, libbrotlienc.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libexpat.so.1 | 193.7 KiB | 1 | 1 | yes | browser-archive, libfontconfig.so.1, mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libvorbis.so.0 | 193.7 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libopenmpt.so.0, libsndfile.so.1, libvorbisenc.so.2, libvorbisfile.so.3 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXext.so.6 | 130.9 KiB | 1 | 1 | yes | browser-archive, libXi.so.6, libXinerama.so.1, libXrandr.so.2, libcairo.so.2, libgdk-3.so.0 (+2) | a shared library the browser archive ships and loads at run time that no exception names |
+| libsoxr.so.0 | 130.2 KiB | 1 | 1 | yes | browser-archive, libswresample.so.4 | a shared library the browser archive ships and loads at run time that no exception names |
+| libswresample.so.4 | 130.0 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libdouble-conversion.so.3 | 129.9 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libgcc_s.so.1 | 129.9 KiB | 1 | 1 | yes | browser-archive, libdouble-conversion.so.3, libopenh264.so.8, libopenmpt.so.0, librav1e.so.0.7, libsimdutf.so.24 (+4) | a shared library the browser archive ships and loads at run time that no exception names |
+| libtheoradec.so.1 | 129.9 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libtheoraenc.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libz.so.1 | 129.9 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60, libavformat.so.60, libcairo.so.2, libcups.so.2, libfreetype.so.6 (+8) | a shared library the browser archive ships and loads at run time that no exception names |
+| libfribidi.so.0 | 129.8 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libgtk-3.so.0, libpango-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libgraphite2.so.3 | 129.7 KiB | 1 | 1 | yes | browser-archive, libharfbuzz.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpangoft2-1.0.so.0 | 129.7 KiB | 1 | 1 | yes | browser-archive, libgtk-3.so.0, libpangocairo-1.0.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libwayland-cursor.so.0 | 78.2 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libbz2.so.1 | 68.7 KiB | 1 | 1 | yes | browser-archive, libavformat.so.60, libfreetype.so.6 | a shared library the browser archive ships and loads at run time that no exception names |
+| libbsd.so.0 | 66.9 KiB | 1 | 1 | yes | browser-archive, libXdmcp.so.6 | a shared library the browser archive ships and loads at run time that no exception names |
+| libwayland-server.so.0 | 66.7 KiB | 1 | 1 | no | mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libwayland-client.so.0 | 66.7 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libwayland-cursor.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libnuma.so.1 | 66.2 KiB | 1 | 1 | yes | browser-archive, libx265.so.209 | a shared library the browser archive ships and loads at run time that no exception names |
+| libavahi-client.so.3 | 66.1 KiB | 1 | 1 | yes | browser-archive, libcups.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libavahi-common.so.3 | 66.1 KiB | 1 | 1 | yes | browser-archive, libavahi-client.so.3, libcups.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libffi.so.8 | 66.0 KiB | 1 | 1 | yes | browser-archive, libgobject-2.0.so.0, libp11-kit.so.0, libwayland-client.so.0, libwayland-server.so.0, mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libmd.so.0 | 66.0 KiB | 1 | 1 | yes | browser-archive, libbsd.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXrender.so.1 | 65.9 KiB | 1 | 1 | yes | browser-archive, libXcursor.so.1, libXrandr.so.2, libcairo.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libhwy.so.1 | 65.9 KiB | 1 | 1 | yes | browser-archive, libjxl.so.0.10 | a shared library the browser archive ships and loads at run time that no exception names |
+| libudev.so.1 | 65.9 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libtasn1.so.6 | 65.9 KiB | 1 | 1 | yes | browser-archive, libgnutls.so.30 | a shared library the browser archive ships and loads at run time that no exception names |
+| libeconf.so.0 | 65.9 KiB | 1 | 1 | yes | browser-archive, libblkid.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libva-x11.so.2 | 65.8 KiB | 1 | 1 | yes | browser-archive, libavutil.so.58 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXi.so.6 | 65.8 KiB | 1 | 1 | yes | browser-archive, libatspi.so.0, libgdk-3.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXdmcp.so.6 | 65.8 KiB | 1 | 1 | yes | browser-archive, libxcb.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libpangocairo-1.0.so.0 | 65.8 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXinerama.so.1 | 65.8 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXrandr.so.2 | 65.8 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libcairo-gobject.so.2 | 65.8 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-dri3.so.0 | 65.8 KiB | 1 | 1 | yes | browser-archive, libva-x11.so.2, mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-present.so.0 | 65.8 KiB | 1 | 1 | no | mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-randr.so.0 | 65.8 KiB | 1 | 1 | no | mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-render.so.0 | 65.8 KiB | 1 | 1 | yes | browser-archive, libcairo.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-shm.so.0 | 65.8 KiB | 1 | 1 | yes | browser-archive, libcairo.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-sync.so.1 | 65.8 KiB | 1 | 1 | no | mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libxcb-xfixes.so.0 | 65.8 KiB | 1 | 1 | no | mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libgmodule-2.0.so.0 | 65.8 KiB | 1 | 1 | yes | browser-archive, libgdk_pixbuf-2.0.so.0, libgio-2.0.so.0, libgtk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libva-drm.so.2 | 65.7 KiB | 1 | 1 | yes | browser-archive, libavutil.so.58 | a shared library the browser archive ships and loads at run time that no exception names |
+| libwebpdemux.so.2 | 65.7 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libvorbisfile.so.3 | 65.7 KiB | 1 | 1 | yes | browser-archive, libopenmpt.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libcjson.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive, librist.so.4 | a shared library the browser archive ships and loads at run time that no exception names |
+| libsharpyuv.so.0 | 65.7 KiB | 1 | 1 | yes | browser-archive, libwebp.so.7 | a shared library the browser archive ships and loads at run time that no exception names |
+| libvdpau.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive, libavutil.so.58 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXau.so.6 | 65.7 KiB | 1 | 1 | yes | browser-archive, libxcb.so.1 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXcomposite.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXcursor.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXdamage.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive, libgdk-3.so.0 | a shared library the browser archive ships and loads at run time that no exception names |
+| libasyncns.so.0 | 65.7 KiB | 1 | 1 | yes | browser-archive, libpulsecommon-17.0.so | a shared library the browser archive ships and loads at run time that no exception names |
+| libbrotlidec.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive, libfreetype.so.6, libjxl.so.0.10 | a shared library the browser archive ships and loads at run time that no exception names |
+| libcrc32c.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libminizip.so.1 | 65.7 KiB | 1 | 1 | yes | browser-archive | a shared library the browser archive ships and loads at run time that no exception names |
+| libogg.so.0 | 65.7 KiB | 1 | 1 | yes | browser-archive, libFLAC.so.12, libsndfile.so.1, libtheoraenc.so.1, libvorbis.so.0, libvorbisfile.so.3 | a shared library the browser archive ships and loads at run time that no exception names |
+| libwebpmux.so.3 | 65.7 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+| libXfixes.so.3 | 65.6 KiB | 1 | 1 | yes | browser-archive, libXcursor.so.1, libgdk-3.so.0, libgtk-3.so.0, libva-x11.so.2 | a shared library the browser archive ships and loads at run time that no exception names |
+| libX11-xcb.so.1 | 65.6 KiB | 1 | 1 | yes | browser-archive, libva-x11.so.2, mesa | a shared library the browser archive ships and loads at run time that no exception names |
+| libjxl_cms.so.0.10 | 63.4 KiB | 1 | 1 | yes | browser-archive, libjxl.so.0.10 | a shared library the browser archive ships and loads at run time that no exception names |
+| libjxl_threads.so.0.10 | 13.7 KiB | 1 | 1 | yes | browser-archive, libavcodec.so.60 | a shared library the browser archive ships and loads at run time that no exception names |
+
+### ELF files
+
+174 ELF files: 3 dynamic, 167 library, 1 loader, 3 static.
+
+Static ELF executables (no PT_INTERP):
+
+- `/usr/local/bin/bctl-guest` (bctl-guest, rust)
+- `/usr/local/bin/seatd` (seatd, rust)
+- `/usr/local/bin/tinyland` (tinyland, rust)
+
+ELF audit findings (glibc dependencies, missing libraries, foreign interpreters):
+
+- none
+
+### Runtime loads from the traced B1 run
+
+Libraries mapped by a process but outside its static DT_NEEDED closure, which means a `dlopen` by it or by a library it loaded. Processes with none are omitted.
+
+`/opt/browser/chromium`:
+
+| library | unit | class |
+|---|---|---|
+| `/opt/browser/lib/libXcursor.so.1` | libXcursor.so.1 | gap |
+| `/opt/browser/lib/libXinerama.so.1` | libXinerama.so.1 | gap |
+| `/opt/browser/lib/libcairo-gobject.so.2` | libcairo-gobject.so.2 | gap |
+| `/opt/browser/lib/libepoxy.so.0` | libepoxy.so.0 | gap |
+| `/opt/browser/lib/libgdk-3.so.0` | libgdk-3.so.0 | gap |
+| `/opt/browser/lib/libgdk_pixbuf-2.0.so.0` | libgdk_pixbuf-2.0.so.0 | gap |
+| `/opt/browser/lib/libgtk-3.so.0` | libgtk-3.so.0 | gap |
+| `/opt/browser/lib/libpangocairo-1.0.so.0` | libpangocairo-1.0.so.0 | gap |
+| `/opt/browser/lib/libpangoft2-1.0.so.0` | libpangoft2-1.0.so.0 | gap |
+| `/opt/browser/lib/libwayland-client.so.0` | libwayland-client.so.0 | gap |
+| `/opt/browser/lib/libwayland-cursor.so.0` | libwayland-cursor.so.0 | gap |
+| `/opt/browser/lib/libwayland-egl.so.1` | mesa | exception |
+
+Data files mapped by `exe`, by unit:
+
+- `/opt/browser/chromium`: browser-archive 6, created at run time 154
+
+## Reading the scratch results
+
+- Every gap but one is inside the browser's runtime closure: the 141
+  libraries under `/opt/browser/lib` that no exception names (98.5 MiB) and
+  `libxkbcommon.so.0` (R3), which the browser and GTK link. The one gap
+  outside it is `xkb-data`, the xkeyboard-config tree under
+  `/usr/share/X11/xkb` (3.1 MiB): no ELF links it, because tinyland's kbvm
+  reads it at start to compile the US keymap it hands to clients. Removing
+  it needs a tinyland that carries its keymap, or an owner decision that the
+  data is an exception.
+- Rust-owned: `tinyland`, `seatd`, `bctl-guest` (all three static, no
+  PT_INTERP), and the two account files. The only C outside the browser
+  archive is musl's loader.
+- The closure is the DT_NEEDED closure of every ELF file in the browser
+  directory plus the libraries the browser mapped outside its DT_NEEDED
+  closure in a traced B1 run on `ref-alpine-tinyland`, plus the four NSS
+  modules chromium-build also seeds. Five of the 141 were not mapped in this
+  run (`libwayland-server`, `libxcb-present`, `libxcb-randr`, `libxcb-sync`,
+  `libxcb-xfixes`); they belong to Mesa's GBM and DRI3 paths.
+- Mesa (186.6 MiB, mostly `libLLVM`) ships but stays unloaded: GBM looks for
+  its backend only at its built-in `/usr/lib/gbm`, so `dri_gbm.so` in the
+  archive's flat `lib/` is never found, and `libgallium`, `libLLVM`, and
+  `libSPIRV-Tools` are never mapped. The GPU process exits during
+  initialization and Chromium composites in software, as it does on
+  `ref-alpine-tinyland` (no native `libEGL.so.1` there either). A Helium
+  archive built by `copy_system_closure` has the same layout, so P2 has to
+  decide how Helium's Mesa finds its GBM backend.
+- The NSS modules (`libsoftokn3`, `libfreeblpriv3`, `libfreebl3`,
+  `libnssckbi`) were not mapped: the B1 fixture is served over plain HTTP.
+
 ## Reading the stand-in results
 
-- No file is Rust-owned yet. The image contains C `seatd`, `libseat`,
-  `libudev-zero` (laputa's C fork), Sway, wlroots, and a shell `bctl-guest`.
-  R1 and T1 replace those; the attribution table needs `rust` rules for
-  `guest/tinyland`, `guest/seatd`, and the Rust `bctl-guest` when they ship.
+- No file is Rust-owned in `ref-alpine-chromium`. That image contains C
+  `seatd`, `libseat`, `libudev-zero` (laputa's C fork), Sway, wlroots, and a
+  shell `bctl-guest`. The table's `rust` rules cover `guest/tinyland`,
+  `guest/seatd`, and the Rust `bctl-guest`; `ref-alpine-tinyland` reports
+  its tinyland and seatd under them.
 - Most gap bytes belong to the browser's system-library closure: codecs
   through ffmpeg, the PipeWire/PulseAudio stack, TLS libraries, GTK3, and
   glib. The Helium archive bundles or drops these, so they say little about

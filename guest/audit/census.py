@@ -45,6 +45,8 @@ class Rule:
     source: str | None
     paths: tuple[str, ...]
     packages: frozenset[str]
+    elf: bool | None
+    unit_per_file: bool
 
 
 def load_rules(path: Path) -> tuple[list[Rule], tuple[str, ...]]:
@@ -56,7 +58,7 @@ def load_rules(path: Path) -> tuple[list[Rule], tuple[str, ...]]:
     rules = []
     for index, entry in enumerate(raw.get("rule", []), 1):
         where = f"{path}: rule {index} ({entry.get('name', '?')})"
-        unknown = set(entry) - {"class", "name", "reason", "source", "paths", "packages"}
+        unknown = set(entry) - {"class", "name", "reason", "source", "paths", "packages", "elf", "unit"}
         if unknown:
             raise CensusError(f"{where}: unknown keys {sorted(unknown)}")
         klass = entry.get("class")
@@ -71,6 +73,10 @@ def load_rules(path: Path) -> tuple[list[Rule], tuple[str, ...]]:
             raise CensusError(f"{where}: only rust rules carry a source")
         if not entry.get("paths") and not entry.get("packages"):
             raise CensusError(f"{where}: no paths or packages")
+        if "elf" in entry and not isinstance(entry["elf"], bool):
+            raise CensusError(f"{where}: elf must be true or false")
+        if entry.get("unit", "file") != "file":
+            raise CensusError(f"{where}: unit must be \"file\" or absent")
         rules.append(
             Rule(
                 klass=klass,
@@ -79,6 +85,8 @@ def load_rules(path: Path) -> tuple[list[Rule], tuple[str, ...]]:
                 source=entry.get("source"),
                 paths=tuple(entry.get("paths", ())),
                 packages=frozenset(entry.get("packages", ())),
+                elf=entry.get("elf"),
+                unit_per_file="unit" in entry,
             )
         )
     if not rules:
@@ -177,6 +185,13 @@ def symlink_owner(root: Path, path: str, db: ApkDb) -> str | None:
     return None
 
 
+def has_elf_magic(root: Path, entry: Entry) -> bool:
+    if entry.kind != "file":
+        return False
+    with (root / entry.path.lstrip("/")).open("rb") as stream:
+        return stream.read(4) == b"\x7fELF"
+
+
 def attribute(root: Path, entries: list[Entry], rules: list[Rule], db: ApkDb | None) -> list[Entry]:
     unattributed = []
     for entry in entries:
@@ -184,6 +199,8 @@ def attribute(root: Path, entries: list[Entry], rules: list[Rule], db: ApkDb | N
         if db and entry.package is None and entry.kind == "symlink":
             entry.package = symlink_owner(root, entry.path, db)
         for rule in rules:
+            if rule.elf is not None and has_elf_magic(root, entry) != rule.elf:
+                continue
             if any(fnmatch.fnmatchcase(entry.path, pattern) for pattern in rule.paths) or (
                 entry.package is not None and entry.package in rule.packages
             ):
@@ -195,7 +212,9 @@ def attribute(root: Path, entries: list[Entry], rules: list[Rule], db: ApkDb | N
 
 
 def unit_of(entry: Entry) -> str:
-    return entry.package or entry.rule.name
+    if entry.package:
+        return entry.package
+    return PurePosixPath(entry.path).name if entry.rule.unit_per_file else entry.rule.name
 
 
 def classify_elf(info, runtime) -> str:

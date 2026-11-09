@@ -1,5 +1,6 @@
 #!/bin/sh
-# Run the B1 fixture (bctl-proof m1) on IMAGE_TAG with a /proc/*/maps sampler in the guest.
+# Run the B1 fixture (bctl-proof m1) on IMAGE_TAG with a /proc/*/maps sampler in the guest: a shell sampler when
+# the image has /bin/sh, otherwise the one bctl-guest runs under BCTL_TRACE_MAPS=1.
 # Usage: trace.sh IMAGE_TAG OUT.tsv   (build bctl-proof first; SMOLVM and PROOF override the paths)
 set -eu
 tag=${1:?usage: trace.sh IMAGE_TAG OUT.tsv}
@@ -17,14 +18,23 @@ image=$work/$trace_tag.tar
 [ -x "$proof" ] || { echo "trace.sh: no bctl-proof at $proof" >&2; exit 1; }
 
 mkdir -p "$build"
-cp "$here/trace-sampler.sh" "$build/r0-trace-sampler"
-cp "$here/trace-entry.sh" "$build/r0-trace-entry"
-cat > "$build/Dockerfile" <<DOCKER
+if docker run --rm --platform linux/arm64 --entrypoint /bin/sh "$tag" -c true > /dev/null 2>&1; then
+    cp "$here/trace-sampler.sh" "$build/r0-trace-sampler"
+    cp "$here/trace-entry.sh" "$build/r0-trace-entry"
+    cat > "$build/Dockerfile" <<DOCKER
 FROM $tag
 COPY --chmod=755 r0-trace-sampler r0-trace-entry /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/r0-trace-entry"]
 CMD ["run"]
 DOCKER
+    read_trace="cat /run/r0-maps.tsv"
+else
+    cat > "$build/Dockerfile" <<DOCKER
+FROM $tag
+ENV BCTL_TRACE_MAPS=1
+DOCKER
+    read_trace="bctl-guest maps"
+fi
 docker build -q --platform linux/arm64 -t "$trace_tag" "$build" > /dev/null
 docker save "$trace_tag" -o "$image"
 docker rmi -f "$trace_tag" > /dev/null
@@ -35,7 +45,8 @@ pid=$!
 machine=bctl-proof-$pid-1
 : > "$out.part"
 while kill -0 "$pid" 2>/dev/null; do
-    if "$smolvm" machine exec --name "$machine" -- cat /run/r0-maps.tsv > "$out.next" 2>/dev/null && [ -s "$out.next" ]; then
+    # shellcheck disable=SC2086
+    if "$smolvm" machine exec --name "$machine" -- $read_trace > "$out.next" 2>/dev/null && [ -s "$out.next" ]; then
         mv "$out.next" "$out.part"
     fi
     sleep 1

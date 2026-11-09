@@ -1,4 +1,4 @@
-exclude = ["/.dockerenv", "/dev/*", "/proc/*", "/sys/*"]
+exclude = ["/.dockerenv", "/dev/*", "/proc/*", "/sys/*", "/etc/hostname", "/etc/hosts", "/etc/resolv.conf", "/etc/mtab"]
 
 [[rule]]
 class = "exception"
@@ -11,7 +11,7 @@ packages = ["musl"]
 class = "exception"
 name = "mesa"
 reason = "named exception with its library closure (owner 2026-11-08)"
-paths = ["*/libEGL.so*", "*/libGLESv2.so*", "*/libgbm.so*", "*/libgallium-*.so", "*/libwayland-egl.so*", "*/libEGL_mesa.so*", "*/libGLX_mesa.so*"]
+paths = ["*/lib/libEGL.so*", "*/lib/libGLESv2.so*", "*/lib/libgbm.so*", "*/lib/libgallium-*.so", "*/lib/libwayland-egl.so*", "*/lib/libEGL_mesa.so*", "*/lib/libGLX_mesa.so*", "*/lib/dri_gbm.so", "*/lib/libLLVM.so*", "*/lib/libSPIRV-Tools*.so*", "*/lib/libdrm.so*", "*/lib/libdrm_*.so*", "*/lib/libelf*.so*", "*/lib/libxshmfence.so*", "*/lib/libpciaccess.so*"]
 packages = ["mesa", "mesa-dri-gallium", "mesa-egl", "mesa-gbm", "mesa-gles", "wayland-libs-egl", "llvm20-libs", "spirv-tools", "libdrm", "libxshmfence", "libelf", "libpciaccess", "hwdata-pci"]
 
 [[rule]]
@@ -25,7 +25,7 @@ packages = ["alsa-lib"]
 class = "exception"
 name = "nss"
 reason = "Mozilla Network Security Services, named exception"
-paths = ["*/libsoftokn3.so", "*/libfreebl3.so", "*/libfreeblpriv3.so", "*/libnssckbi.so", "*/libnss3.so", "*/libnssutil3.so", "*/libsmime3.so", "*/libnspr4.so", "*/libplc4.so", "*/libplds4.so"]
+paths = ["*/libsoftokn3.so", "*/libfreebl3.so", "*/libfreeblpriv3.so", "*/libnssckbi.so", "*/libnss3.so", "*/libnssutil3.so", "*/libsmime3.so", "*/libnspr4.so", "*/libplc4.so", "*/libplds4.so", "*/lib/libsqlite3.so*"]
 packages = ["nss", "nspr", "sqlite-libs"]
 
 [[rule]]
@@ -35,11 +35,42 @@ reason = "stand-in for Helium and what it statically bundles (Alpine chromium AP
 packages = ["chromium"]
 
 [[rule]]
+class = "rust"
+name = "tinyland"
+reason = "the Wayland compositor"
+source = "guest/tinyland (crate tinyland)"
+paths = ["/usr/local/bin/tinyland"]
+elf = true
+
+[[rule]]
+class = "rust"
+name = "seatd"
+reason = "the seat broker"
+source = "guest/seatd (crate seatd)"
+paths = ["/usr/local/bin/seatd"]
+elf = true
+
+[[rule]]
+class = "rust"
+name = "bctl-guest"
+reason = "the appliance entrypoint: supervisor, readiness check, CDP relay"
+source = "guest/appliance (crate bctl-guest)"
+paths = ["/usr/local/bin/bctl-guest"]
+elf = true
+
+[[rule]]
 class = "gap"
 name = "alpine-base"
 reason = "Alpine base system and package manager; R1 removes the base"
-paths = ["/etc/apk/*", "/lib/apk/*", "/etc/passwd*", "/etc/group*", "/etc/shadow*", "/etc/resolv.conf", "/usr/local/bin/bctl-guest"]
+paths = ["/etc/apk/*", "/lib/apk/*", "/etc/passwd-", "/etc/group-", "/etc/shadow*", "/etc/resolv.conf", "/usr/local/bin/bctl-guest"]
 packages = ["alpine-baselayout", "alpine-baselayout-data", "alpine-keys", "alpine-release", "apk-tools", "libapk2", "ca-certificates-bundle", "ssl_client", "scanelf", "pkgconf", "musl-utils"]
+
+[[rule]]
+class = "rust"
+name = "bctl-guest-accounts"
+reason = "the browser user and device group that bctl-guest and seatd resolve"
+source = "guest/appliance/rootfs/etc"
+paths = ["/etc/passwd", "/etc/group"]
 
 [[rule]]
 class = "gap"
@@ -57,7 +88,27 @@ packages = ["sway", "swaybar", "swaynag", "sway-wallpapers", "wlroots", "seatd",
 class = "gap"
 name = "libxkbcommon"
 reason = "C libxkbcommon; R3 replaces it with a kbvm-backed library"
+paths = ["*/lib/libxkbcommon.so*"]
 packages = ["libxkbcommon", "xkeyboard-config"]
+
+[[rule]]
+class = "gap"
+name = "xkb-data"
+reason = "xkeyboard-config data that tinyland's kbvm compiles the US keymap from at start"
+paths = ["/usr/share/X11/xkb/*"]
+
+[[rule]]
+class = "gap"
+name = "browser-closure"
+reason = "a shared library the browser archive ships and loads at run time that no exception names"
+paths = ["/opt/browser/lib/*"]
+unit = "file"
+
+[[rule]]
+class = "exception"
+name = "browser-archive"
+reason = "the browser archive with its fonts and fontconfig; here Alpine chromium packed in Helium's layout (images/ref-scratch-chromium)"
+paths = ["/opt/browser/*", "/usr/local/bin/browser"]
 
 [[rule]]
 class = "gap"
@@ -77,7 +128,7 @@ class = "gap"
 name = "chromium-system-libs"
 reason = "libraries the Alpine chromium APK links from the system; Helium bundles its own copies or the library is a real gap"
 paths = ["/var/cache/fontconfig/*", "/usr/share/fonts/*"]
-packages = ["freetype", "harfbuzz", "harfbuzz-subset", "fontconfig", "font-dejavu", "font-opensans", "libpng", "libjpeg-turbo", "libwebp", "libwebpdemux", "libwebpmux", "libsharpyuv", "libxml2", "libxslt", "zlib", "zstd-libs", "xz-libs", "brotli-libs", "minizip", "icu-data-full", "libjxl", "lcms2", "openh264", "libdeflate", "tiff", "giflib", "libhwy", "crc32c", "double-conversion", "simdutf", "imath", "abseil-cpp-raw-logging-internal", "abseil-cpp-strings", "abseil-cpp-strings-internal", "wayland-libs-client", "wayland-libs-cursor", "encodings"]
+packages = ["freetype", "harfbuzz", "harfbuzz-subset", "fontconfig", "font-dejavu", "font-opensans", "libpng", "libjpeg-turbo", "libwebp", "libwebpdemux", "libwebpmux", "libsharpyuv", "libxml2", "libxslt", "zlib", "zstd-libs", "xz-libs", "brotli-libs", "minizip", "icu-data-full", "libjxl", "lcms2", "openh264", "libdeflate", "tiff", "giflib", "libhwy", "crc32c", "double-conversion", "simdutf", "imath", "abseil-cpp-raw-logging-internal", "abseil-cpp-strings", "abseil-cpp-strings-internal", "wayland-libs-client", "wayland-libs-cursor", "encodings", "eudev-libs"]
 
 [[rule]]
 class = "gap"
