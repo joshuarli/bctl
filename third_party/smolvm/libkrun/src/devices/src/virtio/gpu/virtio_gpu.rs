@@ -41,12 +41,13 @@ use rutabaga_gfx::{
 };
 #[cfg(target_os = "macos")]
 use utils::worker_message::WorkerMessage;
-use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
 use super::{GpuError, Result};
-use crate::virtio::display::DisplayInfo;
+use super::display::DisplayInfo;
+use super::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+use super::snapshot::{Gpu2DResource, Gpu2DScanout, Gpu2DState};
 use crate::virtio::fs::ExportTable;
-use crate::virtio::gpu::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
 use crate::virtio::{InterruptTransport, VirtioShmRegion};
 
 /// Whether virglrenderer may retire fences from a thread of its own.
@@ -251,6 +252,7 @@ pub struct VirtioGpu {
     /// Rate-limits the re-present to a sane cadence.
     last_represent: Option<std::time::Instant>,
     resources: BTreeMap<u32, VirtioGpuResource>,
+    backings: BTreeMap<u32, Vec<(u64, u64)>>,
     fence_state: Arc<Mutex<FenceState>>,
     #[cfg(target_os = "macos")]
     map_sender: Sender<WorkerMessage>,
@@ -476,6 +478,7 @@ impl VirtioGpu {
         interrupt: InterruptTransport,
         fence_state: Arc<Mutex<FenceState>>,
         virgl_flags: u32,
+        two_d_only: bool,
         export_table: Option<ExportTable>,
     ) -> Option<Rutabaga> {
         let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
@@ -543,13 +546,20 @@ impl VirtioGpu {
         // transfers, and fences — on hosts whose virglrenderer build has no
         // GL/virgl support (e.g. the Venus-oriented macOS build) all of those
         // fail, so the desktop path selects the 2D component explicitly.
-        let component = if env::var("KRUN_GPU_BACKEND").as_deref() == Ok("2d") {
-            rutabaga_gfx::RutabagaComponentType::Rutabaga2D
+        //
+        // A 2D-only device must not build a virglrenderer component at all:
+        // rutabaga's snapshot accepts only a 2D component with no capsets, and
+        // a capset mask would pull virglrenderer (and Venus) back in.
+        let (component, capset_mask) = if two_d_only {
+            (rutabaga_gfx::RutabagaComponentType::Rutabaga2D, 0)
         } else {
-            rutabaga_gfx::RutabagaComponentType::VirglRenderer
+            (
+                rutabaga_gfx::RutabagaComponentType::VirglRenderer,
+                super::advertised_capset_mask(),
+            )
         };
 
-        let builder = RutabagaBuilder::new(component, virgl_flags, super::advertised_capset_mask())
+        let builder = RutabagaBuilder::new(component, virgl_flags, capset_mask)
             .set_rutabaga_channels(rutabaga_channels_opt);
         let builder = if let Some(export_table) = export_table {
             builder.set_export_table(export_table)
@@ -655,6 +665,7 @@ impl VirtioGpu {
         queue_ctl: Arc<Mutex<VirtQueue>>,
         interrupt: InterruptTransport,
         virgl_flags: u32,
+        two_d_only: bool,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
         export_table: Option<ExportTable>,
         displays: Box<[DisplayInfo]>,
@@ -668,6 +679,7 @@ impl VirtioGpu {
             interrupt.clone(),
             fence_state.clone(),
             virgl_flags,
+            two_d_only,
             export_table.clone(),
         ) {
             Some(rutabaga) => rutabaga,
@@ -692,6 +704,7 @@ impl VirtioGpu {
         Self {
             rutabaga,
             resources: Default::default(),
+            backings: Default::default(),
             fence_state,
             represent_until: None,
             last_represent: None,
@@ -701,6 +714,149 @@ impl VirtioGpu {
             #[cfg(target_os = "macos")]
             map_sender,
         }
+    }
+
+    pub fn snapshot_2d(&self) -> std::result::Result<Gpu2DState, String> {
+        let mut rutabaga = Vec::new();
+        self.rutabaga
+            .snapshot(&mut rutabaga)
+            .map_err(|error| format!("rutabaga 2D snapshot: {error}"))?;
+        let resources = self
+            .resources
+            .values()
+            .map(|resource| Gpu2DResource {
+                id: resource.id,
+                width: resource.width,
+                height: resource.height,
+                format: resource.format.map(|format| format as u32),
+                size: resource.size,
+                shmem_offset: resource.shmem_offset,
+                rutabaga_external_mapping: resource.rutabaga_external_mapping,
+                scanout_mask: resource.scanouts.0,
+                backings: self.backings.get(&resource.id).cloned().unwrap_or_default(),
+            })
+            .collect();
+        let scanouts = self
+            .scanouts
+            .iter()
+            .map(|scanout| match scanout {
+                None => Ok(None),
+                Some(scanout) if scanout.blob.is_none() => {
+                    let format = self
+                        .resources
+                        .get(&scanout.resource_id)
+                        .and_then(|resource| resource.format)
+                        .ok_or_else(|| {
+                            format!(
+                                "scanout resource {} has no known format",
+                                scanout.resource_id
+                            )
+                        })?;
+                    Ok(Some(Gpu2DScanout {
+                        resource_id: scanout.resource_id,
+                        width: scanout.width,
+                        height: scanout.height,
+                        format: format as u32,
+                    }))
+                }
+                Some(_) => Err("a blob scanout cannot be saved as 2D state".to_string()),
+            })
+            .collect::<std::result::Result<Vec<_>, String>>()?;
+        Ok(Gpu2DState {
+            rutabaga,
+            resources,
+            scanouts,
+        })
+    }
+
+    pub fn restore_2d_state(
+        &mut self,
+        state: &Gpu2DState,
+        mem: &GuestMemoryMmap,
+    ) -> std::result::Result<(), String> {
+        if !self.resources.is_empty() || !self.backings.is_empty() {
+            return Err("the 2D GPU device already holds resources".to_string());
+        }
+        self.rutabaga
+            .restore(&mut &state.rutabaga[..])
+            .map_err(|error| format!("rutabaga 2D restore: {error}"))?;
+        for saved in &state.resources {
+            let resource = VirtioGpuResource {
+                id: saved.id,
+                width: saved.width,
+                height: saved.height,
+                scanouts: AssociatedScanouts(saved.scanout_mask),
+                format: saved.format.and_then(|format| ResourceFormat::try_from(format).ok()),
+                size: saved.size,
+                shmem_offset: saved.shmem_offset,
+                rutabaga_external_mapping: saved.rutabaga_external_mapping,
+            };
+            self.resources.insert(saved.id, resource);
+            if saved.backings.is_empty() {
+                continue;
+            }
+            let vecs = saved
+                .backings
+                .iter()
+                .map(|(gpa, len)| {
+                    usize::try_from(*len)
+                        .map(|len| (GuestAddress(*gpa), len))
+                        .map_err(|_| {
+                            format!("resource {} backing does not fit this host", saved.id)
+                        })
+                })
+                .collect::<std::result::Result<Vec<_>, String>>()?;
+            let iovecs = sglist_to_rutabaga_iovecs(&vecs, mem)
+                .map_err(|error| format!("resource {} backing: {error:?}", saved.id))?;
+            self.rutabaga
+                .attach_backing(saved.id, iovecs)
+                .map_err(|error| format!("attach backing to resource {}: {error}", saved.id))?;
+            self.rutabaga
+                .transfer_write(0, saved.id, Transfer3D::new_2d(0, 0, saved.width, saved.height))
+                .map_err(|error| format!("reload resource {} from its backing: {error}", saved.id))?;
+            self.backings.insert(saved.id, saved.backings.clone());
+        }
+        for (index, saved) in state.scanouts.iter().enumerate() {
+            let Some(saved) = saved else {
+                continue;
+            };
+            let scanout_id = index as u32;
+            let resource = *self
+                .resources
+                .get(&saved.resource_id)
+                .ok_or_else(|| format!("scanout {index} names a missing resource"))?;
+            let format = ResourceFormat::try_from(saved.format)
+                .map_err(|_| format!("scanout {index} has an unsupported format"))?;
+            let Some(display) = self.displays.get(index) else {
+                continue;
+            };
+            self.display_backend
+                .configure_scanout(
+                    scanout_id,
+                    display.width,
+                    display.height,
+                    saved.width,
+                    saved.height,
+                    format,
+                )
+                .map_err(|error| format!("configure restored scanout {index}: {error}"))?;
+            self.scanouts[index] = Some(VirtioGpuScanout {
+                resource_id: saved.resource_id,
+                width: saved.width,
+                height: saved.height,
+                blob: None,
+            });
+            let (frame_id, buffer) = self
+                .display_backend
+                .alloc_frame(scanout_id)
+                .map_err(|error| format!("allocate a frame for restored scanout {index}: {error}"))?;
+            Self::read_2d_resource(&mut self.rutabaga, resource, buffer, saved.width, saved.height)
+                .map_err(|error| format!("read restored scanout {index}: {error:?}"))?;
+            self.display_backend
+                .present_frame(scanout_id, frame_id, None)
+                .map_err(|error| format!("present restored scanout {index}: {error}"))?;
+        }
+        Ok(())
     }
 
     // Non-public function -- no doc comment needed!
@@ -838,6 +994,7 @@ impl VirtioGpu {
             self.rutabaga.unmap(resource_id)?;
         }
 
+        self.backings.remove(&resource_id);
         self.rutabaga.unref_resource(resource_id)?;
         Ok(OkNoData)
     }
@@ -1371,12 +1528,19 @@ impl VirtioGpu {
     ) -> VirtioGpuResult {
         let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
         self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
+        self.backings.insert(
+            resource_id,
+            vecs.iter()
+                .map(|(address, len)| (address.raw_value(), *len as u64))
+                .collect(),
+        );
         Ok(OkNoData)
     }
 
     /// Detaches any previously attached iovecs from the resource.
     pub fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
         self.rutabaga.detach_backing(resource_id)?;
+        self.backings.remove(&resource_id);
         Ok(OkNoData)
     }
 

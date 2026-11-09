@@ -102,6 +102,7 @@ impl MachineSpec {
             network_backend,
             gpu,
             gpu_vram_mib,
+            gpu_mode,
             cuda,
             nested_virt,
             rosetta,
@@ -151,6 +152,7 @@ impl MachineSpec {
             credentials,
             gpu,
             gpu_vram_mib,
+            gpu_mode,
             rosetta,
             nested_virt,
             cuda,
@@ -379,6 +381,11 @@ fn merge_record_launch_features(record: &VmRecord, mut features: LaunchFeatures)
     if features.dns_filter_hosts.is_none() {
         features.dns_filter_hosts = record.dns_filter_hosts.clone();
     }
+    if features.published_sockets.is_empty() {
+        features.published_sockets = record.published_sockets.clone();
+    }
+    features.expose_docker |= record.docker_socket;
+    features.cuda |= record.cuda;
     // A detached machine stays detached on every launch — a plain start after
     // a stop, a resume, a fork clone (which copies the golden's record) — not
     // only the one that created it. A caller that decides explicitly still
@@ -1343,6 +1350,23 @@ mod tests {
             Some(&header_policy())
         )
         .is_err());
+    }
+
+    #[test]
+    fn embedded_launch_rebuilds_the_record_host_bridges() {
+        let mut record = test_spec("bridged", true).to_record().unwrap();
+        record.published_sockets = vec![crate::config::PublishedSocketConfig {
+            direction: crate::config::SocketDirection::Expose,
+            guest_path: "/run/cdp.sock".to_string(),
+            host_path: Some("/srv/cdp.sock".to_string()),
+        }];
+        record.docker_socket = true;
+        record.cuda = true;
+
+        let features = merge_record_launch_features(&record, LaunchFeatures::default());
+        assert_eq!(features.published_sockets, record.published_sockets);
+        assert!(features.expose_docker);
+        assert!(features.cuda);
     }
 
     #[test]

@@ -470,7 +470,7 @@ impl Rutabaga {
             .resources
             .into_iter()
             .map(|(i, s)| {
-                let size = u64::from(s.width * s.height * 4);
+                let size = u64::from(s.width) * u64::from(s.height) * 4;
                 let r = RutabagaResource {
                     resource_id: s.resource_id,
                     handle: None,
@@ -1467,5 +1467,57 @@ mod tests {
         );
         // NOTE: We attached an backing iovec, but it should be gone post-restore.
         assert!(rutabaga_resource.backing_iovecs.is_none());
+        assert_eq!(
+            rutabaga_resource.info_2d.as_ref().unwrap().host_mem,
+            vec![0; 100 * 200 * 4]
+        );
+    }
+
+    #[test]
+    fn snapshot_2d_leaves_pixels_in_the_guest_backing() {
+        use std::ffi::c_void;
+
+        let resource_id = 7;
+        let resource_create_3d = ResourceCreate3D {
+            target: RUTABAGA_PIPE_TEXTURE_2D,
+            format: 1,
+            bind: RUTABAGA_PIPE_BIND_RENDER_TARGET,
+            width: 1280,
+            height: 800,
+            depth: 1,
+            array_size: 1,
+            last_level: 0,
+            nr_samples: 0,
+            flags: 0,
+        };
+        let pixels: Vec<u8> = (0..1280 * 800 * 4).map(|i| i as u8).collect();
+        let backing = || {
+            vec![RutabagaIovec {
+                base: pixels.as_ptr() as *mut c_void,
+                len: pixels.len(),
+            }]
+        };
+
+        let mut rutabaga1 = new_2d();
+        rutabaga1
+            .resource_create_3d(resource_id, resource_create_3d)
+            .unwrap();
+        rutabaga1.attach_backing(resource_id, backing()).unwrap();
+        rutabaga1
+            .transfer_write(0, resource_id, Transfer3D::new_2d(0, 0, 1280, 800))
+            .unwrap();
+
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        rutabaga1.snapshot(&mut buffer).unwrap();
+        assert!(buffer.get_ref().len() < 4096);
+
+        let mut rutabaga2 = new_2d();
+        rutabaga2.restore(&mut &buffer.get_ref()[..]).unwrap();
+        rutabaga2.attach_backing(resource_id, backing()).unwrap();
+        rutabaga2
+            .transfer_write(0, resource_id, Transfer3D::new_2d(0, 0, 1280, 800))
+            .unwrap();
+        let restored = rutabaga2.resources.get(&resource_id).unwrap();
+        assert!(restored.info_2d.as_ref().unwrap().host_mem == pixels);
     }
 }

@@ -22,6 +22,8 @@ use crate::virtio::{Console, ConsoleState, VirtioDevice};
 use crate::virtio::{Fs, FsState};
 #[cfg(feature = "gpu")]
 use crate::virtio::{Gpu, gpu::GpuState};
+#[cfg(feature = "input")]
+use crate::virtio::{Input, input::InputState};
 #[cfg(feature = "net")]
 use crate::virtio::{Net, net::NetState};
 #[cfg(not(feature = "tee"))]
@@ -49,6 +51,8 @@ pub enum DeviceSnapshot {
     Gpu(GpuState),
     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(feature = "tee")))]
     Memory(MemoryDeviceState),
+    #[cfg(feature = "input")]
+    Input(InputState),
 }
 
 impl DeviceSnapshot {
@@ -73,6 +77,8 @@ impl DeviceSnapshot {
             DeviceSnapshot::Net(_) => TYPE_NET,
             #[cfg(feature = "gpu")]
             DeviceSnapshot::Gpu(_) => TYPE_GPU,
+            #[cfg(feature = "input")]
+            DeviceSnapshot::Input(_) => TYPE_INPUT,
         }
     }
 
@@ -95,6 +101,8 @@ impl DeviceSnapshot {
             DeviceSnapshot::Net(s) => s.acked_features,
             #[cfg(feature = "gpu")]
             DeviceSnapshot::Gpu(s) => s.acked_features,
+            #[cfg(feature = "input")]
+            DeviceSnapshot::Input(s) => s.acked_features,
         }
     }
 
@@ -120,6 +128,8 @@ impl DeviceSnapshot {
             DeviceSnapshot::Net(s) => vec![s.queue_rx.clone(), s.queue_tx.clone()],
             #[cfg(feature = "gpu")]
             DeviceSnapshot::Gpu(s) => s.queues.clone(),
+            #[cfg(feature = "input")]
+            DeviceSnapshot::Input(s) => s.queues.clone(),
         }
     }
 }
@@ -188,6 +198,10 @@ pub fn snapshot_device(dev: &dyn VirtioDevice) -> Option<DeviceSnapshot> {
     if let Some(d) = any.downcast_ref::<Gpu>() {
         return Some(DeviceSnapshot::Gpu(d.save_state()));
     }
+    #[cfg(feature = "input")]
+    if let Some(d) = any.downcast_ref::<Input>() {
+        return Some(DeviceSnapshot::Input(d.save_state()));
+    }
     None
 }
 
@@ -238,6 +252,11 @@ pub fn restore_device(dev: &mut dyn VirtioDevice, snap: &DeviceSnapshot) -> Resu
         DeviceSnapshot::Gpu(s) => any
             .downcast_mut::<Gpu>()
             .ok_or_else(|| "snapshot/device mismatch: expected Gpu".to_string())?
+            .restore_state(s),
+        #[cfg(feature = "input")]
+        DeviceSnapshot::Input(s) => any
+            .downcast_mut::<Input>()
+            .ok_or_else(|| "snapshot/device mismatch: expected Input".to_string())?
             .restore_state(s),
     }
 }
@@ -346,6 +365,26 @@ mod tests {
         let snap = DeviceSnapshot::Gpu(GpuState {
             acked_features: 0xF00D,
             queues: vec![Some(qs.clone()), None],
+            two_d: Some(crate::virtio::gpu::Gpu2DState {
+                rutabaga: vec![9, 8, 7],
+                resources: vec![crate::virtio::gpu::Gpu2DResource {
+                    id: 3,
+                    width: 2,
+                    height: 1,
+                    format: Some(1),
+                    size: 8,
+                    shmem_offset: None,
+                    rutabaga_external_mapping: false,
+                    scanout_mask: 1,
+                    backings: vec![(0x2000, 8)],
+                }],
+                scanouts: vec![Some(crate::virtio::gpu::Gpu2DScanout {
+                    resource_id: 3,
+                    width: 2,
+                    height: 1,
+                    format: 1,
+                })],
+            }),
         });
 
         assert_eq!(snap.device_type(), TYPE_GPU);

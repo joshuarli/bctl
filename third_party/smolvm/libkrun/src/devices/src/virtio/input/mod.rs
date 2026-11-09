@@ -3,7 +3,7 @@ pub mod passthrough;
 mod worker;
 
 pub use self::defs::uapi::VIRTIO_ID_INPUT as TYPE_INPUT;
-pub use self::device::Input;
+pub use self::device::{Input, InputState};
 
 use super::QueueConfig;
 

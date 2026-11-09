@@ -54,6 +54,8 @@ pub use self::device::*;
 pub use self::fs::*;
 #[cfg(feature = "gpu")]
 pub use self::gpu::*;
+#[cfg(feature = "input")]
+pub use self::input::{Input, InputState, TYPE_INPUT};
 pub use self::mmio::*;
 #[cfg(feature = "net")]
 pub use self::net::Net;

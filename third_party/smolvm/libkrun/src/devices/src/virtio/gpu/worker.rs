@@ -29,6 +29,7 @@ use super::virtio_gpu::{BlobScanout, VirtioGpu};
 use crate::virtio::display::DisplayInfo;
 use crate::virtio::fs::ExportTable;
 use crate::virtio::gpu::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
+use crate::virtio::gpu::snapshot::{Gpu2DState, GpuWorkerSync};
 use crate::virtio::gpu::virtio_gpu::VirtioGpuRing;
 use crate::virtio::{InterruptTransport, VirtioShmRegion};
 use krun_display::DisplayBackend;
@@ -46,6 +47,9 @@ pub struct Worker {
     interrupt: InterruptTransport,
     shm_region: VirtioShmRegion,
     virgl_flags: u32,
+    two_d_only: bool,
+    sync: Arc<GpuWorkerSync>,
+    restored: Option<Gpu2DState>,
     #[cfg(target_os = "macos")]
     map_sender: Sender<WorkerMessage>,
     export_table: Option<ExportTable>,
@@ -81,6 +85,9 @@ impl Worker {
         interrupt: InterruptTransport,
         shm_region: VirtioShmRegion,
         virgl_flags: u32,
+        two_d_only: bool,
+        sync: Arc<GpuWorkerSync>,
+        restored: Option<Gpu2DState>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
         export_table: Option<ExportTable>,
         displays: Box<[DisplayInfo]>,
@@ -113,6 +120,9 @@ impl Worker {
             interrupt,
             shm_region,
             virgl_flags,
+            two_d_only,
+            sync,
+            restored,
             #[cfg(target_os = "macos")]
             map_sender,
             export_table,
@@ -140,6 +150,7 @@ impl Worker {
             self.control_queue.clone(),
             self.interrupt.clone(),
             self.virgl_flags,
+            self.two_d_only,
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
             self.export_table.take(),
@@ -147,11 +158,26 @@ impl Worker {
             self.display_backend,
         );
 
+        if let Some(state) = self.restored.take() {
+            let restored = virtio_gpu.restore_2d_state(&state, &self.mem);
+            self.sync.complete_restore(restored);
+        }
+
         #[cfg(target_os = "linux")]
         self.work_loop_epoll(&mut virtio_gpu);
 
         #[cfg(not(target_os = "linux"))]
         self.work_loop_blocking(&mut virtio_gpu);
+    }
+
+    fn service_sync(&self, virtio_gpu: &mut VirtioGpu) {
+        if let Some(state) = self.sync.take_restore_request() {
+            let restored = virtio_gpu.restore_2d_state(&state, &self.mem);
+            self.sync.complete_restore(restored);
+        }
+        if self.sync.take_snapshot_request() {
+            self.sync.complete_snapshot(virtio_gpu.snapshot_2d());
+        }
     }
 
     /// Linux GPU worker loop: uses epoll to multiplex the virtio control eventfd,
@@ -239,6 +265,7 @@ impl Worker {
         let mut events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
 
         loop {
+            self.service_sync(virtio_gpu);
             // 1ms timeout: keeps blind-polled fallback contexts (those where
             // virglrenderer returned -1 for the poll fd) drained each tick.
             // SAFETY: epoll_wait with a valid epoll_fd, properly sized buffer.
@@ -348,6 +375,7 @@ impl Worker {
         use nix::errno::Errno;
         use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
         loop {
+            self.service_sync(virtio_gpu);
             let (control_ready, cursor_ready) = {
                 // SAFETY: the raw fds outlive the poll call; self owns both
                 // eventfds for the lifetime of the loop.

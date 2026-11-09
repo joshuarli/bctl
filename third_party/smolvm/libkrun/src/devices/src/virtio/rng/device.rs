@@ -150,10 +150,11 @@ impl VirtioDevice for Rng {
         }
     }
 
-    fn finish_restore_activation(&mut self) {
+    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
         // Queue indices survive restore; the host eventfd counter does not.
         // Check the restored queue even when no new guest kick arrives.
         self.notify_pending_request();
+        Ok(())
     }
 
     fn avail_features(&self) -> u64 {
@@ -337,7 +338,7 @@ mod checkpoint_tests {
             event.read().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
-        rng.finish_restore_activation();
+        rng.finish_restore_activation().unwrap();
         rng.handle_req_event(&EpollEvent::new(EventSet::IN, event.as_raw_fd() as u64));
         assert_eq!(ring.used.idx.get(), 1);
     }
@@ -349,7 +350,7 @@ mod checkpoint_tests {
         assert!(!rng.process_req());
         rng.rearm_after_snapshot();
         rng.rearm_after_snapshot();
-        rng.finish_restore_activation();
+        rng.finish_restore_activation().unwrap();
         rng.quiesce_for_snapshot();
         assert!(rng.reset());
         assert!(!rng.snapshot_quiesced);

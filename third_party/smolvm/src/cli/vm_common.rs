@@ -531,6 +531,8 @@ pub struct CreateVmParams {
     pub gpu: bool,
     /// GPU VRAM size in MiB (None = default). Ignored when gpu is false.
     pub gpu_vram_mib: Option<u32>,
+    /// virtio-gpu backend (None = virglrenderer with Venus).
+    pub gpu_mode: Option<smolvm::data::resources::GpuMode>,
     /// Enable Rosetta 2 for x86_64 binary translation on Apple Silicon.
     pub rosetta: bool,
     /// Hostnames for DNS filtering (from --allow-host / [network].allow_hosts).
@@ -762,6 +764,7 @@ impl CreateVmParams {
             nested_virt,
             gpu,
             gpu_vram_mib,
+            gpu_mode,
             rosetta,
             dns_filter_hosts,
             credential_policy,
@@ -820,6 +823,7 @@ impl CreateVmParams {
             published_sockets,
             gpu,
             gpu_vram_mib,
+            gpu_mode,
             rosetta,
             nested_virt,
             cuda,

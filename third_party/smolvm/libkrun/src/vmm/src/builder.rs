@@ -1609,6 +1609,7 @@ pub fn build_microvm(
             export_table.clone(),
             intc.clone(),
             virgl_flags,
+            gpu_2d_only_requested(),
             Box::from(&vm_resources.displays[..]),
             display_backend,
             #[cfg(target_os = "macos")]
@@ -4087,6 +4088,11 @@ fn attach_vhost_user_device(
 }
 
 #[cfg(feature = "gpu")]
+fn gpu_2d_only_requested() -> bool {
+    std::env::var("KRUN_GPU_BACKEND").as_deref() == Ok("2d")
+}
+
+#[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
 fn attach_gpu_device(
     vmm: &mut Vmm,
@@ -4094,6 +4100,7 @@ fn attach_gpu_device(
     #[cfg(not(feature = "tee"))] mut export_table: Option<ExportTable>,
     intc: IrqChip,
     virgl_flags: u32,
+    two_d_only: bool,
     displays: Box<[DisplayInfo]>,
     display_backend: DisplayBackend<'static>,
     #[cfg(any(target_os = "macos", target_os = "windows"))] map_sender: Sender<WorkerMessage>,
@@ -4103,6 +4110,7 @@ fn attach_gpu_device(
     let gpu = Arc::new(Mutex::new(
         devices::virtio::Gpu::new(
             virgl_flags,
+            two_d_only,
             displays,
             display_backend,
             #[cfg(any(target_os = "macos", target_os = "windows"))]

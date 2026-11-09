@@ -863,6 +863,7 @@ impl PackCreateCmd {
                 disk_volumes: Vec::new(),
                 block_private: None,
                 gpu_vram_mib: None,
+                gpu_mode: None,
                 rosetta: false,
                 allowed_cidrs: None,
                 egress_rules: Vec::new(),

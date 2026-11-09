@@ -12,6 +12,7 @@ use super::super::{
 use super::defs;
 use super::defs::uapi;
 use super::defs::uapi::virtio_gpu_config;
+use super::snapshot::{Gpu2DState, GpuWorkerSync};
 use super::worker::Worker;
 use crate::virtio::InterruptTransport;
 use crate::virtio::display::DisplayInfo;
@@ -27,23 +28,28 @@ pub(crate) const AVAIL_FEATURES: u64 = (1u64 << uapi::VIRTIO_F_VERSION_1)
     | (1u64 << uapi::VIRTIO_GPU_F_RESOURCE_BLOB)
     | (1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT);
 
+const AVAIL_FEATURES_2D: u64 = (1u64 << uapi::VIRTIO_F_VERSION_1) | (1u64 << uapi::VIRTIO_GPU_F_EDID);
+
 const QUEUE_SIZE: u16 = 256;
 static QUEUE_CONFIG: [QueueConfig; defs::NUM_QUEUES] =
     [QueueConfig::new(QUEUE_SIZE); defs::NUM_QUEUES];
 
-/// Snapshot of the GPU device's transport-level state for checkpoint/fork.
+/// Snapshot of the GPU device's state for checkpoint/fork.
 ///
-/// Deliberately excludes rutabaga/virgl GPU state (contexts, resources, the
-/// render-server connection) — that is live host GPU state which is not
-/// serializable (rutabaga only snapshots 2D). A fork clone re-activates the GPU
-/// device fresh, spawning its own render-server and rutabaga; this snapshot
-/// carries only what the transport needs to re-attach the guest's queues:
-/// negotiated features + per-queue ring state.
+/// A virgl/Venus device carries only its transport state: contexts, render
+/// resources and the render-server connection are live host GPU state that
+/// cannot be serialized. A device on rutabaga's 2D component also carries its
+/// resources, their pixels and the scanout assignment, so a restored guest
+/// keeps the frame it had on screen.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GpuState {
     pub acked_features: u64,
     /// Control queue then cursor queue (index order), each `None` if never set up.
     pub queues: Vec<Option<QueueState>>,
+    /// Present when the device ran on rutabaga's 2D component, which can be
+    /// snapshotted; a virgl/Venus device keeps only its transport state.
+    #[serde(default)]
+    pub two_d: Option<Gpu2DState>,
 }
 
 pub struct Gpu {
@@ -52,6 +58,7 @@ pub struct Gpu {
     pub(crate) device_state: DeviceState,
     shm_region: Option<VirtioShmRegion>,
     virgl_flags: u32,
+    two_d_only: bool,
     #[cfg(target_os = "macos")]
     map_sender: Sender<WorkerMessage>,
     export_table: Option<ExportTable>,
@@ -64,21 +71,32 @@ pub struct Gpu {
     /// drains and acks cursor commands, so ring state must be read live at
     /// snapshot time.
     cursor_queue: Option<Arc<Mutex<VirtQueue>>>,
+    worker_sync: Arc<GpuWorkerSync>,
+    captured: Option<Gpu2DState>,
+    snapshot_failure: Option<String>,
+    restored: Option<Gpu2DState>,
+    restore_expected: bool,
 }
 
 impl Gpu {
     pub fn new(
         virgl_flags: u32,
+        two_d_only: bool,
         displays: Box<[DisplayInfo]>,
         display_backend: DisplayBackend<'static>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
     ) -> super::Result<Gpu> {
         Ok(Gpu {
-            avail_features: AVAIL_FEATURES,
+            avail_features: if two_d_only {
+                AVAIL_FEATURES_2D
+            } else {
+                AVAIL_FEATURES
+            },
             acked_features: 0,
             device_state: DeviceState::Inactive,
             shm_region: None,
             virgl_flags,
+            two_d_only,
             #[cfg(target_os = "macos")]
             map_sender,
             export_table: None,
@@ -86,12 +104,16 @@ impl Gpu {
             display_backend,
             control_queue: None,
             cursor_queue: None,
+            worker_sync: Arc::new(GpuWorkerSync::new()),
+            captured: None,
+            snapshot_failure: None,
+            restored: None,
+            restore_expected: false,
         })
     }
 
-    /// Capture the device's transport state for checkpoint/fork. GPU state is
-    /// intentionally NOT captured (see [`GpuState`]) — the clone re-activates
-    /// fresh.
+    /// Capture the device's state for checkpoint/fork. A virgl/Venus device
+    /// contributes only its transport state (see [`GpuState`]).
     pub fn save_state(&self) -> GpuState {
         let control = self
             .control_queue
@@ -104,14 +126,25 @@ impl Gpu {
         GpuState {
             acked_features: self.acked_features,
             queues: vec![control, cursor],
+            two_d: self.captured.clone(),
         }
     }
 
-    /// Restore transport state onto a freshly-built device before re-activation.
-    /// Only the negotiated features are applied here; the queues are rebuilt from
-    /// the saved ring state by the transport's `restore_and_activate`.
+    /// Restore device state captured by [`Self::save_state`]. The queues are
+    /// rebuilt from the saved ring state by the transport's
+    /// `restore_and_activate`.
     pub fn restore_state(&mut self, state: &GpuState) -> Result<(), String> {
         self.acked_features = state.acked_features;
+        if let Some(two_d) = &state.two_d {
+            self.two_d_only = true;
+            self.restore_expected = true;
+            if self.is_activated() {
+                self.worker_sync.request_restore(two_d.clone())?;
+            } else {
+                self.restored = Some(two_d.clone());
+                self.worker_sync.expect_restore();
+            }
+        }
         Ok(())
     }
 
@@ -214,7 +247,11 @@ impl VirtioDevice for Gpu {
             events_read: 0,
             events_clear: 0,
             num_scanouts: self.displays.len() as u32,
-            num_capsets: super::advertised_num_capsets(),
+            num_capsets: if self.two_d_only {
+                0
+            } else {
+                super::advertised_num_capsets()
+            },
         };
 
         let config_slice = config.as_slice();
@@ -280,6 +317,9 @@ impl VirtioDevice for Gpu {
             interrupt.clone(),
             shm_region,
             self.virgl_flags,
+            self.two_d_only,
+            self.worker_sync.clone(),
+            self.restored.take(),
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
             self.export_table.take(),
@@ -291,6 +331,27 @@ impl VirtioDevice for Gpu {
         self.device_state = DeviceState::Activated(mem, interrupt);
 
         Ok(())
+    }
+
+    fn quiesce_for_snapshot(&mut self) {
+        if !self.two_d_only || !self.is_activated() {
+            return;
+        }
+        match self.worker_sync.request_snapshot() {
+            Ok(state) => self.captured = Some(state),
+            Err(error) => self.snapshot_failure = Some(error),
+        }
+    }
+
+    fn snapshot_error(&self) -> Option<&str> {
+        self.snapshot_failure.as_deref()
+    }
+
+    fn finish_restore_activation(&mut self) -> Result<(), String> {
+        if !self.restore_expected {
+            return Ok(());
+        }
+        self.worker_sync.wait_restore()
     }
 
     fn is_activated(&self) -> bool {

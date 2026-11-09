@@ -546,6 +546,10 @@ pub struct VmRecord {
     #[serde(default)]
     pub gpu_vram_mib: Option<u32>,
 
+    /// virtio-gpu backend (`--gpu-mode`). `None` is virglrenderer with Venus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mode: Option<crate::data::resources::GpuMode>,
+
     /// Enable Rosetta 2 for x86_64 binary translation on Apple Silicon.
     #[serde(default)]
     pub rosetta: Option<bool>,
@@ -984,6 +988,7 @@ impl VmRecord {
             network,
             gpu: None,
             gpu_vram_mib: None,
+            gpu_mode: None,
             nested_virt: None,
             rosetta: None,
             restart: RestartConfig::default(),
@@ -1088,6 +1093,7 @@ impl VmRecord {
             network,
             gpu: None,
             gpu_vram_mib: None,
+            gpu_mode: None,
             nested_virt: None,
             rosetta: None,
             restart,
@@ -1683,6 +1689,7 @@ impl VmRecord {
             network_backend: self.network_backend,
             gpu: self.gpu.unwrap_or(false),
             gpu_vram_mib: self.gpu_vram_mib,
+            gpu_mode: self.gpu_mode,
             cuda: self.cuda,
             nested_virt: self.nested_virt.unwrap_or(false),
             rosetta: self.rosetta.unwrap_or(false),

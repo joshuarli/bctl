@@ -1,0 +1,1464 @@
+diff --git a/src/devices/src/virtio/balloon/device.rs b/src/devices/src/virtio/balloon/device.rs
+index 730e86c..45b844c 100644
+--- a/src/devices/src/virtio/balloon/device.rs
++++ b/src/devices/src/virtio/balloon/device.rs
+@@ -904,7 +904,7 @@ impl VirtioDevice for Balloon {
+         }
+     }
+ 
+-    fn finish_restore_activation(&mut self) {
++    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
+         // Eventfd notifications do not survive a portable restore. The saved
+         // available ring can still contain reports awaiting acknowledgment.
+         self.notify_pending_queues(
+@@ -920,6 +920,7 @@ impl VirtioDevice for Balloon {
+         if self.acked_features & (1 << uapi::VIRTIO_BALLOON_F_FREE_PAGE_HINT) != 0 {
+             self.finish_free_page_hint();
+         }
++        Ok(())
+     }
+ 
+     fn avail_features(&self) -> u64 {
+@@ -1290,7 +1291,7 @@ mod checkpoint_quiescence_tests {
+         rings[FRQ_INDEX].dtable[0].len.set(4096);
+         rings[FRQ_INDEX].avail.ring[0].set(0);
+         rings[FRQ_INDEX].avail.idx.set(1);
+-        balloon.finish_restore_activation();
++        balloon.finish_restore_activation().unwrap();
+         balloon.handle_frq_event(&EpollEvent::new(EventSet::IN, event.as_raw_fd() as u64));
+         assert_eq!(rings[FRQ_INDEX].used.idx.get(), 1);
+     }
+diff --git a/src/devices/src/virtio/console/device.rs b/src/devices/src/virtio/console/device.rs
+index 3ba8a54..a01529b 100644
+--- a/src/devices/src/virtio/console/device.rs
++++ b/src/devices/src/virtio/console/device.rs
+@@ -513,7 +513,7 @@ impl VirtioDevice for Console {
+         self.replay_deferred_events();
+     }
+ 
+-    fn finish_restore_activation(&mut self) {
++    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
+         self.start_ports_after_restore();
+         if self.is_activated() {
+             // Guest queue state survives restore, host eventfd counters do not.
+@@ -527,6 +527,7 @@ impl VirtioDevice for Console {
+                 }
+             }
+         }
++        Ok(())
+     }
+ }
+ 
+@@ -648,7 +649,7 @@ mod checkpoint_boundary_tests {
+ 
+         let (mut restored, rings) = active_console(&memory);
+         restored.restore_state(&decoded).unwrap();
+-        restored.finish_restore_activation();
++        restored.finish_restore_activation().unwrap();
+         let mut manager = EventManager::new().unwrap();
+         let event = EpollEvent::new(
+             EventSet::IN,
+@@ -699,7 +700,7 @@ mod checkpoint_boundary_tests {
+             .set(size_of::<VirtioConsoleControl>() as u32);
+         ring.avail.ring[0].set(0);
+         ring.avail.idx.set(1);
+-        console.finish_restore_activation();
++        console.finish_restore_activation().unwrap();
+         assert!(console.ports[0].is_active());
+         let event = EpollEvent::new(
+             EventSet::IN,
+diff --git a/src/devices/src/virtio/device.rs b/src/devices/src/virtio/device.rs
+index 18f7778..048de9a 100644
+--- a/src/devices/src/virtio/device.rs
++++ b/src/devices/src/virtio/device.rs
+@@ -195,7 +195,9 @@ pub trait VirtioDevice: AsAny + Send {
+     /// guest has already completed that handshake and will not re-send it — so
+     /// the console must restart its port workers here, or the guest hard-spins
+     /// writing console output to a queue nobody drains. Default: no-op.
+-    fn finish_restore_activation(&mut self) {}
++    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
++        Ok(())
++    }
+ }
+ 
+ pub trait VmmExitObserver: Send {
+diff --git a/src/devices/src/virtio/gpu/device.rs b/src/devices/src/virtio/gpu/device.rs
+index 5a0018b..0ee8237 100644
+--- a/src/devices/src/virtio/gpu/device.rs
++++ b/src/devices/src/virtio/gpu/device.rs
+@@ -12,6 +12,7 @@ use super::super::{
+ use super::defs;
+ use super::defs::uapi;
+ use super::defs::uapi::virtio_gpu_config;
++use super::snapshot::{Gpu2DState, GpuWorkerSync};
+ use super::worker::Worker;
+ use crate::virtio::InterruptTransport;
+ use crate::virtio::display::DisplayInfo;
+@@ -27,23 +28,28 @@ pub(crate) const AVAIL_FEATURES: u64 = (1u64 << uapi::VIRTIO_F_VERSION_1)
+     | (1u64 << uapi::VIRTIO_GPU_F_RESOURCE_BLOB)
+     | (1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT);
+ 
++const AVAIL_FEATURES_2D: u64 = (1u64 << uapi::VIRTIO_F_VERSION_1) | (1u64 << uapi::VIRTIO_GPU_F_EDID);
++
+ const QUEUE_SIZE: u16 = 256;
+ static QUEUE_CONFIG: [QueueConfig; defs::NUM_QUEUES] =
+     [QueueConfig::new(QUEUE_SIZE); defs::NUM_QUEUES];
+ 
+-/// Snapshot of the GPU device's transport-level state for checkpoint/fork.
++/// Snapshot of the GPU device's state for checkpoint/fork.
+ ///
+-/// Deliberately excludes rutabaga/virgl GPU state (contexts, resources, the
+-/// render-server connection) — that is live host GPU state which is not
+-/// serializable (rutabaga only snapshots 2D). A fork clone re-activates the GPU
+-/// device fresh, spawning its own render-server and rutabaga; this snapshot
+-/// carries only what the transport needs to re-attach the guest's queues:
+-/// negotiated features + per-queue ring state.
++/// A virgl/Venus device carries only its transport state: contexts, render
++/// resources and the render-server connection are live host GPU state that
++/// cannot be serialized. A device on rutabaga's 2D component also carries its
++/// resources, their pixels and the scanout assignment, so a restored guest
++/// keeps the frame it had on screen.
+ #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+ pub struct GpuState {
+     pub acked_features: u64,
+     /// Control queue then cursor queue (index order), each `None` if never set up.
+     pub queues: Vec<Option<QueueState>>,
++    /// Present when the device ran on rutabaga's 2D component, which can be
++    /// snapshotted; a virgl/Venus device keeps only its transport state.
++    #[serde(default)]
++    pub two_d: Option<Gpu2DState>,
+ }
+ 
+ pub struct Gpu {
+@@ -52,6 +58,7 @@ pub struct Gpu {
+     pub(crate) device_state: DeviceState,
+     shm_region: Option<VirtioShmRegion>,
+     virgl_flags: u32,
++    two_d_only: bool,
+     #[cfg(target_os = "macos")]
+     map_sender: Sender<WorkerMessage>,
+     export_table: Option<ExportTable>,
+@@ -64,21 +71,32 @@ pub struct Gpu {
+     /// drains and acks cursor commands, so ring state must be read live at
+     /// snapshot time.
+     cursor_queue: Option<Arc<Mutex<VirtQueue>>>,
++    worker_sync: Arc<GpuWorkerSync>,
++    captured: Option<Gpu2DState>,
++    snapshot_failure: Option<String>,
++    restored: Option<Gpu2DState>,
++    restore_expected: bool,
+ }
+ 
+ impl Gpu {
+     pub fn new(
+         virgl_flags: u32,
++        two_d_only: bool,
+         displays: Box<[DisplayInfo]>,
+         display_backend: DisplayBackend<'static>,
+         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+     ) -> super::Result<Gpu> {
+         Ok(Gpu {
+-            avail_features: AVAIL_FEATURES,
++            avail_features: if two_d_only {
++                AVAIL_FEATURES_2D
++            } else {
++                AVAIL_FEATURES
++            },
+             acked_features: 0,
+             device_state: DeviceState::Inactive,
+             shm_region: None,
+             virgl_flags,
++            two_d_only,
+             #[cfg(target_os = "macos")]
+             map_sender,
+             export_table: None,
+@@ -86,12 +104,16 @@ impl Gpu {
+             display_backend,
+             control_queue: None,
+             cursor_queue: None,
++            worker_sync: Arc::new(GpuWorkerSync::new()),
++            captured: None,
++            snapshot_failure: None,
++            restored: None,
++            restore_expected: false,
+         })
+     }
+ 
+-    /// Capture the device's transport state for checkpoint/fork. GPU state is
+-    /// intentionally NOT captured (see [`GpuState`]) — the clone re-activates
+-    /// fresh.
++    /// Capture the device's state for checkpoint/fork. A virgl/Venus device
++    /// contributes only its transport state (see [`GpuState`]).
+     pub fn save_state(&self) -> GpuState {
+         let control = self
+             .control_queue
+@@ -104,14 +126,25 @@ impl Gpu {
+         GpuState {
+             acked_features: self.acked_features,
+             queues: vec![control, cursor],
++            two_d: self.captured.clone(),
+         }
+     }
+ 
+-    /// Restore transport state onto a freshly-built device before re-activation.
+-    /// Only the negotiated features are applied here; the queues are rebuilt from
+-    /// the saved ring state by the transport's `restore_and_activate`.
++    /// Restore device state captured by [`Self::save_state`]. The queues are
++    /// rebuilt from the saved ring state by the transport's
++    /// `restore_and_activate`.
+     pub fn restore_state(&mut self, state: &GpuState) -> Result<(), String> {
+         self.acked_features = state.acked_features;
++        if let Some(two_d) = &state.two_d {
++            self.two_d_only = true;
++            self.restore_expected = true;
++            if self.is_activated() {
++                self.worker_sync.request_restore(two_d.clone())?;
++            } else {
++                self.restored = Some(two_d.clone());
++                self.worker_sync.expect_restore();
++            }
++        }
+         Ok(())
+     }
+ 
+@@ -214,7 +247,11 @@ impl VirtioDevice for Gpu {
+             events_read: 0,
+             events_clear: 0,
+             num_scanouts: self.displays.len() as u32,
+-            num_capsets: super::advertised_num_capsets(),
++            num_capsets: if self.two_d_only {
++                0
++            } else {
++                super::advertised_num_capsets()
++            },
+         };
+ 
+         let config_slice = config.as_slice();
+@@ -280,6 +317,9 @@ impl VirtioDevice for Gpu {
+             interrupt.clone(),
+             shm_region,
+             self.virgl_flags,
++            self.two_d_only,
++            self.worker_sync.clone(),
++            self.restored.take(),
+             #[cfg(target_os = "macos")]
+             self.map_sender.clone(),
+             self.export_table.take(),
+@@ -293,6 +333,27 @@ impl VirtioDevice for Gpu {
+         Ok(())
+     }
+ 
++    fn quiesce_for_snapshot(&mut self) {
++        if !self.two_d_only || !self.is_activated() {
++            return;
++        }
++        match self.worker_sync.request_snapshot() {
++            Ok(state) => self.captured = Some(state),
++            Err(error) => self.snapshot_failure = Some(error),
++        }
++    }
++
++    fn snapshot_error(&self) -> Option<&str> {
++        self.snapshot_failure.as_deref()
++    }
++
++    fn finish_restore_activation(&mut self) -> Result<(), String> {
++        if !self.restore_expected {
++            return Ok(());
++        }
++        self.worker_sync.wait_restore()
++    }
++
+     fn is_activated(&self) -> bool {
+         self.device_state.is_activated()
+     }
+diff --git a/src/devices/src/virtio/gpu/mod.rs b/src/devices/src/virtio/gpu/mod.rs
+index b62083a..2d29851 100644
+--- a/src/devices/src/virtio/gpu/mod.rs
++++ b/src/devices/src/virtio/gpu/mod.rs
+@@ -2,6 +2,7 @@ mod device;
+ pub mod display;
+ mod edid;
+ mod protocol;
++mod snapshot;
+ mod virtio_gpu;
+ mod worker;
+ 
+@@ -9,6 +10,7 @@ use super::descriptor_utils::Error as DescriptorError;
+ 
+ pub use self::defs::uapi::VIRTIO_ID_GPU as TYPE_GPU;
+ pub use self::device::{Gpu, GpuState};
++pub use self::snapshot::{Gpu2DResource, Gpu2DScanout, Gpu2DState, GpuWorkerSync};
+ 
+ mod defs {
+     pub const GPU_DEV_ID: &str = "virtio_gpu";
+diff --git a/src/devices/src/virtio/gpu/snapshot.rs b/src/devices/src/virtio/gpu/snapshot.rs
+new file mode 100644
+index 0000000..64c5981
+--- /dev/null
++++ b/src/devices/src/virtio/gpu/snapshot.rs
+@@ -0,0 +1,210 @@
++use std::sync::{Condvar, Mutex, MutexGuard};
++use std::time::Duration;
++
++const WORKER_TIMEOUT: Duration = Duration::from_secs(10);
++
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct Gpu2DState {
++    pub rutabaga: Vec<u8>,
++    pub resources: Vec<Gpu2DResource>,
++    pub scanouts: Vec<Option<Gpu2DScanout>>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct Gpu2DResource {
++    pub id: u32,
++    pub width: u32,
++    pub height: u32,
++    pub format: Option<u32>,
++    pub size: u64,
++    pub shmem_offset: Option<u64>,
++    pub rutabaga_external_mapping: bool,
++    pub scanout_mask: u32,
++    pub backings: Vec<(u64, u64)>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct Gpu2DScanout {
++    pub resource_id: u32,
++    pub width: u32,
++    pub height: u32,
++    pub format: u32,
++}
++
++#[derive(Default)]
++struct WorkerState {
++    snapshot_requested: bool,
++    snapshot_reply: Option<Result<Gpu2DState, String>>,
++    restore_requested: Option<Gpu2DState>,
++    restore_reply: Option<Result<(), String>>,
++    restore_pending: bool,
++}
++
++pub struct GpuWorkerSync {
++    state: Mutex<WorkerState>,
++    changed: Condvar,
++}
++
++impl GpuWorkerSync {
++    pub fn new() -> Self {
++        Self {
++            state: Mutex::new(WorkerState::default()),
++            changed: Condvar::new(),
++        }
++    }
++
++    fn wait<'a>(
++        &self,
++        guard: MutexGuard<'a, WorkerState>,
++        done: impl Fn(&WorkerState) -> bool,
++    ) -> Result<MutexGuard<'a, WorkerState>, String> {
++        let (guard, timeout) = self
++            .changed
++            .wait_timeout_while(guard, WORKER_TIMEOUT, |state| !done(state))
++            .map_err(|_| "gpu worker state is poisoned".to_string())?;
++        if timeout.timed_out() {
++            return Err("gpu worker did not answer in time".to_string());
++        }
++        Ok(guard)
++    }
++
++    pub fn request_snapshot(&self) -> Result<Gpu2DState, String> {
++        let mut state = self
++            .state
++            .lock()
++            .map_err(|_| "gpu worker state is poisoned".to_string())?;
++        state.snapshot_requested = true;
++        state.snapshot_reply = None;
++        self.changed.notify_all();
++        let mut state = self.wait(state, |state| state.snapshot_reply.is_some())?;
++        state
++            .snapshot_reply
++            .take()
++            .expect("waited for the snapshot reply")
++    }
++
++    pub fn take_snapshot_request(&self) -> bool {
++        self.state
++            .lock()
++            .map(|mut state| std::mem::take(&mut state.snapshot_requested))
++            .unwrap_or(false)
++    }
++
++    pub fn complete_snapshot(&self, reply: Result<Gpu2DState, String>) {
++        if let Ok(mut state) = self.state.lock() {
++            state.snapshot_requested = false;
++            state.snapshot_reply = Some(reply);
++            self.changed.notify_all();
++        }
++    }
++
++    pub fn request_restore(&self, restore: Gpu2DState) -> Result<(), String> {
++        let mut state = self
++            .state
++            .lock()
++            .map_err(|_| "gpu worker state is poisoned".to_string())?;
++        state.restore_requested = Some(restore);
++        state.restore_reply = None;
++        self.changed.notify_all();
++        let mut state = self.wait(state, |state| state.restore_reply.is_some())?;
++        state
++            .restore_reply
++            .take()
++            .expect("waited for the restore reply")
++    }
++
++    pub fn take_restore_request(&self) -> Option<Gpu2DState> {
++        self.state
++            .lock()
++            .ok()
++            .and_then(|mut state| state.restore_requested.take())
++    }
++
++    pub fn complete_restore(&self, reply: Result<(), String>) {
++        if let Ok(mut state) = self.state.lock() {
++            state.restore_reply = Some(reply);
++            self.changed.notify_all();
++        }
++    }
++
++    pub fn expect_restore(&self) {
++        if let Ok(mut state) = self.state.lock() {
++            state.restore_pending = true;
++        }
++    }
++
++    pub fn wait_restore(&self) -> Result<(), String> {
++        let state = self
++            .state
++            .lock()
++            .map_err(|_| "gpu worker state is poisoned".to_string())?;
++        if !state.restore_pending {
++            return Ok(());
++        }
++        let mut state = self.wait(state, |state| state.restore_reply.is_some())?;
++        state.restore_pending = false;
++        state
++            .restore_reply
++            .take()
++            .expect("waited for the restore reply")
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::Arc;
++
++    fn sample_state() -> Gpu2DState {
++        Gpu2DState {
++            rutabaga: vec![1, 2, 3, 4],
++            resources: vec![Gpu2DResource {
++                id: 7,
++                width: 4,
++                height: 3,
++                format: Some(1),
++                size: 48,
++                shmem_offset: None,
++                rutabaga_external_mapping: false,
++                scanout_mask: 1,
++                backings: vec![(0x1000, 48)],
++            }],
++            scanouts: vec![Some(Gpu2DScanout {
++                resource_id: 7,
++                width: 4,
++                height: 3,
++                format: 1,
++            })],
++        }
++    }
++
++    #[test]
++    fn gpu_2d_state_roundtrips_through_device_snapshot_json() {
++        let state = sample_state();
++        let bytes = serde_json::to_vec(&state).unwrap();
++        let restored: Gpu2DState = serde_json::from_slice(&bytes).unwrap();
++        assert_eq!(state, restored);
++    }
++
++    #[test]
++    fn worker_sync_answers_a_snapshot_request() {
++        let sync = Arc::new(GpuWorkerSync::new());
++        let worker = sync.clone();
++        let thread = std::thread::spawn(move || {
++            while !worker.take_snapshot_request() {
++                std::thread::yield_now();
++            }
++            worker.complete_snapshot(Ok(sample_state()));
++        });
++        assert_eq!(sync.request_snapshot().unwrap(), sample_state());
++        thread.join().unwrap();
++    }
++
++    #[test]
++    fn worker_sync_reports_a_failed_restore() {
++        let sync = GpuWorkerSync::new();
++        sync.expect_restore();
++        sync.complete_restore(Err("no display".to_string()));
++        assert_eq!(sync.wait_restore(), Err("no display".to_string()));
++    }
++}
+diff --git a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+index ece2300..0c611a8 100644
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -41,12 +41,13 @@ use rutabaga_gfx::{
+ };
+ #[cfg(target_os = "macos")]
+ use utils::worker_message::WorkerMessage;
+-use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
++use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+ 
+ use super::{GpuError, Result};
+-use crate::virtio::display::DisplayInfo;
++use super::display::DisplayInfo;
++use super::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
++use super::snapshot::{Gpu2DResource, Gpu2DScanout, Gpu2DState};
+ use crate::virtio::fs::ExportTable;
+-use crate::virtio::gpu::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+ use crate::virtio::{InterruptTransport, VirtioShmRegion};
+ 
+ /// Whether virglrenderer may retire fences from a thread of its own.
+@@ -251,6 +252,7 @@ pub struct VirtioGpu {
+     /// Rate-limits the re-present to a sane cadence.
+     last_represent: Option<std::time::Instant>,
+     resources: BTreeMap<u32, VirtioGpuResource>,
++    backings: BTreeMap<u32, Vec<(u64, u64)>>,
+     fence_state: Arc<Mutex<FenceState>>,
+     #[cfg(target_os = "macos")]
+     map_sender: Sender<WorkerMessage>,
+@@ -476,6 +478,7 @@ impl VirtioGpu {
+         interrupt: InterruptTransport,
+         fence_state: Arc<Mutex<FenceState>>,
+         virgl_flags: u32,
++        two_d_only: bool,
+         export_table: Option<ExportTable>,
+     ) -> Option<Rutabaga> {
+         let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
+@@ -543,13 +546,20 @@ impl VirtioGpu {
+         // transfers, and fences — on hosts whose virglrenderer build has no
+         // GL/virgl support (e.g. the Venus-oriented macOS build) all of those
+         // fail, so the desktop path selects the 2D component explicitly.
+-        let component = if env::var("KRUN_GPU_BACKEND").as_deref() == Ok("2d") {
+-            rutabaga_gfx::RutabagaComponentType::Rutabaga2D
++        //
++        // A 2D-only device must not build a virglrenderer component at all:
++        // rutabaga's snapshot accepts only a 2D component with no capsets, and
++        // a capset mask would pull virglrenderer (and Venus) back in.
++        let (component, capset_mask) = if two_d_only {
++            (rutabaga_gfx::RutabagaComponentType::Rutabaga2D, 0)
+         } else {
+-            rutabaga_gfx::RutabagaComponentType::VirglRenderer
++            (
++                rutabaga_gfx::RutabagaComponentType::VirglRenderer,
++                super::advertised_capset_mask(),
++            )
+         };
+ 
+-        let builder = RutabagaBuilder::new(component, virgl_flags, super::advertised_capset_mask())
++        let builder = RutabagaBuilder::new(component, virgl_flags, capset_mask)
+             .set_rutabaga_channels(rutabaga_channels_opt);
+         let builder = if let Some(export_table) = export_table {
+             builder.set_export_table(export_table)
+@@ -655,6 +665,7 @@ impl VirtioGpu {
+         queue_ctl: Arc<Mutex<VirtQueue>>,
+         interrupt: InterruptTransport,
+         virgl_flags: u32,
++        two_d_only: bool,
+         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+         export_table: Option<ExportTable>,
+         displays: Box<[DisplayInfo]>,
+@@ -668,6 +679,7 @@ impl VirtioGpu {
+             interrupt.clone(),
+             fence_state.clone(),
+             virgl_flags,
++            two_d_only,
+             export_table.clone(),
+         ) {
+             Some(rutabaga) => rutabaga,
+@@ -692,6 +704,7 @@ impl VirtioGpu {
+         Self {
+             rutabaga,
+             resources: Default::default(),
++            backings: Default::default(),
+             fence_state,
+             represent_until: None,
+             last_represent: None,
+@@ -703,6 +716,149 @@ impl VirtioGpu {
+         }
+     }
+ 
++    pub fn snapshot_2d(&self) -> std::result::Result<Gpu2DState, String> {
++        let mut rutabaga = Vec::new();
++        self.rutabaga
++            .snapshot(&mut rutabaga)
++            .map_err(|error| format!("rutabaga 2D snapshot: {error}"))?;
++        let resources = self
++            .resources
++            .values()
++            .map(|resource| Gpu2DResource {
++                id: resource.id,
++                width: resource.width,
++                height: resource.height,
++                format: resource.format.map(|format| format as u32),
++                size: resource.size,
++                shmem_offset: resource.shmem_offset,
++                rutabaga_external_mapping: resource.rutabaga_external_mapping,
++                scanout_mask: resource.scanouts.0,
++                backings: self.backings.get(&resource.id).cloned().unwrap_or_default(),
++            })
++            .collect();
++        let scanouts = self
++            .scanouts
++            .iter()
++            .map(|scanout| match scanout {
++                None => Ok(None),
++                Some(scanout) if scanout.blob.is_none() => {
++                    let format = self
++                        .resources
++                        .get(&scanout.resource_id)
++                        .and_then(|resource| resource.format)
++                        .ok_or_else(|| {
++                            format!(
++                                "scanout resource {} has no known format",
++                                scanout.resource_id
++                            )
++                        })?;
++                    Ok(Some(Gpu2DScanout {
++                        resource_id: scanout.resource_id,
++                        width: scanout.width,
++                        height: scanout.height,
++                        format: format as u32,
++                    }))
++                }
++                Some(_) => Err("a blob scanout cannot be saved as 2D state".to_string()),
++            })
++            .collect::<std::result::Result<Vec<_>, String>>()?;
++        Ok(Gpu2DState {
++            rutabaga,
++            resources,
++            scanouts,
++        })
++    }
++
++    pub fn restore_2d_state(
++        &mut self,
++        state: &Gpu2DState,
++        mem: &GuestMemoryMmap,
++    ) -> std::result::Result<(), String> {
++        if !self.resources.is_empty() || !self.backings.is_empty() {
++            return Err("the 2D GPU device already holds resources".to_string());
++        }
++        self.rutabaga
++            .restore(&mut &state.rutabaga[..])
++            .map_err(|error| format!("rutabaga 2D restore: {error}"))?;
++        for saved in &state.resources {
++            let resource = VirtioGpuResource {
++                id: saved.id,
++                width: saved.width,
++                height: saved.height,
++                scanouts: AssociatedScanouts(saved.scanout_mask),
++                format: saved.format.and_then(|format| ResourceFormat::try_from(format).ok()),
++                size: saved.size,
++                shmem_offset: saved.shmem_offset,
++                rutabaga_external_mapping: saved.rutabaga_external_mapping,
++            };
++            self.resources.insert(saved.id, resource);
++            if saved.backings.is_empty() {
++                continue;
++            }
++            let vecs = saved
++                .backings
++                .iter()
++                .map(|(gpa, len)| {
++                    usize::try_from(*len)
++                        .map(|len| (GuestAddress(*gpa), len))
++                        .map_err(|_| {
++                            format!("resource {} backing does not fit this host", saved.id)
++                        })
++                })
++                .collect::<std::result::Result<Vec<_>, String>>()?;
++            let iovecs = sglist_to_rutabaga_iovecs(&vecs, mem)
++                .map_err(|error| format!("resource {} backing: {error:?}", saved.id))?;
++            self.rutabaga
++                .attach_backing(saved.id, iovecs)
++                .map_err(|error| format!("attach backing to resource {}: {error}", saved.id))?;
++            self.rutabaga
++                .transfer_write(0, saved.id, Transfer3D::new_2d(0, 0, saved.width, saved.height))
++                .map_err(|error| format!("reload resource {} from its backing: {error}", saved.id))?;
++            self.backings.insert(saved.id, saved.backings.clone());
++        }
++        for (index, saved) in state.scanouts.iter().enumerate() {
++            let Some(saved) = saved else {
++                continue;
++            };
++            let scanout_id = index as u32;
++            let resource = *self
++                .resources
++                .get(&saved.resource_id)
++                .ok_or_else(|| format!("scanout {index} names a missing resource"))?;
++            let format = ResourceFormat::try_from(saved.format)
++                .map_err(|_| format!("scanout {index} has an unsupported format"))?;
++            let Some(display) = self.displays.get(index) else {
++                continue;
++            };
++            self.display_backend
++                .configure_scanout(
++                    scanout_id,
++                    display.width,
++                    display.height,
++                    saved.width,
++                    saved.height,
++                    format,
++                )
++                .map_err(|error| format!("configure restored scanout {index}: {error}"))?;
++            self.scanouts[index] = Some(VirtioGpuScanout {
++                resource_id: saved.resource_id,
++                width: saved.width,
++                height: saved.height,
++                blob: None,
++            });
++            let (frame_id, buffer) = self
++                .display_backend
++                .alloc_frame(scanout_id)
++                .map_err(|error| format!("allocate a frame for restored scanout {index}: {error}"))?;
++            Self::read_2d_resource(&mut self.rutabaga, resource, buffer, saved.width, saved.height)
++                .map_err(|error| format!("read restored scanout {index}: {error:?}"))?;
++            self.display_backend
++                .present_frame(scanout_id, frame_id, None)
++                .map_err(|error| format!("present restored scanout {index}: {error}"))?;
++        }
++        Ok(())
++    }
++
+     // Non-public function -- no doc comment needed!
+     fn result_from_query(&mut self, resource_id: u32) -> GpuResponse {
+         match self.rutabaga.query(resource_id) {
+@@ -838,6 +994,7 @@ impl VirtioGpu {
+             self.rutabaga.unmap(resource_id)?;
+         }
+ 
++        self.backings.remove(&resource_id);
+         self.rutabaga.unref_resource(resource_id)?;
+         Ok(OkNoData)
+     }
+@@ -1371,12 +1528,19 @@ impl VirtioGpu {
+     ) -> VirtioGpuResult {
+         let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
+         self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
++        self.backings.insert(
++            resource_id,
++            vecs.iter()
++                .map(|(address, len)| (address.raw_value(), *len as u64))
++                .collect(),
++        );
+         Ok(OkNoData)
+     }
+ 
+     /// Detaches any previously attached iovecs from the resource.
+     pub fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
+         self.rutabaga.detach_backing(resource_id)?;
++        self.backings.remove(&resource_id);
+         Ok(OkNoData)
+     }
+ 
+diff --git a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+index 179a7f4..8760121 100644
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -29,6 +29,7 @@ use super::virtio_gpu::{BlobScanout, VirtioGpu};
+ use crate::virtio::display::DisplayInfo;
+ use crate::virtio::fs::ExportTable;
+ use crate::virtio::gpu::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
++use crate::virtio::gpu::snapshot::{Gpu2DState, GpuWorkerSync};
+ use crate::virtio::gpu::virtio_gpu::VirtioGpuRing;
+ use crate::virtio::{InterruptTransport, VirtioShmRegion};
+ use krun_display::DisplayBackend;
+@@ -46,6 +47,9 @@ pub struct Worker {
+     interrupt: InterruptTransport,
+     shm_region: VirtioShmRegion,
+     virgl_flags: u32,
++    two_d_only: bool,
++    sync: Arc<GpuWorkerSync>,
++    restored: Option<Gpu2DState>,
+     #[cfg(target_os = "macos")]
+     map_sender: Sender<WorkerMessage>,
+     export_table: Option<ExportTable>,
+@@ -81,6 +85,9 @@ impl Worker {
+         interrupt: InterruptTransport,
+         shm_region: VirtioShmRegion,
+         virgl_flags: u32,
++        two_d_only: bool,
++        sync: Arc<GpuWorkerSync>,
++        restored: Option<Gpu2DState>,
+         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+         export_table: Option<ExportTable>,
+         displays: Box<[DisplayInfo]>,
+@@ -113,6 +120,9 @@ impl Worker {
+             interrupt,
+             shm_region,
+             virgl_flags,
++            two_d_only,
++            sync,
++            restored,
+             #[cfg(target_os = "macos")]
+             map_sender,
+             export_table,
+@@ -140,6 +150,7 @@ impl Worker {
+             self.control_queue.clone(),
+             self.interrupt.clone(),
+             self.virgl_flags,
++            self.two_d_only,
+             #[cfg(target_os = "macos")]
+             self.map_sender.clone(),
+             self.export_table.take(),
+@@ -147,6 +158,11 @@ impl Worker {
+             self.display_backend,
+         );
+ 
++        if let Some(state) = self.restored.take() {
++            let restored = virtio_gpu.restore_2d_state(&state, &self.mem);
++            self.sync.complete_restore(restored);
++        }
++
+         #[cfg(target_os = "linux")]
+         self.work_loop_epoll(&mut virtio_gpu);
+ 
+@@ -154,6 +170,16 @@ impl Worker {
+         self.work_loop_blocking(&mut virtio_gpu);
+     }
+ 
++    fn service_sync(&self, virtio_gpu: &mut VirtioGpu) {
++        if let Some(state) = self.sync.take_restore_request() {
++            let restored = virtio_gpu.restore_2d_state(&state, &self.mem);
++            self.sync.complete_restore(restored);
++        }
++        if self.sync.take_snapshot_request() {
++            self.sync.complete_snapshot(virtio_gpu.snapshot_2d());
++        }
++    }
++
+     /// Linux GPU worker loop: uses epoll to multiplex the virtio control eventfd,
+     /// the virglrenderer global poll fd, and per-context render-server poll fds.
+     ///
+@@ -239,6 +265,7 @@ impl Worker {
+         let mut events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
+ 
+         loop {
++            self.service_sync(virtio_gpu);
+             // 1ms timeout: keeps blind-polled fallback contexts (those where
+             // virglrenderer returned -1 for the poll fd) drained each tick.
+             // SAFETY: epoll_wait with a valid epoll_fd, properly sized buffer.
+@@ -348,6 +375,7 @@ impl Worker {
+         use nix::errno::Errno;
+         use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+         loop {
++            self.service_sync(virtio_gpu);
+             let (control_ready, cursor_ready) = {
+                 // SAFETY: the raw fds outlive the poll call; self owns both
+                 // eventfds for the lifetime of the loop.
+diff --git a/src/devices/src/virtio/input/device.rs b/src/devices/src/virtio/input/device.rs
+index 61974c0..c1aeb51 100644
+--- a/src/devices/src/virtio/input/device.rs
++++ b/src/devices/src/virtio/input/device.rs
+@@ -7,10 +7,13 @@ use utils::eventfd::{EFD_NONBLOCK, EventFd};
+ use vm_memory::GuestMemoryMmap;
+ 
+ use super::super::{
+-    ActivateError, ActivateResult, DeviceQueue, DeviceState, QueueConfig, VirtioDevice,
++    ActivateError, ActivateResult, DeviceQueue, DeviceState, Queue as VirtQueue, QueueConfig,
++    VirtioDevice,
+ };
++use super::super::queue::QueueState;
+ use super::worker::InputWorker;
+ use super::{InputError, defs, defs::uapi};
++use std::sync::{Arc, Mutex};
+ 
+ use crate::virtio::InterruptTransport;
+ use crate::virtio::input::defs::config_select;
+@@ -139,6 +142,14 @@ pub struct Input {
+ 
+     worker_thread: Option<JoinHandle<()>>,
+     worker_stopfd: EventFd,
++    event_queue: Option<Arc<Mutex<VirtQueue>>>,
++    status_queue: Option<Arc<Mutex<VirtQueue>>>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct InputState {
++    pub acked_features: u64,
++    pub queues: Vec<Option<QueueState>>,
+ }
+ 
+ impl Input {
+@@ -155,12 +166,34 @@ impl Input {
+             cfg: InputConfig::new(),
+             worker_thread: None,
+             worker_stopfd: EventFd::new(EFD_NONBLOCK).map_err(InputError::EventFd)?,
++            event_queue: None,
++            status_queue: None,
+         })
+     }
+ 
+     pub fn id(&self) -> &str {
+         defs::INPUT_DEV_ID
+     }
++
++    pub fn save_state(&self) -> InputState {
++        let event = self
++            .event_queue
++            .as_ref()
++            .map(|queue| queue.lock().expect("input event queue poisoned").save_state());
++        let status = self
++            .status_queue
++            .as_ref()
++            .map(|queue| queue.lock().expect("input status queue poisoned").save_state());
++        InputState {
++            acked_features: self.acked_features,
++            queues: vec![event, status],
++        }
++    }
++
++    pub fn restore_state(&mut self, state: &InputState) -> Result<(), String> {
++        self.acked_features = state.acked_features;
++        Ok(())
++    }
+ }
+ 
+ const AVAIL_FEATURES: u64 = 1 << uapi::VIRTIO_F_VERSION_1;
+@@ -238,9 +271,24 @@ impl VirtioDevice for Input {
+             ActivateError::BadActivate
+         })?;
+ 
++        let DeviceQueue {
++            queue: event_queue,
++            event: event_evt,
++        } = event_q;
++        let DeviceQueue {
++            queue: status_queue,
++            event: status_evt,
++        } = status_q;
++        let event_queue = Arc::new(Mutex::new(event_queue));
++        let status_queue = Arc::new(Mutex::new(status_queue));
++        self.event_queue = Some(event_queue.clone());
++        self.status_queue = Some(status_queue.clone());
++
+         let worker = InputWorker::new(
+-            event_q,
+-            status_q,
++            event_evt,
++            event_queue,
++            status_evt,
++            status_queue,
+             interrupt.clone(),
+             mem.clone(),
+             self.event_provider_backend,
+diff --git a/src/devices/src/virtio/input/mod.rs b/src/devices/src/virtio/input/mod.rs
+index 8f0571a..f85d4de 100644
+--- a/src/devices/src/virtio/input/mod.rs
++++ b/src/devices/src/virtio/input/mod.rs
+@@ -3,7 +3,7 @@ pub mod passthrough;
+ mod worker;
+ 
+ pub use self::defs::uapi::VIRTIO_ID_INPUT as TYPE_INPUT;
+-pub use self::device::Input;
++pub use self::device::{Input, InputState};
+ 
+ use super::QueueConfig;
+ 
+diff --git a/src/devices/src/virtio/input/worker.rs b/src/devices/src/virtio/input/worker.rs
+index 3766b0e..3f745d9 100644
+--- a/src/devices/src/virtio/input/worker.rs
++++ b/src/devices/src/virtio/input/worker.rs
+@@ -2,14 +2,15 @@ use log::{debug, error};
+ use std::io;
+ use std::io::Read;
+ use std::os::fd::AsRawFd;
++use std::sync::{Arc, Mutex};
+ use std::thread::{self, JoinHandle};
+ use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+ use utils::eventfd::EventFd;
+ use virtio_bindings::virtio_input;
+ use vm_memory::{ByteValued, GuestMemoryMmap};
+ 
+-use super::super::DeviceQueue;
+ use crate::virtio::InterruptTransport;
++use crate::virtio::Queue as VirtQueue;
+ use crate::virtio::descriptor_utils::{Reader, Writer};
+ use krun_input::{InputEventProviderBackend, InputEventProviderInstance, InputEventsImpl};
+ 
+@@ -25,8 +26,10 @@ struct VirtioInputEvent {
+ unsafe impl ByteValued for VirtioInputEvent {}
+ 
+ pub struct InputWorker {
+-    event_q: DeviceQueue,  // Device -> Guest events
+-    status_q: DeviceQueue, // Guest -> Device events
++    event_evt: Arc<EventFd>,
++    event_q: Arc<Mutex<VirtQueue>>, // Device -> Guest events
++    status_evt: Arc<EventFd>,
++    status_q: Arc<Mutex<VirtQueue>>, // Guest -> Device events
+     interrupt: InterruptTransport,
+     mem: GuestMemoryMmap,
+     backend_wrapper: InputEventProviderBackend<'static>,
+@@ -35,15 +38,19 @@ pub struct InputWorker {
+ 
+ impl InputWorker {
+     pub fn new(
+-        event_q: DeviceQueue,
+-        status_q: DeviceQueue,
++        event_evt: Arc<EventFd>,
++        event_q: Arc<Mutex<VirtQueue>>,
++        status_evt: Arc<EventFd>,
++        status_q: Arc<Mutex<VirtQueue>>,
+         interrupt: InterruptTransport,
+         mem: GuestMemoryMmap,
+         backend: InputEventProviderBackend<'static>,
+         stop_fd: EventFd,
+     ) -> Self {
+         Self {
++            event_evt,
+             event_q,
++            status_evt,
+             status_q,
+             interrupt,
+             mem,
+@@ -96,14 +103,14 @@ impl InputWorker {
+         epoll
+             .ctl(
+                 ControlOperation::Add,
+-                self.event_q.event.as_raw_fd(),
++                self.event_evt.as_raw_fd(),
+                 &EpollEvent::new(EventSet::IN, EVENTQ),
+             )
+             .expect("Failed to add ready fd to epoll");
+         epoll
+             .ctl(
+                 ControlOperation::Add,
+-                self.status_q.event.as_raw_fd(),
++                self.status_evt.as_raw_fd(),
+                 &EpollEvent::new(EventSet::IN, STATUSQ),
+             )
+             .expect("Failed to add ready fd to epoll");
+@@ -135,12 +142,12 @@ impl InputWorker {
+                         needs_interrupt |= self.process_event_queue(&mut events_instance);
+                     }
+                     EVENTQ => {
+-                        self.event_q.event.read().unwrap();
++                        self.event_evt.read().unwrap();
+                         trace!("EVENTQ");
+                         needs_interrupt |= self.process_event_queue(&mut events_instance);
+                     }
+                     STATUSQ => {
+-                        self.status_q.event.read().unwrap();
++                        self.status_evt.read().unwrap();
+                         needs_interrupt |= self.process_status_queue();
+                     }
+                     QUIT => {
+@@ -200,8 +207,10 @@ impl InputWorker {
+     fn process_event_queue(&mut self, events_instance: &mut InputEventProviderInstance) -> bool {
+         let mut needs_interrupt = false;
+         let mem = self.mem.clone();
++        let event_queue = self.event_q.clone();
++        let mut event_q = event_queue.lock().expect("input event queue poisoned");
+ 
+-        while let Some(desc_chain) = self.event_q.queue.pop(&mem) {
++        while let Some(desc_chain) = event_q.pop(&mem) {
+             let mut writer = match Writer::new(&mem, desc_chain.clone()) {
+                 Ok(w) => w,
+                 Err(e) => {
+@@ -215,15 +224,14 @@ impl InputWorker {
+                 .unwrap();
+ 
+             if bytes_written != 0 {
+-                self.event_q
+-                    .queue
++                event_q
+                     .add_used(&mem, desc_chain.index, bytes_written as u32)
+                     .expect("TODO");
+                 needs_interrupt = true;
+             }
+ 
+             if bytes_written == 0 {
+-                self.event_q.queue.undo_pop();
++                event_q.undo_pop();
+                 break;
+             }
+ 
+@@ -251,8 +259,10 @@ impl InputWorker {
+     fn process_status_queue(&mut self) -> bool {
+         let mut needs_interrupt = false;
+         let mem = self.mem.clone();
++        let status_queue = self.status_q.clone();
++        let mut status_q = status_queue.lock().expect("input status queue poisoned");
+ 
+-        while let Some(desc_chain) = self.status_q.queue.pop(&mem) {
++        while let Some(desc_chain) = status_q.pop(&mem) {
+             let mut reader = match Reader::new(&mem, desc_chain.clone()) {
+                 Ok(r) => r,
+                 Err(e) => {
+@@ -262,8 +272,7 @@ impl InputWorker {
+             };
+             match self.read_status_virtqueue(&mut reader) {
+                 Ok(bytes_read) => {
+-                    self.status_q
+-                        .queue
++                    status_q
+                         .add_used(&mem, desc_chain.index, bytes_read as u32)
+                         .unwrap();
+                 }
+diff --git a/src/devices/src/virtio/memory/device.rs b/src/devices/src/virtio/memory/device.rs
+index cc5f9ff..c3d6dab 100644
+--- a/src/devices/src/virtio/memory/device.rs
++++ b/src/devices/src/virtio/memory/device.rs
+@@ -230,8 +230,9 @@ impl VirtioDevice for MemoryDevice {
+         self.quiesced = false;
+         self.kick();
+     }
+-    fn finish_restore_activation(&mut self) {
++    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
+         self.kick();
++        Ok(())
+     }
+     // Do not claim reset support until the event registrations and plugged
+     // memory lifecycle can both be reset safely.
+diff --git a/src/devices/src/virtio/mod.rs b/src/devices/src/virtio/mod.rs
+index 92593e4..9319b20 100644
+--- a/src/devices/src/virtio/mod.rs
++++ b/src/devices/src/virtio/mod.rs
+@@ -54,6 +54,8 @@ pub use self::device::*;
+ pub use self::fs::*;
+ #[cfg(feature = "gpu")]
+ pub use self::gpu::*;
++#[cfg(feature = "input")]
++pub use self::input::{Input, InputState, TYPE_INPUT};
+ pub use self::mmio::*;
+ #[cfg(feature = "net")]
+ pub use self::net::Net;
+diff --git a/src/devices/src/virtio/persist.rs b/src/devices/src/virtio/persist.rs
+index 6e738be..e050a62 100644
+--- a/src/devices/src/virtio/persist.rs
++++ b/src/devices/src/virtio/persist.rs
+@@ -22,6 +22,8 @@ use crate::virtio::{Console, ConsoleState, VirtioDevice};
+ use crate::virtio::{Fs, FsState};
+ #[cfg(feature = "gpu")]
+ use crate::virtio::{Gpu, gpu::GpuState};
++#[cfg(feature = "input")]
++use crate::virtio::{Input, input::InputState};
+ #[cfg(feature = "net")]
+ use crate::virtio::{Net, net::NetState};
+ #[cfg(not(feature = "tee"))]
+@@ -49,6 +51,8 @@ pub enum DeviceSnapshot {
+     Gpu(GpuState),
+     #[cfg(all(any(target_os = "linux", target_os = "macos"), not(feature = "tee")))]
+     Memory(MemoryDeviceState),
++    #[cfg(feature = "input")]
++    Input(InputState),
+ }
+ 
+ impl DeviceSnapshot {
+@@ -73,6 +77,8 @@ impl DeviceSnapshot {
+             DeviceSnapshot::Net(_) => TYPE_NET,
+             #[cfg(feature = "gpu")]
+             DeviceSnapshot::Gpu(_) => TYPE_GPU,
++            #[cfg(feature = "input")]
++            DeviceSnapshot::Input(_) => TYPE_INPUT,
+         }
+     }
+ 
+@@ -95,6 +101,8 @@ impl DeviceSnapshot {
+             DeviceSnapshot::Net(s) => s.acked_features,
+             #[cfg(feature = "gpu")]
+             DeviceSnapshot::Gpu(s) => s.acked_features,
++            #[cfg(feature = "input")]
++            DeviceSnapshot::Input(s) => s.acked_features,
+         }
+     }
+ 
+@@ -120,6 +128,8 @@ impl DeviceSnapshot {
+             DeviceSnapshot::Net(s) => vec![s.queue_rx.clone(), s.queue_tx.clone()],
+             #[cfg(feature = "gpu")]
+             DeviceSnapshot::Gpu(s) => s.queues.clone(),
++            #[cfg(feature = "input")]
++            DeviceSnapshot::Input(s) => s.queues.clone(),
+         }
+     }
+ }
+@@ -188,6 +198,10 @@ pub fn snapshot_device(dev: &dyn VirtioDevice) -> Option<DeviceSnapshot> {
+     if let Some(d) = any.downcast_ref::<Gpu>() {
+         return Some(DeviceSnapshot::Gpu(d.save_state()));
+     }
++    #[cfg(feature = "input")]
++    if let Some(d) = any.downcast_ref::<Input>() {
++        return Some(DeviceSnapshot::Input(d.save_state()));
++    }
+     None
+ }
+ 
+@@ -239,6 +253,11 @@ pub fn restore_device(dev: &mut dyn VirtioDevice, snap: &DeviceSnapshot) -> Resu
+             .downcast_mut::<Gpu>()
+             .ok_or_else(|| "snapshot/device mismatch: expected Gpu".to_string())?
+             .restore_state(s),
++        #[cfg(feature = "input")]
++        DeviceSnapshot::Input(s) => any
++            .downcast_mut::<Input>()
++            .ok_or_else(|| "snapshot/device mismatch: expected Input".to_string())?
++            .restore_state(s),
+     }
+ }
+ 
+@@ -346,6 +365,26 @@ mod tests {
+         let snap = DeviceSnapshot::Gpu(GpuState {
+             acked_features: 0xF00D,
+             queues: vec![Some(qs.clone()), None],
++            two_d: Some(crate::virtio::gpu::Gpu2DState {
++                rutabaga: vec![9, 8, 7],
++                resources: vec![crate::virtio::gpu::Gpu2DResource {
++                    id: 3,
++                    width: 2,
++                    height: 1,
++                    format: Some(1),
++                    size: 8,
++                    shmem_offset: None,
++                    rutabaga_external_mapping: false,
++                    scanout_mask: 1,
++                    backings: vec![(0x2000, 8)],
++                }],
++                scanouts: vec![Some(crate::virtio::gpu::Gpu2DScanout {
++                    resource_id: 3,
++                    width: 2,
++                    height: 1,
++                    format: 1,
++                })],
++            }),
+         });
+ 
+         assert_eq!(snap.device_type(), TYPE_GPU);
+diff --git a/src/devices/src/virtio/rng/device.rs b/src/devices/src/virtio/rng/device.rs
+index 3a0ef0c..4d8af39 100644
+--- a/src/devices/src/virtio/rng/device.rs
++++ b/src/devices/src/virtio/rng/device.rs
+@@ -150,10 +150,11 @@ impl VirtioDevice for Rng {
+         }
+     }
+ 
+-    fn finish_restore_activation(&mut self) {
++    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
+         // Queue indices survive restore; the host eventfd counter does not.
+         // Check the restored queue even when no new guest kick arrives.
+         self.notify_pending_request();
++        Ok(())
+     }
+ 
+     fn avail_features(&self) -> u64 {
+@@ -337,7 +338,7 @@ mod checkpoint_tests {
+             event.read().unwrap_err().kind(),
+             std::io::ErrorKind::WouldBlock
+         );
+-        rng.finish_restore_activation();
++        rng.finish_restore_activation().unwrap();
+         rng.handle_req_event(&EpollEvent::new(EventSet::IN, event.as_raw_fd() as u64));
+         assert_eq!(ring.used.idx.get(), 1);
+     }
+@@ -349,7 +350,7 @@ mod checkpoint_tests {
+         assert!(!rng.process_req());
+         rng.rearm_after_snapshot();
+         rng.rearm_after_snapshot();
+-        rng.finish_restore_activation();
++        rng.finish_restore_activation().unwrap();
+         rng.quiesce_for_snapshot();
+         assert!(rng.reset());
+         assert!(!rng.snapshot_quiesced);
+diff --git a/src/devices/src/virtio/vsock/device.rs b/src/devices/src/virtio/vsock/device.rs
+index aac6a4b..9f7db3b 100644
+--- a/src/devices/src/virtio/vsock/device.rs
++++ b/src/devices/src/virtio/vsock/device.rs
+@@ -390,7 +390,7 @@ impl VirtioDevice for Vsock {
+     /// Fork-clone restore: the muxer worker + epoll are live now, so rebuild the
+     /// inbound-port-forward listeners staged by `restore_state` against this
+     /// clone's own host port map. A no-op for a normal boot (none staged).
+-    fn finish_restore_activation(&mut self) {
++    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
+         if !self.pending_restore_listeners.is_empty() {
+             let listeners = std::mem::take(&mut self.pending_restore_listeners);
+             self.muxer.restore_listeners(listeners);
+@@ -403,6 +403,7 @@ impl VirtioDevice for Vsock {
+                 self.muxer.release_rx_after_transport_reset();
+             }
+         }
++        Ok(())
+     }
+ 
+     fn acked_features(&self) -> u64 {
+diff --git a/src/rutabaga_gfx/src/rutabaga_core.rs b/src/rutabaga_gfx/src/rutabaga_core.rs
+index 8a4b5ff..d5a7cef 100644
+--- a/src/rutabaga_gfx/src/rutabaga_core.rs
++++ b/src/rutabaga_gfx/src/rutabaga_core.rs
+@@ -470,7 +470,7 @@ impl Rutabaga {
+             .resources
+             .into_iter()
+             .map(|(i, s)| {
+-                let size = u64::from(s.width * s.height * 4);
++                let size = u64::from(s.width) * u64::from(s.height) * 4;
+                 let r = RutabagaResource {
+                     resource_id: s.resource_id,
+                     handle: None,
+@@ -1467,5 +1467,57 @@ mod tests {
+         );
+         // NOTE: We attached an backing iovec, but it should be gone post-restore.
+         assert!(rutabaga_resource.backing_iovecs.is_none());
++        assert_eq!(
++            rutabaga_resource.info_2d.as_ref().unwrap().host_mem,
++            vec![0; 100 * 200 * 4]
++        );
++    }
++
++    #[test]
++    fn snapshot_2d_leaves_pixels_in_the_guest_backing() {
++        use std::ffi::c_void;
++
++        let resource_id = 7;
++        let resource_create_3d = ResourceCreate3D {
++            target: RUTABAGA_PIPE_TEXTURE_2D,
++            format: 1,
++            bind: RUTABAGA_PIPE_BIND_RENDER_TARGET,
++            width: 1280,
++            height: 800,
++            depth: 1,
++            array_size: 1,
++            last_level: 0,
++            nr_samples: 0,
++            flags: 0,
++        };
++        let pixels: Vec<u8> = (0..1280 * 800 * 4).map(|i| i as u8).collect();
++        let backing = || {
++            vec![RutabagaIovec {
++                base: pixels.as_ptr() as *mut c_void,
++                len: pixels.len(),
++            }]
++        };
++
++        let mut rutabaga1 = new_2d();
++        rutabaga1
++            .resource_create_3d(resource_id, resource_create_3d)
++            .unwrap();
++        rutabaga1.attach_backing(resource_id, backing()).unwrap();
++        rutabaga1
++            .transfer_write(0, resource_id, Transfer3D::new_2d(0, 0, 1280, 800))
++            .unwrap();
++
++        let mut buffer = std::io::Cursor::new(Vec::new());
++        rutabaga1.snapshot(&mut buffer).unwrap();
++        assert!(buffer.get_ref().len() < 4096);
++
++        let mut rutabaga2 = new_2d();
++        rutabaga2.restore(&mut &buffer.get_ref()[..]).unwrap();
++        rutabaga2.attach_backing(resource_id, backing()).unwrap();
++        rutabaga2
++            .transfer_write(0, resource_id, Transfer3D::new_2d(0, 0, 1280, 800))
++            .unwrap();
++        let restored = rutabaga2.resources.get(&resource_id).unwrap();
++        assert!(restored.info_2d.as_ref().unwrap().host_mem == pixels);
+     }
+ }
+diff --git a/src/vmm/src/builder.rs b/src/vmm/src/builder.rs
+index d698b47..d901105 100644
+--- a/src/vmm/src/builder.rs
++++ b/src/vmm/src/builder.rs
+@@ -1609,6 +1609,7 @@ pub fn build_microvm(
+             export_table.clone(),
+             intc.clone(),
+             virgl_flags,
++            gpu_2d_only_requested(),
+             Box::from(&vm_resources.displays[..]),
+             display_backend,
+             #[cfg(target_os = "macos")]
+@@ -4086,6 +4087,11 @@ fn attach_vhost_user_device(
+     Ok(())
+ }
+ 
++#[cfg(feature = "gpu")]
++fn gpu_2d_only_requested() -> bool {
++    std::env::var("KRUN_GPU_BACKEND").as_deref() == Ok("2d")
++}
++
+ #[cfg(feature = "gpu")]
+ #[allow(clippy::too_many_arguments)]
+ fn attach_gpu_device(
+@@ -4094,6 +4100,7 @@ fn attach_gpu_device(
+     #[cfg(not(feature = "tee"))] mut export_table: Option<ExportTable>,
+     intc: IrqChip,
+     virgl_flags: u32,
++    two_d_only: bool,
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackend<'static>,
+     #[cfg(any(target_os = "macos", target_os = "windows"))] map_sender: Sender<WorkerMessage>,
+@@ -4103,6 +4110,7 @@ fn attach_gpu_device(
+     let gpu = Arc::new(Mutex::new(
+         devices::virtio::Gpu::new(
+             virgl_flags,
++            two_d_only,
+             displays,
+             display_backend,
+             #[cfg(any(target_os = "macos", target_os = "windows"))]
+diff --git a/src/vmm/src/device_manager/hvf/mmio.rs b/src/vmm/src/device_manager/hvf/mmio.rs
+index aa74afc..aee01ea 100644
+--- a/src/vmm/src/device_manager/hvf/mmio.rs
++++ b/src/vmm/src/device_manager/hvf/mmio.rs
+@@ -360,7 +360,7 @@ impl MMIODeviceManager {
+                 // Devices that defer worker startup past `activate` (the console
+                 // starts each port's worker only on the guest's PORT_OPEN, which
+                 // a restored guest never re-sends) restart their workers here.
+-                t.locked_device().finish_restore_activation();
++                t.locked_device().finish_restore_activation()?;
+                 used[i] = true;
+                 applied = true;
+                 break;
+diff --git a/src/vmm/src/device_manager/kvm/mmio.rs b/src/vmm/src/device_manager/kvm/mmio.rs
+index 1b2df67..f00cf83 100644
+--- a/src/vmm/src/device_manager/kvm/mmio.rs
++++ b/src/vmm/src/device_manager/kvm/mmio.rs
+@@ -467,7 +467,7 @@ impl MMIODeviceManager {
+                 // Devices that defer worker startup past `activate` (the console
+                 // starts each port's worker only on the guest's PORT_OPEN, which
+                 // a restored guest never re-sends) restart their workers here.
+-                t.locked_device().finish_restore_activation();
++                t.locked_device().finish_restore_activation()?;
+                 used[i] = true;
+                 applied = true;
+                 break;
+diff --git a/src/vmm/src/device_manager/whp/mmio.rs b/src/vmm/src/device_manager/whp/mmio.rs
+index fd5830f..369f147 100644
+--- a/src/vmm/src/device_manager/whp/mmio.rs
++++ b/src/vmm/src/device_manager/whp/mmio.rs
+@@ -283,7 +283,7 @@ impl MMIODeviceManager {
+                 t.set_restored_interrupt_status(
+                     state.interrupt_status.get(index).copied().unwrap_or(0),
+                 );
+-                t.locked_device().finish_restore_activation();
++                t.locked_device().finish_restore_activation()?;
+                 used[i] = true;
+                 applied = true;
+                 break;
+diff --git a/src/vmm/src/snapshot.rs b/src/vmm/src/snapshot.rs
+index 9c8181f..1ac2289 100644
+--- a/src/vmm/src/snapshot.rs
++++ b/src/vmm/src/snapshot.rs
+@@ -34,7 +34,7 @@ use crate::GuestMemoryMmap;
+ pub const SNAPSHOT_MAGIC: u64 = 0x534d4f4c534e4150;
+ /// On-disk snapshot format version. Bumped on any layout change (no backward
+ /// compatibility is maintained — alpha project).
+-pub const SNAPSHOT_VERSION: u32 = 1;
++pub const SNAPSHOT_VERSION: u32 = 2;
+ 
+ /// Describes one guest-RAM region in a memory snapshot: where it maps in guest
+ /// physical address space and how many bytes it holds. The region bytes follow

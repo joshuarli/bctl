@@ -1902,6 +1902,7 @@ pub fn resource_spec_to_vm_resources(spec: &ResourceSpec, network: bool) -> VmRe
         // inherit the default. Add to ResourceSpec if the API ever
         // needs to expose it.
         gpu_vram_mib: None,
+        gpu_mode: None,
         cuda: spec.cuda.unwrap_or(false),
         nested_virt: spec.nested_virt.unwrap_or(false),
         rosetta: false,

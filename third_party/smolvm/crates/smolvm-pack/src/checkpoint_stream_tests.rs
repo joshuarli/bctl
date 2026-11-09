@@ -360,3 +360,13 @@ fn fragmented_ram_is_archived_as_whole_aligned_blocks() {
     assert_eq!(restored, expected);
     assert_eq!(std::fs::read(&copy).unwrap(), expected);
 }
+
+#[test]
+fn a_runtime_refusal_reports_its_own_reason() {
+    let mut input: &[u8] = b"ERR EIO checkpoint stream metadata exceeds bounds\n";
+    let error = CheckpointStream::read(&mut input, 8192).err().unwrap();
+    assert_eq!(
+        error.to_string(),
+        "ERR EIO checkpoint stream metadata exceeds bounds"
+    );
+}

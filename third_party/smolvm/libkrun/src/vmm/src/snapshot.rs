@@ -34,7 +34,7 @@ use crate::GuestMemoryMmap;
 pub const SNAPSHOT_MAGIC: u64 = 0x534d4f4c534e4150;
 /// On-disk snapshot format version. Bumped on any layout change (no backward
 /// compatibility is maintained — alpha project).
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Describes one guest-RAM region in a memory snapshot: where it maps in guest
 /// physical address space and how many bytes it holds. The region bytes follow

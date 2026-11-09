@@ -7,10 +7,13 @@ use utils::eventfd::{EFD_NONBLOCK, EventFd};
 use vm_memory::GuestMemoryMmap;
 
 use super::super::{
-    ActivateError, ActivateResult, DeviceQueue, DeviceState, QueueConfig, VirtioDevice,
+    ActivateError, ActivateResult, DeviceQueue, DeviceState, Queue as VirtQueue, QueueConfig,
+    VirtioDevice,
 };
+use super::super::queue::QueueState;
 use super::worker::InputWorker;
 use super::{InputError, defs, defs::uapi};
+use std::sync::{Arc, Mutex};
 
 use crate::virtio::InterruptTransport;
 use crate::virtio::input::defs::config_select;
@@ -139,6 +142,14 @@ pub struct Input {
 
     worker_thread: Option<JoinHandle<()>>,
     worker_stopfd: EventFd,
+    event_queue: Option<Arc<Mutex<VirtQueue>>>,
+    status_queue: Option<Arc<Mutex<VirtQueue>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InputState {
+    pub acked_features: u64,
+    pub queues: Vec<Option<QueueState>>,
 }
 
 impl Input {
@@ -155,11 +166,33 @@ impl Input {
             cfg: InputConfig::new(),
             worker_thread: None,
             worker_stopfd: EventFd::new(EFD_NONBLOCK).map_err(InputError::EventFd)?,
+            event_queue: None,
+            status_queue: None,
         })
     }
 
     pub fn id(&self) -> &str {
         defs::INPUT_DEV_ID
+    }
+
+    pub fn save_state(&self) -> InputState {
+        let event = self
+            .event_queue
+            .as_ref()
+            .map(|queue| queue.lock().expect("input event queue poisoned").save_state());
+        let status = self
+            .status_queue
+            .as_ref()
+            .map(|queue| queue.lock().expect("input status queue poisoned").save_state());
+        InputState {
+            acked_features: self.acked_features,
+            queues: vec![event, status],
+        }
+    }
+
+    pub fn restore_state(&mut self, state: &InputState) -> Result<(), String> {
+        self.acked_features = state.acked_features;
+        Ok(())
     }
 }
 
@@ -238,9 +271,24 @@ impl VirtioDevice for Input {
             ActivateError::BadActivate
         })?;
 
+        let DeviceQueue {
+            queue: event_queue,
+            event: event_evt,
+        } = event_q;
+        let DeviceQueue {
+            queue: status_queue,
+            event: status_evt,
+        } = status_q;
+        let event_queue = Arc::new(Mutex::new(event_queue));
+        let status_queue = Arc::new(Mutex::new(status_queue));
+        self.event_queue = Some(event_queue.clone());
+        self.status_queue = Some(status_queue.clone());
+
         let worker = InputWorker::new(
-            event_q,
-            status_q,
+            event_evt,
+            event_queue,
+            status_evt,
+            status_queue,
             interrupt.clone(),
             mem.clone(),
             self.event_provider_backend,

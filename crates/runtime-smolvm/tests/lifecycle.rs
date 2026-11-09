@@ -76,3 +76,30 @@ fn a_failed_launch_reports_smolvms_error_code() {
         other => panic!("expected a smolvm error, got {other:?}"),
     }
 }
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+fn a_paused_session_resumes_ready_and_a_paused_machine_can_be_removed() {
+    let runtime = SmolVm::new(workspace().join(".work/runtime/smolvm/smolvm"));
+    let session = SessionName::new(&format!("pause-{}", std::process::id())).unwrap();
+    let spec = spec(&session, 1);
+    let name = spec.machine.to_string();
+    let running = |runtime: &SmolVm| runtime.list().unwrap().into_iter().find(|m| m.name == name).map(|m| m.running);
+    runtime.launch(&spec).unwrap();
+    let outcome = (|| {
+        runtime.wait_ready(&spec.machine, spec.endpoints, &spec.cdp_socket, Duration::from_secs(120), |_| {})?;
+        runtime.pause(&spec.machine)?;
+        let paused = running(&runtime);
+        runtime.resume(&spec)?;
+        let resumed = runtime.wait_ready(&spec.machine, spec.endpoints, &spec.cdp_socket, Duration::from_secs(30), |_| {})?;
+        runtime.pause(&spec.machine)?;
+        Ok::<_, RuntimeError>((paused, resumed))
+    })();
+    let removed = runtime.remove(&spec.machine);
+
+    let (paused, resumed) = outcome.unwrap();
+    assert_eq!(paused, Some(false));
+    assert_eq!(resumed.input, InputSupport::Interactive);
+    assert_eq!(removed, Ok(()));
+    assert_eq!(running(&runtime), None);
+}

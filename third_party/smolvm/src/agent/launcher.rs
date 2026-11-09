@@ -955,6 +955,7 @@ pub fn launch_agent_vm(config: &LaunchConfig<'_>) -> Result<()> {
         // Requires libkrun built with `gpu` feature and host virglrenderer.
         // On macOS, also requires MoltenVK (Vulkan → Metal translation).
         if resources.gpu {
+            super::apply_gpu_mode(resources.gpu_mode);
             let virgl_flags = super::gpu_virgl_flags();
             // Size the GPU shared-memory region. Caller may override
             // via `--gpu-vram <MiB>` (CLI) or `gpu_vram = N` (Smolfile);

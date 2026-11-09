@@ -283,7 +283,7 @@ impl MMIODeviceManager {
                 t.set_restored_interrupt_status(
                     state.interrupt_status.get(index).copied().unwrap_or(0),
                 );
-                t.locked_device().finish_restore_activation();
+                t.locked_device().finish_restore_activation()?;
                 used[i] = true;
                 applied = true;
                 break;

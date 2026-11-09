@@ -62,7 +62,30 @@ are supplied explicitly because a crypto-less rcgen cannot derive them.
 feature hard-enables ring, and the SHA-256 call sites use the tree's existing
 `sha2` instead of ring's digest.
 
-Both patches are applied in the order `UPSTREAM.lock` lists them.
+`libkrun-0002-gpu-2d-snapshot.patch` makes a virtio-gpu device that runs on
+rutabaga's 2D component alone checkpointable. `KRUN_GPU_BACKEND=2d` now builds
+no virglrenderer component and advertises no capsets, so the device is a 2D KMS
+scanout and nothing else. Its device state carries the 2D resources, their
+guest backing ranges and the scanout assignment, but no pixels: a restore
+re-attaches each backing, reloads the resource from it (the backing in the
+checkpointed guest RAM holds everything the guest ever transferred), reconfigures
+the host scanout and presents the frame before the guest runs. Saving pixels
+instead put every framebuffer in the device state and overran the checkpoint
+stream's 16 MiB state limit after the first resume. The patch also gives virtio-input a device state
+(negotiated features and both queue rings), so a restored guest keeps its
+event and status queues instead of finding them silently reset.
+
+`smolvm-0002-pause-2d-sessions.patch` records the GPU backend on the machine
+(`--gpu-mode 2d|3d`), selects it at every launch, and admits a paused session
+with a 2D GPU, exposed Unix sockets, and host-backed image layers. An exposed
+socket's listener is re-created at the same host path on resume, because every
+launch from the machine record now carries the record's published sockets,
+Docker socket and CUDA flag (resume used to drop them); its live connections
+are dropped. A runtime refusal on the checkpoint stream is reported with its own
+reason instead of as an invalid stream. A host-backed image archive is admitted only under its
+recorded content digest, which resume re-checks and refuses with the expected
+and actual digests if the archive changed. Virgl/Venus GPUs, `local-dir:` image
+layers and the Docker socket stay refused.
 
 The importer applies every patch to freshly imported source, so a patch that no
 longer matches the tip fails the import, not a later build. `runtime/build.sh`
@@ -121,9 +144,8 @@ brings its own userland.
     libvirglrenderer.1.dylib
     libMoltenVK.dylib
     libepoxy.0.dylib
-  templates/
-    storage-template.ext4.zst
-    overlay-template.ext4.zst
+  storage-template.ext4.zst
+  overlay-template.ext4.zst
 ```
 
 The wrapper is upstream's `scripts/smolvm-wrapper.sh`; it sets

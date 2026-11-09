@@ -730,6 +730,9 @@ pub struct CheckpointSettings {
     /// Seconds after boot before health checks start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_startup_grace_secs: Option<u64>,
+    /// virtio-gpu shared-memory window the captured guest had, in MiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_vram_mib: Option<u32>,
 }
 
 impl CheckpointSettings {

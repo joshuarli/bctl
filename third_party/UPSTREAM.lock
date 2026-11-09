@@ -1,9 +1,9 @@
 [import]
 format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
-source_identity = "sha256:26ee7a90ebee27fcf5d23c715715ee4eabc83f0a3217a49db214717cbae64351"
+source_identity = "sha256:c3f9a7d99604aa56a3562cec1000e17466a7aefd582a57aecc82196a655c1597"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -39,3 +39,13 @@ sha256 = "80cbf562d19aa957d675e3fb6700c5c31b2d1d01a23069877020bfbe01894714"
 path = "smolvm-0001-graviola-only-crypto.patch"
 tree = "."
 sha256 = "7e59e0f19463ef755124f0715a91edc1f29feff4bf865eb4c33f254e0896c2df"
+
+[[patch]]
+path = "libkrun-0002-gpu-2d-snapshot.patch"
+tree = "libkrun"
+sha256 = "f24061e55c716f824a436ea3b4d6e96ee6e5fd349ecb29153e534d993064b05e"
+
+[[patch]]
+path = "smolvm-0002-pause-2d-sessions.patch"
+tree = "."
+sha256 = "bfb6440fc8540e258983e3d5a46a41bd65320ecc483d6d9913c29ff1f885fd69"

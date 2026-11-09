@@ -514,6 +514,7 @@ impl ExportVm {
                 gpu: false,
                 cuda: false,
                 gpu_vram_mib: None,
+                gpu_mode: None,
                 nested_virt: false,
                 rosetta: false,
                 storage_gib: Some(helper_storage_gib),

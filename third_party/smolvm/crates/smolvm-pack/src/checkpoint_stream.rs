@@ -23,11 +23,23 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid checkpoint stream")
 }
 
+fn runtime_refusal(start: &[u8], source: &mut dyn Read) -> io::Error {
+    let mut line = start.to_vec();
+    let mut rest = Vec::new();
+    let _ = source.take(4096).read_to_end(&mut rest);
+    line.extend_from_slice(&rest);
+    let end = line.iter().position(|&b| b == b'\n').unwrap_or(line.len());
+    io::Error::other(String::from_utf8_lossy(&line[..end]).into_owned())
+}
+
 impl<'a> CheckpointStream<'a> {
     /// Read bounded metadata and a validated sparse map from the local runtime.
     pub fn read(source: &'a mut dyn Read, max_memory_bytes: u64) -> io::Result<Self> {
         let mut header = [0; 16];
         source.read_exact(&mut header)?;
+        if header.starts_with(b"ERR ") {
+            return Err(runtime_refusal(&header, source));
+        }
         let state_len = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
         let layout_len = u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize;
         if &header[..8] != b"SMOLCKS1"

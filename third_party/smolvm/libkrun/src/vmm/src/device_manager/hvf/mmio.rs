@@ -360,7 +360,7 @@ impl MMIODeviceManager {
                 // Devices that defer worker startup past `activate` (the console
                 // starts each port's worker only on the guest's PORT_OPEN, which
                 // a restored guest never re-sends) restart their workers here.
-                t.locked_device().finish_restore_activation();
+                t.locked_device().finish_restore_activation()?;
                 used[i] = true;
                 applied = true;
                 break;

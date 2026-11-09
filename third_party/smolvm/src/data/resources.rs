@@ -149,6 +149,35 @@ pub enum DiskDurability {
     Deferred,
 }
 
+/// Which virtio-gpu backend a GPU machine runs.
+///
+/// `3d` is the historical device: virglrenderer with Venus/Vulkan. `2d` runs
+/// rutabaga's CPU 2D component only, which is all a software-rendered
+/// compositor needs and the only GPU state a checkpoint can save.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::ValueEnum,
+    utoipa::ToSchema,
+)]
+pub enum GpuMode {
+    /// virglrenderer with Venus/Vulkan.
+    #[default]
+    #[serde(rename = "3d")]
+    #[value(name = "3d")]
+    ThreeD,
+    /// rutabaga's CPU 2D component.
+    #[serde(rename = "2d")]
+    #[value(name = "2d")]
+    TwoD,
+}
+
 /// Resources available to a micro vm.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VmResources {
@@ -168,6 +197,9 @@ pub struct VmResources {
     /// `None` → use `DEFAULT_GPU_VRAM_MIB`.
     #[serde(default)]
     pub gpu_vram_mib: Option<u32>,
+    /// virtio-gpu backend. `None` is the default, virglrenderer with Venus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mode: Option<GpuMode>,
     /// Remote the guest's CUDA Driver-API calls to the host NVIDIA GPU over vsock
     /// (distinct from `gpu`, which is Vulkan/virtio-gpu). When set, the launcher
     /// starts a per-VM CUDA host server and bridges it to the guest's CUDA shims,
@@ -301,7 +333,18 @@ impl VmResources {
                 "overlay disk size must be greater than 0 GiB",
             ));
         }
+        if self.gpu_mode.is_some() && !self.gpu {
+            return Err(crate::Error::config(
+                "validate resources",
+                "a GPU mode requires the GPU to be enabled",
+            ));
+        }
         Ok(())
+    }
+
+    /// Whether this machine runs virtio-gpu with only rutabaga's 2D component.
+    pub fn two_d_gpu(&self) -> bool {
+        self.gpu && self.gpu_mode == Some(GpuMode::TwoD)
     }
 }
 
@@ -314,6 +357,7 @@ impl Default for VmResources {
             network_backend: None,
             gpu: false,
             gpu_vram_mib: None,
+            gpu_mode: None,
             cuda: false,
             nested_virt: false,
             rosetta: false,

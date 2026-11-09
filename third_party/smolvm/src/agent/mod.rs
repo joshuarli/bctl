@@ -144,6 +144,21 @@ pub fn parse_display_size(raw: Option<&str>) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// Select the virtio-gpu backend for this launch.
+///
+/// libkrun reads `KRUN_GPU_BACKEND` when it builds the GPU device. Setting it
+/// from the machine's recorded mode keeps a resumed machine on the device its
+/// checkpoint was captured with, and stops the display default below from
+/// turning an explicit 3D machine into a 2D one.
+pub fn apply_gpu_mode(mode: Option<crate::data::resources::GpuMode>) {
+    use crate::data::resources::GpuMode;
+    match mode {
+        Some(GpuMode::TwoD) => std::env::set_var("KRUN_GPU_BACKEND", "2d"),
+        Some(GpuMode::ThreeD) => std::env::set_var("KRUN_GPU_BACKEND", "3d"),
+        None => {}
+    }
+}
+
 /// Default `KRUN_GPU_BACKEND=2d` on macOS when a display is requested.
 ///
 /// The virglrenderer bundled on macOS is Venus-only: it cannot create the

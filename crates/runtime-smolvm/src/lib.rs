@@ -202,7 +202,7 @@ impl SmolVm {
         let socket = format!("{GUEST_CDP_SOCKET}:{}", spec.cdp_socket.to_string_lossy());
         let memory = spec.memory_mib.to_string();
         let cpus = spec.cpus.to_string();
-        let mut create = vec!["machine", "create", "--name", &name, "--gpu", "--mem", &memory, "--cpus", &cpus, "--expose-socket", &socket, "--block-private", "--image", &image];
+        let mut create = vec!["machine", "create", "--name", &name, "--gpu", "--gpu-mode", "2d", "--mem", &memory, "--cpus", &cpus, "--expose-socket", &socket, "--block-private", "--image", &image];
         let volume = spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy()));
         if let Some(volume) = &volume {
             create.extend(["-v", volume]);
@@ -211,31 +211,34 @@ impl SmolVm {
             create.extend(["--allow-private", range]);
         }
         self.run("machine create", &create, &[])?;
-        let env = [
-            ("SMOLVM_DISPLAY", format!("{}x{}", spec.display.0, spec.display.1)),
-            ("SMOLVM_VNC", format!("127.0.0.1:{}", spec.endpoints.vnc_port)),
-        ];
-        if let Err(error) = self.run("machine start", &["machine", "start", "--name", &name], &env) {
+        if let Err(error) = self.run("machine start", &["machine", "start", "--name", &name], &display_env(spec)) {
             let _ = self.remove(&spec.machine);
             return Err(error);
         }
         Ok(())
     }
 
-    /// Stops and deletes the VM; a machine that is already gone is not an error.
+    /// Checkpoints the running VM in place and stops its vCPUs; the browser's state lives in the checkpoint.
+    pub fn pause(&self, machine: &MachineName) -> Result<(), RuntimeError> {
+        let name = machine.to_string();
+        self.run("machine pause", &["machine", "pause", "--name", &name], &[]).map(drop)
+    }
+
+    /// Restores a paused VM. The restored devices must match the checkpoint, so the display and VNC endpoint are
+    /// the ones the VM was launched with.
+    pub fn resume(&self, spec: &LaunchSpec) -> Result<(), RuntimeError> {
+        let name = spec.machine.to_string();
+        self.run("machine resume", &["machine", "resume", "--name", &name], &display_env(spec)).map(drop)
+    }
+
+    /// Stops and deletes the VM, running or paused; a machine that is already gone is not an error.
     pub fn remove(&self, machine: &MachineName) -> Result<(), RuntimeError> {
         let name = machine.to_string();
-        for (operation, args) in [
-            ("machine stop", vec!["machine", "stop", "--name", &name]),
-            ("machine delete", vec!["machine", "delete", "--name", &name, "-f"]),
-        ] {
-            match self.run(operation, &args, &[]) {
-                Ok(_) => {}
-                Err(RuntimeError::Smolvm { code, .. }) if code == "NOT_FOUND" => return Ok(()),
-                Err(e) => return Err(e),
-            }
+        match self.run("machine delete", &["machine", "delete", "--name", &name, "-f"], &[]) {
+            Ok(_) => Ok(()),
+            Err(RuntimeError::Smolvm { code, .. }) if code == "NOT_FOUND" => Ok(()),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 
     pub fn guest_check(&self, machine: &MachineName) -> Result<GuestReport, RuntimeError> {
@@ -337,6 +340,13 @@ fn version_browser(mut stream: impl Read + Write, host: &str) -> Option<String> 
             return json::from_str::<Version>(&body[..length]).ok().map(|v| v.browser);
         }
     }
+}
+
+fn display_env(spec: &LaunchSpec) -> [(&'static str, String); 2] {
+    [
+        ("SMOLVM_DISPLAY", format!("{}x{}", spec.display.0, spec.display.1)),
+        ("SMOLVM_VNC", format!("127.0.0.1:{}", spec.endpoints.vnc_port)),
+    ]
 }
 
 #[cfg(test)]

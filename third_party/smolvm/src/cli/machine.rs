@@ -1920,6 +1920,7 @@ impl RunCmd {
             gpu: self.gpu || params.gpu,
             nested_virt: self.nested_virt,
             gpu_vram_mib: self.gpu_vram_mib.or(params.gpu_vram_mib),
+            gpu_mode: params.gpu_mode,
             cuda: self.cuda || params.cuda,
             rosetta: self.rosetta || params.rosetta,
             storage_gib: params.storage_gb,
@@ -4689,6 +4690,12 @@ pub struct CreateCmd {
     #[arg(long)]
     pub gpu: bool,
 
+    /// virtio-gpu backend: `3d` (virglrenderer with Venus, the default) or
+    /// `2d` (rutabaga's CPU 2D component only). A paused 2D machine keeps its
+    /// framebuffer; a 3D machine cannot be paused.
+    #[arg(long = "gpu-mode", value_name = "MODE")]
+    pub gpu_mode: Option<smolvm::data::resources::GpuMode>,
+
     /// Expose the host's virtualization extensions so the guest can run KVM --
     /// i.e. run smolvm, QEMU or another hypervisor inside the machine. Off by
     /// default: nesting turns work the guest would do natively into vmexits.
@@ -5051,6 +5058,7 @@ impl CreateCmd {
             gpu,
             nested_virt,
             gpu_vram_mib,
+            gpu_mode,
             rosetta,
             expose_socket,
             mount_socket,
@@ -5195,6 +5203,9 @@ impl CreateCmd {
         cli.cuda |= *cuda;
         cli.docker_socket |= *docker_socket;
         cli.gpu |= *gpu;
+        if gpu_mode.is_some() {
+            cli.gpu_mode = *gpu_mode;
+        }
         cli.rosetta |= *rosetta;
         // CLI --gpu-vram takes precedence over Smolfile gpu_vram.
         if gpu_vram_mib.is_some() {

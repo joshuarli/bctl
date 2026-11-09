@@ -904,7 +904,7 @@ impl VirtioDevice for Balloon {
         }
     }
 
-    fn finish_restore_activation(&mut self) {
+    fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
         // Eventfd notifications do not survive a portable restore. The saved
         // available ring can still contain reports awaiting acknowledgment.
         self.notify_pending_queues(
@@ -920,6 +920,7 @@ impl VirtioDevice for Balloon {
         if self.acked_features & (1 << uapi::VIRTIO_BALLOON_F_FREE_PAGE_HINT) != 0 {
             self.finish_free_page_hint();
         }
+        Ok(())
     }
 
     fn avail_features(&self) -> u64 {
@@ -1290,7 +1291,7 @@ mod checkpoint_quiescence_tests {
         rings[FRQ_INDEX].dtable[0].len.set(4096);
         rings[FRQ_INDEX].avail.ring[0].set(0);
         rings[FRQ_INDEX].avail.idx.set(1);
-        balloon.finish_restore_activation();
+        balloon.finish_restore_activation().unwrap();
         balloon.handle_frq_event(&EpollEvent::new(EventSet::IN, event.as_raw_fd() as u64));
         assert_eq!(rings[FRQ_INDEX].used.idx.get(), 1);
     }

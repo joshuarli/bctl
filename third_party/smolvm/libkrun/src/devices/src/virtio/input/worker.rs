@@ -2,14 +2,15 @@ use log::{debug, error};
 use std::io;
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use utils::eventfd::EventFd;
 use virtio_bindings::virtio_input;
 use vm_memory::{ByteValued, GuestMemoryMmap};
 
-use super::super::DeviceQueue;
 use crate::virtio::InterruptTransport;
+use crate::virtio::Queue as VirtQueue;
 use crate::virtio::descriptor_utils::{Reader, Writer};
 use krun_input::{InputEventProviderBackend, InputEventProviderInstance, InputEventsImpl};
 
@@ -25,8 +26,10 @@ struct VirtioInputEvent {
 unsafe impl ByteValued for VirtioInputEvent {}
 
 pub struct InputWorker {
-    event_q: DeviceQueue,  // Device -> Guest events
-    status_q: DeviceQueue, // Guest -> Device events
+    event_evt: Arc<EventFd>,
+    event_q: Arc<Mutex<VirtQueue>>, // Device -> Guest events
+    status_evt: Arc<EventFd>,
+    status_q: Arc<Mutex<VirtQueue>>, // Guest -> Device events
     interrupt: InterruptTransport,
     mem: GuestMemoryMmap,
     backend_wrapper: InputEventProviderBackend<'static>,
@@ -35,15 +38,19 @@ pub struct InputWorker {
 
 impl InputWorker {
     pub fn new(
-        event_q: DeviceQueue,
-        status_q: DeviceQueue,
+        event_evt: Arc<EventFd>,
+        event_q: Arc<Mutex<VirtQueue>>,
+        status_evt: Arc<EventFd>,
+        status_q: Arc<Mutex<VirtQueue>>,
         interrupt: InterruptTransport,
         mem: GuestMemoryMmap,
         backend: InputEventProviderBackend<'static>,
         stop_fd: EventFd,
     ) -> Self {
         Self {
+            event_evt,
             event_q,
+            status_evt,
             status_q,
             interrupt,
             mem,
@@ -96,14 +103,14 @@ impl InputWorker {
         epoll
             .ctl(
                 ControlOperation::Add,
-                self.event_q.event.as_raw_fd(),
+                self.event_evt.as_raw_fd(),
                 &EpollEvent::new(EventSet::IN, EVENTQ),
             )
             .expect("Failed to add ready fd to epoll");
         epoll
             .ctl(
                 ControlOperation::Add,
-                self.status_q.event.as_raw_fd(),
+                self.status_evt.as_raw_fd(),
                 &EpollEvent::new(EventSet::IN, STATUSQ),
             )
             .expect("Failed to add ready fd to epoll");
@@ -135,12 +142,12 @@ impl InputWorker {
                         needs_interrupt |= self.process_event_queue(&mut events_instance);
                     }
                     EVENTQ => {
-                        self.event_q.event.read().unwrap();
+                        self.event_evt.read().unwrap();
                         trace!("EVENTQ");
                         needs_interrupt |= self.process_event_queue(&mut events_instance);
                     }
                     STATUSQ => {
-                        self.status_q.event.read().unwrap();
+                        self.status_evt.read().unwrap();
                         needs_interrupt |= self.process_status_queue();
                     }
                     QUIT => {
@@ -200,8 +207,10 @@ impl InputWorker {
     fn process_event_queue(&mut self, events_instance: &mut InputEventProviderInstance) -> bool {
         let mut needs_interrupt = false;
         let mem = self.mem.clone();
+        let event_queue = self.event_q.clone();
+        let mut event_q = event_queue.lock().expect("input event queue poisoned");
 
-        while let Some(desc_chain) = self.event_q.queue.pop(&mem) {
+        while let Some(desc_chain) = event_q.pop(&mem) {
             let mut writer = match Writer::new(&mem, desc_chain.clone()) {
                 Ok(w) => w,
                 Err(e) => {
@@ -215,15 +224,14 @@ impl InputWorker {
                 .unwrap();
 
             if bytes_written != 0 {
-                self.event_q
-                    .queue
+                event_q
                     .add_used(&mem, desc_chain.index, bytes_written as u32)
                     .expect("TODO");
                 needs_interrupt = true;
             }
 
             if bytes_written == 0 {
-                self.event_q.queue.undo_pop();
+                event_q.undo_pop();
                 break;
             }
 
@@ -251,8 +259,10 @@ impl InputWorker {
     fn process_status_queue(&mut self) -> bool {
         let mut needs_interrupt = false;
         let mem = self.mem.clone();
+        let status_queue = self.status_q.clone();
+        let mut status_q = status_queue.lock().expect("input status queue poisoned");
 
-        while let Some(desc_chain) = self.status_q.queue.pop(&mem) {
+        while let Some(desc_chain) = status_q.pop(&mem) {
             let mut reader = match Reader::new(&mem, desc_chain.clone()) {
                 Ok(r) => r,
                 Err(e) => {
@@ -262,8 +272,7 @@ impl InputWorker {
             };
             match self.read_status_virtqueue(&mut reader) {
                 Ok(bytes_read) => {
-                    self.status_q
-                        .queue
+                    status_q
                         .add_used(&mem, desc_chain.index, bytes_read as u32)
                         .unwrap();
                 }

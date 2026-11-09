@@ -113,7 +113,7 @@ done
 [ -s "$src/target/release/smolvm" ] || fail "smolvm was not built"
 
 rm -rf "$out.next"
-mkdir -p "$out.next/lib" "$out.next/templates"
+mkdir -p "$out.next/lib"
 cp "$src/scripts/smolvm-wrapper.sh" "$out.next/smolvm"
 chmod 755 "$out.next/smolvm"
 cp "$src/target/release/smolvm" "$out.next/smolvm-bin"
@@ -143,7 +143,7 @@ codesign --force --sign - "$dylib" 2>/dev/null
 codesign --force --sign - "$out.next/lib/libkrunfw.5.dylib" 2>/dev/null
 
 cp -a "$guest_out/rootfs" "$out.next/agent-rootfs"
-cp "$guest_out/storage-template.ext4.zst" "$guest_out/overlay-template.ext4.zst" "$out.next/templates/"
+cp "$guest_out/storage-template.ext4.zst" "$guest_out/overlay-template.ext4.zst" "$out.next/"
 
 codesign --force --sign - --entitlements "$src/smolvm.entitlements" "$out.next/smolvm-bin" 2>/dev/null
 codesign --verify --strict "$out.next/smolvm-bin" || fail "the smolvm binary has no valid signature"

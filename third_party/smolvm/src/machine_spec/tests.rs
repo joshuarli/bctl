@@ -644,6 +644,7 @@ fn cases() -> Vec<Case> {
         published_sockets,
         gpu,
         gpu_vram_mib,
+        gpu_mode,
         rosetta,
         nested_virt,
         cuda,
@@ -1021,6 +1022,20 @@ fn cases() -> Vec<Case> {
         .embedded(|e, _| {
             e.spec.resources.gpu = true;
             e.spec.resources.gpu_vram_mib = Some(2048);
+        })
+        .checkpoint(Refused("gpu")),
+        case!(
+            gpu_mode,
+            |s, _| {
+                s.gpu = true;
+                s.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
+            },
+            |r| r.gpu_mode == Some(crate::data::resources::GpuMode::TwoD)
+        )
+        .cli(&["--gpu", "--gpu-mode", "2d"])
+        .embedded(|e, _| {
+            e.spec.resources.gpu = true;
+            e.spec.resources.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
         })
         .checkpoint(Refused("gpu")),
         case!(rosetta, |s, _| s.rosetta = true, |r| r.rosetta == Some(true))

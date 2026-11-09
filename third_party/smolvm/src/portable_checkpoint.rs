@@ -2126,7 +2126,13 @@ fn capture_with_completion(
             all(target_os = "macos", target_arch = "aarch64")
         )) && crate::agent::fork::control_socket_cmd(&control, "SAVE_SPARSE_CAPABILITIES")?.trim()
             == "OK sparse-stream-v1 ownership-v1";
-    let max_memory_image = max_checkpoint_memory_image(vm.mem, mounts_image_layers(vm))?;
+    let max_memory_image = max_checkpoint_memory_image(
+        vm.mem,
+        mounts_image_layers(vm),
+        vm.gpu
+            .unwrap_or(false)
+            .then(|| vm.vm_resources().effective_gpu_vram_mib()),
+    )?;
     // A frozen guest was synced when it froze, and cannot free pages now.
     if !frozen {
         crate::agent::fork::sync_fork_source(name)?;
@@ -3685,7 +3691,7 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()> 
     if (!vm.mounts.is_empty() && !host_mounts) || !vm.staged_mounts.is_empty() {
         unsupported.push("host mounts");
     }
-    if !vm.published_sockets.is_empty() {
+    if !vm.published_sockets.is_empty() && !host_mounts {
         unsupported.push("published sockets");
     }
     if !vm.remote_volumes.is_empty() {
@@ -3696,17 +3702,18 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()> 
     }
     // A `.smolmachine` source is recorded in the checkpoint and attached again
     // on restore, and so is a registry image the host fetched for a machine
-    // with no network. Layers found only under a host path named by the image
-    // are not, so they stay unsupported.
-    if vm.source_smolmachine.is_none()
-        && vm.host_fetched_origin().is_none()
-        && vm
-            .image
-            .as_deref()
-            .and_then(crate::data::image_source::packed_layers_dir_for_ref)
-            .is_some()
-    {
-        unsupported.push("host-backed image layers");
+    // with no network. A local image archive is a host path: a pause admits it
+    // when the archive still has the digest its reference records, and
+    // [`prepare_paused_restore`] checks that again at resume. Layers found only
+    // under a host directory have no digest to check, so they stay unsupported.
+    if vm.source_smolmachine.is_none() && vm.host_fetched_origin().is_none() {
+        if let Some(reference) = vm.image.as_deref() {
+            if crate::data::image_source::packed_layers_dir_for_ref(reference).is_some()
+                && !(host_mounts && local_archive_digest(reference).is_some())
+            {
+                unsupported.push("host-backed image layers");
+            }
+        }
     }
     if vm.dns.is_some() {
         unsupported.push("custom DNS");
@@ -3714,7 +3721,10 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()> 
     if vm.network_name.is_some() {
         unsupported.push("named inter-VM networking");
     }
-    if vm.gpu.unwrap_or(false) {
+    if vm.gpu.unwrap_or(false)
+        && !(host_mounts
+            && vm.gpu_mode == Some(crate::data::resources::GpuMode::TwoD))
+    {
         unsupported.push("Vulkan GPU state");
     }
     if vm.cuda {
@@ -3744,6 +3754,75 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()> 
             unsupported.join(", ")
         ),
     ))
+}
+
+/// The content digest a local image archive reference records, if it names one.
+///
+/// An archive's cache entry is keyed by the SHA-256 of its bytes. A variant
+/// created to match a restored guest's mtime (`<digest>-m<mtime>`) serves those
+/// same bytes, so its digest is the prefix before the suffix.
+fn local_archive_digest(reference: &str) -> Option<&str> {
+    let key = crate::data::image_source::local_archive_hash(reference)?;
+    let digest = match key.split_once("-m") {
+        Some((digest, suffix))
+            if !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            digest
+        }
+        _ => key,
+    };
+    (digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())).then_some(digest)
+}
+
+/// Refuse to resume a machine whose host-backed image archive changed or
+/// disappeared since the pause. The checkpoint holds the guest RAM captured
+/// from that image, so the guest would otherwise boot different content than
+/// its memory was taken from.
+fn verify_local_image_layers(vm: &VmRecord) -> Result<()> {
+    let Some(reference) = vm.image.as_deref() else {
+        return Ok(());
+    };
+    let Some(archive) = crate::data::image_source::archive_file_for_ref(reference) else {
+        return Ok(());
+    };
+    let Some(expected) = local_archive_digest(reference) else {
+        return Err(Error::agent(
+            "resume machine",
+            format!(
+                "this machine boots image layers from {reference}, which has no content digest; \
+                 resume it where the layers are unchanged or rebuild it from an image archive"
+            ),
+        ));
+    };
+    let actual = sha256_file(&archive).map_err(|error| {
+        Error::agent(
+            "resume machine",
+            format!(
+                "the image archive {} for this machine is missing ({error})",
+                archive.display()
+            ),
+        )
+    })?;
+    verify_archive_digest(reference, &archive, expected, &actual)
+}
+
+fn verify_archive_digest(
+    reference: &str,
+    archive: &Path,
+    expected: &str,
+    actual: &str,
+) -> Result<()> {
+    if actual != expected {
+        return Err(Error::agent(
+            "resume machine",
+            format!(
+                "the image archive {} for {reference} changed since this machine was paused \
+                 (sha256 {actual}, expected {expected}); restore it or recreate the machine",
+                archive.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The host directory mounts a checkpoint restores, as `(host, guest, read_only)`
@@ -3954,6 +4033,10 @@ fn checkpoint_settings(vm: &VmRecord) -> smolvm_pack::format::CheckpointSettings
         health_timeout_secs: vm.health_timeout_secs,
         health_retries: vm.health_retries,
         health_startup_grace_secs: vm.health_startup_grace_secs,
+        gpu_vram_mib: vm
+            .gpu
+            .unwrap_or(false)
+            .then(|| vm.vm_resources().effective_gpu_vram_mib()),
     }
 }
 
@@ -5179,7 +5262,11 @@ fn describe_sparse_asset(path: &Path, relative_path: &str) -> Result<CheckpointA
 
 /// Bound a RAM image by configured guest RAM and the devices' mapped windows.
 /// Capture and restore must use the same bound for packed-layer machines.
-fn max_checkpoint_memory_image(memory_mib: u32, packed_layers: bool) -> Result<u64> {
+fn max_checkpoint_memory_image(
+    memory_mib: u32,
+    packed_layers: bool,
+    gpu_vram_mib: Option<u32>,
+) -> Result<u64> {
     // Bound by the largest window a packed-layer guest has booted with, so
     // checkpoints taken before the window shrank still pass.
     let packed_layers_window = if packed_layers {
@@ -5187,10 +5274,14 @@ fn max_checkpoint_memory_image(memory_mib: u32, packed_layers: bool) -> Result<u
     } else {
         0
     };
+    let gpu_window = u64::from(gpu_vram_mib.unwrap_or(0))
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| Error::agent("checkpoint memory", "memory size overflow"))?;
     u64::from(memory_mib)
         .checked_mul(1024 * 1024)
         .and_then(|bytes| bytes.checked_add(FIXED_MEMORY_OVERHEAD_BYTES))
         .and_then(|bytes| bytes.checked_add(packed_layers_window))
+        .and_then(|bytes| bytes.checked_add(gpu_window))
         .ok_or_else(|| Error::agent("checkpoint memory", "memory size overflow"))
 }
 
@@ -5328,6 +5419,7 @@ pub fn validate_compatibility(checkpoint: &PortableCheckpointManifest) -> Result
     let max_memory_image = max_checkpoint_memory_image(
         checkpoint.memory_mib,
         mounts_checkpoint_image_layers(checkpoint),
+        checkpoint.settings.gpu_vram_mib,
     )?;
     if checkpoint.state.size == 0
         || checkpoint.state.size > MAX_STATE_BYTES
@@ -6239,6 +6331,7 @@ pub(crate) fn prepare_paused_restore(record: &VmRecord) -> Result<()> {
             "source VM has not stopped",
         ));
     }
+    verify_local_image_layers(record)?;
     let footer = ensure_checkpoint_layout(artifact)?;
     // Treat this manifest as untrusted until extraction verifies the full
     // sidecar checksum. No machine state changes before that verification.
@@ -8868,6 +8961,109 @@ mod tests {
         assert!(error.contains("host-backed image layers"), "{error}");
     }
 
+    fn exposed_socket() -> crate::config::PublishedSocketConfig {
+        crate::config::PublishedSocketConfig {
+            direction: crate::config::SocketDirection::Expose,
+            guest_path: "/run/cdp.sock".to_string(),
+            host_path: None,
+        }
+    }
+
+    fn demo_archive_ref() -> String {
+        format!("local:{}", "ab".repeat(32))
+    }
+
+    #[test]
+    fn a_paused_two_d_gpu_and_exposed_socket_are_admitted() {
+        use crate::data::resources::GpuMode;
+
+        let mut record = no_network_machine(&demo_archive_ref());
+        record.gpu = Some(true);
+        record.gpu_mode = Some(GpuMode::TwoD);
+        record.published_sockets = vec![exposed_socket()];
+
+        validate_capture_profile(&record, true)
+            .expect("a 2D GPU, an exposed socket and a digest-pinned archive can be paused");
+
+        // The portable artifact cannot record them, so export still refuses.
+        let error = validate_capture_profile(&record, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("published sockets"), "{error}");
+    }
+
+    #[test]
+    fn a_virgl_gpu_is_still_refused_on_pause() {
+        let mut record = no_network_machine("alpine:3.20");
+        record.gpu = Some(true);
+        let error = validate_capture_profile(&record, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Vulkan GPU state"), "{error}");
+
+        record.gpu_mode = Some(crate::data::resources::GpuMode::ThreeD);
+        let error = validate_capture_profile(&record, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Vulkan GPU state"), "{error}");
+    }
+
+    #[test]
+    fn a_host_image_directory_has_no_digest_to_pause_against() {
+        let mut record = no_network_machine("local-dir:/srv/rootfs");
+        record.gpu = Some(true);
+        record.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
+        let error = validate_capture_profile(&record, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("host-backed image layers"), "{error}");
+    }
+
+    #[test]
+    fn the_docker_socket_is_still_refused_on_pause() {
+        let mut record = no_network_machine("alpine:3.20");
+        record.docker_socket = true;
+        let error = validate_capture_profile(&record, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Docker socket forwarding"), "{error}");
+    }
+
+    #[test]
+    fn a_changed_image_archive_refuses_the_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("archive.tar");
+        std::fs::write(&archive, b"original image").unwrap();
+        let expected = sha256_file(&archive).unwrap();
+        verify_archive_digest(&demo_archive_ref(), &archive, &expected, &expected).unwrap();
+
+        std::fs::write(&archive, b"a different image").unwrap();
+        let actual = sha256_file(&archive).unwrap();
+        let error = verify_archive_digest(&demo_archive_ref(), &archive, &expected, &actual)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed since this machine was paused"), "{error}");
+        assert!(error.contains(&expected), "{error}");
+        assert!(error.contains(&actual), "{error}");
+    }
+
+    #[test]
+    fn a_local_archive_reference_records_its_content_digest() {
+        let digest = "ab".repeat(32);
+        assert_eq!(
+            local_archive_digest(&format!("local:{digest}")),
+            Some(digest.as_str())
+        );
+        // A variant kept for a restored guest's mtime serves the same bytes.
+        assert_eq!(
+            local_archive_digest(&format!("local:{digest}-m1700000000")),
+            Some(digest.as_str())
+        );
+        assert_eq!(local_archive_digest("local:abc"), None);
+        assert_eq!(local_archive_digest("local-dir:/srv/rootfs"), None);
+        assert_eq!(local_archive_digest("alpine:3.20"), None);
+    }
+
     #[test]
     fn a_registry_image_the_guest_pulled_keeps_its_reference() {
         let record = no_network_machine("alpine:3.20");
@@ -8892,7 +9088,7 @@ mod tests {
 
         metadata.device_profile = DEVICE_PROFILE_PACKED_LAYERS.to_string();
         validate_compatibility(&metadata).unwrap();
-        metadata.memory.size = max_checkpoint_memory_image(metadata.memory_mib, true).unwrap();
+        metadata.memory.size = max_checkpoint_memory_image(metadata.memory_mib, true, None).unwrap();
         validate_compatibility(&metadata).unwrap();
         metadata.memory.size = 1;
 
@@ -8966,7 +9162,7 @@ mod tests {
 
         metadata.device_profile = DEVICE_PROFILE_PACKED_LAYERS.to_string();
         validate_compatibility(&metadata).unwrap();
-        metadata.memory.size = max_checkpoint_memory_image(metadata.memory_mib, true).unwrap();
+        metadata.memory.size = max_checkpoint_memory_image(metadata.memory_mib, true, None).unwrap();
         validate_compatibility(&metadata).unwrap();
         metadata.memory.size += 1;
         assert!(validate_compatibility(&metadata).is_err());

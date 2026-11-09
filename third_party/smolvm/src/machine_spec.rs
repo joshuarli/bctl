@@ -164,6 +164,8 @@ pub struct CreateSpec {
     pub gpu: bool,
     /// GPU shared-memory size in MiB.
     pub gpu_vram_mib: Option<u32>,
+    /// virtio-gpu backend.
+    pub gpu_mode: Option<crate::data::resources::GpuMode>,
     /// Rosetta x86_64 translation.
     pub rosetta: bool,
     /// Nested virtualization.
@@ -276,6 +278,7 @@ impl CreateSpec {
             published_sockets,
             gpu,
             gpu_vram_mib,
+            gpu_mode,
             rosetta,
             nested_virt,
             cuda,
@@ -348,6 +351,7 @@ impl CreateSpec {
             published_sockets: list(self.published_sockets, published_sockets),
             gpu: gpu || self.gpu,
             gpu_vram_mib: gpu_vram_mib.or(self.gpu_vram_mib),
+            gpu_mode: gpu_mode.or(self.gpu_mode),
             rosetta: rosetta || self.rosetta,
             nested_virt: nested_virt || self.nested_virt,
             cuda: cuda || self.cuda,
@@ -531,6 +535,8 @@ pub struct ResolvedSpec {
     pub gpu: bool,
     /// GPU VRAM.
     pub gpu_vram_mib: Option<u32>,
+    /// GPU backend.
+    pub gpu_mode: Option<crate::data::resources::GpuMode>,
     /// Rosetta.
     pub rosetta: bool,
     /// Nested virtualization.
@@ -741,6 +747,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
         published_sockets,
         gpu,
         gpu_vram_mib,
+        gpu_mode,
         rosetta,
         nested_virt,
         cuda,
@@ -941,6 +948,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                 published_sockets,
                 gpu,
                 gpu_vram_mib,
+                gpu_mode,
                 rosetta,
                 nested_virt,
                 cuda,
@@ -1021,6 +1029,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                 published_sockets,
                 gpu: gpu || pack.gpu,
                 gpu_vram_mib,
+                gpu_mode,
                 rosetta,
                 nested_virt,
                 cuda: cuda || pack.cuda,
@@ -1094,6 +1103,9 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
             let gpu = same_flag("gpu", gpu, false)?;
             if gpu_vram_mib.is_some() {
                 return Err(fixed("GPU VRAM", TOPOLOGY));
+            }
+            if gpu_mode.is_some() {
+                return Err(fixed("the GPU mode", TOPOLOGY));
             }
             let rosetta = same_flag("rosetta", rosetta, false)?;
             let nested_virt =
@@ -1302,6 +1314,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                 published_sockets: Vec::new(),
                 gpu,
                 gpu_vram_mib: None,
+                gpu_mode: None,
                 rosetta,
                 nested_virt,
                 cuda,
@@ -1380,6 +1393,7 @@ impl ResolvedSpec {
             network_backend: self.network_backend,
             gpu: self.gpu,
             gpu_vram_mib: self.gpu_vram_mib,
+            gpu_mode: self.gpu_mode,
             cuda: self.cuda,
             nested_virt: self.nested_virt,
             rosetta: self.rosetta,
@@ -1492,6 +1506,7 @@ impl ResolvedSpec {
             published_sockets,
             gpu,
             gpu_vram_mib,
+            gpu_mode,
             rosetta,
             nested_virt,
             cuda,
@@ -1547,6 +1562,7 @@ impl ResolvedSpec {
             gpu: gpu.then_some(true),
             nested_virt: nested_virt.then_some(true),
             gpu_vram_mib,
+            gpu_mode,
             rosetta: rosetta.then_some(true),
             restart,
             last_exit_code: None,
