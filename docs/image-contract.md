@@ -25,8 +25,8 @@ build does not.
 
 `/usr/local/bin/bctl-guest` is the entrypoint, and `machine exec` finds it on
 `PATH`. Two implementations exist: the Rust `guest/appliance` crate in
-`ref-scratch-chromium`, and the shell script `images/bctl-guest` in the
-Alpine images.
+`helium` and `ref-scratch-chromium`, and the shell script `images/bctl-guest`
+in the Alpine images.
 
 - `bctl-guest run` (the default command) brings up, in order, the seat
   (`/run/seatd.sock`), the compositor (`$XDG_RUNTIME_DIR/wayland-1`), and the
@@ -51,13 +51,15 @@ Alpine images.
   on Wayland, with the Chromium sandbox enabled. A shell-free image carries
   its own `/etc/passwd` and `/etc/group` for that user and group
   (`guest/appliance/rootfs/etc`).
-- In `ref-scratch-chromium` the browser is an archive in the Helium archive
-  layout, installed unchanged at `/opt/browser`, with
-  `/usr/local/bin/browser` linking to the executable that its
-  `package-manifest.json` names. `bctl-guest browser` sets what the archive's
-  `helium-wrapper` would (`LD_LIBRARY_PATH=<root>/lib`,
-  `FONTCONFIG_FILE=<root>/fontconfig/fonts.conf`,
+- In `helium` and `ref-scratch-chromium` the browser is an archive in the
+  Helium archive layout at `/opt/browser`, with `/usr/local/bin/browser`
+  linking to the executable that its `package-manifest.json` names.
+  `bctl-guest browser` sets what the archive's `helium-wrapper` would
+  (`LD_LIBRARY_PATH=<root>/lib`, `FONTCONFIG_FILE=<root>/fontconfig/fonts.conf`,
   `FONTCONFIG_PATH=<root>/fontconfig`) and runs the executable directly.
+- The browser's `HOME` is `/home/browser`, which exists in the image and which
+  `bctl-guest run` creates and hands to `browser` before the compositor
+  starts. Helium 0.20.3.1 segfaults at startup when `$HOME` does not exist.
 - CDP is relayed on the guest Unix socket `/run/bctl/cdp.sock`
   (`BCTL_CDP_SOCKET`); bctl exposes that socket to a host path in a
   per-session directory only the user can enter, so no host TCP port reaches
@@ -90,9 +92,10 @@ passes B1 with no SmolVM file of its own.
 
 | Image | Base | Browser | Compositor | Role |
 |---|---|---|---|---|
-| `ref-alpine-chromium` | Alpine 3.22 | Alpine `chromium` | Sway (pixman) | Test scaffolding until the Helium arm64 archive exists; never a default |
-| `ref-alpine-tinyland` | Alpine 3.22 | Alpine `chromium` | `guest/tinyland` with `guest/seatd` | Stand-in for `helium-tinyland` until Helium exists; never a default |
-| `ref-scratch-chromium` | scratch: no base, busybox, or shell | Alpine `chromium` and its runtime closure, packed in the Helium archive layout | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | Stand-in for the shell-free product image until Helium exists; never a default |
+| `ref-alpine-chromium` | Alpine 3.22 | Alpine `chromium` | Sway (pixman) | Diagnostic with a shell and the Sway stack; never a default |
+| `ref-alpine-tinyland` | Alpine 3.22 | Alpine `chromium` | `guest/tinyland` with `guest/seatd` | Diagnostic with a shell on tinyland; never a default |
+| `helium` | scratch: no base, busybox, or shell | chromium-build's Helium linux-aarch64-musl archive | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | The product image |
+| `ref-scratch-chromium` | scratch: no base, busybox, or shell | Alpine `chromium` and its runtime closure, packed in the Helium archive layout | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | Diagnostic: the scratch layout around Alpine `chromium`; never a default |
 
 Build one with `images/build.sh <image>`; the archive lands in
 `.work/images/<image>.tar`.
@@ -104,5 +107,50 @@ closure of its ELF files and of the libraries a traced B1 run showed it
 `dlopen`ing, DejaVu fonts, and fontconfig. To build the image around a
 Helium archive instead, override the stage with a directory holding exactly
 one `*.tar.xz`:
-`docker build --build-context browser-archive=DIR --build-context guest=guest images/ref-scratch-chromium`.
+`BCTL_BROWSER_ARCHIVE=DIR images/build.sh ref-scratch-chromium`.
 `stage-browser.sh` installs whichever archive arrives.
+
+## The helium image
+
+`BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium` builds the product image.
+`DIR` holds exactly one `helium-<version>-linux-aarch64-musl.tar.xz` with its
+`.sha256` and `.acceptance.json` sidecars; the image has no default browser.
+`images/helium/stage-helium.sh` refuses the archive unless:
+
+- its name is `helium-*-linux-aarch64-musl.tar.xz`;
+- the `.sha256` sidecar names its SHA-256 and its file name;
+- the `.acceptance.json` sidecar names product `helium`, architecture
+  `arm64`, this archive's file name, and its SHA-256;
+- chromium-build's installer (`scripts/install-runtime.py --verify-extract`,
+  fetched at the revision the Dockerfile pins) accepts it: complete
+  acceptance checks, a manifest whose every file digest matches, no file
+  outside the manifest, and its ELF audit (AArch64, musl's interpreter,
+  every `DT_NEEDED` inside the archive, no glibc).
+
+The stage then changes the installed archive in two ways and records both in
+the receipt:
+
+- `lib/libxkbcommon.so.0` is deleted; kbvm's `libxkbcommon.so.0` (the
+  `kbvm-xkbcommon` crate at the kbvm revision `guest/Cargo.lock` pins) is at
+  `/usr/local/lib`, which musl searches after `LD_LIBRARY_PATH`.
+- The libraries only Mesa's GL stack loads (`libEGL.so.1`, `libGLESv2.so.2`,
+  `libgallium`, `libLLVM`, and their exclusive closure, 206 MiB) are deleted.
+  The browser renders in software either way; see `docs/userland.md` (Mesa).
+  `libgbm.so.1`, a `DT_NEEDED` of `helium`, and `libdrm` stay.
+
+musl's loader comes from the Alpine 3.24.1 image chromium-build builds the
+arm64 archive on (musl 1.2.6), not from Alpine 3.22.
+
+`images/helium/qualify.py` then fails the build unless every ELF file in the
+rootfs is AArch64 ELF64, names musl's loader as its interpreter if it has
+one, finds each `DT_NEEDED` on the search path the loader would use
+(`LD_LIBRARY_PATH` for the browser, then RPATH/RUNPATH, then `/lib`,
+`/usr/local/lib`, `/usr/lib`), and imports no symbol its closure does not
+define, and unless kbvm's library exports every `xkb_*` symbol any ELF file
+imports. Run it on an exported rootfs to read its report.
+
+`/etc/bctl/receipt.json` records the image name, the browser's own version
+string (`helium --version`, run in the assembled rootfs), the archive file
+name and SHA-256, and the replaced and removed files. Helium's
+`/json/version` reports `Chrome/<chromium version>`, so the receipt, not
+CDP, identifies the browser as Helium.

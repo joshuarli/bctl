@@ -73,6 +73,13 @@ source = "guest/appliance/rootfs/etc"
 paths = ["/etc/passwd", "/etc/group"]
 
 [[rule]]
+class = "rust"
+name = "image-receipt"
+reason = "the image's record of the browser version and the archive it was built from"
+source = "images/helium/stage-helium.sh"
+paths = ["/etc/bctl/receipt.json"]
+
+[[rule]]
 class = "gap"
 name = "shell-and-tooling"
 reason = "busybox and shell tooling; the diagnostic image keeps them, the product image drops them"
@@ -115,7 +122,7 @@ unit = "file"
 [[rule]]
 class = "exception"
 name = "browser-archive"
-reason = "the browser archive with its fonts and fontconfig; here Alpine chromium packed in Helium's layout (images/ref-scratch-chromium)"
+reason = "the browser archive with its fonts and fontconfig: Helium in images/helium, Alpine chromium packed in Helium's layout in images/ref-scratch-chromium"
 paths = ["/opt/browser/*", "/usr/local/bin/browser"]
 
 [[rule]]
