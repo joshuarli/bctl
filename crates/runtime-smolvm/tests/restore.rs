@@ -325,6 +325,7 @@ fn a_session_restored_from_a_pre_browser_template_reaches_ready_with_the_sandbox
     }));
 
     let removed = runtime.remove(&spec.machine);
+    std::fs::remove_file(&template.checkpoint).unwrap_or_else(|e| panic!("remove {}: {e}", template.checkpoint.display()));
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(panic) => std::panic::resume_unwind(panic),
