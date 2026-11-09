@@ -103,7 +103,7 @@ typedef struct fdtable *fdtable;
 
 thread create_thread(process, u64 tid);
 boolean exit_thread(thread);
-sysreturn fork_process(thread t);
+sysreturn fork_process(thread t, struct clone_args_internal *args);
 void process_kill(process p, int wait_status);
 process process_get(int pid);
 
@@ -126,7 +126,7 @@ int process_getppid(process p);
 sysreturn process_signal(process sender, int pid, struct siginfo *si);
 struct rusage;
 sysreturn process_wait(int idtype, int id, int options, int *wstatus, struct siginfo *infop,
-                       struct rusage *ru);
+                       struct rusage *ru, boolean report_pid);
 boolean process_is_init(process p);
 void process_teardown(process p);
 process_vm mmap_process_fork(process_vm parent, sysreturn *rv);
@@ -379,6 +379,7 @@ typedef struct thread {
 
     epoll select_epoll;
     int *clear_tid;
+    int *set_child_tid;
     int tid;
     struct rbnode n;
 
@@ -599,6 +600,7 @@ typedef struct process {
     timestamp         cutime, cstime;
     blockq            child_bq;
     u64               rlimit_nproc_cur, rlimit_nproc_max;
+    thread            vfork_waiter;
     boolean           exiting;
     boolean           dumpable;
     u32               uid, gid;

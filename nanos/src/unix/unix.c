@@ -705,6 +705,7 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->wait_status = 0;
     p->cutime = p->cstime = 0;
     p->rlimit_nproc_cur = p->rlimit_nproc_max = default_rlimit_nproc();
+    p->vfork_waiter = 0;
     p->exiting = false;
     p->dumpable = true;
     init_refcount(&p->refcount, 1, init_closure_func(&p->free, thunk, process_free));
@@ -823,9 +824,22 @@ static void process_unlink_child_locked(process c)
     c->parent = 0;
 }
 
-sysreturn fork_process(thread t)
+static void process_vfork_release(process c)
+{
+    process_lock(c);
+    thread waiter = c->vfork_waiter;
+    c->vfork_waiter = 0;
+    process_unlock(c);
+    if (waiter) {
+        syscall_return(waiter, c->pid);
+        thread_release(waiter);
+    }
+}
+
+sysreturn fork_process(thread t, struct clone_args_internal *args)
 {
 #ifdef __x86_64__
+    u64 flags = args->flags;
     process parent = t->p;
     u64 pid = allocate_u64((heap)parent->uh->processes, 1);
     if (pid == INVALID_PHYSICAL)
@@ -857,23 +871,36 @@ sysreturn fork_process(thread t)
         process_release(c);
         return -EAGAIN;
     }
+    process new_parent = (flags & CLONE_PARENT) ? parent->parent : parent;
+    c->exit_signal = (flags & CLONE_PARENT) ? parent->exit_signal :
+                     ((args->exit_signal <= NSIG) ? args->exit_signal : 0);
     list_insert_before(&processes, &c->l);
-    c->parent = parent;
-    list_insert_before(&parent->children, &c->sibling);
+    c->parent = new_parent;
+    list_insert_before(&new_parent->children, &c->sibling);
     spin_unlock(&processes_lock);
 
     sysreturn rv;
-    c->vm = mmap_process_fork(parent->vm, &rv);
-    if (c->vm == INVALID_ADDRESS) {
-        c->vm = 0;
-        goto fail;
+    if (flags & CLONE_VM) {
+        c->vm = parent->vm;
+        process_vm_reserve(c->vm);
+    } else {
+        c->vm = mmap_process_fork(parent->vm, &rv);
+        if (c->vm == INVALID_ADDRESS) {
+            c->vm = 0;
+            goto fail;
+        }
+        init_vdso(c);
     }
-    init_vdso(c);
-    c->fdtable = fdtable_copy(parent->fdtable);
-    if (c->fdtable == INVALID_ADDRESS) {
-        c->fdtable = 0;
-        rv = -ENOMEM;
-        goto fail;
+    if (flags & CLONE_FILES) {
+        c->fdtable = parent->fdtable;
+        fdtable_reserve(c->fdtable);
+    } else {
+        c->fdtable = fdtable_copy(parent->fdtable);
+        if (c->fdtable == INVALID_ADDRESS) {
+            c->fdtable = 0;
+            rv = -ENOMEM;
+            goto fail;
+        }
     }
 
     thread ct = create_thread(c, c->pid);
@@ -888,16 +915,38 @@ sysreturn fork_process(thread t)
     ct->signal_stack = t->signal_stack;
     ct->signal_stack_length = t->signal_stack_length;
     set_syscall_return(ct, 0);
+    if (args->stack_size)
+        f[SYSCALL_FRAME_SP] = u64_from_pointer(args->stack) + args->stack_size;
+    if (flags & CLONE_SETTLS)
+        set_tls(f, args->tls);
+    if (flags & CLONE_CHILD_CLEARTID)
+        ct->clear_tid = args->child_tid;
+    if (flags & CLONE_CHILD_SETTID)
+        ct->set_child_tid = args->child_tid;
+    if (flags & CLONE_PARENT_SETTID) {
+        int child_pid = c->pid;
+        if (!set_user_value(args->parent_tid, child_pid)) {
+            exit_thread(ct);
+            rv = -EFAULT;
+            goto fail;
+        }
+    }
+    if (flags & CLONE_VFORK) {
+        thread_reserve(t);
+        c->vfork_waiter = t;
+    }
     ct->syscall = 0;
     f[FRAME_FULL] = true;
     thread_reserve(ct);
     schedule_thread(ct);
+    if (flags & CLONE_VFORK)
+        return thread_maybe_sleep_uninterruptible(t);
     return c->pid;
   fail:
     spin_lock(&processes_lock);
     process_unlink_child_locked(c);
     spin_unlock(&processes_lock);
-    blockq_wake_all(parent->child_bq);
+    blockq_wake_all(new_parent->child_bq);
     process_release(c);
     return rv;
 #else
@@ -969,6 +1018,7 @@ void process_teardown(process p)
     process_vm vm = p->vm;
     p->vm = 0;
     process_vm_release(vm);
+    process_vfork_release(p);
 
     process init = init_process;
     vector orphaned_zombies = allocate_vector(heap_locked(get_kernel_heaps()), 4);
@@ -1090,9 +1140,9 @@ static sysreturn wait_report_none(struct siginfo *infop)
     return 0;
 }
 
-closure_function(7, 1, sysreturn, wait_bh,
+closure_function(8, 1, sysreturn, wait_bh,
                  thread, t, int, idtype, int, id, int, options, int *, wstatus, struct siginfo *, infop,
-                 struct rusage *, ru,
+                 struct rusage *, ru, boolean, report_pid,
                  u64 flags)
 {
     thread t = bound(t);
@@ -1124,6 +1174,8 @@ closure_function(7, 1, sysreturn, wait_bh,
     spin_unlock(&processes_lock);
     if (c) {
         rv = wait_report(c, bound(wstatus), bound(infop), bound(ru));
+        if (!bound(report_pid) && (rv > 0))
+            rv = 0;
         process_release(c);
     } else if (!eligible) {
         rv = -ECHILD;
@@ -1136,10 +1188,11 @@ closure_function(7, 1, sysreturn, wait_bh,
 }
 
 sysreturn process_wait(int idtype, int id, int options, int *wstatus, struct siginfo *infop,
-                       struct rusage *ru)
+                       struct rusage *ru, boolean report_pid)
 {
     thread t = current;
-    blockq_action ba = contextual_closure(wait_bh, t, idtype, id, options, wstatus, infop, ru);
+    blockq_action ba = contextual_closure(wait_bh, t, idtype, id, options, wstatus, infop, ru,
+                                          report_pid);
     if (ba == INVALID_ADDRESS)
         return -ENOMEM;
     return blockq_check(t->p->child_bq, ba, false);

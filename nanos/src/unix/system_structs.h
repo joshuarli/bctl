@@ -681,8 +681,14 @@ struct tms {
 #define CLONE_NEWNET		0x40000000	/* New network namespace */
 #define CLONE_IO		0x80000000	/* Clone io context */
 
+#define CLONE_NEWTIME		0x00000080
+#define CLONE_PIDFD		0x00001000
+#define CLONE_CLEAR_SIGHAND	0x100000000ull
+#define CLONE_INTO_CGROUP	0x200000000ull
+
 struct clone_args_internal {
      u64 flags;
+     int exit_signal;
      int *child_tid;
      int *parent_tid;
      void *stack;
@@ -699,7 +705,12 @@ struct clone_args {
      u64 stack;
      u64 stack_size;
      u64 tls;
+     u64 set_tid;
+     u64 set_tid_size;
+     u64 cgroup;
 };
+
+#define CLONE_ARGS_SIZE_VER0    64
 
 #define	EPOLL_CTL_ADD 0x1
 #define	EPOLL_CTL_DEL 0x2

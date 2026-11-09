@@ -2356,7 +2356,7 @@ static sysreturn wait4(int pid, int *wstatus, int options, struct rusage *rusage
         idtype = P_PGID;
         id = -pid;
     }
-    return process_wait(idtype, id, options | WEXITED, wstatus, 0, rusage);
+    return process_wait(idtype, id, options | WEXITED, wstatus, 0, rusage, true);
 }
 
 static sysreturn waitid(int idtype, int id, struct siginfo *infop, int options,
@@ -2387,7 +2387,7 @@ static sysreturn waitid(int idtype, int id, struct siginfo *infop, int options,
     if ((infop && !validate_process_memory(current->p, infop, sizeof(*infop), true)) ||
         (rusage && !validate_process_memory(current->p, rusage, sizeof(*rusage), true)))
         return -EFAULT;
-    return process_wait(idtype, id, options, 0, infop, rusage);
+    return process_wait(idtype, id, options, 0, infop, rusage, false);
 }
 
 sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
