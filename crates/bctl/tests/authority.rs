@@ -3,15 +3,61 @@ mod common;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Fixture, Home, assert_ok, dashboard_viewer, eventually, http, status_of, up_with_fixtures};
+use common::{Fixture, Home, assert_ok, attach, dashboard_viewer, evaluate_outside, eventually, http, outside_client, status_of, up_with_fixtures};
 use miniserde::{Deserialize, json};
 
 const PAGE: &str = r#"<!doctype html><title>Authority</title>
 <button onclick="events.push('pressed')">Press</button>
 <script>window.events = []</script>"#;
 
-fn site(_path: &str, _port: u16) -> String {
-    PAGE.to_string()
+const PHASES: &str = r#"<!doctype html><title>Phases</title>
+<style>
+  body { margin: 0; overflow: hidden }
+  button, input { display: block; margin: 4px; width: 120px }
+  @keyframes move { from { margin-left: 0 } to { margin-left: 100px } }
+  #spinning { animation: 1s linear infinite move }
+  #offscreen { position: absolute; left: -500px; top: 0 }
+  #cover { position: absolute; left: 0; top: 0; width: 300px; height: 300px }
+</style>
+<button id=hidden style="display: none">Hidden</button>
+<button id=off disabled>Off</button>
+<button id=spinning>Spinning</button>
+<button id=offscreen>Offscreen</button>
+<input id=readonly readonly value=fixed>
+<button id=covered>Covered</button>
+<button id=late disabled>Late</button>
+<div id=cover></div>
+<script>
+window.seen = [];
+for (const type of ['mousedown', 'mouseup', 'click', 'keydown', 'input']) {
+  addEventListener(type, event => seen.push({ what: type, on: event.target.id || event.target.localName, at: performance.now() }), true);
+}
+let pending;
+function reset() {
+  clearTimeout(pending);
+  document.getElementById('late').disabled = true;
+  if (!document.getElementById('cover')) document.body.append(Object.assign(document.createElement('div'), { id: 'cover' }));
+  seen.length = 0;
+  return 'reset';
+}
+function enableLater(after) {
+  pending = setTimeout(() => { document.getElementById('cover').remove(); document.getElementById('late').disabled = false; }, after);
+  return 'armed';
+}
+</script>"#;
+
+fn site(path: &str, _port: u16) -> String {
+    match path {
+        "/phases" => PHASES.to_string(),
+        _ => PAGE.to_string(),
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct Seen {
+    what: String,
+    on: String,
+    at: f64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -148,5 +194,103 @@ fn n6_taking_control_yields_to_a_native_wait_which_ends_taken_over_and_resuming_
     assert_eq!(read.value.map(|v| json::to_string(&v)).as_deref(), Some("[\"pressed\",\"kept=yes\"]"), "the page and its cookies are intact and act again");
     let (status, _) = http(port, capability, "GET /json/version", "");
     assert_eq!(status, 200, "CDP attachments are accepted again under automation");
+    assert_ok(&home.bctl(&["down", s]));
+}
+
+fn bctl_in_background(home: &Home, args: Vec<String>) -> thread::JoinHandle<(Instant, Reply)> {
+    let path = home.path.clone();
+    thread::spawn(move || {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_bctl")).args(&args).arg("--json").env("BCTL_HOME", path).output().unwrap();
+        (Instant::now(), json::from_str::<Reply>(&String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|_| panic!("{output:?}")))
+    })
+}
+
+fn seen(home: &Home, session: &str) -> Vec<Seen> {
+    let value = acted(home, &["page", "eval", session, "seen"]).value.expect("eval returns a value");
+    json::from_str(&json::to_string(&value)).unwrap()
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_follows() {
+    let fixture = Fixture::start(site);
+    let home = Home::new("n7-a");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    up_with_fixtures(&home, s, "n7-a");
+    let tab = reply(&home, &["tab", "new", s, &fixture.url("/phases")]).tabs.and_then(|t| t.selected).expect("a new tab is selected");
+    acted(&home, &["page", "wait", s, "--load", "load"]);
+    let outside = outside_client(&home, s);
+    let page = attach(&outside, &tab);
+    let (port, address, as_viewer) = dashboard_viewer(&home);
+    let control = |method: &str, path: &str| -> ControlState {
+        let (status, response) = http(port, &address, &format!("{method} /api/sessions/{s}/control{path}"), &as_viewer);
+        let body = response.split_once("\r\n\r\n").map(|(_, body)| body.to_string()).unwrap_or_default();
+        assert_eq!(status, 200, "{body}");
+        json::from_str(&body).unwrap_or_else(|_| panic!("{body}"))
+    };
+    let batch = home.path.join("batch.json");
+    std::fs::write(&batch, r##"[{"action": "eval", "expression": "1"}, {"action": "click", "css": "#never", "timeout_ms": 60000}]"##).unwrap();
+    let click = |css: &str| ["page", "click", s, "--css", css, "--timeout", "60000"].map(str::to_string).to_vec();
+    let phases: Vec<(&str, Vec<String>)> = vec![
+        ("locator evaluation", click("#never")),
+        ("visibility", click("#hidden")),
+        ("enabled state", click("#off")),
+        ("stability", click("#spinning")),
+        ("scroll and hit test", click("#offscreen")),
+        ("hit test", click("#covered")),
+        ("editable state", ["page", "fill", s, "--css", "#readonly", "x", "--timeout", "60000"].map(str::to_string).to_vec()),
+        ("batch preparation", ["page", "batch", s, batch.to_str().unwrap()].map(str::to_string).to_vec()),
+    ];
+    for (phase, args) in phases {
+        let running = bctl_in_background(&home, args);
+        eventually("the action to be in flight", || {
+            assert!(!running.is_finished(), "{phase}: the action ended before the takeover");
+            (control("GET", "").settling == 1).then_some(())
+        });
+        let taken = Instant::now();
+        assert_eq!(control("POST", "").authority, "yielding", "{phase}: the takeover waits for the action");
+        let (ended, outcome) = running.join().unwrap();
+        let error = outcome.error.unwrap_or_else(|| panic!("{phase}: the action succeeded"));
+        assert_eq!(error.code, "TAKEN_OVER", "{phase}: {error:?}");
+        assert!(ended.duration_since(taken) < Duration::from_secs(2), "{phase}: the action ended {:?} after the takeover", ended.duration_since(taken));
+        eventually("the takeover to hand over", || (control("GET", "").authority == "human").then_some(()));
+        assert_eq!(control("POST", "/resume").authority, "automation");
+        assert!(seen(&home, s).is_empty(), "{phase}: no input reached the page");
+    }
+
+    for delay in [0, 10, 20, 25, 30, 35, 40, 45, 50, 60, 80, 120] {
+        acted(&home, &["page", "eval", s, "reset()"]);
+        let running = bctl_in_background(&home, click("#late"));
+        let started = Instant::now();
+        while control("GET", "").settling != 1 {
+            if running.is_finished() {
+                panic!("the click ended before the takeover: {:?}", running.join().unwrap().1);
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the click never started");
+            thread::sleep(Duration::from_millis(20));
+        }
+        evaluate_outside(&outside, &page, "enableLater(0)");
+        thread::sleep(Duration::from_millis(delay));
+        control("POST", "");
+        let (_, outcome) = running.join().unwrap();
+        eventually("the takeover to hand over", || (control("GET", "").authority == "human").then_some(()));
+        let human_at = match evaluate_outside(&outside, &page, "performance.now()") {
+            json::Value::Number(json::Number::F64(at)) => at,
+            json::Value::Number(json::Number::U64(at)) => at as f64,
+            other => panic!("performance.now() is {}", json::to_string(&other)),
+        };
+        assert_eq!(control("POST", "/resume").authority, "automation");
+        let record = seen(&home, s);
+        eprintln!("n7 takeover race: taken {delay} ms after the click could proceed: {}", outcome.error.as_ref().map_or("clicked", |e| e.code.as_str()));
+        match outcome.error {
+            Some(error) => {
+                assert_eq!(error.code, "TAKEN_OVER", "{error:?}");
+                assert!(record.is_empty(), "a click stopped by the takeover sent nothing: {record:?}");
+            }
+            None => assert!(record.iter().any(|r| r.what == "click" && r.on == "late"), "{record:?}"),
+        }
+        assert!(record.iter().all(|r| r.at < human_at), "no input arrived once the person had control: {record:?} after {human_at}");
+    }
     assert_ok(&home.bctl(&["down", s]));
 }
