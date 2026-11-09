@@ -329,6 +329,38 @@ static void check_blocking_reader_xproc(void)
 	close(p[0]);
 }
 
+static void check_shutdown_handshake_xproc(void)
+{
+	int failures = 0, last = 0;
+	for (int i = 0; i < 200; i++) {
+		int fds[2];
+		if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds)) {
+			failures++;
+			continue;
+		}
+		pid_t pid = fork();
+		if (pid == 0) {
+			char c;
+			ssize_t r;
+			close(fds[1]);
+			shutdown(fds[0], SHUT_WR);
+			while ((r = read(fds[0], &c, 1)) < 0 && errno == EINTR)
+				;
+			_exit(r == 1 && c == 'C' ? 0 : r < 0 ? 2 : 3);
+		}
+		close(fds[0]);
+		shutdown(fds[1], SHUT_RD);
+		int sent = send(fds[1], "C", 1, MSG_NOSIGNAL) == 1;
+		close(fds[1]);
+		int status = reap(pid);
+		if (!sent || status) {
+			failures++;
+			last = status;
+		}
+	}
+	record("shutdown_handshake_xproc", failures == 0, "failures=%d,last_status=0x%x", failures, last);
+}
+
 static void check_pipe_sigpipe(void)
 {
 	int p[2];
@@ -486,6 +518,7 @@ int main(void)
 	check_shut_wr_sigpipe();
 	check_shutdown_einval();
 	check_blocking_reader_xproc();
+	check_shutdown_handshake_xproc();
 	check_pipe_sigpipe();
 	check_msg_dontwait();
 	check_membarrier();

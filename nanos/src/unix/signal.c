@@ -1106,8 +1106,15 @@ boolean dispatch_signals(thread t)
         t->saved_signal_mask = -1ull;
     }
 
-    if (qs == INVALID_ADDRESS)
+    if (qs == INVALID_ADDRESS) {
+        if (t->interrupting_syscall) {
+            t->interrupting_syscall = false;
+            sysreturn rv = get_syscall_return(t);
+            if ((rv == -ERESTARTSYS) || (rv == -ERESTARTNOHAND))
+                syscall_restart_arch_fixup(thread_frame(t));
+        }
         return false;
+    }
 
     /* act on signal disposition */
     struct siginfo *si = &qs->si;
