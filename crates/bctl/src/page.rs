@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bctl_automation::{
-    Acted, Action, ActionError, AttachError, Checked, Chord, ClickCount, Condition, Coverage, Dialog, DialogResponse, ElementRef, FieldValue, LoadState,
+    Acted, Action, ActionError, AttachError, Interrupt, Checked, Chord, ClickCount, Condition, Coverage, Dialog, DialogResponse, ElementRef, FieldValue, LoadState,
     Locator, NodeValue, Occurrence, Outcome, Pages, Query, Read, Readiness, RefCounter, RefCounterError, RefError, Scroll, SnapshotError, SnapshotNode,
     SnapshotOptions, TargetScope, Tabs,
 };
@@ -14,6 +14,7 @@ use bctl_core::SessionName;
 use futures_lite::future::block_on;
 use miniserde::json;
 
+use crate::authority::{Effect, InFlight};
 use crate::daemon::{Daemon, Refusal};
 use crate::protocol::{
     ActionRequest, ActionView, BatchView, CandidateView, DialogView, ElementView, ErrorBody, ErrorCode, NodeView, Op, PageView, Request, Response,
@@ -42,6 +43,7 @@ impl RefCounter for StoredRefCounter<'_> {
 }
 
 pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: PageCommand, request: &Request) -> Result<Response, Refusal> {
+    let _in_flight = tabs::begin(daemon, session, Effect::Reads)?;
     let browser = tabs::browser(daemon, session)?;
     let store = SessionBindings { daemon, session };
     let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
@@ -340,14 +342,12 @@ pub(crate) fn act(daemon: &Daemon, session: &SessionName, op: Op, request: &Requ
     let started = Instant::now();
     let asked = request.action.as_deref().cloned().unwrap_or_default();
     let action = action(op, &asked)?;
-    if action.mutates() {
-        tabs::refuse_while_person_in_control(daemon, session)?;
-    }
+    let in_flight = tabs::begin(daemon, session, effect(&action))?;
     let browser = tabs::browser(daemon, session)?;
     let store = SessionBindings { daemon, session };
     let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
     let mut pages = browser.pages.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut view = run_step(daemon, session, &target, &mut pages, &Step { op, asked, action })?;
+    let mut view = run_step(daemon, session, &target, &mut pages, &Step { op, asked, action }, &in_flight)?;
     drop(pages);
     view.elapsed_ms = started.elapsed().as_millis() as u64;
     Ok(Response { page: Some(Box::new(PageView { action: Some(view), ..PageView::default() })), ..Response::empty() })
@@ -360,9 +360,13 @@ struct Step {
     action: Action,
 }
 
-fn run_step(daemon: &Daemon, session: &SessionName, target: &TargetScope, pages: &mut Pages, step: &Step) -> Result<ActionView, Refusal> {
+fn effect(action: &Action) -> Effect {
+    if action.mutates() { Effect::Mutates } else { Effect::Reads }
+}
+
+fn run_step(daemon: &Daemon, session: &SessionName, target: &TargetScope, pages: &mut Pages, step: &Step, in_flight: &InFlight<'_>) -> Result<ActionView, Refusal> {
     let Step { op, asked, action } = step;
-    let acted = block_on(pages.act(target, action, &StoredRefCounter { daemon })).map_err(|e| action_failure(session, target, e))?;
+    let acted = block_on(pages.act(target, action, &StoredRefCounter { daemon }, in_flight)).map_err(|e| action_failure(session, target, e))?;
     let Acted { on, outcome, cdp_calls, elapsed, .. } = acted;
     let mut view = ActionView {
         action: op_name(*op),
@@ -447,9 +451,8 @@ pub(crate) fn batch(daemon: &Daemon, session: &SessionName, request: &Request) -
         return Err(bad(format!("a batch holds 1 to {MAX_BATCH_STEPS} steps; this one has {}", steps.len())));
     }
     let planned = steps.iter().enumerate().map(|(index, step)| plan(index, step)).collect::<Result<Vec<_>, _>>()?;
-    if planned.iter().any(|step| step.action.mutates()) {
-        tabs::refuse_while_person_in_control(daemon, session)?;
-    }
+    let mutates = planned.iter().any(|step| step.action.mutates());
+    let in_flight = tabs::begin(daemon, session, if mutates { Effect::Mutates } else { Effect::Reads })?;
     let browser = tabs::browser(daemon, session)?;
     let store = SessionBindings { daemon, session };
     let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
@@ -458,7 +461,7 @@ pub(crate) fn batch(daemon: &Daemon, session: &SessionName, request: &Request) -
     let mut failed = None;
     for (index, step) in planned.iter().enumerate() {
         let step_started = Instant::now();
-        let ran = run_step(daemon, session, &target, &mut pages, step);
+        let ran = if in_flight.interrupted() { Err(taken_over(session, &target, "the batch").into()) } else { run_step(daemon, session, &target, &mut pages, step, &in_flight) };
         let elapsed_ms = step_started.elapsed().as_millis() as u64;
         let action = op_name(step.op);
         match ran {
@@ -484,6 +487,15 @@ pub(crate) fn batch(daemon: &Daemon, session: &SessionName, request: &Request) -
 
 fn op_name(op: Op) -> String {
     op.as_str().trim_start_matches("page-").to_string()
+}
+
+fn taken_over(session: &SessionName, target: &TargetScope, what: &str) -> Response {
+    page_failure(
+        target,
+        ErrorCode::TakenOver,
+        format!("a person took control of session {session}, so {what} stopped"),
+        Some("resume automation in the dashboard, then retry".into()),
+    )
 }
 
 fn action_failure(session: &SessionName, target: &TargetScope, error: ActionError) -> Response {
@@ -520,6 +532,7 @@ fn action_failure(session: &SessionName, target: &TargetScope, error: ActionErro
         }
         ActionError::NoDialog => page_failure(target, ErrorCode::NoDialog, message, None),
         ActionError::Timeout { .. } => page_failure(target, ErrorCode::Timeout, message, Some("wait longer with --timeout MS".into())),
+        ActionError::Interrupted { .. } => taken_over(session, target, &message),
         ActionError::NavigationFailed { .. } => page_failure(target, ErrorCode::NavigationFailed, message, None),
         ActionError::Script { .. } => page_failure(target, ErrorCode::EvalFailed, message, None),
         ActionError::Attach(error) => attach_failure(session, target, error),

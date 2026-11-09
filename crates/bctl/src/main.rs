@@ -1,3 +1,4 @@
+mod authority;
 mod daemon;
 mod gateway;
 mod page;

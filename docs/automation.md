@@ -96,6 +96,45 @@ whose command was sent but whose reply never came fails `UNKNOWN_OUTCOME` and
 is not retried, here or in a later batch. External CDP clients, Grab runs, and
 a person can still act on the page between steps.
 
+## Authority
+
+Each session has one control authority, owned by the daemon and kept in
+memory: `automation`, `yielding`, or `human`. A daemon restart starts every
+session under `automation`.
+
+| From | Event | To |
+|------|-------|----|
+| `automation` | a viewer takes control, no native command settling | `human` |
+| `automation` | a viewer takes control, native commands settling | `yielding` |
+| `yielding` | the last native command begun under `automation` ends | `human` |
+| `yielding` or `human` | the same viewer resumes automation, or its live view closes | `automation` |
+| any | `bctl down` | `automation` |
+
+Taking or resuming as another viewer while a person holds control, or is
+taking it, is refused with HTTP 409 and changes nothing. A native command is
+*settling* from the moment it starts under `automation` until it returns.
+
+- **Native commands.** Under `yielding` and `human`, commands that change the
+  page (`goto`, `click`, `fill`, `eval`, `tab new`, `tab close`, a batch with
+  any such step, and the rest) fail with `HUMAN_IN_CONTROL` before doing
+  anything. Reads (`snapshot`, `resolve`, `get`, `wait`, `screenshot`, `tab
+  list`, `tab use`) still run.
+- **Commands in flight.** A takeover lets settling commands end on their own,
+  except where they wait: a `wait`, or a `goto` waiting for its page to load,
+  ends within about 100 ms with `TAKEN_OVER`, and a batch stops before its next
+  step with `TAKEN_OVER`. A `goto` that ends this way has already sent its
+  navigation. Nothing is retried. The browser, the selected tab, and the
+  profile are untouched.
+- **The RFB input lease** is held exactly in `human`: until then the viewer's
+  keyboard and pointer input is dropped, and the dashboard shows `Yielding`
+  with the number of commands it waits for.
+- **CDP attachments.** Under `yielding` and `human` the gateway refuses new
+  attachments through `bctl cdp-url` capabilities with HTTP 409. Connections
+  already open, such as a run's, are not cut.
+- **Runs.** Resuming automation also resumes the session's run if it is in
+  `needs-interaction`. A takeover does not wait for a running run: neither
+  Grab nor an exec job has a boundary to pause at without ending the attempt.
+
 ## The Rust API
 
 `crates/automation` (`bctl-automation`) is the library. A host program:
@@ -136,3 +175,7 @@ CLI already is. The capability is still the gateway's: `bctl cdp-revoke` or
 - One very large DOM read can exceed the 32 MiB CDP message cap.
 - A host program's own connection is not interrupted when a person takes
   control in the dashboard; the gateway only refuses new attachments.
+  `Pages::act` takes an `Interrupt`, which a host can use to stop its own
+  waits.
+- A read begun after a takeover, such as a long `wait`, is not interrupted by
+  it and holds the session's page lock until it ends.

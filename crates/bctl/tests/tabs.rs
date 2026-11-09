@@ -148,7 +148,7 @@ fn n2_the_binding_survives_a_daemon_kill_but_not_a_new_generation_and_waits_for_
     assert_eq!(refused(&home, &["close", s, &selected]).code, "HUMAN_IN_CONTROL");
     let during = listed(&home, &["list", s]);
     assert_eq!(ids(&during.targets), ids(&reattached.targets), "a refused command changes no page");
-    let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control/release"), &as_viewer);
+    let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control/resume"), &as_viewer);
     assert_eq!(status, 200, "{response}");
     let after = listed(&home, &["new", s]);
     assert_eq!(after.targets.len(), reattached.targets.len() + 1);

@@ -164,12 +164,14 @@ output files. Files are downloads only: they are served as an opaque
 attachment under a `sandbox` policy, never as a page on the dashboard origin.
 
 When a run is `needs-interaction`, the page embeds the session's live view.
-"Take control" acquires the session's input lease, so only that viewer's
-keyboard and pointer reach the browser, and new CDP attachments are refused
-until it is released. Grab leaves no tab open at a login wall, so open the
-named URL in the browser yourself. "Resume automation" releases the lease and
-sends `resume`, as `bctl resume` does. If another viewer holds the lease, it
-refuses.
+"Take control" moves the session's authority to `yielding` and then, once
+bctl's own native commands in flight have ended, to `human`: only then does
+that viewer's keyboard and pointer reach the browser. From `yielding` on, new
+CDP attachments and native commands that change the page are refused. Grab
+leaves no tab open at a login wall, so open the named URL in the browser
+yourself. "Resume automation" hands control back to automation and sends
+`resume`, as `bctl resume` does. If another viewer has control, it refuses.
+The states are described in [automation.md](automation.md#authority).
 
 ### States and outcomes
 

@@ -33,8 +33,8 @@ mod url;
 use std::time::Duration;
 
 pub use actions::{
-    Acted, ActedOn, Action, ActionError, Candidate, ClickCount, Condition, Dialog, DialogResponse, FieldValue, LoadState, Locator, MAX_CANDIDATES, MAX_READ_CHARS,
-    Occurrence, Outcome, Query, Read, Readiness, Scroll,
+    Acted, ActedOn, Action, ActionError, Candidate, ClickCount, Condition, Dialog, DialogResponse, FieldValue, Interrupt, LoadState, Locator, MAX_CANDIDATES,
+    MAX_READ_CHARS, Occurrence, Outcome, Query, Read, Readiness, Scroll, Uninterrupted,
 };
 pub use keys::{Chord, Modifier, UnknownKey};
 pub use pages::{Accessible, AttachError, Pages, RefError, ResolvedRef, SnapshotError, Staleness};

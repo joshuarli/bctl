@@ -51,7 +51,8 @@ Shadowdriver's `control_url`, Playwright's `connectOverCDP`). The URL is a
 capability served by the gateway: its host is `<token>.localhost`, so clients
 that keep only a URL's host and port still present it. `bctl cdp-revoke NAME`
 (or `bctl down NAME`) revokes it and closes its DevTools connections. While a
-person holds the dashboard input lease, new attachments are refused.
+person has control of the session, or is taking it, new attachments are
+refused.
 
 bctl's own automation acts on one selected page target per session, named by
 its CDP target id:
@@ -71,7 +72,7 @@ with `TARGET_GONE`. The error's `target` names the vanished target and
 `targets` lists the remaining ones; nothing is selected in its place. The
 other codes are `NO_SUCH_TARGET`, `LAST_TARGET` (closing the last page
 target would end the browser), `HUMAN_IN_CONTROL` (`tab new` and `tab close`
-while a person holds the input lease), `UNKNOWN_OUTCOME` (the browser may or
+while a person has control or is taking it), `UNKNOWN_OUTCOME` (the browser may or
 may not have acted; bctl never retries), and `CDP_FAILED`. URLs shown or
 stored by these commands have no userinfo, query, or fragment.
 
@@ -84,6 +85,13 @@ those actions in order and stops at the first failure; it is not a
 transaction. The same automation is a Rust library, `bctl-automation`.
 [docs/automation.md](docs/automation.md) describes the commands, the socket
 protocol, batches, the library, ref lifetimes, and the known limits.
+
+"Take control" in the dashboard first moves the session to `yielding`: native
+commands that would change the page are refused, a running `wait` ends with
+`TAKEN_OVER`, and the person's input reaches the browser once the commands in
+flight have ended. "Resume automation" hands control back and resumes a run
+that waits for a person. See the authority section of
+[docs/automation.md](docs/automation.md).
 
 The guest's CDP is exposed to the host only as a Unix socket in a 0700
 directory under `BCTL_HOME`; no host TCP port reaches it, so the gateway is the
@@ -104,6 +112,7 @@ cargo test -p bctl --test tabs -- --ignored
 cargo test -p bctl --test snapshots -- --ignored
 cargo test -p bctl --test actions -- --ignored
 cargo test -p bctl --test batches -- --ignored
+cargo test -p bctl --test authority -- --ignored
 BCTL_GRAB="$PWD/../shadowdriver/grab/.venv/bin/grab" cargo test -p bctl --test runs -- --ignored
 cargo run -p bctl-proof -- m1 --runs 10
 BCTL_PROOF_IMAGE=.work/images/ref-alpine-tinyland.tar cargo run -p bctl-proof -- m1

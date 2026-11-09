@@ -22,7 +22,9 @@ use h12tiny::web::{Request, Router, WebSocketFrame, WebSocketOpCode, WebSocketPa
 use http::{HeaderValue, Method, Response, StatusCode, header};
 use miniserde::{Deserialize, Serialize, json};
 
+use crate::authority::{Authority, Contested, Control, Viewer};
 use crate::daemon::Daemon;
+use crate::protocol::Request as DaemonRequest;
 
 mod runs;
 
@@ -36,8 +38,6 @@ pub struct Gateway {
     port: Option<u16>,
     login_tokens: HashMap<String, Instant>,
     sessions: HashSet<String>,
-    /// The dashboard session holding each browser session's input lease.
-    controllers: HashMap<SessionName, String>,
     /// Unguessable CDP capabilities, each bound to one browser session until revoked.
     capabilities: Vec<(String, SessionName)>,
 }
@@ -213,8 +213,8 @@ fn handle(daemon: &Arc<Daemon>, port: u16, mut request: Request) -> Response<Box
         (Method::GET, ["api", "runs", id, "artifacts", rest @ ..]) => runs::download(daemon, id, rest),
         (Method::POST, ["api", "runs", id, "resume"]) => runs::resume(daemon, id, &viewer),
         (Method::GET, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Inspect),
-        (Method::POST, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Acquire),
-        (Method::POST, ["api", "sessions", name, "control", "release"]) => control(daemon, name, &viewer, ControlRequest::Release),
+        (Method::POST, ["api", "sessions", name, "control"]) => control(daemon, name, &viewer, ControlRequest::Take),
+        (Method::POST, ["api", "sessions", name, "control", "resume"]) => control(daemon, name, &viewer, ControlRequest::Resume),
         (Method::POST, ["api", "sessions", name, "down"]) => match SessionName::new(name) {
             Ok(name) => match stop_session(daemon, &name) {
                 Ok(()) => respond(StatusCode::NO_CONTENT, "text/plain", ""),
@@ -326,17 +326,12 @@ fn handle_cdp(daemon: &Arc<Daemon>, host: &str, token: &str, request: &mut Reque
     if request.headers().contains_key(header::ORIGIN) {
         return text(StatusCode::FORBIDDEN, "Browser-originated CDP requests are refused.");
     }
-    let (session, person_in_control) = {
-        let gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
-        let session = gateway.capability_session(token);
-        let held = session.as_ref().is_some_and(|session| gateway.controllers.contains_key(session));
-        (session, held)
-    };
+    let session = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capability_session(token);
     let Some(session) = session else {
         return text(StatusCode::UNAUTHORIZED, "This CDP URL is invalid or revoked. Run `bctl cdp-url SESSION`.");
     };
-    if person_in_control {
-        return text(StatusCode::CONFLICT, "A person has taken control of this browser; new CDP attachments are refused until they release it.");
+    if daemon.authority.of(&session, |control| *control.authority() != Authority::Automation) {
+        return text(StatusCode::CONFLICT, "A person has control of this browser, or is taking it; new CDP attachments are refused until automation resumes.");
     }
     let Some(cdp_socket) = daemon.cdp_socket(&session) else {
         return text(StatusCode::CONFLICT, "That session is not running.");
@@ -466,6 +461,7 @@ fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, cdp_socket: &Path, path: 
 }
 
 fn proxy_vnc(daemon: &Arc<Daemon>, name: &str, request: &mut Request, viewer: String) -> Response<BoxBody> {
+    let viewer = Viewer::new(&viewer);
     let Ok(session) = SessionName::new(name) else {
         return text(StatusCode::BAD_REQUEST, "Invalid session name.");
     };
@@ -481,16 +477,13 @@ fn proxy_vnc(daemon: &Arc<Daemon>, name: &str, request: &mut Request, viewer: St
     thread::spawn(move || {
         futures_lite::future::block_on(async move {
             let policy = || {
-                let holds = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).controllers.get(&session) == Some(&viewer);
+                let holds = daemon.authority.of(&session, |control| *control.authority() == Authority::Human(viewer.clone()));
                 if interactive && holds { InputPolicy::Forward } else { InputPolicy::Drop }
             };
             if let (Ok(vnc), Ok(connection)) = (TcpStream::connect(("127.0.0.1", vnc_port)).await, upgrade.into_connection().await) {
                 relay(connection, vnc, policy).await;
             }
-            let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
-            if gateway.controllers.get(&session) == Some(&viewer) {
-                gateway.controllers.remove(&session);
-            }
+            daemon.authority.of(&session, |control| control.abandon(&viewer));
         });
     });
     response
@@ -551,58 +544,62 @@ async fn relay(connection: h12tiny::web::WebSocketConnection, vnc: TcpStream, po
 #[derive(Clone, Copy)]
 enum ControlRequest {
     Inspect,
-    Acquire,
-    Release,
+    Take,
+    Resume,
 }
 
 #[derive(Serialize)]
 struct ControlState {
-    held: bool,
+    /// `automation`, `yielding`, or `human`.
+    authority: String,
+    /// Whether this viewer is the one taking or holding control.
     mine: bool,
+    /// Native commands begun under automation that have not ended; `yielding` lasts until this is 0.
+    settling: u64,
 }
 
-/// The input lease: one dashboard session at a time may send keyboard and pointer input to a browser session.
-fn control(daemon: &Daemon, name: &str, viewer: &str, request: ControlRequest) -> Response<BoxBody> {
+fn control_state(control: &Control, viewer: &Viewer) -> ControlState {
+    ControlState {
+        authority: control.authority().as_str().to_string(),
+        mine: control.authority().viewer() == Some(viewer),
+        settling: control.settling() as u64,
+    }
+}
+
+/// The session's authority as a dashboard viewer sees it. Taking control yields first: the RFB input lease is
+/// this viewer's only once the authority is `human`. Resuming hands control back to automation and resumes a
+/// run waiting for a person.
+fn control(daemon: &Arc<Daemon>, name: &str, viewer: &str, request: ControlRequest) -> Response<BoxBody> {
     let Ok(session) = SessionName::new(name) else {
         return text(StatusCode::BAD_REQUEST, "Invalid session name.");
     };
-    let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
-    let holder = gateway.controllers.get(&session).cloned();
+    let viewer = Viewer::new(viewer);
+    let contested = || text(StatusCode::CONFLICT, "Another viewer has control of this browser, or is taking it.");
     match request {
         ControlRequest::Inspect => {}
-        ControlRequest::Acquire => match holder.as_deref() {
-            Some(other) if other != viewer => return text(StatusCode::CONFLICT, "Another viewer has control of this browser."),
-            _ => {
-                drop(gateway);
-                if daemon.vnc_target(&session).is_none_or(|(_, interactive)| !interactive) {
-                    return text(StatusCode::CONFLICT, "This runtime is view-only: it has no input devices.");
-                }
-                gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
-                if gateway.controllers.get(&session).is_some_and(|h| h != viewer) {
-                    return text(StatusCode::CONFLICT, "Another viewer has control of this browser.");
-                }
-                gateway.controllers.insert(session.clone(), viewer.to_string());
+        ControlRequest::Take => {
+            if daemon.vnc_target(&session).is_none_or(|(_, interactive)| !interactive) {
+                return text(StatusCode::CONFLICT, "This runtime is view-only: it has no input devices.");
             }
-        },
-        ControlRequest::Release => {
-            if holder.as_deref() == Some(viewer) {
-                gateway.controllers.remove(&session);
+            if let Err(Contested) = daemon.authority.of(&session, |control| control.take(&viewer)) {
+                return contested();
+            }
+        }
+        ControlRequest::Resume => {
+            if let Err(Contested) = daemon.authority.of(&session, |control| control.resume(&viewer)) {
+                return contested();
+            }
+            if let Some(run) = daemon.run_needing_interaction(&session)
+                && let Err(refusal) = daemon.handle(&DaemonRequest { op: "resume".into(), run: Some(run), ..DaemonRequest::empty() })
+            {
+                let message = refusal.0.error.map(|e| e.message).unwrap_or_default();
+                return text(StatusCode::CONFLICT, &format!("Automation resumed, but run {run} did not: {message}"));
             }
         }
     }
-    let holder = gateway.controllers.get(&session);
-    json_response(&ControlState { held: holder.is_some(), mine: holder.is_some_and(|h| h == viewer) })
-}
-
-pub(crate) fn person_in_control(daemon: &Daemon, session: &SessionName) -> bool {
-    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).controllers.contains_key(session)
-}
-
-fn release_control(daemon: &Daemon, session: &SessionName) {
-    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).controllers.remove(session);
+    json_response(&daemon.authority.of(&session, |control| control_state(control, &viewer)))
 }
 
 fn stop_session(daemon: &Daemon, session: &SessionName) -> Result<(), String> {
-    release_control(daemon, session);
     daemon.down_session(session)
 }

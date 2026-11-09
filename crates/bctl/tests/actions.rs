@@ -438,7 +438,7 @@ fn n4_forms_take_unicode_text_selections_and_checks_like_a_person_and_refuse_whi
     }
     assert_eq!(done(&home, "get", s, &["value", "--label", "Plan"]).text.as_deref(), Some("pro"), "reads go on while a person has control");
     done(&home, "wait", s, &["--text", "Arrived late"]);
-    let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control/release"), &as_viewer);
+    let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control/resume"), &as_viewer);
     assert_eq!(status, 200, "{response}");
     assert_eq!(events(&home, s), before, "refused actions changed nothing");
 

@@ -11,6 +11,7 @@ use bctl_core::{Generation, SelectedTarget, SessionName, SessionState, StoreErro
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, json};
 
+use crate::authority::{Authority, Effect, InFlight, Refused};
 use crate::daemon::{Daemon, Refusal};
 use crate::gateway;
 use crate::protocol::{ErrorBody, ErrorCode, Request, Response, TabView, TabsView};
@@ -63,24 +64,28 @@ pub(crate) enum TabCommand {
     Close,
 }
 
-pub(crate) fn refuse_while_person_in_control(daemon: &Daemon, session: &SessionName) -> Result<(), Refusal> {
-    if gateway::person_in_control(daemon, session) {
-        return Err(failure(
+/// Registers a native command with the session's authority, refusing one that would change the pages while a
+/// person has control or is taking it.
+pub(crate) fn begin<'a>(daemon: &'a Daemon, session: &SessionName, effect: Effect) -> Result<InFlight<'a>, Refusal> {
+    daemon.authority.begin(session, effect).map_err(|Refused(held)| {
+        let state = match held {
+            Authority::Yielding(_) => "is taking",
+            Authority::Human(_) | Authority::Automation => "has",
+        };
+        failure(
             ErrorCode::HumanInControl,
-            format!("a person has control of session {session}; native commands do not change its pages until they release it"),
-            Some("release control in the dashboard, then retry".into()),
+            format!("a person {state} control of session {session}; native commands do not change its pages until automation resumes"),
+            Some("resume automation in the dashboard, then retry".into()),
             None,
             None,
         )
-        .into());
-    }
-    Ok(())
+        .into()
+    })
 }
 
 pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand, request: &Request) -> Result<Response, Refusal> {
-    if matches!(command, TabCommand::New | TabCommand::Close) {
-        refuse_while_person_in_control(daemon, session)?;
-    }
+    let effect = if matches!(command, TabCommand::New | TabCommand::Close) { Effect::Mutates } else { Effect::Reads };
+    let _in_flight = begin(daemon, session, effect)?;
     let connection = browser(daemon, session)?.connection;
     let store = SessionBindings { daemon, session };
     let tabs = Tabs::new(&connection, &store);

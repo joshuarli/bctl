@@ -1,7 +1,9 @@
 import RFB from "@novnc/novnc";
 import { Badge, Button, EmptyState, Notice, PageHeader, Panel } from "@laputa-systems/ui-dashboard";
 import { For, Show, createEffect, createSignal, onCleanup, onSettled } from "solid-js";
-import { control, focusTab, releaseControl, stop, tabs, takeControl, vncUrl, type Control, type SessionView, type Tab } from "./api.ts";
+import {
+  authorityText, automation, control, focusTab, resumeAutomation, stop, tabs, takeControl, vncUrl, type Control, type SessionView, type Tab
+} from "./api.ts";
 import { navigate, stateTone } from "./app.tsx";
 import { RunsPanel } from "./runs.tsx";
 
@@ -28,7 +30,7 @@ export function SessionPage(props: { name: string; session: SessionView | null }
   const [attempt, setAttempt] = createSignal(0);
   const [tabList, setTabList] = createSignal<Tab[]>([]);
   const [problem, setProblem] = createSignal<string | null>(null);
-  const [lease, setLease] = createSignal<Control>({ held: false, mine: false });
+  const [lease, setLease] = createSignal<Control>(automation);
 
   onSettled(() => {
     let alive = true;
@@ -65,11 +67,9 @@ export function SessionPage(props: { name: string; session: SessionView | null }
           <Show when={session().input === "view-only"}>
             <Notice tone="warn">This runtime has no input devices: the view is read-only.</Notice>
           </Show>
-          <Show when={lease().held && !lease().mine}>
-            <Notice tone="info">Another viewer has control. You are watching.</Notice>
-          </Show>
+          <p data-testid="authority">{authorityText(lease(), false)}</p>
           <Show when={`${attempt()}:${session().generation}`} keyed>
-            <Viewer name={session().name} generation={session().generation} viewOnly={!lease().mine} onStream={setStream} />
+            <Viewer name={session().name} generation={session().generation} viewOnly={!(lease().mine && lease().authority === "human")} onStream={setStream} />
           </Show>
         </Show>
       </Panel>
@@ -78,9 +78,9 @@ export function SessionPage(props: { name: string; session: SessionView | null }
           <div class="controls">
             <Show when={session().input === "interactive"}>
               <Show when={lease().mine} fallback={
-                <Button onClick={() => void act(async () => { setLease(await takeControl(session().name)); })}>Take control</Button>
+                <Button disabled={lease().authority !== "automation"} onClick={() => void act(async () => { setLease(await takeControl(session().name)); })}>Take control</Button>
               }>
-                <Button onClick={() => void act(async () => { setLease(await releaseControl(session().name)); })}>Release control</Button>
+                <Button onClick={() => void act(async () => { setLease(await resumeAutomation(session().name)); })}>Resume automation</Button>
               </Show>
             </Show>
             <Button onClick={() => setAttempt((n) => n + 1)}>Reconnect viewer</Button>

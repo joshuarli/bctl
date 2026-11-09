@@ -190,6 +190,21 @@ impl Action {
     }
 }
 
+/// Asks a long action to stop early. [`Pages::act`] asks between the polls of a wait and while a navigation it
+/// started loads; it never stops an action part way through sending input.
+pub trait Interrupt {
+    fn interrupted(&self) -> bool;
+}
+
+/// Never asks an action to stop.
+pub struct Uninterrupted;
+
+impl Interrupt for Uninterrupted {
+    fn interrupted(&self) -> bool {
+        false
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dialog {
     /// `alert`, `confirm`, `prompt`, or `beforeunload`, as the browser reports it.
@@ -268,6 +283,9 @@ pub enum ActionError {
     DialogOpen(Dialog),
     NoDialog,
     Timeout { waiting_for: String, waited: Duration },
+    /// The caller's [`Interrupt`] asked the action to stop while it waited. A navigation's command had already
+    /// been sent.
+    Interrupted { waiting_for: String, waited: Duration },
     NavigationFailed { url: SafeUrl, reason: String },
     /// The caller's expression threw.
     Script { exception: String },
@@ -296,6 +314,7 @@ impl fmt::Display for ActionError {
             ActionError::DialogOpen(dialog) => write!(f, "the page shows a {} dialog: {}", dialog.kind, json::to_string(&dialog.message)),
             ActionError::NoDialog => f.write_str("the page shows no dialog"),
             ActionError::Timeout { waiting_for, waited } => write!(f, "{waiting_for} did not happen within {} ms", waited.as_millis()),
+            ActionError::Interrupted { waiting_for, waited } => write!(f, "waiting for {waiting_for} was interrupted after {} ms", waited.as_millis()),
             ActionError::NavigationFailed { url, reason } => write!(f, "navigating to {url} failed: {reason}"),
             ActionError::Script { exception } => write!(f, "the expression threw: {exception}"),
             ActionError::Helper { reason } => write!(f, "bctl's page helper failed: {reason}"),
@@ -1350,9 +1369,17 @@ impl<'a> Act<'a> {
         })
     }
 
-    async fn wait(&mut self, condition: &Condition, timeout: Duration) -> Result<Outcome, ActionError> {
+    async fn wait(&mut self, condition: &Condition, timeout: Duration, interrupt: &dyn Interrupt) -> Result<Outcome, ActionError> {
         let started = Instant::now();
         let deadline = started + timeout;
+        let waiting_for = || match condition {
+            Condition::Present(query) => format!("an element matching {query}"),
+            Condition::Absent(query) => format!("no element matching {query}"),
+            Condition::Text(text) => format!("the text {}", json::to_string(text)),
+            Condition::Url(pattern) => format!("a URL matching {}", json::to_string(pattern)),
+            Condition::Loaded(LoadState::DomContentLoaded) => "DOMContentLoaded".to_string(),
+            Condition::Loaded(LoadState::Load) => "the load event".to_string(),
+        };
         loop {
             if let Some(dialog) = self.attachment.current_dialog().await.map_err(subscription_end)? {
                 return Err(ActionError::DialogOpen(dialog));
@@ -1367,15 +1394,10 @@ impl<'a> Act<'a> {
             }
             let now = Instant::now();
             if now >= deadline {
-                let waiting_for = match condition {
-                    Condition::Present(query) => format!("an element matching {query}"),
-                    Condition::Absent(query) => format!("no element matching {query}"),
-                    Condition::Text(text) => format!("the text {}", json::to_string(text)),
-                    Condition::Url(pattern) => format!("a URL matching {}", json::to_string(pattern)),
-                    Condition::Loaded(LoadState::DomContentLoaded) => "DOMContentLoaded".to_string(),
-                    Condition::Loaded(LoadState::Load) => "the load event".to_string(),
-                };
-                return Err(ActionError::Timeout { waiting_for, waited: now - started });
+                return Err(ActionError::Timeout { waiting_for: waiting_for(), waited: now - started });
+            }
+            if interrupt.interrupted() {
+                return Err(ActionError::Interrupted { waiting_for: waiting_for(), waited: now - started });
             }
             Timer::at(deadline.min(now + POLL)).await;
             self.release().await;
@@ -1384,7 +1406,7 @@ impl<'a> Act<'a> {
         }
     }
 
-    async fn navigate(&mut self, url: &str, readiness: Readiness, timeout: Duration) -> Result<Outcome, ActionError> {
+    async fn navigate(&mut self, url: &str, readiness: Readiness, timeout: Duration, interrupt: &dyn Interrupt) -> Result<Outcome, ActionError> {
         let started = Instant::now();
         let deadline = started + timeout;
         let page = self.attachment.page.clone();
@@ -1396,9 +1418,10 @@ impl<'a> Act<'a> {
         }
         let (Some(loader), false) = (navigated.loader_id, readiness == Readiness::Commit) else { return Ok(Outcome::Done) };
         let wanted = readiness.lifecycle_name();
+        let awaited = || format!("the {wanted} event of the navigation to {}", SafeUrl::new(url));
         loop {
             let next = future::or(async { Some(events.next().await) }, async {
-                Timer::at(deadline).await;
+                Timer::at(deadline.min(Instant::now() + POLL)).await;
                 None
             });
             let dialogs = &mut self.attachment.dialogs;
@@ -1418,9 +1441,9 @@ impl<'a> Act<'a> {
             let event = match raced {
                 Ok(Some(Ok(event))) => event,
                 Ok(Some(Err(end))) => return Err(subscription_end(end)),
-                Ok(None) => {
-                    return Err(ActionError::Timeout { waiting_for: format!("the {wanted} event of the navigation to {}", SafeUrl::new(url)), waited: started.elapsed() });
-                }
+                Ok(None) if Instant::now() >= deadline => return Err(ActionError::Timeout { waiting_for: awaited(), waited: started.elapsed() }),
+                Ok(None) if interrupt.interrupted() => return Err(ActionError::Interrupted { waiting_for: awaited(), waited: started.elapsed() }),
+                Ok(None) => continue,
                 Err(Ok(dialog)) => {
                     self.attachment.dialog = Some(dialog.clone());
                     return Err(ActionError::DialogOpen(dialog));
@@ -1487,13 +1510,13 @@ impl<'a> Act<'a> {
         }
     }
 
-    async fn run(&mut self, action: &Action, counter: &dyn RefCounter) -> Result<(Option<Node>, Outcome), ActionError> {
+    async fn run(&mut self, action: &Action, counter: &dyn RefCounter, interrupt: &dyn Interrupt) -> Result<(Option<Node>, Outcome), ActionError> {
         if action.sends_input() {
             let page = self.attachment.page.clone();
             self.dispatch(&page, &BringToFront {}).await?;
         }
         match action {
-            Action::Navigate { url, readiness, timeout } => Ok((None, self.navigate(url, *readiness, *timeout).await?)),
+            Action::Navigate { url, readiness, timeout } => Ok((None, self.navigate(url, *readiness, *timeout, interrupt).await?)),
             Action::Click { locator, count } => {
                 let node = self.locate(locator, counter).await?;
                 self.actionable(&node, locator, true).await?;
@@ -1569,7 +1592,7 @@ impl<'a> Act<'a> {
                 }
                 Ok((Some(node), Outcome::Checked { changed: true }))
             }
-            Action::Wait { condition, timeout } => Ok((None, self.wait(condition, *timeout).await?)),
+            Action::Wait { condition, timeout } => Ok((None, self.wait(condition, *timeout, interrupt).await?)),
             Action::Read(read) => self.read(read, counter).await,
             Action::Screenshot => {
                 let page = self.attachment.page.clone();
@@ -1663,8 +1686,9 @@ impl<'a> Act<'a> {
 impl Pages {
     /// Runs one action on `target`. A mutating action whose command was sent without an observed reply fails
     /// with [`CallError::UnknownOutcome`] and is never retried. A dialog that is open, or that the action opens,
-    /// fails it with [`ActionError::DialogOpen`] until answered with [`Action::Dialog`].
-    pub async fn act(&mut self, target: &TargetScope, action: &Action, counter: &dyn RefCounter) -> Result<Acted, ActionError> {
+    /// fails it with [`ActionError::DialogOpen`] until answered with [`Action::Dialog`]. A wait, or a navigation
+    /// waiting to load, ends with [`ActionError::Interrupted`] soon after `interrupt` asks.
+    pub async fn act(&mut self, target: &TargetScope, action: &Action, counter: &dyn RefCounter, interrupt: &dyn Interrupt) -> Result<Acted, ActionError> {
         let started = Instant::now();
         if target.generation != self.connection.generation() {
             return Err(ActionError::OtherGeneration);
@@ -1677,7 +1701,7 @@ impl Pages {
         let open = act.attachment.current_dialog().await.map_err(subscription_end)?;
         let result = match open {
             Some(dialog) if !matches!(action, Action::Dialog(_)) => Err(ActionError::DialogOpen(dialog)),
-            _ => act.run(action, counter).await,
+            _ => act.run(action, counter, interrupt).await,
         };
         let open = act.attachment.current_dialog().await.map_err(subscription_end)?;
         let result = match (result, open) {

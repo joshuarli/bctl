@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { resolve } from "node:path";
@@ -88,7 +88,7 @@ test("the live view follows the browser and carries typing into the page", async
   await expect.poll(async () => Buffer.compare(await viewerShot(page), before) !== 0, { timeout: 10_000 }).toBe(true);
 
   await page.getByRole("button", { name: "Take control" }).click();
-  await expect(page.getByRole("button", { name: "Release control" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Resume automation" })).toBeVisible();
   await page.getByTestId("viewer").locator("canvas").click({ position: { x: 200, y: 200 } });
   await page.keyboard.type("hello dashboard");
   await expect.poll(() => guestPage.evaluate(() => (document.getElementById("t") as HTMLTextAreaElement).value), { timeout: 10_000 }).toBe("hello dashboard");
@@ -136,7 +136,7 @@ test("only the viewer holding control can send input", async ({ browser }) => {
   await expect(holder.getByTestId("stream")).toHaveText("live", { timeout: 30_000 });
   await guestPage.goto("data:text/html,<textarea id=t autofocus style='width:100vw;height:100vh'></textarea>");
   await holder.getByRole("button", { name: "Take control" }).click();
-  await expect(holder.getByRole("button", { name: "Release control" })).toBeVisible();
+  await expect(holder.getByRole("button", { name: "Resume automation" })).toBeVisible();
 
   const watcher = await (await browser.newContext()).newPage();
   await watcher.goto(`${bctl("serve").trim()}&next=/sessions/${session}`);
@@ -151,8 +151,53 @@ test("only the viewer holding control can send input", async ({ browser }) => {
   await rawKeys(holder, session, "ok");
   await expect.poll(() => guestPage.evaluate(() => (document.getElementById("t") as HTMLTextAreaElement).value), { timeout: 10_000 }).toBe("ok");
 
-  await holder.getByRole("button", { name: "Release control" }).click();
+  await holder.getByRole("button", { name: "Resume automation" }).click();
   await expect(watcher.getByRole("button", { name: "Take control" })).toBeVisible();
   const taken = await watcher.evaluate(async (name) => (await fetch(`/api/sessions/${name}/control`, { method: "POST" })).status, session);
   expect(taken).toBe(200);
+  await watcher.context().close();
+  await holder.context().close();
+});
+
+function bctlLater(...args: string[]): Promise<{ code: number; stdout: string }> {
+  return new Promise((done) => {
+    execFile(bctlBinary, args, { env: { ...process.env, BCTL_HOME: home }, encoding: "utf8" }, (error, stdout) => {
+      done({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout });
+    });
+  });
+}
+
+type ControlState = { authority: string; mine: boolean; settling: number };
+
+test("taking control yields to a native command in flight, then hands over, and resuming gives automation control back", async ({ page }) => {
+  bctl("tab", "new", session, "data:text/html,<title>Yield</title><button>Press</button>");
+  await page.goto(`${bctl("serve").trim()}&next=/sessions/${session}`);
+  await expect(page.getByTestId("stream")).toHaveText("live", { timeout: 30_000 });
+  await expect(page.getByTestId("authority")).toHaveText("Automation drives the browser.");
+
+  const slow = bctlLater("page", "eval", session, "new Promise((done) => setTimeout(() => done('settled'), 5000))", "--json");
+  const controlState = () => page.evaluate(async (name) => (await (await fetch(`/api/sessions/${name}/control`)).json()) as ControlState, session);
+  await expect.poll(async () => (await controlState()).settling, { timeout: 10_000 }).toBe(1);
+
+  await page.getByRole("button", { name: "Take control" }).click();
+  await expect(page.getByTestId("authority")).toHaveText("Yielding: waiting for 1 native command to stop before your input reaches the browser.");
+  await expect(page.getByRole("button", { name: "Resume automation" })).toBeVisible();
+  expect(await controlState()).toEqual({ authority: "yielding", mine: true, settling: 1 });
+
+  await expect(page.getByTestId("authority")).toContainText("You have control", { timeout: 15_000 });
+  const settled = await slow;
+  expect(settled.code).toBe(0);
+  expect(JSON.parse(settled.stdout).page.action.value).toBe("settled");
+  expect(await controlState()).toEqual({ authority: "human", mine: true, settling: 0 });
+
+  let refused: { error: { code: string } } | null = null;
+  try { bctl("page", "click", session, "--role", "button", "--name", "Press", "--json"); } catch (e) {
+    refused = JSON.parse((e as { stdout: string }).stdout) as { error: { code: string } };
+  }
+  expect(refused?.error.code).toBe("HUMAN_IN_CONTROL");
+
+  await page.getByRole("button", { name: "Resume automation" }).click();
+  await expect(page.getByTestId("authority")).toHaveText("Automation drives the browser.");
+  await expect(page.getByRole("button", { name: "Take control" })).toBeVisible();
+  expect(JSON.parse(bctl("page", "click", session, "--role", "button", "--name", "Press", "--json")).page.action.action).toBe("click");
 });

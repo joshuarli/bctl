@@ -105,12 +105,12 @@ test("a crawl behind a login is taken over, logged in by hand, and resumed from 
   await expect(page.getByText("needs-interaction").first()).toBeVisible({ timeout: 240_000 });
   await expect(page.getByText(`The run needs you: challenge at ${seed}`)).toBeVisible();
   expect(loginHits).not.toContain("/a.html");
-  await expect(page.getByTestId("authority")).toContainText("Nobody holds the input lease");
+  await expect(page.getByTestId("authority")).toHaveText("Automation holds control and the run waits for you.");
 
   await expect(page.getByTestId("stream")).toHaveText("live", { timeout: 30_000 });
   const canvas = page.getByTestId("viewer").locator("canvas");
   await page.getByRole("button", { name: "Take control" }).click();
-  await expect(page.getByTestId("authority")).toContainText("You hold the input lease");
+  await expect(page.getByTestId("authority")).toContainText("You have control");
 
   const seedHits = () => loginHits.filter((path) => path === "/").length;
   const before = seedHits();
@@ -130,7 +130,7 @@ test("a crawl behind a login is taken over, logged in by hand, and resumed from 
   await expect.poll(() => loginHits.includes("/login"), { timeout: 30_000 }).toBe(true);
 
   await page.getByRole("button", { name: "Resume automation" }).click();
-  await expect(page.getByTestId("authority")).not.toContainText("You hold the input lease");
+  await expect(page.getByTestId("authority")).not.toContainText("You have control");
   await expect(page.getByTestId("outcome")).toHaveText("succeeded", { timeout: 300_000 });
   await expect(page.getByRole("heading", { name: `Run #${runId}` })).toBeVisible();
   await expect(page.getByTestId("log")).not.toHaveText("The log is empty.");

@@ -143,7 +143,7 @@ fn a_person_holding_the_input_lease_blocks_new_cdp_attachments() {
     let (status, _) = http(port, &host, &format!("GET {browser_path}"), UPGRADE);
     assert_eq!(status, 409, "a websocket attach must be refused while a person is in control");
 
-    let (status, response) = http(port, &dashboard, &format!("POST /api/sessions/{session}/control/release"), &as_viewer);
+    let (status, response) = http(port, &dashboard, &format!("POST /api/sessions/{session}/control/resume"), &as_viewer);
     assert_eq!(status, 200, "{response}");
     let (status, response) = http(port, &host, "GET /json/version", "");
     assert_eq!(status, 200, "{response}");

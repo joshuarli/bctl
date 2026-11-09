@@ -1,7 +1,7 @@
 import { Badge, Button, EmptyState, Notice, PageHeader, Panel, type Tone } from "@laputa-systems/ui-dashboard";
 import { For, Show, createSignal, onCleanup, onSettled } from "solid-js";
 import {
-  artifactUrl, control, releaseControl, resumeRun, run, runArtifacts, runLog, sessionRuns, takeControl,
+  artifactUrl, authorityText, automation, control, resumeAutomation, resumeRun, run, runArtifacts, runLog, sessionRuns, takeControl,
   type Artifacts, type Control, type Run, type SessionView
 } from "./api.ts";
 import { navigate } from "./app.tsx";
@@ -161,7 +161,7 @@ function ArtifactsPanel(props: { id: number; ended: boolean }) {
 }
 
 function Takeover(props: { run: Run; session: SessionView | null; reload: () => Promise<void> }) {
-  const [lease, setLease] = createSignal<Control>({ held: false, mine: false });
+  const [lease, setLease] = createSignal<Control>(automation);
   const [stream, setStream] = createSignal<Stream>("connecting");
   const [problem, setProblem] = createSignal<string | null>(null);
   const name = () => props.run.session;
@@ -183,32 +183,32 @@ function Takeover(props: { run: Run; session: SessionView | null; reload: () => 
     try { setProblem(null); await what(); } catch (e) { setProblem(message(e)); }
   };
   const waiting = () => props.run.state === "needs-interaction";
-  const authority = () => lease().mine
-    ? "You hold the input lease; your keyboard and pointer reach the browser."
-    : lease().held
-      ? "Another viewer holds the input lease. You are watching."
-      : waiting()
-        ? "Nobody holds the input lease. The run waits for you."
-        : "Nobody holds the input lease. Automation drives the browser.";
+  const resume = async () => {
+    if (waiting()) {
+      await resumeRun(props.run.id);
+      setLease(await control(name()));
+    } else {
+      setLease(await resumeAutomation(name()));
+    }
+    await props.reload();
+  };
   return <Panel title="Live view" meta={<span data-testid="stream">{stream() === "live" ? "live" : stream() === "lost" ? "stream lost" : "connecting"}</span>}>
     <Show when={problem()}>{(p) => <Notice tone="bad">{p()}</Notice>}</Show>
     <Show when={waiting() && props.run.interaction}>{(i) =>
       <Notice tone="warn">The run needs you: {i().reason} at {i().url}. Take control, open that address in the browser, sign in, then resume automation.</Notice>
     }</Show>
-    <p data-testid="authority">{authority()}</p>
+    <p data-testid="authority">{authorityText(lease(), waiting())}</p>
     <div class="controls">
-      <Show when={lease().mine} fallback={
-        <Button disabled={lease().held || props.session?.input !== "interactive"} onClick={() => void act(async () => { setLease(await takeControl(name())); })}>Take control</Button>
-      }>
-        <Button onClick={() => void act(async () => { setLease(await releaseControl(name())); })}>Release control</Button>
+      <Show when={!lease().mine}>
+        <Button disabled={lease().authority !== "automation" || props.session?.input !== "interactive"} onClick={() => void act(async () => { setLease(await takeControl(name())); })}>Take control</Button>
       </Show>
-      <Show when={waiting()}>
-        <Button disabled={lease().held && !lease().mine} onClick={() => void act(async () => { await resumeRun(props.run.id); setLease(await control(name())); await props.reload(); })}>Resume automation</Button>
+      <Show when={lease().mine || waiting()}>
+        <Button disabled={lease().authority !== "automation" && !lease().mine} onClick={() => void act(resume)}>Resume automation</Button>
       </Show>
     </div>
     <Show when={props.session?.state === "ready"} fallback={<EmptyState title="The session is not running" detail="There is no live view." />}>
       <Show when={props.session?.generation} keyed>{(generation) =>
-        <Viewer name={name()} generation={generation} viewOnly={!lease().mine} onStream={setStream} />
+        <Viewer name={name()} generation={generation} viewOnly={!(lease().mine && lease().authority === "human")} onStream={setStream} />
       }</Show>
     </Show>
   </Panel>;

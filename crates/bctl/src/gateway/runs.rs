@@ -9,6 +9,7 @@ use http::{HeaderValue, Response, StatusCode, header};
 use miniserde::Serialize;
 
 use super::{json_response, respond, text};
+use crate::authority::{Contested, Viewer};
 use crate::daemon::Daemon;
 use crate::protocol::{ErrorCode, Request, Response as Reply};
 use crate::runs::RunFiles;
@@ -73,22 +74,13 @@ pub(super) fn run(daemon: &Arc<Daemon>, id: &str) -> Response<BoxBody> {
     }
 }
 
-/// Releases the caller's input lease on the run's session, then asks the daemon to resume the run.
+/// Hands the run's session back to automation, if the caller holds or is taking control, then resumes the run.
 pub(super) fn resume(daemon: &Arc<Daemon>, id: &str, viewer: &str) -> Response<BoxBody> {
     let result = parse_run(id).and_then(|id| {
         let run = one_run(daemon, id)?;
         let session = SessionName::new(&run.session).map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
-        {
-            let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
-            match gateway.controllers.get(&session) {
-                Some(holder) if holder != viewer => {
-                    return Err(text(StatusCode::CONFLICT, "Another viewer has control of this browser.").into());
-                }
-                Some(_) => {
-                    gateway.controllers.remove(&session);
-                }
-                None => {}
-            }
+        if let Err(Contested) = daemon.authority.of(&session, |control| control.resume(&Viewer::new(viewer))) {
+            return Err(text(StatusCode::CONFLICT, "Another viewer has control of this browser, or is taking it.").into());
         }
         let reply = ask(daemon, Request { op: "resume".into(), run: Some(id), ..Request::empty() })?;
         reply.runs.into_iter().next().ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "The daemon returned no run.").into())

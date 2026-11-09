@@ -45,7 +45,23 @@ export function vncUrl(session: string): string {
   return `ws://${location.host}/api/sessions/${encodeURIComponent(session)}/vnc`;
 }
 
-export type Control = { held: boolean; mine: boolean };
+export type Control = { authority: "automation" | "yielding" | "human"; mine: boolean; settling: number };
+
+export const automation: Control = { authority: "automation", mine: false, settling: 0 };
+
+export function authorityText(c: Control, runWaits: boolean): string {
+  if (c.authority === "human") {
+    return c.mine
+      ? "You have control: your keyboard and pointer reach the browser, and native commands that change the page are refused."
+      : "Another viewer has control. You are watching.";
+  }
+  if (c.authority === "yielding") {
+    return c.mine
+      ? `Yielding: waiting for ${c.settling} native ${c.settling === 1 ? "command" : "commands"} to stop before your input reaches the browser.`
+      : "Another viewer is taking control. You are watching.";
+  }
+  return runWaits ? "Automation holds control and the run waits for you." : "Automation drives the browser.";
+}
 
 export async function control(session: string): Promise<Control> {
   return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control`)).json()) as Control;
@@ -55,8 +71,8 @@ export async function takeControl(session: string): Promise<Control> {
   return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control`, { method: "POST" })).json()) as Control;
 }
 
-export async function releaseControl(session: string): Promise<Control> {
-  return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control/release`, { method: "POST" })).json()) as Control;
+export async function resumeAutomation(session: string): Promise<Control> {
+  return (await (await request(`/api/sessions/${encodeURIComponent(session)}/control/resume`, { method: "POST" })).json()) as Control;
 }
 
 export type Attempt = {

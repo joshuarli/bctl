@@ -16,6 +16,7 @@ use bctl_core::{
 use bctl_runtime_smolvm::{InputSupport, LaunchSpec, RuntimeError, SmolVm, cdp_socket_browser};
 use miniserde::json;
 
+use crate::authority::{Authorities, Control};
 use crate::gateway::{self, SharedGateway};
 use crate::paths::Paths;
 use crate::protocol::{
@@ -42,6 +43,7 @@ pub(crate) struct Daemon {
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
     pub(crate) gateway: SharedGateway,
     pub(crate) browsers: Browsers,
+    pub(crate) authority: Authorities,
 }
 
 pub(crate) struct Refusal(pub(crate) Box<Response>);
@@ -77,6 +79,7 @@ pub fn run(paths: Paths) -> Result<(), String> {
         live: Mutex::default(),
         gateway: Mutex::default(),
         browsers: Mutex::default(),
+        authority: Authorities::default(),
     });
     if daemon.paths.runtime().exists() {
         daemon.restore()?;
@@ -616,6 +619,7 @@ impl Daemon {
         self.stop_live_run(name);
         gateway::revoke_cdp(self, name);
         tabs::close(self, name);
+        self.authority.of(name, Control::reset);
         let record = self.store().session(name).map_err(store_failure)?;
         match record.state {
             SessionState::Stopped => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
@@ -783,6 +787,13 @@ impl Daemon {
             interaction: current.interaction.as_ref().map(|i| InteractionView { reason: i.reason.clone(), url: i.url.clone() }),
             attempts: record.previous.iter().chain(std::iter::once(current)).map(attempt_view).collect(),
         }
+    }
+
+    /// The session's live run, if it is waiting for a person.
+    pub(crate) fn run_needing_interaction(&self, session: &SessionName) -> Option<i64> {
+        let live = lock(&self.live).get(session).cloned()?;
+        let record = self.store().run(live.run).ok()?;
+        (record.current.id == live.attempt && record.current.state == AttemptState::NeedsInteraction).then_some(live.run)
     }
 
     fn live_handle(&self, record: &RunRecord) -> Option<Arc<Live>> {
