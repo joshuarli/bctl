@@ -622,6 +622,8 @@ static pid_t spawn(const char *log, char *const argv[], const char *const env[],
 	}
 	if (cwd && chdir(cwd) < 0)
 		_exit(124);
+	clearenv();
+	putenv("PATH=/usr/bin:/bin");
 	for (; *env; env++)
 		putenv((char *)*env);
 	execv(argv[0], argv);
