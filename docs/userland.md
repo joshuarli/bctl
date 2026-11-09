@@ -633,10 +633,16 @@ Data files mapped by `exe`, by unit:
   libraries under `/opt/browser/lib` that no exception names (98.5 MiB) and
   `libxkbcommon.so.0` (R3), which the browser and GTK link. The one gap
   outside it is `xkb-data`, the xkeyboard-config tree under
-  `/usr/share/X11/xkb` (3.1 MiB): no ELF links it, because tinyland's kbvm
-  reads it at start to compile the US keymap it hands to clients. Removing
-  it needs a tinyland that carries its keymap, or an owner decision that the
-  data is an exception.
+  `/usr/share/X11/xkb` (3.1 MiB): no ELF links it. tinyland no longer needs
+  it: it carries a built-in US keymap (`guest/tinyland/data/us.xkb`) and
+  uses XKB rules only when `TINYLAND_XKB_ROOT` or the system tree provides
+  them. The data stays in the image anyway. With it removed, B1 fails: the
+  browser's own libxkbcommon compiles `rules/evdev` for its default layout
+  ("Couldn't look up rules 'evdev'"), and the browser then dies with SIGSEGV
+  when the compositor's client connects, even with an empty
+  `/usr/share/X11/xkb` present. Removal waits on R3 (a kbvm-backed
+  `libxkbcommon` that can serve the same built-in keymap) or an owner
+  decision that the data is an exception.
 - Rust-owned: `tinyland`, `seatd`, `bctl-guest` (all three static, no
   PT_INTERP), and the two account files. The only C outside the browser
   archive is musl's loader.

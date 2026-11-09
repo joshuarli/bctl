@@ -28,35 +28,78 @@ pub struct Keyboard {
     pub keymap_size: u32,
 }
 
+const EMBEDDED_KEYMAP: &str = include_str!("../data/us.xkb");
+const SYSTEM_XKB_ROOT: &str = "/usr/share/X11/xkb";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeymapSource {
+    RulesOverride,
+    RulesSystem,
+    Embedded,
+}
+
+impl KeymapSource {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::RulesOverride => "xkb rules (TINYLAND_XKB_ROOT)",
+            Self::RulesSystem => "xkb rules (system)",
+            Self::Embedded => "embedded us keymap",
+        }
+    }
+}
+
+fn system_rules_present() -> bool {
+    let root = std::env::var_os("XKB_CONFIG_ROOT").unwrap_or_else(|| SYSTEM_XKB_ROOT.into());
+    let extra = std::env::var_os("XKB_CONFIG_EXTRA_PATH").unwrap_or_else(|| "/etc/xkb".into());
+    [root, extra].iter().any(|dir| std::path::Path::new(dir).join("rules/evdev").exists())
+}
+
+fn keymap_from_rules(context: &kbvm::xkb::Context) -> Result<kbvm::xkb::Keymap, String> {
+    let groups = [kbvm::xkb::rmlvo::Group { layout: "us", variant: "" }];
+    let keymap = context.keymap_from_names(
+        kbvm::xkb::diagnostic::WriteToLog,
+        Some("evdev"),
+        Some("pc105"),
+        Some(&groups),
+        Some(&[]),
+    );
+    if keymap.keys().count() == 0 {
+        return Err(format!(
+            "compile US XKB keymap from rules (override={:?}, system-rules-present={})",
+            std::env::var_os("TINYLAND_XKB_ROOT").or_else(|| std::env::var_os("XKB_CONFIG_ROOT")),
+            system_rules_present(),
+        ));
+    }
+    Ok(keymap)
+}
+
+fn keymap_embedded(context: &kbvm::xkb::Context) -> Result<kbvm::xkb::Keymap, String> {
+    context
+        .keymap_from_bytes(kbvm::xkb::diagnostic::WriteToLog, None, EMBEDDED_KEYMAP)
+        .map_err(|e| format!("parse embedded US keymap: {e}"))
+}
+
 impl Keyboard {
     pub fn new() -> Result<Self, String> {
         let mut builder = kbvm::xkb::Context::builder();
-        if let Some(root) = std::env::var_os("TINYLAND_XKB_ROOT") {
+        let source = if let Some(root) = std::env::var_os("TINYLAND_XKB_ROOT") {
             let path = std::path::PathBuf::from(&root);
-            if path.exists() {
-                builder.prepend_path(&path);
-                eprintln!("TINYLAND_XKB_ROOT {}", path.display());
-            } else {
+            if !path.exists() {
                 return Err(format!("TINYLAND_XKB_ROOT {} missing", path.display()));
             }
-        }
+            builder.prepend_path(&path);
+            KeymapSource::RulesOverride
+        } else if system_rules_present() {
+            KeymapSource::RulesSystem
+        } else {
+            KeymapSource::Embedded
+        };
         let context = builder.build();
-        let groups = [kbvm::xkb::rmlvo::Group { layout: "us", variant: "" }];
-        let keymap = context.keymap_from_names(
-            kbvm::xkb::diagnostic::WriteToLog,
-            Some("evdev"),
-            Some("pc105"),
-            Some(&groups),
-            Some(&[]),
-        );
-        if keymap.keys().count() == 0 {
-            let system = std::path::Path::new("/usr/share/X11/xkb/rules/evdev");
-            return Err(format!(
-                "compile US XKB keymap (override={:?}, system-rules-present={})",
-                std::env::var_os("TINYLAND_XKB_ROOT").or_else(|| std::env::var_os("XKB_CONFIG_ROOT")),
-                system.exists(),
-            ));
-        }
+        let keymap = match source {
+            KeymapSource::Embedded => keymap_embedded(&context)?,
+            KeymapSource::RulesOverride | KeymapSource::RulesSystem => keymap_from_rules(&context)?,
+        };
+        eprintln!("tinyland keymap source: {}", source.describe());
         let text = format!("{}\n", keymap.format());
         let mut bytes = text.into_bytes();
         bytes.push(0);
@@ -377,6 +420,54 @@ pub fn vt_switch_target(code: u16, depressed: u32) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_keymap_maps_evdev_codes_to_keysyms() {
+        let context = kbvm::xkb::Context::builder().build();
+        let keymap = keymap_embedded(&context).unwrap();
+        let builder = keymap.to_builder();
+        let lookup = builder.build_lookup_table();
+        let machine = builder.build_state_machine();
+        let mut state = machine.create_state();
+        let mut components = kbvm::Components::default();
+        let syms = |components: &kbvm::Components, code: KeyCode| -> Vec<kbvm::Keysym> {
+            lookup
+                .lookup(components.group, components.mods, kbvm::Keycode::from_evdev(u32::from(code.code())))
+                .into_iter()
+                .map(|p| p.keysym())
+                .collect()
+        };
+        assert_eq!(syms(&components, KeyCode::KEY_A), [kbvm::syms::a]);
+        assert_eq!(syms(&components, KeyCode::KEY_SEMICOLON), [kbvm::syms::semicolon]);
+        let mut events = Vec::new();
+        machine.handle_key(&mut state, &mut events, kbvm::Keycode::from_evdev(u32::from(KeyCode::KEY_LEFTSHIFT.code())), kbvm::state_machine::Direction::Down);
+        for event in events {
+            components.apply_event(event);
+        }
+        assert_eq!(syms(&components, KeyCode::KEY_1), [kbvm::syms::exclam]);
+        assert_eq!(syms(&components, KeyCode::KEY_SEMICOLON), [kbvm::syms::colon]);
+    }
+
+    #[test]
+    fn embedded_keymap_matches_the_rules() {
+        let context = kbvm::xkb::Context::builder().build();
+        let from_rules = keymap_from_rules(&context).unwrap();
+        let embedded = keymap_embedded(&context).unwrap();
+        assert_eq!(
+            embedded.format().to_string(),
+            from_rules.format().to_string(),
+            "data/us.xkb drifted from xkeyboard-config; run harness/regenerate-keymap.sh"
+        );
+    }
+
+    #[test]
+    #[ignore = "writes data/us.xkb; run through harness/regenerate-keymap.sh"]
+    fn regenerate_embedded_keymap() {
+        let out = std::env::var_os("TINYLAND_KEYMAP_OUT").expect("TINYLAND_KEYMAP_OUT");
+        let context = kbvm::xkb::Context::builder().build();
+        let keymap = keymap_from_rules(&context).unwrap();
+        std::fs::write(out, format!("{}\n", keymap.format())).unwrap();
+    }
 
     #[test]
     fn shift_changes_text_and_releases_its_modifier() {
