@@ -104,7 +104,29 @@ typedef struct fdtable *fdtable;
 thread create_thread(process, u64 tid);
 boolean exit_thread(thread);
 sysreturn fork_process(thread t);
-void process_kill(process p);
+void process_kill(process p, int wait_status);
+process process_get(int pid);
+
+static inline int wait_status_exited(int code)
+{
+    return (code & 0xff) << 8;
+}
+
+static inline int wait_status_signaled(int sig)
+{
+    return sig & 0x7f;
+}
+
+static inline boolean wait_status_is_exit(int status)
+{
+    return (status & 0x7f) == 0;
+}
+
+int process_getppid(process p);
+sysreturn process_signal(process sender, int pid, struct siginfo *si);
+struct rusage;
+sysreturn process_wait(int idtype, int id, int options, int *wstatus, struct siginfo *infop,
+                       struct rusage *ru);
 boolean process_is_init(process p);
 void process_teardown(process p);
 process_vm mmap_process_fork(process_vm parent, sysreturn *rv);
@@ -275,6 +297,7 @@ static inline sstring blockq_name(blockq bq)
 }
 
 unix_context blockq_wake_one(blockq bq);
+void blockq_wake_all(blockq bq);
 boolean blockq_wake_one_for_thread(blockq bq, unix_context t, boolean nullify);
 void blockq_flush(blockq bq);
 sysreturn blockq_check_timeout(blockq bq, blockq_action a, boolean in_bh,
@@ -555,13 +578,27 @@ struct fdtable {
     vector            files;
 };
 
+enum process_state {
+    PROCESS_RUNNING,
+    PROCESS_ZOMBIE,
+};
+
 typedef struct process {
     unix_heaps        uh;       /* non-thread-specific */
     int               pid;
-    int               ppid;
+    int               pgid;
     struct list       l;        /* live processes */
     struct refcount   refcount; /* one for being alive, one per thread and aio context */
     closure_struct(thunk, free);
+    process           parent;
+    struct list       children;
+    struct list       sibling;
+    enum process_state state;
+    int               exit_signal;
+    int               wait_status;
+    timestamp         cutime, cstime;
+    blockq            child_bq;
+    u64               rlimit_nproc_cur, rlimit_nproc_max;
     boolean           exiting;
     boolean           dumpable;
     u32               uid, gid;

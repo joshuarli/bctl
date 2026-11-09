@@ -142,6 +142,19 @@ unix_context blockq_wake_one(blockq bq)
     return INVALID_ADDRESS;
 }
 
+void blockq_wake_all(blockq bq)
+{
+    blockq_lock(bq);
+    int waiters = 0;
+    list_foreach(&bq->waiters_head, l)
+        waiters++;
+    blockq_unlock(bq);
+    do {
+        if (blockq_wake_one(bq) == INVALID_ADDRESS)
+            break;
+    } while (--waiters > 0);
+}
+
 boolean blockq_wake_one_for_thread(blockq bq, unix_context t, boolean nullify)
 {
     thread_log(current, "%s: ctx %p", func_ss, t);

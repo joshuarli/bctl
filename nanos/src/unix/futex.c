@@ -356,6 +356,9 @@ void wake_robust_list(process p, void *head)
     int *pending;
     int *uaddr;
 
+    if (!h)
+        return;
+
     /* must be very careful accessing the head as well as the list */
     context ctx = get_current_context(current_cpu());
     if (context_set_err(ctx))

@@ -613,22 +613,17 @@ sysreturn kill(int pid, int sig)
 {
     sig_debug("pid %d, sig %d\n", pid, sig);
 
-    /* yes, we can only kill our process self */
-    if (pid != current->p->pid)
-        return -ESRCH;
-
     if (sig < 0 || sig > NSIG)
         return -EINVAL;
+    if (pid == S32_MIN)
+        return -ESRCH;
 
-    if (sig == 0)
-        return 0;               /* always permitted */
-
+    process p = current->p;
     struct siginfo si;
     init_siginfo(&si, sig, SI_USER);
-    si.sifields.kill.pid = pid;
-    si.sifields.kill.uid = 0;
-    deliver_signal_to_process(current->p, &si);
-    return 0;
+    si.sifields.kill.pid = p->pid;
+    si.sifields.kill.uid = p->uid;
+    return process_signal(p, pid, &si);
 }
 
 static inline sysreturn sigqueueinfo_sanitize_args(int tgid, int sig, siginfo_t *uinfo)
@@ -1079,9 +1074,7 @@ static void default_signal_action(thread t, queued_signal qs)
         return;
     }
     if (!process_is_init(t->p)) {
-        if ((signum != SIGTERM) && (signum != SIGKILL) && !t->p->exiting)
-            dump_sig_info(t, qs);
-        process_kill(t->p);
+        process_kill(t->p, wait_status_signaled(signum));
         return;
     }
     if (signum != SIGTERM) {

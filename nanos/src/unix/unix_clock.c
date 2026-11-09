@@ -168,7 +168,8 @@ sysreturn times(struct tms *buf)
         return -EFAULT;
     buf->tms_utime = CLOCKS_PER_SEC * proc_utime(current->p) / TIMESTAMP_SECOND;
     buf->tms_stime = CLOCKS_PER_SEC * proc_stime(current->p) / TIMESTAMP_SECOND;
-    buf->tms_cutime = buf->tms_cstime = 0;  /* there are no child processes */
+    buf->tms_cutime = CLOCKS_PER_SEC * current->p->cutime / TIMESTAMP_SECOND;
+    buf->tms_cstime = CLOCKS_PER_SEC * current->p->cstime / TIMESTAMP_SECOND;
     context_clear_err(ctx);
     return set_syscall_return(current,
             CLOCKS_PER_SEC * uptime() / TIMESTAMP_SECOND);

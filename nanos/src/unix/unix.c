@@ -667,20 +667,44 @@ closure_func_basic(thunk, void, process_free)
     deallocate_timerqueue(p->cpu_timers);
     destroy_heap((heap)p->aio_ids);
     deallocate_vector(p->aio);
-    deallocate_u64((heap)p->uh->processes, p->pid, 1);
+    deallocate_blockq(p->child_bq);
+    if (p->pid)
+        deallocate_u64((heap)p->uh->processes, p->pid, 1);
     deallocate(locked, p, sizeof(struct process));
 }
 
-static process process_alloc(unix_heaps uh, tuple root, filesystem fs)
+static u64 default_rlimit_nproc(void)
+{
+    u64 n = (heap_total((heap)heap_physical(get_kernel_heaps())) >> PAGELOG) / 64;
+    return MAX(n, 20);
+}
+
+static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
 {
     kernel_heaps kh = get_kernel_heaps();
     heap locked = heap_locked(kh);
-    process p = mem_alloc(locked, sizeof(struct process), MEM_NOFAIL);
+    process p = allocate_zero(locked, sizeof(struct process));
+    if (p == INVALID_ADDRESS)
+        return p;
+    p->child_bq = allocate_blockq(locked, ss("wait"));
+    if (p->child_bq == INVALID_ADDRESS) {
+        deallocate(locked, p, sizeof(struct process));
+        return INVALID_ADDRESS;
+    }
 
     spin_lock_init(&p->lock);
     p->uh = uh;
-    p->pid = mem_alloc_u64((heap)uh->processes, 1, MEM_NOFAIL);
-    p->ppid = 0;
+    p->pid = pid;
+    p->pgid = pid;
+    list_init(&p->l);
+    list_init(&p->children);
+    list_init(&p->sibling);
+    p->parent = 0;
+    p->state = PROCESS_RUNNING;
+    p->exit_signal = SIGCHLD;
+    p->wait_status = 0;
+    p->cutime = p->cstime = 0;
+    p->rlimit_nproc_cur = p->rlimit_nproc_max = default_rlimit_nproc();
     p->exiting = false;
     p->dumpable = true;
     init_refcount(&p->refcount, 1, init_closure_func(&p->free, thunk, process_free));
@@ -713,24 +737,29 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs)
     p->rlimit_stack = PROCESS_STACK_SIZE;
     p->trace = 0;
     p->trap = 0;
-    spin_lock(&processes_lock);
-    list_insert_before(&processes, &p->l);
-    spin_unlock(&processes_lock);
     return p;
 }
 
 process create_process(unix_heaps uh, tuple root, filesystem fs)
 {
-    process p = process_alloc(uh, root, fs);
+    spin_lock(&processes_lock);
+    boolean kernel = list_empty(&processes);
+    spin_unlock(&processes_lock);
+    int pid = kernel ? 0 : allocate_u64((heap)uh->processes, 1);
+    assert(pid != INVALID_PHYSICAL);
+    process p = process_alloc(uh, root, fs, pid);
+    assert(p != INVALID_ADDRESS);
     p->fdtable = fdtable_alloc();
     assert(p->fdtable != INVALID_ADDRESS);
-    /* don't need these for kernel process */
-    if (p->pid > 1) {
+    if (!kernel) {
         p->vm = mmap_process_init(root);
         init_vdso(p);
         if (!init_process)
             init_process = p;
     }
+    spin_lock(&processes_lock);
+    list_insert_before(&processes, &p->l);
+    spin_unlock(&processes_lock);
     create_stdfiles(uh, p);
     return p;
 }
@@ -745,43 +774,112 @@ boolean process_is_init(process p)
     return p == init_process;
 }
 
+static boolean process_is_kernel(process p)
+{
+    return p->pid == 0;
+}
+
+process process_get(int pid)
+{
+    process found = 0;
+    if (pid <= 0)
+        return found;
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (p->pid == pid) {
+            process_reserve(p);
+            found = p;
+            break;
+        }
+    }
+    spin_unlock(&processes_lock);
+    return found;
+}
+
+int process_getppid(process p)
+{
+    spin_lock(&processes_lock);
+    int ppid = p->parent ? p->parent->pid : 0;
+    spin_unlock(&processes_lock);
+    return ppid;
+}
+
+static u64 processes_of_uid_locked(u32 uid)
+{
+    u64 n = 0;
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (!process_is_kernel(p) && (p->uid == uid))
+            n++;
+    }
+    return n;
+}
+
+static void process_unlink_child_locked(process c)
+{
+    list_delete(&c->sibling);
+    list_init(&c->sibling);
+    c->parent = 0;
+}
+
 sysreturn fork_process(thread t)
 {
 #ifdef __x86_64__
     process parent = t->p;
-    process c = process_alloc(parent->uh, parent->process_root, parent->root_fs);
+    u64 pid = allocate_u64((heap)parent->uh->processes, 1);
+    if (pid == INVALID_PHYSICAL)
+        return -EAGAIN;
+    process c = process_alloc(parent->uh, parent->process_root, parent->root_fs, pid);
+    if (c == INVALID_ADDRESS) {
+        deallocate_u64((heap)parent->uh->processes, pid, 1);
+        return -ENOMEM;
+    }
     filesystem_release(c->cwd_fs);
     process_get_cwd(parent, &c->cwd_fs, &c->cwd);
-    c->ppid = parent->pid;
+    c->pgid = parent->pgid;
     c->uid = parent->uid;
     c->gid = parent->gid;
     c->dumpable = parent->dumpable;
     c->syscalls = parent->syscalls;
     c->rlimit_stack = parent->rlimit_stack;
+    c->rlimit_nproc_cur = parent->rlimit_nproc_cur;
+    c->rlimit_nproc_max = parent->rlimit_nproc_max;
     c->trace = parent->trace;
     runtime_memcpy(c->sigactions, parent->sigactions, sizeof(c->sigactions));
     runtime_memcpy(c->saved_aux, parent->saved_aux, sizeof(c->saved_aux));
     c->saved_args_begin = parent->saved_args_begin;
     c->saved_args_end = parent->saved_args_end;
+
+    spin_lock(&processes_lock);
+    if (processes_of_uid_locked(c->uid) >= parent->rlimit_nproc_cur) {
+        spin_unlock(&processes_lock);
+        process_release(c);
+        return -EAGAIN;
+    }
+    list_insert_before(&processes, &c->l);
+    c->parent = parent;
+    list_insert_before(&parent->children, &c->sibling);
+    spin_unlock(&processes_lock);
+
     sysreturn rv;
     c->vm = mmap_process_fork(parent->vm, &rv);
     if (c->vm == INVALID_ADDRESS) {
         c->vm = 0;
-        process_release(c);
-        return rv;
+        goto fail;
     }
     init_vdso(c);
     c->fdtable = fdtable_copy(parent->fdtable);
     if (c->fdtable == INVALID_ADDRESS) {
         c->fdtable = 0;
-        process_release(c);
-        return -ENOMEM;
+        rv = -ENOMEM;
+        goto fail;
     }
 
     thread ct = create_thread(c, c->pid);
     if (ct == INVALID_ADDRESS) {
-        process_teardown(c);
-        return -ENOMEM;
+        rv = -ENOMEM;
+        goto fail;
     }
     context_frame f = thread_frame(ct);
     clone_frame_pstate(f, thread_frame(t));
@@ -795,9 +893,67 @@ sysreturn fork_process(thread t)
     thread_reserve(ct);
     schedule_thread(ct);
     return c->pid;
+  fail:
+    spin_lock(&processes_lock);
+    process_unlink_child_locked(c);
+    spin_unlock(&processes_lock);
+    blockq_wake_all(parent->child_bq);
+    process_release(c);
+    return rv;
 #else
     return -ENOSYS;
 #endif
+}
+
+static boolean process_autoreaps(process parent, int exit_signal)
+{
+    struct sigaction *sa = &parent->sigactions[SIGCHLD - 1];
+    return (exit_signal == SIGCHLD) &&
+           ((sa->sa_handler == SIG_IGN) || (sa->sa_flags & SA_NOCLDWAIT));
+}
+
+closure_function(2, 1, boolean, thread_blocks_signal,
+                 u64, sigword, boolean *, blocked,
+                 rbnode n)
+{
+    if (struct_from_field(n, thread, n)->signal_mask & bound(sigword)) {
+        *bound(blocked) = true;
+        return false;
+    }
+    return true;
+}
+
+static boolean process_discards_signal(process p, int sig)
+{
+    void *handler = p->sigactions[sig - 1].sa_handler;
+    if (handler == SIG_IGN)
+        return true;
+    if (handler != SIG_DFL)
+        return false;
+    boolean blocked = false;
+    spin_lock(&p->threads_lock);
+    rbtree_traverse(p->threads, RB_INORDER,
+                    stack_closure(thread_blocks_signal, mask_from_sig(sig), &blocked));
+    spin_unlock(&p->threads_lock);
+    return !blocked;
+}
+
+static void process_send_exit_signal(process parent, process child)
+{
+    int sig = child->exit_signal;
+    if (!sig || process_discards_signal(parent, sig))
+        return;
+    int status = child->wait_status;
+    struct siginfo si = {
+        .si_signo = sig,
+        .si_code = wait_status_is_exit(status) ? CLD_EXITED : CLD_KILLED,
+    };
+    si.sifields.sigchld.pid = child->pid;
+    si.sifields.sigchld.uid = child->uid;
+    si.sifields.sigchld.status = wait_status_is_exit(status) ? (status >> 8) & 0xff : status & 0x7f;
+    si.sifields.sigchld.utime = proc_utime(child) / (TIMESTAMP_SECOND / CLOCKS_PER_SEC);
+    si.sifields.sigchld.stime = proc_stime(child) / (TIMESTAMP_SECOND / CLOCKS_PER_SEC);
+    deliver_signal_to_process(parent, &si);
 }
 
 /* Runs once the last thread of a non-init process is gone. */
@@ -813,7 +969,180 @@ void process_teardown(process p)
     process_vm vm = p->vm;
     p->vm = 0;
     process_vm_release(vm);
-    process_release(p);
+
+    process init = init_process;
+    vector orphaned_zombies = allocate_vector(heap_locked(get_kernel_heaps()), 4);
+    assert(orphaned_zombies != INVALID_ADDRESS);
+    spin_lock(&processes_lock);
+    list l, next;
+    for (l = p->children.next; l != &p->children; l = next) {
+        next = l->next;
+        process c = struct_from_list(l, process, sibling);
+        list_delete(&c->sibling);
+        c->parent = init;
+        list_insert_before(&init->children, &c->sibling);
+        if (c->state == PROCESS_ZOMBIE) {
+            process_reserve(c);
+            vector_push(orphaned_zombies, c);
+        }
+    }
+    process parent = p->parent;
+    boolean reaped = !parent || process_autoreaps(parent, p->exit_signal);
+    if (reaped) {
+        if (parent)
+            process_unlink_child_locked(p);
+    } else {
+        p->state = PROCESS_ZOMBIE;
+        process_reserve(parent);
+    }
+    spin_unlock(&processes_lock);
+    process c;
+    vector_foreach(orphaned_zombies, c) {
+        if (process_autoreaps(init, c->exit_signal)) {
+            spin_lock(&processes_lock);
+            boolean still_ours = c->parent == init;
+            if (still_ours) {
+                process_unlink_child_locked(c);
+                list_delete(&c->l);
+                list_init(&c->l);
+            }
+            spin_unlock(&processes_lock);
+            if (still_ours)
+                process_release(c);
+        } else {
+            process_send_exit_signal(init, c);
+        }
+        process_release(c);
+    }
+    if (vector_length(orphaned_zombies))
+        blockq_wake_all(init->child_bq);
+    deallocate_vector(orphaned_zombies);
+    if (reaped) {
+        if (parent)
+            blockq_wake_all(parent->child_bq);
+        process_release(p);
+        return;
+    }
+    process_send_exit_signal(parent, p);
+    blockq_wake_all(parent->child_bq);
+    process_release(parent);
+}
+
+static process wait_find_child_locked(process p, int idtype, int id, int options,
+                                      boolean *eligible)
+{
+    *eligible = false;
+    list_foreach(&p->children, l) {
+        process c = struct_from_list(l, process, sibling);
+        if ((idtype == P_PID) && (c->pid != id))
+            continue;
+        if ((idtype == P_PGID) && (c->pgid != id))
+            continue;
+        if (!(options & __WALL) && ((c->exit_signal != SIGCHLD) != !!(options & __WCLONE)))
+            continue;
+        *eligible = true;
+        if ((options & WEXITED) && (c->state == PROCESS_ZOMBIE))
+            return c;
+    }
+    return 0;
+}
+
+static sysreturn wait_report(process c, int *wstatus, struct siginfo *infop, struct rusage *ru)
+{
+    context ctx = get_current_context(current_cpu());
+    if (context_set_err(ctx))
+        return -EFAULT;
+    int status = c->wait_status;
+    if (wstatus)
+        *wstatus = status;
+    if (infop) {
+        infop->si_signo = SIGCHLD;
+        infop->si_errno = 0;
+        infop->si_code = wait_status_is_exit(status) ? CLD_EXITED : CLD_KILLED;
+        infop->sifields.sigchld.pid = c->pid;
+        infop->sifields.sigchld.uid = c->uid;
+        infop->sifields.sigchld.status = wait_status_is_exit(status) ? (status >> 8) & 0xff :
+                                                                       status & 0x7f;
+    }
+    if (ru) {
+        zero(ru, sizeof(*ru));
+        timeval_from_time(&ru->ru_utime, proc_utime(c) + c->cutime);
+        timeval_from_time(&ru->ru_stime, proc_stime(c) + c->cstime);
+    }
+    context_clear_err(ctx);
+    return c->pid;
+}
+
+static sysreturn wait_report_none(struct siginfo *infop)
+{
+    if (!infop)
+        return 0;
+    context ctx = get_current_context(current_cpu());
+    if (context_set_err(ctx))
+        return -EFAULT;
+    infop->si_signo = 0;
+    infop->si_errno = 0;
+    infop->si_code = 0;
+    infop->sifields.sigchld.pid = 0;
+    infop->sifields.sigchld.uid = 0;
+    infop->sifields.sigchld.status = 0;
+    context_clear_err(ctx);
+    return 0;
+}
+
+closure_function(7, 1, sysreturn, wait_bh,
+                 thread, t, int, idtype, int, id, int, options, int *, wstatus, struct siginfo *, infop,
+                 struct rusage *, ru,
+                 u64 flags)
+{
+    thread t = bound(t);
+    process p = t->p;
+    int options = bound(options);
+    sysreturn rv;
+    if (flags & BLOCKQ_ACTION_NULLIFY) {
+        rv = -ERESTARTSYS;
+        goto out;
+    }
+    boolean eligible;
+    spin_lock(&processes_lock);
+    process c = wait_find_child_locked(p, bound(idtype), bound(id), options, &eligible);
+    if (c) {
+        if (options & WNOWAIT) {
+            process_reserve(c);
+        } else {
+            process_unlink_child_locked(c);
+            list_delete(&c->l);
+            list_init(&c->l);
+            p->cutime += proc_utime(c) + c->cutime;
+            p->cstime += proc_stime(c) + c->cstime;
+        }
+    } else if (eligible && !(options & WNOHANG)) {
+        rv = blockq_block_required(&t->syscall->uc, flags);
+        spin_unlock(&processes_lock);
+        return rv;
+    }
+    spin_unlock(&processes_lock);
+    if (c) {
+        rv = wait_report(c, bound(wstatus), bound(infop), bound(ru));
+        process_release(c);
+    } else if (!eligible) {
+        rv = -ECHILD;
+    } else {
+        rv = wait_report_none(bound(infop));
+    }
+  out:
+    closure_finish();
+    return syscall_return(t, rv);
+}
+
+sysreturn process_wait(int idtype, int id, int options, int *wstatus, struct siginfo *infop,
+                       struct rusage *ru)
+{
+    thread t = current;
+    blockq_action ba = contextual_closure(wait_bh, t, idtype, id, options, wstatus, infop, ru);
+    if (ba == INVALID_ADDRESS)
+        return -ENOMEM;
+    return blockq_check(t->p->child_bq, ba, false);
 }
 
 closure_function(1, 1, boolean, process_kill_thread,
@@ -825,14 +1154,86 @@ closure_function(1, 1, boolean, process_kill_thread,
 }
 
 /* Every thread of the process exits at its next return to user mode. */
-void process_kill(process p)
+void process_kill(process p, int wait_status)
 {
     assert(!process_is_init(p));
     struct siginfo si = { .si_signo = SIGKILL };
-    p->exiting = true;
+    process_lock(p);
+    if (!p->exiting) {
+        p->exiting = true;
+        p->wait_status = wait_status;
+    }
+    process_unlock(p);
     spin_lock(&p->threads_lock);
     rbtree_traverse(p->threads, RB_INORDER, stack_closure(process_kill_thread, &si));
     spin_unlock(&p->threads_lock);
+}
+
+static boolean process_may_signal(process sender, process target, int sig)
+{
+    if (process_is_kernel(target))
+        return false;
+    if (process_is_init(target) && (sender != target)) {
+        if ((sig == SIGKILL) || (sig == SIGSTOP) ||
+            (target->sigactions[sig - 1].sa_handler == SIG_DFL))
+            return false;
+    }
+    return true;
+}
+
+static boolean process_signal_permitted(process sender, process target)
+{
+    return (sender->uid == 0) || (sender->uid == target->uid);
+}
+
+sysreturn process_signal(process sender, int pid, struct siginfo *si)
+{
+    int sig = si->si_signo;
+    if (pid > 0) {
+        process target = process_get(pid);
+        if (!target)
+            return -ESRCH;
+        sysreturn rv = 0;
+        if (!process_signal_permitted(sender, target))
+            rv = -EPERM;
+        else if (sig && (target->state == PROCESS_RUNNING) &&
+                 process_may_signal(sender, target, sig))
+            deliver_signal_to_process(target, si);
+        process_release(target);
+        return rv;
+    }
+    int pgid = (pid == 0) ? sender->pgid : -pid;
+    boolean all = (pid == -1);
+    int found = 0, permitted = 0;
+    vector targets = allocate_vector(heap_locked(get_kernel_heaps()), 8);
+    if (targets == INVALID_ADDRESS)
+        return -ENOMEM;
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (process_is_kernel(p))
+            continue;
+        if (all ? (process_is_init(p) || (p == sender)) : (p->pgid != pgid))
+            continue;
+        found++;
+        if (!process_signal_permitted(sender, p))
+            continue;
+        permitted++;
+        if (sig && (p->state == PROCESS_RUNNING) && process_may_signal(sender, p, sig)) {
+            process_reserve(p);
+            vector_push(targets, p);
+        }
+    }
+    spin_unlock(&processes_lock);
+    process p;
+    vector_foreach(targets, p) {
+        deliver_signal_to_process(p, si);
+        process_release(p);
+    }
+    deallocate_vector(targets);
+    if (!found)
+        return -ESRCH;
+    return permitted ? 0 : -EPERM;
 }
 
 void process_get_cwd(process p, filesystem *cwd_fs, inode *cwd)
@@ -995,7 +1396,7 @@ void unix_shutdown(void)
     spin_lock(&processes_lock);
     list_foreach(&processes, l) {
         process p = struct_from_list(l, process, l);
-        if (p->pid <= 1 || p->exiting)
+        if (process_is_kernel(p) || p->exiting)
             continue;
         struct siginfo *si = allocate_zero(h, sizeof(struct siginfo));
         if (si == INVALID_ADDRESS) {

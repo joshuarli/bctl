@@ -422,6 +422,10 @@ struct rusage {
 #define TRAP_BRKPT 1 /* Process breakpoint */
 #define TRAP_TRACE 2 /* Process trace trap */
 
+#define CLD_EXITED 1
+#define CLD_KILLED 2
+#define CLD_DUMPED 3
+
 typedef union sigval {
     s32 sival_int;
     void * sival_ptr;
@@ -457,8 +461,8 @@ typedef struct siginfo {
             u32 pid;
             u32 uid;
             s32 status;
-            u32 utime;
-            u32 stime;
+            s64 utime;
+            s64 stime;
         } sigchld;
         
         struct {

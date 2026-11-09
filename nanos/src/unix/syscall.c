@@ -1730,13 +1730,25 @@ sysreturn setrlimit(int resource, const struct rlimit *rlim)
     context ctx = get_current_context(current_cpu());
     if (!memory_is_user(rlim, sizeof(struct rlimit)) || context_set_err(ctx))
         return -EFAULT;
+    sysreturn rv = 0;
+    process p = current->p;
     switch (resource) {
     case RLIMIT_STACK:
         current->p->rlimit_stack = rlim->rlim_cur;
         break;
+    case RLIMIT_NPROC:
+        if (rlim->rlim_cur > rlim->rlim_max)
+            rv = -EINVAL;
+        else if ((rlim->rlim_max > p->rlimit_nproc_max) && (p->uid != 0))
+            rv = -EPERM;
+        else {
+            p->rlimit_nproc_cur = rlim->rlim_cur;
+            p->rlimit_nproc_max = rlim->rlim_max;
+        }
+        break;
     }
     context_clear_err(ctx);
-    return 0;
+    return rv;
 }
 
 sysreturn getrlimit(int resource, struct rlimit *rlim)
@@ -1766,6 +1778,10 @@ sysreturn getrlimit(int resource, struct rlimit *rlim)
         break;
     case RLIMIT_AS:
         rlim->rlim_cur = rlim->rlim_max = heap_total(current->p->vm->virtual);
+        break;
+    case RLIMIT_NPROC:
+        rlim->rlim_cur = current->p->rlimit_nproc_cur;
+        rlim->rlim_max = current->p->rlimit_nproc_max;
         break;
     default:
         rv = -EINVAL;
@@ -1801,7 +1817,8 @@ static sysreturn getrusage(int who, struct rusage *usage)
             timeval_from_time(&usage->ru_stime, proc_stime(current->p));
             break;
         case RUSAGE_CHILDREN:
-            /* There are no children. */
+            timeval_from_time(&usage->ru_utime, current->p->cutime);
+            timeval_from_time(&usage->ru_stime, current->p->cstime);
             break;
         case RUSAGE_THREAD:
             timeval_from_time(&usage->ru_utime, thread_utime(current));
@@ -2155,7 +2172,7 @@ sysreturn getpid()
 
 sysreturn getppid()
 {
-    return current->p->ppid;
+    return process_getppid(current->p);
 }
 
 sysreturn getuid()
@@ -2179,6 +2196,12 @@ static void __attribute__((noreturn)) exit_current_thread(int code)
     if (exit_thread(current)) {
         if (process_is_init(p))
             kernel_shutdown(code);
+        process_lock(p);
+        if (!p->exiting) {
+            p->exiting = true;
+            p->wait_status = wait_status_exited(code);
+        }
+        process_unlock(p);
         process_teardown(p);
     }
     syscall_finish(true);
@@ -2189,7 +2212,7 @@ sysreturn exit_group(int status)
     process p = current->p;
     if (process_is_init(p))
         kernel_shutdown(status);
-    process_kill(p);
+    process_kill(p, wait_status_exited(status));
     exit_current_thread(status);
 }
 
@@ -2313,14 +2336,31 @@ sysreturn capget(cap_user_header_t hdrp, cap_user_data_t datap)
     return 0;
 }
 
-static sysreturn wait4(int pid, int *wstatus, int options, void *rusage)
+static sysreturn wait4(int pid, int *wstatus, int options, struct rusage *rusage)
 {
     if (options & ~(WNOHANG | WUNTRACED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL))
         return -EINVAL;
-    return -ECHILD;
+    if (pid == S32_MIN)
+        return -ESRCH;
+    if ((wstatus && !validate_process_memory(current->p, wstatus, sizeof(*wstatus), true)) ||
+        (rusage && !validate_process_memory(current->p, rusage, sizeof(*rusage), true)))
+        return -EFAULT;
+    int idtype = P_ALL, id = 0;
+    if (pid > 0) {
+        idtype = P_PID;
+        id = pid;
+    } else if (pid == 0) {
+        idtype = P_PGID;
+        id = current->p->pgid;
+    } else if (pid < -1) {
+        idtype = P_PGID;
+        id = -pid;
+    }
+    return process_wait(idtype, id, options | WEXITED, wstatus, 0, rusage);
 }
 
-static sysreturn waitid(int idtype, int id, void *infop, int options, void *rusage)
+static sysreturn waitid(int idtype, int id, struct siginfo *infop, int options,
+                        struct rusage *rusage)
 {
     if (options & ~(WNOHANG | WNOWAIT | WEXITED | WSTOPPED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL))
         return -EINVAL;
@@ -2328,7 +2368,12 @@ static sysreturn waitid(int idtype, int id, void *infop, int options, void *rusa
         return -EINVAL;
     switch (idtype) {
     case P_ALL:
+        break;
     case P_PGID:
+        if (id < 0)
+            return -EINVAL;
+        if (id == 0)
+            id = current->p->pgid;
         break;
     case P_PID:
         if (id <= 0)
@@ -2339,7 +2384,10 @@ static sysreturn waitid(int idtype, int id, void *infop, int options, void *rusa
     default:
         return -EINVAL;
     }
-    return -ECHILD;
+    if ((infop && !validate_process_memory(current->p, infop, sizeof(*infop), true)) ||
+        (rusage && !validate_process_memory(current->p, rusage, sizeof(*rusage), true)))
+        return -EFAULT;
+    return process_wait(idtype, id, options, 0, infop, rusage);
 }
 
 sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)

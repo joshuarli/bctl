@@ -187,6 +187,7 @@ void thread_log_internal(thread t, sstring desc, ...)
 static inline boolean check_stop_conditions(thread t)
 {
     sstring cause;
+    int sig;
     u64 pending = sigstate_get_pending(&t->signals);
 
     /* rather abrupt to just halt...this should go do dump or recovery */
@@ -196,6 +197,7 @@ static inline boolean check_stop_conditions(thread t)
         /* Terminate on uncaught SIGSEGV, or if triggered by signal handler. */
         if (handler == SIG_IGN || handler == SIG_DFL) {
             cause = ss("Unhandled SIGSEGV");
+            sig = SIGSEGV;
             goto terminate;
         }
     }
@@ -203,17 +205,13 @@ static inline boolean check_stop_conditions(thread t)
     boolean is_sigkill = (pending & mask_from_sig(SIGKILL)) != 0;
     if (is_sigkill || (pending & mask_from_sig(SIGSTOP))) {
         cause = is_sigkill ? ss("SIGKILL") : ss("SIGSTOP");
+        sig = is_sigkill ? SIGKILL : SIGSTOP;
         goto terminate;
     }
     return false;
   terminate:
     if (!process_is_init(t->p)) {
-        if (!t->p->exiting) {
-            rprintf("\nProcess abort: %s received by thread %d of pid %d\n\n", cause, t->tid,
-                    t->p->pid);
-            dump_context(&t->context);
-        }
-        process_kill(t->p);
+        process_kill(t->p, wait_status_signaled(sig));
         return true;
     }
     rprintf("\nProcess abort: %s received by thread %d\n\n", cause, t->tid);
@@ -276,9 +274,10 @@ closure_func_basic(thunk, void, thread_return)
     dispatch_signals(t);
     current_cpu()->state = cpu_user;
     if (check_stop_conditions(t)) {
-        clear_fault_handler();
         process p = t->p;
-        if (exit_thread(t))
+        boolean last = exit_thread(t);
+        clear_fault_handler();
+        if (last)
             process_teardown(p);
         thread_release(t);
         runloop();
