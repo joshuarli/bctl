@@ -84,6 +84,17 @@ and crashes when it connects), so xkb-data is part of the libxkbcommon gap
 and goes away with R3's kbvm-backed library. `bctl-guest` exits non-zero when a
 supervised child dies on its own. Mesa ships but is never loaded (its GBM
 backend is looked for only at `/usr/lib/gbm`); P2 decides with Helium.
+R3 (kbvm `c21a050`, bctl `1deae2c`; B1 3/3 and T0 on `ref-scratch-chromium`,
+census with no `libxkbcommon` or `xkb-data` unit): the fork's
+`kbvm-xkbcommon` exports the 33 `xkb_*` symbols the stand-in closure imports
+(20 from `chromium`, 13 more from GTK's `libgdk-3`), with a differential
+suite against libxkbcommon 1.9.2 for each. Without rules,
+`xkb_keymap_new_from_names` serves a built-in evdev/pc105/us keymap and logs
+it; GDK hits that path at start. Tinyland pins the same kbvm revision. B1 now
+checks shifted symbols, Caps Lock, Alt and Ctrl chords, key repeat, and the
+Ctrl+Shift+U compose sequence; the US layout has no dead keys, so no dead-key
+sequence was tested. R3 open: no Helium arm64 archive exists to check its
+imports against the 33.
 Next: H1 (running); D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).
