@@ -129,16 +129,11 @@ one `*.tar.xz`:
   outside the manifest, and its ELF audit (AArch64, musl's interpreter,
   every `DT_NEEDED` inside the archive, no glibc).
 
-The stage then changes the installed archive in two ways and records both in
-the receipt:
-
-- `lib/libxkbcommon.so.0` is deleted; kbvm's `libxkbcommon.so.0` (the
-  `kbvm-xkbcommon` crate at the kbvm revision `guest/Cargo.lock` pins) is at
-  `/usr/local/lib`, which musl searches after `LD_LIBRARY_PATH`.
-- The libraries only Mesa's GL stack loads (`libEGL.so.1`, `libGLESv2.so.2`,
-  `libgallium`, `libLLVM`, and their exclusive closure, 206 MiB) are deleted.
-  The browser renders in software either way; see `docs/userland.md` (Mesa).
-  `libgbm.so.1`, a `DT_NEEDED` of `helium`, and `libdrm` stay.
+The stage then replaces one file of the installed archive and records it in
+the receipt: `lib/libxkbcommon.so.0` is deleted, and kbvm's
+`libxkbcommon.so.0` (the `kbvm-xkbcommon` crate at the kbvm revision
+`guest/Cargo.lock` pins) is at `/usr/local/lib`, which musl searches after
+`LD_LIBRARY_PATH`.
 
 musl's loader comes from the Alpine 3.24.1 image chromium-build builds the
 arm64 archive on (musl 1.2.6), not from Alpine 3.22.
@@ -157,6 +152,6 @@ imports. Run it on an exported rootfs to read its report.
 
 `/etc/bctl/receipt.json` records the image name, the browser's own version
 string (`helium --version`, run in the assembled rootfs), the archive file
-name and SHA-256, and the replaced and removed files. Helium's
+name and SHA-256, and the replaced file. Helium's
 `/json/version` reports `Chrome/<chromium version>`, so the receipt, not
 CDP, identifies the browser as Helium.

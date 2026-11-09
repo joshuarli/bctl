@@ -45,31 +45,24 @@ python3 "$scripts/install-runtime.py" --archive "$archive" --verify-extract "$ro
 browser=$rootfs/opt/browser
 [ -f "$browser/lib/libxkbcommon.so.0" ] || fail "$name ships no lib/libxkbcommon.so.0 to replace"
 rm "$browser/lib/libxkbcommon.so.0"
-mesa_gl_closure="libEGL.so.1 libGLESv2.so.2 libgallium-26.1.6.so libLLVM.so.22.1 libSPIRV-Tools.so libdrm_amdgpu.so.1
-libelf.so.1 libwayland-client.so.0 libwayland-egl.so.1 libxcb-present.so.0 libxcb-randr.so.0 libxcb-shm.so.0
-libxcb-sync.so.1 libxcb-xfixes.so.0 libxshmfence.so.1 libzstd.so.1"
-for library in $mesa_gl_closure; do
-    [ -f "$browser/lib/$library" ] || fail "$name has no lib/$library; recheck which libraries only Mesa's GL stack loads"
-    rm "$browser/lib/$library"
-done
 mkdir -p "$rootfs/lib" "$rootfs/usr/local/lib" "$rootfs/usr/local/bin" "$rootfs/home/browser" "$rootfs/etc/bctl"
 cp "$xkbcommon" "$rootfs/usr/local/lib/libxkbcommon.so.0"
 cp /lib/ld-musl-aarch64.so.1 "$rootfs/lib/"
 ln -s ld-musl-aarch64.so.1 "$rootfs/lib/libc.musl-aarch64.so.1"
 ln -s /opt/browser/helium "$rootfs/usr/local/bin/browser"
 
-version=$(env -i HOME=/home/browser LD_LIBRARY_PATH=/opt/browser/lib /usr/sbin/chroot "$rootfs" /opt/browser/helium --version) \
+version=$(env -i HOME=/home/browser LD_LIBRARY_PATH=/opt/browser/lib:/opt/browser /usr/sbin/chroot "$rootfs" /opt/browser/helium --version) \
     || fail "helium --version failed in the assembled rootfs"
 case $version in
     "Helium "*) ;;
     *) fail "helium --version printed $version, not a Helium version" ;;
 esac
 
-python3 -I - "$archive" "$version" "$rootfs/etc/bctl/receipt.json" $mesa_gl_closure <<'PY'
+python3 -I - "$archive" "$version" "$rootfs/etc/bctl/receipt.json" <<'PY'
 import json, sys
 from pathlib import Path
 
-archive, version, out, removed = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), sys.argv[4:]
+archive, version, out = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 report = json.loads(archive.with_name(archive.name + ".acceptance.json").read_text())
 receipt = {
     "image": "helium",
@@ -77,7 +70,6 @@ receipt = {
     "archive": archive.name,
     "archive_sha256": report["archive_sha256"],
     "replaced": {"lib/libxkbcommon.so.0": "/usr/local/lib/libxkbcommon.so.0"},
-    "removed": [f"lib/{name}" for name in removed],
 }
 out.write_text(json.dumps(receipt, indent=2) + "\n")
 PY

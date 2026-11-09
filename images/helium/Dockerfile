@@ -47,7 +47,7 @@ RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\(
  && cp target/aarch64-unknown-linux-musl/release/libxkbcommon.so /libxkbcommon.so.0
 
 FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS installer
-ARG CHROMIUM_BUILD_REV=c7856740687f3d3f47e9b1e596b0ef21e1c5a4d0
+ARG CHROMIUM_BUILD_REV=e9809cb544f09b695a066e31fd24608298c6c7f2
 RUN apk add --no-cache git \
  && git init -q /chromium-build \
  && git -C /chromium-build fetch -q --depth 1 https://github.com/laputa-systems/chromium-build "$CHROMIUM_BUILD_REV" \
