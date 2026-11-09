@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 bctl-rfb = { path = "../rfb" }
+bctl-runtime-smolvm = { path = "../runtime-smolvm" }
 miniserde = "0.1"
 
 [lints]

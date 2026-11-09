@@ -1097,15 +1097,50 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
             if !disk_volumes.is_empty() {
                 return Err(fixed("disk volumes", TOPOLOGY));
             }
-            if !published_sockets.is_empty() {
-                return Err(fixed("published sockets", TOPOLOGY));
-            }
-            let gpu = same_flag("gpu", gpu, false)?;
+            let captured_gpu = checkpoint.settings.gpu;
+            let captured_gpu_mode = match checkpoint.settings.gpu_mode.as_deref() {
+                None => None,
+                Some("2d") => Some(crate::data::resources::GpuMode::TwoD),
+                Some("3d") => Some(crate::data::resources::GpuMode::ThreeD),
+                Some(other) => {
+                    return Err(Error::config(
+                        "restore checkpoint",
+                        format!("checkpoint uses unknown GPU mode '{other}'"),
+                    ));
+                }
+            };
+            let gpu = same_flag("gpu", gpu, captured_gpu)?;
             if gpu_vram_mib.is_some() {
                 return Err(fixed("GPU VRAM", TOPOLOGY));
             }
-            if gpu_mode.is_some() {
-                return Err(fixed("the GPU mode", TOPOLOGY));
+            let gpu_mode = match gpu_mode {
+                Some(requested) if Some(requested) != captured_gpu_mode => {
+                    return Err(fixed("the GPU mode", TOPOLOGY));
+                }
+                Some(requested) => Some(requested),
+                None => captured_gpu_mode,
+            };
+            // A published socket's host listener is not guest state: the
+            // captured guest serves a vsock port fixed by this list's order,
+            // and a restore binds this host's listener to that port. Only the
+            // host side may move.
+            let captured_sockets = &checkpoint.settings.published_sockets;
+            if !published_sockets.is_empty() {
+                let same_sockets = published_sockets.len() == captured_sockets.len()
+                    && published_sockets
+                        .iter()
+                        .zip(captured_sockets)
+                        .all(|(requested, captured)| {
+                            requested.direction.as_str() == captured.direction
+                                && requested.guest_path == captured.guest_path
+                        });
+                if !same_sockets {
+                    return Err(fixed(
+                        "published sockets",
+                        "a restore keeps the captured guest socket paths and their order, which \
+                         fix their vsock ports; only the host side may move",
+                    ));
+                }
             }
             let rosetta = same_flag("rosetta", rosetta, false)?;
             let nested_virt =
@@ -1311,10 +1346,10 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                 credentials,
                 // Bindings a checkpoint brings never read this host's environment.
                 credentials_supplied_only: true,
-                published_sockets: Vec::new(),
+                published_sockets,
                 gpu,
-                gpu_vram_mib: None,
-                gpu_mode: None,
+                gpu_vram_mib: checkpoint.settings.gpu_vram_mib,
+                gpu_mode,
                 rosetta,
                 nested_virt,
                 cuda,

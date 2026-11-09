@@ -7,6 +7,7 @@ mod lifecycle;
 mod net;
 mod report;
 mod resources;
+mod restore;
 mod rfb;
 mod serve;
 mod session;
@@ -22,7 +23,7 @@ use report::{ImageIdentity, Measure, Report};
 use session::Home;
 
 const USAGE: &str = "usage:
-  bctl-bench lifecycle|browser|interaction|resources|viewer [--rounds N] [--iterations N] [--quiet-wait SECS] [--out DIR]
+  bctl-bench lifecycle|browser|interaction|resources|viewer|restore [--rounds N] [--iterations N] [--quiet-wait SECS] [--out DIR]
   bctl-bench gate [RESULT.json...]
   bctl-bench serve                      serve the pinned Speedometer and the page-load fixture on a free port, for manual runs
 
@@ -97,6 +98,7 @@ fn run() -> Fallible<()> {
         "interaction" => interaction::run(&ctx)?,
         "resources" => resources::run(&ctx)?,
         "viewer" => viewer::run(&ctx)?,
+        "restore" => restore::run(&ctx)?,
         _ => return Err(format!("unknown suite {suite}\n{USAGE}")),
     };
     outcome.notes.push(format!("waited {:.0} s in total for a quiet host", ctx.gate.waited().as_secs_f64()));

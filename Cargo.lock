@@ -118,6 +118,7 @@ name = "bctl-bench"
 version = "0.1.0"
 dependencies = [
  "bctl-rfb",
+ "bctl-runtime-smolvm",
  "miniserde",
 ]
 

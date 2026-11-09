@@ -53,7 +53,7 @@ impl Home {
         std::fs::create_dir_all(path.join("runtime")).and_then(|()| std::fs::create_dir_all(path.join("images"))).map_err(|e| e.to_string())?;
         let link = |from: PathBuf, to: PathBuf| std::os::unix::fs::symlink(from, to).map_err(|e| e.to_string());
         link(root.join(".work/runtime/smolvm"), path.join("runtime/smolvm"))?;
-        for image in ["ref-alpine-chromium", "ref-alpine-tinyland"] {
+        for image in ["ref-alpine-chromium", "ref-alpine-tinyland", "helium"] {
             let tar = root.join(format!(".work/images/{image}.tar"));
             if tar.exists() {
                 link(tar, path.join(format!("images/{image}.tar")))?;
@@ -76,10 +76,20 @@ impl Home {
         command
     }
 
+    fn command_with_env(&self, args: &[&str], env: &[(&str, String)]) -> Command {
+        let mut command = self.command(args);
+        command.envs(env.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
     fn reply(&self, args: &[&str]) -> Fallible<Reply> {
+        self.reply_with_env(args, &[])
+    }
+
+    fn reply_with_env(&self, args: &[&str], env: &[(&str, String)]) -> Fallible<Reply> {
         let mut args = args.to_vec();
         args.push("--json");
-        let output: Output = self.command(&args).output().map_err(|e| format!("cannot run bctl: {e}"))?;
+        let output: Output = self.command_with_env(&args, env).output().map_err(|e| format!("cannot run bctl: {e}"))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let reply: Reply = json::from_str(&stdout).map_err(|_| format!("bctl {args:?} printed {stdout:?} / {}", String::from_utf8_lossy(&output.stderr)))?;
         match reply.error {
@@ -105,12 +115,20 @@ impl Home {
     }
 
     pub fn start_daemon(&self) -> Fallible<Duration> {
+        self.start_daemon_with_env(&[])
+    }
+
+    pub fn start_daemon_with_env(&self, env: &[(&str, String)]) -> Fallible<Duration> {
         let started = Instant::now();
-        self.status()?;
+        self.reply_with_env(&["status"], env)?;
         Ok(started.elapsed())
     }
 
     pub fn up(&self, name: &str, profile: &str, image: &str, allow_private: &[String]) -> Fallible<UpTiming> {
+        self.up_with_env(name, profile, image, allow_private, &[])
+    }
+
+    pub fn up_with_env(&self, name: &str, profile: &str, image: &str, allow_private: &[String], env: &[(&str, String)]) -> Fallible<UpTiming> {
         let done = Arc::new(AtomicBool::new(false));
         let poller = {
             let done = Arc::clone(&done);
@@ -140,7 +158,7 @@ impl Home {
             args.extend(["--allow-private", range]);
         }
         let started = Instant::now();
-        let result = self.reply(&args);
+        let result = self.reply_with_env(&args, env);
         let total = started.elapsed();
         done.store(true, Ordering::Relaxed);
         let stages = poller.join().map_err(|_| "stage poller panicked")?;
