@@ -1,0 +1,15 @@
+[package]
+name = "bctl-runtime-smolvm"
+description = "Typed adapter over the pinned smolvm executable: launch, observe, readiness, and teardown of appliance VMs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bctl-core = { path = "../core" }
+bctl-rfb = { path = "../rfb" }
+miniserde = "0.1"
+
+[lints]
+workspace = true

@@ -98,6 +98,15 @@ name = "bctl-rfb"
 version = "0.1.0"
 
 [[package]]
+name = "bctl-runtime-smolvm"
+version = "0.1.0"
+dependencies = [
+ "bctl-core",
+ "bctl-rfb",
+ "miniserde",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -63,6 +63,7 @@ mod tests {
             image: "ref-alpine-chromium".into(),
             state,
             generation: Generation(generation),
+            endpoints: None,
             failure: None,
         }
     }

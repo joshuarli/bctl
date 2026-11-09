@@ -83,7 +83,15 @@ pub struct SessionRecord {
     pub image: String,
     pub state: SessionState,
     pub generation: Generation,
+    pub endpoints: Option<Endpoints>,
     pub failure: Option<String>,
+}
+
+/// Host loopback ports forwarded to one generation of a session: CDP and the VNC display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Endpoints {
+    pub cdp_port: u16,
+    pub vnc_port: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -32,7 +32,9 @@ build does not.
 - `bctl-guest check` prints one line per stage, `<stage> ok` or
   `<stage> missing`, for `seat`, `compositor`, `browser`, and `sandbox`, and
   exits non-zero if any stage is missing. `sandbox ok` means a renderer
-  process runs with `NoNewPrivs: 1` and `Seccomp: 2`.
+  process runs with `NoNewPrivs: 1` and `Seccomp: 2`. A last line,
+  `input ok` or `input absent`, reports whether both VNC input devices exist;
+  `input absent` means a view-only runtime and does not fail the check.
 
 ## Browser
 

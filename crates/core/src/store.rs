@@ -5,7 +5,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, pa
 
 use crate::names::{Generation, MachineName, ProfileName, SessionName};
 use crate::reconcile::Action;
-use crate::state::{AttemptRecord, AttemptState, SessionRecord, SessionState};
+use crate::state::{AttemptRecord, AttemptState, Endpoints, SessionRecord, SessionState};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS profiles (
@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     image TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'failed')),
     generation INTEGER NOT NULL CHECK (generation >= 0),
+    cdp_port INTEGER CHECK (cdp_port BETWEEN 1 AND 65535),
+    vnc_port INTEGER CHECK (vnc_port BETWEEN 1 AND 65535),
     failure TEXT
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS one_writer_per_profile
@@ -104,7 +106,7 @@ impl Store {
     pub fn session(&self, name: &SessionName) -> Result<SessionRecord, StoreError> {
         self.db
             .query_row(
-                "SELECT name, profile, image, state, generation, failure FROM sessions WHERE name = ?1",
+                "SELECT name, profile, image, state, generation, failure, cdp_port, vnc_port FROM sessions WHERE name = ?1",
                 [name.as_str()],
                 raw_session,
             )
@@ -114,17 +116,17 @@ impl Store {
     }
 
     pub fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError> {
-        let mut stmt = self.db.prepare("SELECT name, profile, image, state, generation, failure FROM sessions ORDER BY name")?;
+        let mut stmt = self.db.prepare("SELECT name, profile, image, state, generation, failure, cdp_port, vnc_port FROM sessions ORDER BY name")?;
         let raw = stmt.query_map([], raw_session)?.collect::<Result<Vec<_>, _>>()?;
         raw.into_iter().map(session_record).collect()
     }
 
     /// Records the intent to start before any VM exists: a new generation in `starting`, holding the profile.
-    pub fn begin_start(&mut self, name: &SessionName) -> Result<MachineName, StoreError> {
+    pub fn begin_start(&mut self, name: &SessionName, endpoints: Endpoints) -> Result<MachineName, StoreError> {
         let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let session = tx
             .query_row(
-                "SELECT name, profile, image, state, generation, failure FROM sessions WHERE name = ?1",
+                "SELECT name, profile, image, state, generation, failure, cdp_port, vnc_port FROM sessions WHERE name = ?1",
                 [name.as_str()],
                 raw_session,
             )
@@ -136,8 +138,8 @@ impl Store {
         }
         let generation = session.generation.next();
         let updated = tx.execute(
-            "UPDATE sessions SET state = 'starting', generation = ?2, failure = NULL WHERE name = ?1",
-            params![name.as_str(), to_sql_generation(generation)?],
+            "UPDATE sessions SET state = 'starting', generation = ?2, cdp_port = ?3, vnc_port = ?4, failure = NULL WHERE name = ?1",
+            params![name.as_str(), to_sql_generation(generation)?, endpoints.cdp_port, endpoints.vnc_port],
         );
         match updated {
             Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::ConstraintViolation => {
@@ -223,19 +225,24 @@ impl Store {
     }
 }
 
-type RawSession = (String, String, String, String, i64, Option<String>);
+type RawSession = (String, String, String, String, i64, Option<String>, Option<u16>, Option<u16>);
 
 fn raw_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
 }
 
-fn session_record((name, profile, image, state, generation, failure): RawSession) -> Result<SessionRecord, StoreError> {
+fn session_record((name, profile, image, state, generation, failure, cdp_port, vnc_port): RawSession) -> Result<SessionRecord, StoreError> {
     Ok(SessionRecord {
         name: parse_session_name(&name)?,
         profile: ProfileName::new(&profile).map_err(|e| StoreError::Corrupt(e.to_string()))?,
         image,
         state: SessionState::parse(&state).ok_or_else(|| StoreError::Corrupt(format!("session state {state:?}")))?,
         generation: Generation(u64::try_from(generation).map_err(|_| StoreError::Corrupt(format!("generation {generation}")))?),
+        endpoints: match (cdp_port, vnc_port) {
+            (Some(cdp_port), Some(vnc_port)) => Some(Endpoints { cdp_port, vnc_port }),
+            (None, None) => None,
+            _ => return Err(StoreError::Corrupt(format!("session {name} has only one of its ports"))),
+        },
         failure,
     })
 }
@@ -254,6 +261,8 @@ mod tests {
     use crate::reconcile::reconcile;
     use crate::state::MachineObservation;
 
+    const PORTS: Endpoints = Endpoints { cdp_port: 19222, vnc_port: 15900 };
+
     fn name(s: &str) -> SessionName {
         SessionName::new(s).unwrap()
     }
@@ -269,8 +278,8 @@ mod tests {
     #[test]
     fn a_profile_has_at_most_one_writable_session() {
         let mut store = store_with(&[("a", "personal"), ("b", "personal")]);
-        store.begin_start(&name("a")).unwrap();
-        match store.begin_start(&name("b")) {
+        store.begin_start(&name("a"), PORTS).unwrap();
+        match store.begin_start(&name("b"), PORTS) {
             Err(StoreError::ProfileBusy { profile, holder }) => {
                 assert_eq!((profile.as_str(), holder.as_str()), ("personal", "a"));
             }
@@ -279,26 +288,26 @@ mod tests {
         assert_eq!(store.session(&name("b")).unwrap().state, SessionState::Stopped);
 
         store.transition(&name("a"), Generation(1), SessionState::Stopped, None).unwrap();
-        assert_eq!(store.begin_start(&name("b")).unwrap().to_string(), "bctl-b-1");
+        assert_eq!(store.begin_start(&name("b"), PORTS).unwrap().to_string(), "bctl-b-1");
     }
 
     #[test]
     fn each_start_records_a_new_generation_before_any_machine_exists() {
         let mut store = store_with(&[("research", "personal")]);
-        assert_eq!(store.begin_start(&name("research")).unwrap().to_string(), "bctl-research-1");
+        assert_eq!(store.begin_start(&name("research"), PORTS).unwrap().to_string(), "bctl-research-1");
         let session = store.session(&name("research")).unwrap();
         assert_eq!((session.state, session.generation), (SessionState::Starting, Generation(1)));
-        assert!(matches!(store.begin_start(&name("research")), Err(StoreError::NotStartable { .. })));
+        assert!(matches!(store.begin_start(&name("research"), PORTS), Err(StoreError::NotStartable { .. })));
         store.transition(&name("research"), Generation(1), SessionState::Failed, Some("boom")).unwrap();
-        assert_eq!(store.begin_start(&name("research")).unwrap().to_string(), "bctl-research-2");
+        assert_eq!(store.begin_start(&name("research"), PORTS).unwrap().to_string(), "bctl-research-2");
     }
 
     #[test]
     fn a_report_about_an_older_generation_changes_nothing() {
         let mut store = store_with(&[("research", "personal")]);
-        store.begin_start(&name("research")).unwrap();
+        store.begin_start(&name("research"), PORTS).unwrap();
         store.transition(&name("research"), Generation(1), SessionState::Failed, None).unwrap();
-        store.begin_start(&name("research")).unwrap();
+        store.begin_start(&name("research"), PORTS).unwrap();
         assert!(matches!(
             store.transition(&name("research"), Generation(1), SessionState::Ready, None),
             Err(StoreError::StaleGeneration { .. })
@@ -309,7 +318,7 @@ mod tests {
     #[test]
     fn restart_reconciliation_interrupts_live_attempts_and_never_requeues_them() {
         let mut store = store_with(&[("research", "personal")]);
-        store.begin_start(&name("research")).unwrap();
+        store.begin_start(&name("research"), PORTS).unwrap();
         store.transition(&name("research"), Generation(1), SessionState::Ready, None).unwrap();
         let (_, attempt) = store.create_run(&name("research"), "mirror-docs").unwrap();
         store.set_attempt(attempt, AttemptState::Running).unwrap();
@@ -327,13 +336,13 @@ mod tests {
     #[test]
     fn a_vanished_machine_fails_its_session_and_frees_the_profile() {
         let mut store = store_with(&[("a", "personal"), ("b", "personal")]);
-        store.begin_start(&name("a")).unwrap();
+        store.begin_start(&name("a"), PORTS).unwrap();
         let plan = reconcile(&store.sessions().unwrap(), &[], &[]);
         store.apply(&plan).unwrap();
         let a = store.session(&name("a")).unwrap();
         assert_eq!(a.state, SessionState::Failed);
         assert!(a.failure.unwrap().contains("vanished"));
-        store.begin_start(&name("b")).unwrap();
+        store.begin_start(&name("b"), PORTS).unwrap();
     }
 
     #[test]
@@ -344,10 +353,11 @@ mod tests {
         {
             let mut store = Store::open(&path).unwrap();
             store.create_session(&name("research"), &ProfileName::new("personal").unwrap(), "img").unwrap();
-            store.begin_start(&name("research")).unwrap();
+            store.begin_start(&name("research"), PORTS).unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.session(&name("research")).unwrap().generation, Generation(1));
+        let session = store.session(&name("research")).unwrap();
+        assert_eq!((session.generation, session.endpoints), (Generation(1), Some(PORTS)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

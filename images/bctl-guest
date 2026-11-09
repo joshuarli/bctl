@@ -83,6 +83,12 @@ check() {
         echo "sandbox missing"
         status=1
     fi
+    if grep -qx 'smolvm vnc pointer' /sys/class/input/input*/name 2>/dev/null &&
+        grep -qx 'smolvm vnc keyboard' /sys/class/input/input*/name 2>/dev/null; then
+        echo "input ok"
+    else
+        echo "input absent"
+    fi
     return "$status"
 }
 
