@@ -24,9 +24,12 @@ D1 and `bctl profile login` (`0f3b8c1`), D2's input lease (`59fa9c8`), proved by
 `pnpm --dir web exec playwright test` against a real VM. T2 (`cb8dccd`,
 `docs/compositor-contract.md`). J2 (`ac9b005`, lane). T0 (`8f3e21f`, lane:
 `sh guest/harness/smolvm-proof.sh`).
-Running lanes: J1 (shadowdriver `grab/`), T1 (`guest/`), R3 (kbvm fork).
-Next: J3 (exec runs now, grab runs after J1), then D2's run views.
-Resume: `implement J3 from docs/CAMPAIGN-ROADMAP.md`.
+J1 (shadowdriver `6568107`). T1 (`7418ce2`).
+Running lanes: J3, T3, R0, H2 (CDP capability gateway only), each in
+`.work/wt/<item>`, all on `ref-alpine-chromium`.
+Next: D2's run views after J3; then M3N (native automation), whose N1
+transport has no bctl prereq and can start now.
+Resume: `implement M3N from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
@@ -139,7 +142,30 @@ Resume: `implement J3 from docs/CAMPAIGN-ROADMAP.md`.
 - Prescribed: one VM per session, one writable session per profile, one active
   run per session (multiple tabs inside it).
 - Prescribed: two job kinds, `grab` and `exec`. There is no workflow language.
-  Navigation and extraction are ordinary Shadowdriver code.
+  Multi-step navigation and extraction are ordinary user programs
+  (Shadowdriver code or a Rust program on bctl's API).
+- Owner 2026-11-08 (from an external review): bctl gets its own native
+  automation layer (M3N). The daemon owns a Rust CDP client per session and
+  offers page-level actions (tabs, accessibility snapshots with element refs,
+  semantic locators, actionable clicks, fill, waits) through the CLI, the
+  daemon socket, and a Rust library API. It still runs on the host and
+  speaks CDP, so the boundary above is unchanged. agent-browser
+  (vercel-labs) is a reference for behavior and failure semantics only: no
+  code, dependency, daemon model, launcher, or profile handling comes from
+  it. No Tokio: the transport uses h12tiny's websocket on the daemon's
+  existing smol-family executor, improving h12tiny where it falls short.
+  Grab and Shadowdriver stay supported; nothing migrates off them in this
+  campaign.
+- Prescribed: control authority is one explicit per-session state, not the
+  RFB input lease alone: `Automation | Yielding | Human`. `Human` is entered
+  only after `Yielding` resolves (no native command in flight; a cooperating
+  run has reached an event boundary or `needs_interaction`). The RFB lease
+  is held exactly in `Human`. Native commands that mutate the page are
+  refused outside `Automation`. External CDP clients are gated by H2's
+  gateway: while `Human`, the gateway refuses new attachments; a run's
+  existing connection is cooperative through Grab's control protocol. Until
+  H2 lands, raw loopback CDP bypasses the gate and takeover is exclusive
+  only against bctl's own automation and RFB viewers.
 - Prescribed: Rust for CLI, daemon, and gateway; SQLite for durable state;
   Solid 2 with `@laputa-systems/ui-dashboard` 0.5.0 (light only) for the
   dashboard, built to static assets embedded in the `bctl` binary. No Node at
@@ -335,7 +361,9 @@ Checked 2026-11-08, read-only, nothing built or run.
   `site-rejected`, `login-required`, `verification-failed`, `job-error`,
   `cancelled`, `interrupted`. Logs and artifacts are bounded per run (H1 sets
   the numbers). Pause stops issuing automation at the next event boundary.
-  It never freezes the VM. Acceptance: a fixture crawl requires a login, enters
+  It never freezes the VM. A run's session launches with the resources its
+  `[browsers.*]` entry resolves to, replacing the daemon's hardcoded launch
+  values. Acceptance: a fixture crawl requires a login, enters
   `NeedsInteraction`, the operator logs in through the dashboard, it resumes
   in the same browser and produces a verified mirror; killing the daemon
   mid-crawl marks the attempt `Interrupted`, and `bctl resume` continues from
@@ -347,9 +375,88 @@ Checked 2026-11-08, read-only, nothing built or run.
   shows inputs, resolved config, progress from events, attempts, logs, the
   outcome category, and artifacts. Captured HTML is served only as a download
   or from a separate sandboxed origin, never inline on the dashboard origin.
-  Acceptance: a Playwright test where a second viewer's input does not reach
+  "Take control" moves the session's authority (Decisions) to `Yielding`
+  and acquires the lease only on `Human`; the page shows `Yielding` until
+  then. Acceptance: a Playwright test where a second viewer's input does not reach
   the guest while the first holds the lease; the takeover and resume flow of
   J3 driven entirely from the dashboard.
+
+### M3N: native automation
+
+bctl's own CDP automation, so a coding agent can drive a session with only
+`bctl` or its Rust API. It does not gate the first useful release. N1 has no
+bctl prereq; N2 onward edit the daemon and start after J3 merges, to avoid a
+second scheduler or conflicting daemon changes. Behavior references:
+agent-browser's `cli/src/native/{cdp/client,snapshot,element,interaction,tab_binding}.rs`.
+Correctness tests use local fixtures only, never live sites. Measurements
+(warm command p50/p95, CDP calls per snapshot and action, snapshot bytes,
+daemon idle CPU and RSS, memory after repeated snapshots) go into H1.
+
+- **N1 CDP transport.** Owns `crates/cdp/`. Prereq: none. One persistent
+  connection to the browser websocket: correlated request ids, event
+  dispatch including target and frame lifecycle, flattened target sessions,
+  typed structs for only the methods used, bounded queues, response sizes,
+  and deadlines, ping/pong, and clean shutdown. A timed-out or cancelled
+  request leaves no pending entry. A mutating command dispatched without an
+  observed reply fails as `UnknownOutcome` and is never replayed after a
+  reconnect. The crate takes an endpoint, knows nothing of SmolVM, and is
+  owned per session generation, closing when the generation stops or is
+  replaced. Acceptance: mock-CDP tests for reordered replies, interleaved
+  events, dropped sockets, delayed and malformed messages, concurrent
+  requests, and shutdown; one VM test attaching to a ready session.
+- **N2 Targets.** Owns `crates/automation/`. Prereq: N1, J3 merged. Session,
+  then target (CDP `targetId`, the tab identity), then frame and document,
+  then element ref. List, create, close, and select page targets. The
+  selected target is stored in SQLite with the session generation, reattached
+  after a daemon restart if it still exists, and invalidated by a new
+  generation. A vanished target fails `TARGET_GONE`; a popup or an externally
+  activated tab never moves the binding. Stored diagnostics never keep URL
+  userinfo, query, or fragment.
+- **N3 Snapshots and refs.** Prereq: N2. Accessibility snapshots fetched in
+  bulk (`Accessibility.getFullAXTree` plus DOM backend ids, never one round
+  trip per node): interactive-only by default, full on request, structural
+  pruning, depth limit, CSS subtree scope, role, name, value, and
+  disabled/checked/selected/expanded, bounded text and JSON output, password
+  values redacted. A ref is scoped to generation, target, frame, and
+  document, maps to a backend node, survives same-document updates only
+  while that node survives, and is never recycled. Anything else fails
+  `STALE_REF`; refs are never re-resolved by similar text. Same-process and
+  out-of-process iframes are both modelled.
+- **N4 Locators and actions.** Prereq: N3. Locators: ref, CSS, role plus
+  accessible name, label, placeholder, test id, from browser-computed
+  accessibility. An ambiguous locator fails unless an occurrence is chosen.
+  Actions: navigate, click, double-click, fill, type, press, hover, scroll,
+  select, check, uncheck, wait (selector, text, URL, readiness; monotonic
+  deadline; network idle is never the default), get text/title/URL/attribute,
+  screenshot, and an explicit `eval`. A click resolves the node, checks
+  visibility and enabled state, scrolls into view, finds a hit point, rejects
+  covered or detached targets, and dispatches real `Input` events; it never
+  falls back to `element.click()`. Dialogs, popups, detachment, and frame
+  replacement never corrupt another target's state.
+- **N5 CLI, socket, and batches.** Owns `crates/bctl/` additions. Prereq: N4.
+  `bctl tab list|new|use|close` and `bctl page goto|snapshot|click|fill|press|wait|screenshot|eval`,
+  with stable JSON results and error codes carrying the target id. A failed
+  connection never starts a second browser. A batch is a JSON list run in
+  order over one connection, stopping at the first failure and returning
+  per-step results and timings; it is not a transaction and promises no
+  rollback or exactly-once effects. The Rust API is public for future native
+  jobs; no Python or TypeScript bindings.
+- **N6 Authority.** Prereq: N5, D2. Implements the authority state from
+  Decisions across native commands, the RFB lease, and J3's
+  `NeedsInteraction`, with every allowed and refused transition tested.
+  Taking control mid-command waits for the in-flight command to settle,
+  keeps the browser, tab, and profile, and resumes cleanly.
+
+Acceptance for M3N, on real VMs: snapshot and click a button; role and name
+matching with implicit ARIA roles; fill with Unicode, select, check, and read
+text back; duplicate names fail as ambiguous; hidden, disabled, and covered
+elements fail; DOM replacement and navigation invalidate refs; a ref from
+one tab cannot act in another; a closed selected tab never switches
+silently; a popup leaves the binding alone; same- and cross-origin iframes
+work; a dropped socket causes no duplicate side effect; native commands are
+refused during `Human`; a daemon restart reuses no stale ref; `down` closes
+the connection; and the D1, D2, and Shadowdriver attach tests still pass.
+Deferred until measured (M6): snapshot deltas, conditional screenshots.
 
 ### M4: Tinyland as the appliance compositor
 
@@ -521,7 +628,8 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
 
 - **H1 Gates and baselines.** Owns `docs/performance.md`,
   `tests/bench/`. Prereq: M3. Measure and record: cold `up` to ready, first
-  visible frame, input-to-pixel latency through the gateway, RSS per session,
+  visible frame, input-to-pixel latency through the gateway, M3N's command
+  and snapshot measures, RSS per session,
   idle host CPU per session, viewer overhead, `down` latency, and `bctl`
   binary size. Set the gates from these with their observed spread. Set the
   log, artifact, and disk bounds. Time gates follow the `perf-gate-ready`
@@ -576,7 +684,9 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
   verified Grab mirrors; interrupted crawls resume from Grab's own state.
 - A6 Takeover: `NeedsInteraction` to manual login to `Running` in the same
   browser, from CLI or dashboard, with a server-enforced exclusive input
-  lease.
+  lease. Exclusive means against RFB viewers, bctl's native automation, and
+  (after H2) new CDP attachments; until H2 the receipt says raw loopback CDP
+  was not gated.
 - A7 Stream security: no unauthenticated or cross-origin path reaches VNC;
   input on a view-only runtime is refused, not dropped silently.
 - A8 Tinyland: the same suite passes on `helium-tinyland` and on the Sway
@@ -586,6 +696,11 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
   unattributed file, or a C library outside the named exceptions.
 - A10 Port-back: `guest/tinyland` and `guest/seatd` contain no bctl-specific
   code, and their test suites pass without bctl's host crates.
+- A11 Native automation: a coding agent drives a session with only `bctl`
+  or its Rust API (no agent-browser, Playwright, or Shadowdriver), while the
+  same headed browser stays observable and controllable in the dashboard.
+  Failure: an action lands on a different tab, element, or document than
+  the one named, or a stale ref is re-resolved instead of failing.
 
 ## Needs environment
 
@@ -600,4 +715,7 @@ Owner-provided; never blocks other items.
 WebRTC or a new video pipeline (SmolVM's `/video` H.264 endpoint is evaluated
 in H1 only if RFB fails the latency gate), recording, a workflow language,
 stealth or fingerprint patching in bctl (that belongs in chromium-build and
-Shadowdriver), and a general-purpose guest agent or init system.
+Shadowdriver), and a general-purpose guest agent or init system. From the
+agent-browser comparison: feature parity, annotated screenshots, HAR
+recording, network interception, agent chat, cloud browser providers, mobile
+emulation, and a JavaScript execution server (`page eval` is enough).

@@ -42,8 +42,10 @@ Job names and browser names follow the session-name rules: `a-z`, `0-9`, and
 
 ## Exec jobs
 
-`kind = "exec"` runs a program inside the session. There is no shell: `argv` is
-passed to the program directly.
+`kind = "exec"` runs a program on the host, attached to the session's browser
+over CDP through `BCTL_CDP_URL`; nothing runs inside the VM. The program has
+the user's host authority, the same as running it by hand. There is no shell:
+`argv` is passed to the program directly.
 
 | Field     | Type     | Default      | Constraint                                              |
 |-----------|----------|--------------|---------------------------------------------------------|
