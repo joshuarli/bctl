@@ -31,6 +31,16 @@ case_verdict() {
 	[ "$status" = PASS ] || printf '          log: %s\n' "$dir"
 }
 
+userns_native() {
+	line=$(unshare -Ur "$ROOT/dev/run.sh" --native --timeout 120 --label userns-native "$FIXTURES/userns" || :)
+	dir=${line##* dir=}
+	checks=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json" 2>/dev/null || echo 0)
+	case $line in
+	"RUN verdict=PASS "*) printf 'PASS      %-18s native  %s checks\n' userns "$checks" ;;
+	*) failures=$((failures + 1)); printf 'FAIL      %-18s native  %s\n          log: %s\n' userns "${line%% dir=*}" "$dir" ;;
+	esac
+}
+
 suite_harness() {
 	make -s -C "$ROOT/tests/mini_chromium"
 	for smp in 1 2; do
@@ -54,8 +64,10 @@ suite_harness() {
 		case_verdict creds_procfs "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/creds_procfs"
 		case_verdict seccomp "$smp" 60 PASS '' "$FIXTURES/seccomp"
 		case_verdict seccomp_strace "$smp" 60 PASS '' --klib strace "$FIXTURES/seccomp"
+		case_verdict userns "$smp" 90 PASS '' "$FIXTURES/userns"
 		case_verdict mmap_bad_fd "$smp" 20 PASS '' "$FIXTURES/mmap_bad_fd"
 	done
+	userns_native
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
 	case_verdict duplicate_result 1 20 'FAIL detail=duplicate-record' '' "$FIXTURES/duplicate_result"
