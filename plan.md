@@ -21,11 +21,11 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   native side: `mini_chromium` 47/47 and raw 6/6 natively; on Nanos 2/47 and
   1/6, known-red until G1.
   **Red:** none. **Parked:** none.
-- **Running lanes:** upstream suite on musl (`.work/wt/upstream`, rebasing
-  onto the `writev` fix); G1.1 design note (`.work/wt/g1-design`).
-- **Next:** integrate both lanes (G0.4 baseline table), then the owner
-  reviews the G1.1 design before G1 kernel work. G5 uses a headless Wayland
-  compositor until the headless-Ozone Helium arrives (owner decision 8).
+- **Running lanes:** upstream suite on musl (`.work/wt/upstream`, G0.4);
+  G1.1 kernel, per-process page tables plus eager fork, owning `nanos/src`
+  (`.work/wt/g1.1`); G5 prep, Helium plus headless-compositor rootfs and
+  `guest_init` proven natively (`.work/wt/g5-prep`).
+- **Next:** integrate G0.4, then G1.1 when its acceptance holds, then G1.2.
 - **Gate matrix:** G0 NOT RUN (4/5 slices) · H PASS · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
