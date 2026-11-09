@@ -147,6 +147,7 @@ suite_upstream() {
 
 [ $# -ge 1 ] || usage
 mkdir -p "$IMAGES"
+"$ROOT/dev/build.sh" >/dev/null
 for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
