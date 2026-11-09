@@ -29,7 +29,7 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   vCPUs). G3.2 (seccomp-BPF: validator, interpreter, strict mode, TSYNC,
   the standard actions with forced SIGSYS, one dispatch point shared with
   strace; `seccomp` fixture green on 1 and 2 vCPUs, also under strace).
-  Probe on Nanos: 42/55, raw 6/6; upstream 64 pass.
+  Upstream 64 pass.
   G3.3 (user namespaces with one-shot id maps and scoped capabilities, a
   shared `fs_struct`, `chroot` with a root-clamped lookup, procfs
   `root`/`ns`/map files; `userns` 20/20 on 1 and 2 vCPUs, 11 checks native).
@@ -37,20 +37,28 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   session; `scm_rights` 20/20 on 1 and 2 vCPUs; gVisor cmsg 18/18).
   Realtime timers with a deadline before boot now fire (they wrapped to a
   far-future expiry and hung `shmem_xproc` intermittently).
-  G3.4 network half (net namespaces with isolated inet sockets; `netns`
-  fixture on 1 and 2 vCPUs and native). Abstract and autobound `AF_UNIX`
-  addresses (gVisor peercred 3/3). Cross-process `tkill`/`tgkill`/
-  `sigqueueinfo` (crashpad can re-raise a crash). G5 runs the headless
-  archive `helium-0.20.3.1-r5` with `--headless=new`; the Wayland stopgap
-  is gone. Native helium 10/10; on Nanos the browser dies at zygote launch
-  because `clone(CLONE_NEWPID)` is EINVAL.
-  **Red:** `userns` `chroot_fs` failed once at smp 1 under host load
-  (stage 9, the `/proc/<pid>/root` link); 0/25 in isolation.
-- **Running lane:** G3.4 PID namespaces (`.work/wt/g3.4-pidns`, branch
-  `lane/g3.4-pidns`).
-- **Next:** land PID namespaces; then the owner's session maps
-  `process_visible_pid` through `pid_nr_ns`; then rerun `dev/test.sh helium`.
-- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1, G3.2, G3.3 accepted; G3.4 network half landed) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+  G3.4 (pid namespaces with per-level numbers and the PID-1 rules; net
+  namespaces with isolated inet sockets; `pidns` 7 and `netns` 3 checks on
+  1 and 2 vCPUs and native). Probe on Nanos: 55/55 at 1, 2 and 4 vCPUs.
+  Abstract and autobound `AF_UNIX` addresses (gVisor peercred 3/3).
+  Cross-process `tkill`/`tgkill`/`sigqueueinfo`. A syscall nullified by
+  a blockq flush restarts when no signal is delivered (it leaked errno
+  512). procfs numbers pids in its mount namespace and unlinks dead file
+  nodes. Re-exec through `/proc/self/exe` keeps the real exe name. G5
+  runs the headless archive `helium-0.20.3.1-r5` with `--headless=new`;
+  native helium 10/10.
+  **Red:** helium on Nanos: the browser, both zygotes, the GPU process and
+  the network service start, but the network service exits after 15 s
+  with "no connection" although Mojo messages flow both ways on its
+  channel, and DevTools never listens. `process_visible_pid` still
+  reports root-namespace pids (probe `scm_credentials_translated` only
+  checks `pid > 1`).
+- **Running lane:** none.
+- **Next:** find why the network service's Mojo connection never
+  completes (compare the native strace of the utility's channel with the
+  Nanos trace); the owner's session maps `process_visible_pid` through
+  `pid_nr_ns`.
+- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 PASS · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
