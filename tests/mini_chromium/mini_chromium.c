@@ -173,10 +173,10 @@ static pid_t spawn_role(const char *role, char *const extra[], int nextra)
 	return pid;
 }
 
-static int status_field(const char *field, char *out, size_t outlen)
+static int status_field_at(int proc_fd, const char *field, char *out, size_t outlen)
 {
 	char text[4096];
-	int fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
+	int fd = proc_fd < 0 ? open("/proc/self/status", O_RDONLY | O_CLOEXEC) : openat(proc_fd, "self/status", O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
 		return -errno;
 	ssize_t n = read(fd, text, sizeof text - 1);
@@ -199,6 +199,11 @@ static int status_field(const char *field, char *out, size_t outlen)
 		}
 	}
 	return -ENOENT;
+}
+
+static int status_field(const char *field, char *out, size_t outlen)
+{
+	return status_field_at(-1, field, out, outlen);
 }
 
 static void check_process_fork(void)
@@ -775,7 +780,7 @@ static void on_sigsys(int sig, siginfo_t *info, void *ctx)
 	uc->uc_mcontext.gregs[REG_RAX] = TRAPPED_SYSCALL_RESULT;
 }
 
-static int install_renderer_policy(void)
+static int install_renderer_policy(unsigned flags)
 {
 	struct sock_filter filter[] = {
 		STMT(BPF_LD_W_ABS, offsetof(struct seccomp_data, arch)),
@@ -799,7 +804,7 @@ static int install_renderer_policy(void)
 	struct sock_fprog prog = { sizeof filter / sizeof filter[0], filter };
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
 		return -errno;
-	return syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) ? -errno : 0;
+	return syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, flags, &prog) ? -errno : 0;
 }
 
 static int malformed_filters_rejected(void)
@@ -929,7 +934,7 @@ static int role_renderer(int argc, char **argv)
 	struct sigaction sa = { .sa_sigaction = on_sigsys, .sa_flags = SA_SIGINFO };
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGSYS, &sa, 0);
-	rep.seccomp_installed = install_renderer_policy() == 0;
+	rep.seccomp_installed = install_renderer_policy(0) == 0;
 	errno = 0;
 	rep.socket_denied = socket(AF_INET, SOCK_STREAM, 0) < 0 && errno == EACCES;
 	errno = 0;
@@ -1078,90 +1083,337 @@ static int write_file(const char *path, const char *text)
 	return err;
 }
 
+#define SECCOMP_FILTER_FLAG_TSYNC 1
+#define SECCOMP_FILTER_FLAG_SPEC_ALLOW 4
+
+struct cap_header {
+	uint32_t version;
+	int pid;
+};
+
+struct cap_data {
+	uint32_t effective;
+	uint32_t permitted;
+	uint32_t inheritable;
+};
+
+static int drop_all_capabilities(void)
+{
+	struct cap_header h = { 0x20080522, 0 };
+	struct cap_data d[2] = { { 0, 0, 0 }, { 0, 0, 0 } };
+	if (syscall(SYS_capset, &h, d))
+		return 0;
+	struct cap_data got[2];
+	memset(got, 0xff, sizeof got);
+	return !syscall(SYS_capget, &h, got) && !got[0].effective && !got[0].permitted && !got[1].effective && !got[1].permitted;
+}
+
+static int write_id_maps(uid_t uid, gid_t gid)
+{
+	char map[64];
+	int s = write_file("/proc/self/setgroups", "deny\n");
+	snprintf(map, sizeof map, "%u %u 1\n", (unsigned)gid, (unsigned)gid);
+	int g = write_file("/proc/self/gid_map", map);
+	snprintf(map, sizeof map, "%u %u 1\n", (unsigned)uid, (unsigned)uid);
+	int u = write_file("/proc/self/uid_map", map);
+	return !s && !g && !u;
+}
+
+static int send_message(int sock, const char *text, const int *fds, int nfds)
+{
+	if (nfds)
+		return send_fds(sock, fds, nfds, text, strlen(text) + 1);
+	return send(sock, text, strlen(text) + 1, MSG_NOSIGNAL) == (ssize_t)(strlen(text) + 1) ? 0 : -errno;
+}
+
+static ssize_t recv_with_creds(int sock, void *buf, size_t len, struct ucred *cred, int *fds, int maxfds, int *nfds)
+{
+	char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 8)];
+	struct iovec iov = { buf, len };
+	struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+	ssize_t n;
+	do
+		n = recvmsg(sock, &msg, MSG_CMSG_CLOEXEC);
+	while (n < 0 && errno == EINTR);
+	if (cred)
+		cred->pid = 0;
+	if (nfds)
+		*nfds = 0;
+	if (n <= 0)
+		return n;
+	for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+		if (cm->cmsg_level != SOL_SOCKET)
+			continue;
+		if (cm->cmsg_type == SCM_CREDENTIALS && cred)
+			memcpy(cred, CMSG_DATA(cm), sizeof *cred);
+		if (cm->cmsg_type == SCM_RIGHTS && fds) {
+			int count = (int)((cm->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+			for (int i = 0; i < count && *nfds < maxfds; i++)
+				memcpy(&fds[(*nfds)++], CMSG_DATA(cm) + sizeof(int) * (size_t)i, sizeof(int));
+		}
+	}
+	return n;
+}
+
 struct zygote_report {
-	int userns;
+	int seccomp_null_probes;
+	int nested_userns;
 	int uid_map_once;
-	int caps_scoped;
+	int chroot_helper;
+	int proc_hidden;
+};
+
+struct sandboxed_renderer_report {
 	int pid_one;
+	int caps_dropped;
 	int kill_outside_denied;
 	int netns_denied;
 	int fs_restricted;
+	int task_nlink;
+	int scm_rights;
+	int payload_ok;
+	int seccomp_installed;
+	int socket_denied;
+	int trap_ok;
+	int fork_inherits;
 };
+
+static void sandboxed_renderer(int mojo, int proc_fd, pid_t browser)
+{
+	struct sandboxed_renderer_report rep = { 0 };
+	rep.pid_one = getpid() == 1;
+	errno = 0;
+	rep.kill_outside_denied = kill(browser, 0) < 0 && errno == ESRCH;
+	int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	struct sockaddr_in dst = { .sin_family = AF_INET, .sin_port = htons(80) };
+	inet_pton(AF_INET, "1.1.1.1", &dst.sin_addr);
+	errno = 0;
+	rep.netns_denied = s >= 0 && connect(s, (struct sockaddr *)&dst, sizeof dst) < 0 && errno == ENETUNREACH;
+	if (s >= 0)
+		close(s);
+	struct stat st;
+	int passwd = open("/etc/passwd", O_RDONLY | O_CLOEXEC);
+	int binary = open("/mini_chromium", O_RDONLY | O_CLOEXEC);
+	rep.fs_restricted = passwd < 0 && binary < 0 && (stat("/proc", &st) < 0 || !S_ISDIR(st.st_mode));
+	rep.task_nlink = !fstatat(proc_fd, "self/task/", &st, 0) && st.st_nlink == 3;
+	rep.caps_dropped = drop_all_capabilities();
+
+	int fds[2] = { -1, -1 }, nfds = 0;
+	char work[16] = "";
+	ssize_t n = recv_with_creds(mojo, work, sizeof work - 1, 0, fds, 2, &nfds);
+	rep.scm_rights = n > 0 && nfds == 2 && !strcmp(work, "work");
+	unsigned char *shared = rep.scm_rights ? mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0) : MAP_FAILED;
+	if (shared != MAP_FAILED) {
+		rep.payload_ok = !memcmp(shared, "browser-payload", 16);
+		memcpy(shared + 4096, "sandbox-result!", 16);
+	}
+
+	struct sigaction sa = { .sa_sigaction = on_sigsys, .sa_flags = SA_SIGINFO };
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGSYS, &sa, 0);
+	rep.seccomp_installed = install_renderer_policy(SECCOMP_FILTER_FLAG_SPEC_ALLOW) == 0;
+	errno = 0;
+	rep.socket_denied = socket(AF_INET, SOCK_STREAM, 0) < 0 && errno == EACCES;
+	struct utsname u;
+	rep.trap_ok = syscall(SYS_uname, &u) == TRAPPED_SYSCALL_RESULT && trapped_syscall == SYS_uname && trapped_arch_ok;
+	pid_t child = fork();
+	if (child == 0) {
+		char value[16];
+		errno = 0;
+		int denied = socket(AF_INET, SOCK_STREAM, 0) < 0 && errno == EACCES;
+		_exit(denied && !status_field_at(proc_fd, "Seccomp", value, sizeof value) && !strcmp(value, "2") ? 0 : 1);
+	}
+	int status = 0;
+	rep.fork_inherits = wait_exit(child, &status) && exited_with(status, 0);
+	if (nfds == 2) {
+		uint64_t one = 1;
+		write(fds[1], &one, sizeof one);
+	}
+	_exit(write(mojo, &rep, sizeof rep) == sizeof rep ? 0 : 1);
+}
 
 static int role_zygote(int argc, char **argv)
 {
-	int report = (int)arg_long(argc, argv, "--report");
+	int ctl = (int)arg_long(argc, argv, "--ctl");
 	pid_t browser = (pid_t)arg_long(argc, argv, "--browser-pid");
 	struct zygote_report rep = { 0 };
+	if (send_message(ctl, "ZYGOTE_BOOT", 0, 0))
+		return 2;
+	errno = 0;
+	int prctl_probe = prctl(PR_SET_SECCOMP, 2, 0, 0, 0) < 0 && errno == EFAULT;
+	errno = 0;
+	int tsync_probe = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0) < 0 && errno == EFAULT;
+	rep.seccomp_null_probes = prctl_probe && tsync_probe;
+	int proc_fd = open("/proc", O_DIRECTORY | O_RDONLY | O_CLOEXEC);
 	uid_t uid = getuid();
 	gid_t gid = getgid();
-	char map[64];
 	if (!unshare(CLONE_NEWUSER)) {
-		snprintf(map, sizeof map, "0 %u 1\n", (unsigned)uid);
-		int u = write_file("/proc/self/uid_map", map);
-		int s = write_file("/proc/self/setgroups", "deny\n");
-		snprintf(map, sizeof map, "0 %u 1\n", (unsigned)gid);
-		int g = write_file("/proc/self/gid_map", map);
-		rep.userns = !u && !s && !g && getuid() == 0 && getgid() == 0;
-		snprintf(map, sizeof map, "0 %u 1\n", (unsigned)uid);
+		rep.nested_userns = write_id_maps(uid, gid) && getuid() == uid;
+		char map[64];
+		snprintf(map, sizeof map, "%u %u 1\n", (unsigned)uid, (unsigned)uid);
 		rep.uid_map_once = write_file("/proc/self/uid_map", map) == -EPERM;
-		errno = 0;
-		rep.caps_scoped = sethostname("mini-chromium", 13) < 0 && errno == EPERM;
 	}
-	if (unshare(CLONE_NEWPID | CLONE_NEWNET)) {
-		write(report, &rep, sizeof rep);
-		return 1;
-	}
-	pid_t init = fork();
-	if (init == 0) {
-		rep.pid_one = getpid() == 1;
-		errno = 0;
-		rep.kill_outside_denied = kill(browser, 0) < 0 && errno == ESRCH;
-		int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-		struct sockaddr_in dst = { .sin_family = AF_INET, .sin_port = htons(80) };
-		inet_pton(AF_INET, "1.1.1.1", &dst.sin_addr);
-		errno = 0;
-		rep.netns_denied = s >= 0 && connect(s, (struct sockaddr *)&dst, sizeof dst) < 0 && errno == ENETUNREACH;
-		if (s >= 0)
-			close(s);
-		if (!chroot("/proc/self/fdinfo") && !chdir("/")) {
-			errno = 0;
-			int fd = open("/etc/passwd", O_RDONLY | O_CLOEXEC);
-			int fd2 = open("/mini_chromium", O_RDONLY | O_CLOEXEC);
-			rep.fs_restricted = fd < 0 && fd2 < 0;
-		}
-		_exit(write(report, &rep, sizeof rep) == sizeof rep ? 0 : 1);
-	}
+	long helper = syscall(SYS_clone, CLONE_FS | SIGCHLD, 0, 0, 0, 0);
+	if (helper == 0)
+		_exit(chroot("/proc/self/fdinfo/") || chdir("/") ? 1 : 0);
 	int status = 0;
-	return init > 0 && wait_exit(init, &status) && exited_with(status, 0) ? 0 : 1;
+	rep.chroot_helper = helper > 0 && wait_exit((pid_t)helper, &status) && exited_with(status, 0);
+	struct stat st;
+	rep.proc_hidden = stat("/proc", &st) < 0 || !S_ISDIR(st.st_mode);
+
+	pid_t real = fork();
+	if (real != 0) {
+		struct sigaction sa = { .sa_handler = SIG_IGN };
+		(void)sa;
+		int code = 1;
+		for (;;) {
+			siginfo_t info;
+			if (waitid(P_ALL, 0, &info, WEXITED) < 0) {
+				if (errno == EINTR)
+					continue;
+				break;
+			}
+			if (info.si_pid == real)
+				code = info.si_code == CLD_EXITED ? info.si_status : 1;
+		}
+		_exit(code);
+	}
+	char ok[64 + sizeof rep];
+	memcpy(ok, "ZYGOTE_OK", 10);
+	memcpy(ok + 10, &rep, sizeof rep);
+	if (send(ctl, ok, 10 + sizeof rep, MSG_NOSIGNAL) != (ssize_t)(10 + sizeof rep))
+		_exit(3);
+	for (;;) {
+		char cmd[16] = "";
+		int fds[2] = { -1, -1 }, nfds = 0;
+		ssize_t n = recv_with_creds(ctl, cmd, sizeof cmd - 1, 0, fds, 2, &nfds);
+		if (n <= 0)
+			break;
+		if (strcmp(cmd, "FORK") || nfds != 2)
+			_exit(4);
+		long renderer = syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, 0, 0, 0, 0);
+		if (renderer == 0) {
+			close(ctl);
+			if (send_message(fds[1], "CHILD_PING", 0, 0))
+				_exit(5);
+			sandboxed_renderer(fds[0], proc_fd, browser);
+		}
+		close(fds[0]);
+		close(fds[1]);
+		if (renderer < 0 || !wait_exit((pid_t)renderer, &status) || !exited_with(status, 0))
+			_exit(6);
+	}
+	_exit(0);
 }
 
-static void check_zygote_namespaces(void)
+static void check_zygote_sandbox(void)
 {
-	int pipefd[2];
-	if (pipe(pipefd)) {
-		record("userns_map", 0, "pipe errno=%d", errno);
+	int ctl[2], oracle[2], mojo[2];
+	int one = 1;
+	int shm = memfd_create("mini-chromium-zygote-shm", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	int notify = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ctl) || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, oracle) ||
+		socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, mojo) || shm < 0 || notify < 0 || ftruncate(shm, 8192) ||
+		setsockopt(ctl[0], SOL_SOCKET, SO_PASSCRED, &one, sizeof one) ||
+		setsockopt(oracle[0], SOL_SOCKET, SO_PASSCRED, &one, sizeof one)) {
+		record("zygote_launch", 0, "setup errno=%d", errno);
 		return;
 	}
-	char a_report[32], a_browser[32];
-	snprintf(a_report, sizeof a_report, "--report=%d", pipefd[1]);
+	unsigned char *shared = mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, shm, 0);
+	if (shared == MAP_FAILED) {
+		record("zygote_launch", 0, "mmap errno=%d", errno);
+		return;
+	}
+	memcpy(shared, "browser-payload", 16);
+	uid_t uid = getuid();
+	gid_t gid = getgid();
+	int child_ctl = fcntl(ctl[1], F_DUPFD, 10);
+	char a_ctl[32], a_browser[32];
+	snprintf(a_ctl, sizeof a_ctl, "--ctl=%d", child_ctl);
 	snprintf(a_browser, sizeof a_browser, "--browser-pid=%d", getpid());
-	char *extra[] = { a_report, a_browser };
-	pid_t pid = spawn_role("zygote", extra, 2);
-	close(pipefd[1]);
-	struct zygote_report rep;
-	memset(&rep, 0, sizeof rep);
-	ssize_t n = read(pipefd[0], &rep, sizeof rep);
-	close(pipefd[0]);
+	long zygote = syscall(SYS_clone, CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | SIGCHLD, 0, 0, 0, 0);
+	if (zygote == 0) {
+		if (!write_id_maps(uid, gid))
+			_exit(90);
+		if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
+			_exit(91);
+		char *argv[] = { self_path, "--role=zygote", a_ctl, a_browser, 0 };
+		execve(self_path, argv, environ);
+		_exit(92);
+	}
+	close(child_ctl);
+	close(ctl[1]);
+	if (zygote < 0) {
+		record("zygote_launch", 0, "clone errno=%d", errno);
+		return;
+	}
+	char buf[64 + sizeof(struct zygote_report)];
+	struct ucred boot_cred, ok_cred, ping_cred;
+	ssize_t n = recv_with_creds(ctl[0], buf, sizeof buf, &boot_cred, 0, 0, 0);
+	int boot = n == 12 && !strcmp(buf, "ZYGOTE_BOOT") && boot_cred.pid == zygote;
+	struct zygote_report zrep = { 0 };
+	n = recv_with_creds(ctl[0], buf, sizeof buf, &ok_cred, 0, 0, 0);
+	int zygote_ok = n == (ssize_t)(10 + sizeof zrep) && !strcmp(buf, "ZYGOTE_OK") && ok_cred.pid > 1 && ok_cred.pid != zygote;
+	if (zygote_ok)
+		memcpy(&zrep, buf + 10, sizeof zrep);
+	int pass[2] = { mojo[1], oracle[1] };
+	int forked = zygote_ok && send_message(ctl[0], "FORK", pass, 2) == 0;
+	close(mojo[1]);
+	close(oracle[1]);
+	n = forked ? recv_with_creds(oracle[0], buf, sizeof buf, &ping_cred, 0, 0, 0) : -1;
+	int ping = n == 11 && !strcmp(buf, "CHILD_PING") && ping_cred.pid > 1 && ping_cred.pid != zygote && ping_cred.pid != ok_cred.pid;
+	int give[2] = { shm, notify };
+	int sent = forked && send_fds(mojo[0], give, 2, "work", 5) == 0;
+	struct sandboxed_renderer_report rrep = { 0 };
+	size_t got = 0;
+	while (sent && got < sizeof rrep) {
+		n = read(mojo[0], (char *)&rrep + got, sizeof rrep - got);
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	uint64_t note = 0;
+	int notified = read(notify, &note, sizeof note) == sizeof note && note == 1;
+	shutdown(ctl[0], SHUT_RDWR);
+	close(ctl[0]);
 	int status = 0;
-	wait_exit(pid, &status);
-	int clean = n == sizeof rep && exited_with(status, 0);
-	record("userns_map", clean && rep.userns && rep.uid_map_once, "mapped=%d second_write_eperm=%d", rep.userns, rep.uid_map_once);
-	record("userns_caps_scoped", clean && rep.caps_scoped, 0);
-	record("pidns_isolation", clean && rep.pid_one, 0);
-	record("kill_outside_denied", clean && rep.kill_outside_denied, 0);
-	record("netns_denied", clean && rep.netns_denied, 0);
-	record("fs_restricted", clean && rep.fs_restricted, "zygote_status=0x%x", status);
+	int reaped = wait_exit((pid_t)zygote, &status) && exited_with(status, 0);
+	int clean = got == sizeof rrep && reaped;
+	record("zygote_launch", boot && zygote_ok && reaped, "boot=%d ok=%d zygote_status=0x%x", boot, zygote_ok, status);
+	record("scm_credentials_translated", boot && zygote_ok && ping, "boot_pid=%d ok_pid=%d ping_pid=%d", boot_cred.pid,
+		ok_cred.pid, ping_cred.pid);
+	record("seccomp_null_probes", zygote_ok && zrep.seccomp_null_probes, 0);
+	record("userns_map", zygote_ok && zrep.nested_userns && zrep.uid_map_once, "nested=%d second_write_eperm=%d",
+		zrep.nested_userns, zrep.uid_map_once);
+	record("chroot_helper", zygote_ok && zrep.chroot_helper && zrep.proc_hidden, "helper=%d proc_hidden=%d", zrep.chroot_helper,
+		zrep.proc_hidden);
+	record("pidns_isolation", clean && rrep.pid_one, 0);
+	record("userns_caps_scoped", clean && rrep.caps_dropped, 0);
+	record("kill_outside_denied", clean && rrep.kill_outside_denied, 0);
+	record("netns_denied", clean && rrep.netns_denied, 0);
+	record("fs_restricted", clean && rrep.fs_restricted, 0);
+	record("proc_task_nlink", clean && rrep.task_nlink, 0);
+	record("zygote_renderer_ipc", clean && rrep.scm_rights && rrep.payload_ok && notified &&
+		!memcmp(shared + 4096, "sandbox-result!", 16), "scm=%d payload=%d notified=%d", rrep.scm_rights, rrep.payload_ok, notified);
+	record("zygote_renderer_seccomp", clean && rrep.seccomp_installed && rrep.socket_denied && rrep.trap_ok && rrep.fork_inherits,
+		"installed=%d socket=%d trap=%d fork_inherits=%d", rrep.seccomp_installed, rrep.socket_denied, rrep.trap_ok, rrep.fork_inherits);
+	munmap(shared, 8192);
+	close(shm);
+	close(notify);
+	close(mojo[0]);
+	close(oracle[0]);
+}
+
+static void check_mojo_probes(void)
+{
+	errno = 0;
+	int memfd_einval = memfd_create("", ~0u) < 0 && errno == EINVAL;
+	errno = 0;
+	int eventfd_einval = syscall(SYS_eventfd2, 0, ~0) < 0 && errno == EINVAL;
+	struct stat st;
+	int nlink = !stat("/proc/self/task/", &st) && st.st_nlink == 3;
+	record("mojo_probes", memfd_einval && eventfd_einval, "memfd=%d eventfd2=%d", memfd_einval, eventfd_einval);
+	record("proc_self_task", nlink, "nlink=%lu", (unsigned long)st.st_nlink);
 }
 
 static int role_browser(void)
@@ -1184,7 +1436,8 @@ static int role_browser(void)
 	check_credentials();
 	check_seccomp_requires_nnp();
 	check_browser_renderer();
-	check_zygote_namespaces();
+	check_mojo_probes();
+	check_zygote_sandbox();
 	check_lifecycle_stress();
 	char line[128];
 	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS",
