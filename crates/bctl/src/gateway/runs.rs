@@ -34,17 +34,25 @@ fn failure(reply: Reply) -> Response<BoxBody> {
     text(status, &message)
 }
 
-fn ask(daemon: &Arc<Daemon>, request: Request) -> Result<Reply, Response<BoxBody>> {
-    daemon.handle(&request).map_err(failure)
+struct Refusal(Box<Response<BoxBody>>);
+
+impl From<Response<BoxBody>> for Refusal {
+    fn from(response: Response<BoxBody>) -> Self {
+        Refusal(Box::new(response))
+    }
 }
 
-fn parse_run(id: &str) -> Result<i64, Response<BoxBody>> {
-    id.parse::<i64>().map_err(|_| text(StatusCode::BAD_REQUEST, "Invalid run id."))
+fn ask(daemon: &Arc<Daemon>, request: Request) -> Result<Reply, Refusal> {
+    daemon.handle(&request).map_err(|e| failure(e).into())
 }
 
-fn one_run(daemon: &Arc<Daemon>, id: i64) -> Result<crate::protocol::RunView, Response<BoxBody>> {
+fn parse_run(id: &str) -> Result<i64, Refusal> {
+    id.parse::<i64>().map_err(|_| text(StatusCode::BAD_REQUEST, "Invalid run id.").into())
+}
+
+fn one_run(daemon: &Arc<Daemon>, id: i64) -> Result<crate::protocol::RunView, Refusal> {
     let reply = ask(daemon, Request { op: "runs".into(), run: Some(id), ..Request::empty() })?;
-    reply.runs.into_iter().next().ok_or_else(|| text(StatusCode::NOT_FOUND, "No such run."))
+    reply.runs.into_iter().next().ok_or_else(|| text(StatusCode::NOT_FOUND, "No such run.").into())
 }
 
 pub(super) fn session_runs(daemon: &Arc<Daemon>, session: &str) -> Response<BoxBody> {
@@ -54,14 +62,14 @@ pub(super) fn session_runs(daemon: &Arc<Daemon>, session: &str) -> Response<BoxB
     };
     match ask(daemon, Request { op: "runs".into(), session: Some(session.to_string()), ..Request::empty() }) {
         Ok(reply) => json_response(&reply.runs),
-        Err(response) => response,
+        Err(refusal) => *refusal.0,
     }
 }
 
 pub(super) fn run(daemon: &Arc<Daemon>, id: &str) -> Response<BoxBody> {
     match parse_run(id).and_then(|id| one_run(daemon, id)) {
         Ok(run) => json_response(&run),
-        Err(response) => response,
+        Err(refusal) => *refusal.0,
     }
 }
 
@@ -74,7 +82,7 @@ pub(super) fn resume(daemon: &Arc<Daemon>, id: &str, viewer: &str) -> Response<B
             let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
             match gateway.controllers.get(&session) {
                 Some(holder) if holder != viewer => {
-                    return Err(text(StatusCode::CONFLICT, "Another viewer has control of this browser."));
+                    return Err(text(StatusCode::CONFLICT, "Another viewer has control of this browser.").into());
                 }
                 Some(_) => {
                     gateway.controllers.remove(&session);
@@ -83,11 +91,11 @@ pub(super) fn resume(daemon: &Arc<Daemon>, id: &str, viewer: &str) -> Response<B
             }
         }
         let reply = ask(daemon, Request { op: "resume".into(), run: Some(id), ..Request::empty() })?;
-        reply.runs.into_iter().next().ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "The daemon returned no run."))
+        reply.runs.into_iter().next().ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "The daemon returned no run.").into())
     });
     match result {
         Ok(run) => json_response(&run),
-        Err(response) => response,
+        Err(refusal) => *refusal.0,
     }
 }
 
@@ -111,11 +119,11 @@ pub(super) fn log(daemon: &Arc<Daemon>, id: &str, query: &str) -> Response<BoxBo
             Some(value) => Some(value.parse::<u64>().map_err(|_| text(StatusCode::BAD_REQUEST, "Invalid offset."))?),
             None => None,
         };
-        read_log_chunk(&RunFiles::new(daemon.run_dir(id)).log(), offset).map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("Cannot read the log: {e}")))
+        read_log_chunk(&RunFiles::new(daemon.run_dir(id)).log(), offset).map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("Cannot read the log: {e}")).into())
     });
     match result {
         Ok(chunk) => json_response(&chunk),
-        Err(response) => response,
+        Err(refusal) => *refusal.0,
     }
 }
 
@@ -183,12 +191,12 @@ pub(super) fn artifacts(daemon: &Arc<Daemon>, id: &str) -> Response<BoxBody> {
         match collect(&root, &root, &mut files) {
             Ok(truncated) => Ok(ArtifactList { files, truncated }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ArtifactList { files, truncated: false }),
-            Err(e) => Err(text(StatusCode::INTERNAL_SERVER_ERROR, &format!("Cannot list the output: {e}"))),
+            Err(e) => Err(text(StatusCode::INTERNAL_SERVER_ERROR, &format!("Cannot list the output: {e}")).into()),
         }
     });
     match result {
         Ok(list) => json_response(&list),
-        Err(response) => response,
+        Err(refusal) => *refusal.0,
     }
 }
 
@@ -234,9 +242,9 @@ pub(super) fn download(daemon: &Arc<Daemon>, id: &str, segments: &[&str]) -> Res
         let path = artifact_path(&RunFiles::new(daemon.run_dir(id)).output(), segments).ok_or_else(|| text(StatusCode::NOT_FOUND, "No such artifact."))?;
         let metadata = fs::metadata(&path).ok().filter(|m| m.is_file()).ok_or_else(|| text(StatusCode::NOT_FOUND, "No such artifact."))?;
         if metadata.len() > DOWNLOAD_LIMIT_BYTES {
-            return Err(text(StatusCode::PAYLOAD_TOO_LARGE, "This artifact is too large to download through the dashboard; read it from the run's output directory."));
+            return Err(text(StatusCode::PAYLOAD_TOO_LARGE, "This artifact is too large to download through the dashboard; read it from the run's output directory.").into());
         }
-        fs::read(&path).map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("Cannot read the artifact: {e}")))
+        fs::read(&path).map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("Cannot read the artifact: {e}")).into())
     });
     match result {
         Ok(body) => {
@@ -247,7 +255,7 @@ pub(super) fn download(daemon: &Arc<Daemon>, id: &str, segments: &[&str]) -> Res
             headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'"));
             response
         }
-        Err(response) => response,
+        Err(refusal) => *refusal.0,
     }
 }
 
