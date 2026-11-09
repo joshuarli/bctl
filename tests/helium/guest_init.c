@@ -906,6 +906,27 @@ static int start_helium(void)
 	return helium_pid < 0 ? -1 : 0;
 }
 
+static int helium_status = -1;
+
+static void emit_log_tail(const char *name, off_t max)
+{
+	char path[PATH_MAX], buf[4096];
+	snprintf(path, sizeof path, "%s/%s", opt.logdir, name);
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	off_t size = lseek(fd, 0, SEEK_END);
+	lseek(fd, size > max ? size - max : 0, SEEK_SET);
+	emit("GUEST_LOG_BEGIN ", 16);
+	emit(name, strlen(name));
+	emit("\n", 1);
+	ssize_t n;
+	while ((n = read(fd, buf, sizeof buf)) > 0)
+		emit(buf, (size_t)n);
+	emit("\nGUEST_LOG_END\n", 15);
+	close(fd);
+}
+
 static int wait_cdp_port(long timeout_ms)
 {
 	long deadline = now_ms() + timeout_ms;
@@ -915,7 +936,7 @@ static int wait_cdp_port(long timeout_ms)
 			close(fd);
 			return 0;
 		}
-		if (!child_alive(helium_pid, NULL)) {
+		if (!child_alive(helium_pid, &helium_status)) {
 			helium_pid = -1;
 			return -2;
 		}
@@ -1270,9 +1291,12 @@ int main(int argc, char **argv)
 		goto finish;
 	}
 	int c = wait_cdp_port(120000);
-	record("helium_browser_up", c == 0, "pid=%d,port=%d%s", (int)helium_pid, opt.cdp_port, c == -2 ? ",browser-exited" : "");
-	if (c != 0)
+	record("helium_browser_up", c == 0, "pid=%d,port=%d%s,status=0x%x", (int)helium_pid, opt.cdp_port,
+		c == -2 ? ",browser-exited" : "", helium_status);
+	if (c != 0) {
+		emit_log_tail("helium.log", 8192);
 		goto finish;
+	}
 
 	closed = run_cdp() == 0;
 
