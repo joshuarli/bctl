@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::names::{MachineName, SessionName};
-use crate::state::{AttemptRecord, MachineObservation, SessionRecord, SessionState};
+use crate::state::{AttemptRecord, MachineObservation, MachineState, SessionRecord, SessionState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -18,21 +18,37 @@ pub enum Action {
 /// Decides how to restore ownership after the daemon starts. Machines bctl did not name, and bctl machines for
 /// sessions this store does not know, are left alone: another state directory may own them.
 pub fn reconcile(sessions: &[SessionRecord], attempts: &[AttemptRecord], machines: &[MachineObservation]) -> Vec<Action> {
-    let mut running: BTreeMap<SessionName, Vec<MachineName>> = BTreeMap::new();
-    for machine in machines.iter().filter(|m| m.running) {
+    let mut observed: BTreeMap<SessionName, Vec<(MachineName, MachineState)>> = BTreeMap::new();
+    for machine in machines.iter().filter(|m| matches!(m.state, MachineState::Running | MachineState::Paused)) {
         if let Some(name) = MachineName::parse(&machine.name) {
-            running.entry(name.session.clone()).or_default().push(name);
+            observed.entry(name.session.clone()).or_default().push((name, machine.state));
         }
     }
 
     let mut actions = Vec::new();
     for session in sessions {
-        let machines = running.remove(&session.name).unwrap_or_default();
-        let (current, stale): (Vec<_>, Vec<_>) =
-            machines.into_iter().partition(|m| session.state.holds_machine() && m.generation == session.generation);
+        let mut current = None;
+        let mut stale = Vec::new();
+        for (machine, state) in observed.remove(&session.name).unwrap_or_default() {
+            if !session.state.holds_machine() || machine.generation != session.generation {
+                stale.push(machine);
+                continue;
+            }
+            current = current.or(Some((machine, state)));
+        }
         actions.extend(stale.into_iter().map(|machine| Action::StopStale { machine }));
-        match (session.state, current.into_iter().next()) {
-            (SessionState::Stopping, Some(machine)) | (SessionState::Starting | SessionState::Ready, Some(machine)) => {
+        match (session.state, current) {
+            (SessionState::Paused, Some((_, MachineState::Paused))) => {}
+            (SessionState::Paused, Some((machine, _))) => actions.push(Action::Adopt { session: session.name.clone(), machine }),
+            (SessionState::Starting | SessionState::Ready, Some((_, MachineState::Paused))) => {
+                actions.push(Action::Settle { session: session.name.clone(), state: SessionState::Paused, reason: None });
+            }
+            (SessionState::Paused, None) => actions.push(Action::Settle {
+                session: session.name.clone(),
+                state: SessionState::Failed,
+                reason: Some(format!("machine for generation {} vanished while bctl was not running", session.generation)),
+            }),
+            (SessionState::Stopping, Some((machine, _))) | (SessionState::Starting | SessionState::Ready, Some((machine, _))) => {
                 actions.push(Action::Adopt { session: session.name.clone(), machine });
             }
             (SessionState::Stopping, None) => {
@@ -86,19 +102,72 @@ mod tests {
         }
     }
 
-    fn machine(name: &str, running: bool) -> MachineObservation {
-        MachineObservation { name: name.into(), running }
+    fn machine(name: &str, state: MachineState) -> MachineObservation {
+        MachineObservation { name: name.into(), state }
     }
 
     #[test]
     fn a_running_current_generation_machine_is_adopted() {
-        let actions = reconcile(&[session("research", SessionState::Ready, 3)], &[], &[machine("bctl-research-3", true)]);
+        let actions = reconcile(&[session("research", SessionState::Ready, 3)], &[], &[machine("bctl-research-3", MachineState::Running)]);
         assert_eq!(actions, [Action::Adopt { session: SessionName::new("research").unwrap(), machine: MachineName::parse("bctl-research-3").unwrap() }]);
     }
 
     #[test]
+    fn a_paused_session_whose_current_machine_is_paused_stays_paused() {
+        let actions = reconcile(&[session("research", SessionState::Paused, 3)], &[], &[machine("bctl-research-3", MachineState::Paused)]);
+        assert_eq!(actions, []);
+    }
+
+    #[test]
+    fn a_ready_session_whose_machine_was_paused_settles_as_paused() {
+        let actions = reconcile(&[session("research", SessionState::Ready, 3)], &[], &[machine("bctl-research-3", MachineState::Paused)]);
+        assert_eq!(actions, [Action::Settle { session: SessionName::new("research").unwrap(), state: SessionState::Paused, reason: None }]);
+    }
+
+    #[test]
+    fn a_stop_of_a_paused_machine_is_finished_not_abandoned() {
+        let actions = reconcile(&[session("research", SessionState::Stopping, 3)], &[], &[machine("bctl-research-3", MachineState::Paused)]);
+        assert_eq!(actions, [Action::Adopt { session: SessionName::new("research").unwrap(), machine: MachineName::parse("bctl-research-3").unwrap() }]);
+    }
+
+    #[test]
+    fn a_paused_session_adopts_a_running_machine() {
+        let actions = reconcile(&[session("research", SessionState::Paused, 3)], &[], &[machine("bctl-research-3", MachineState::Running)]);
+        assert_eq!(actions, [Action::Adopt { session: SessionName::new("research").unwrap(), machine: MachineName::parse("bctl-research-3").unwrap() }]);
+    }
+
+    #[test]
+    fn a_paused_session_whose_machine_vanished_fails() {
+        let actions = reconcile(&[session("research", SessionState::Paused, 3)], &[], &[]);
+        assert_eq!(
+            actions,
+            [Action::Settle {
+                session: SessionName::new("research").unwrap(),
+                state: SessionState::Failed,
+                reason: Some("machine for generation 3 vanished while bctl was not running".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_paused_machine_from_another_generation_is_stopped_never_adopted() {
+        let actions = reconcile(&[session("research", SessionState::Paused, 4)], &[], &[machine("bctl-research-3", MachineState::Paused)]);
+        assert_eq!(
+            actions,
+            [
+                Action::StopStale { machine: MachineName::parse("bctl-research-3").unwrap() },
+                Action::Settle {
+                    session: SessionName::new("research").unwrap(),
+                    state: SessionState::Failed,
+                    reason: Some("machine for generation 4 vanished while bctl was not running".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn a_machine_from_another_generation_is_stopped_never_adopted() {
-        let actions = reconcile(&[session("research", SessionState::Ready, 4)], &[], &[machine("bctl-research-3", true)]);
+        let actions = reconcile(&[session("research", SessionState::Ready, 4)], &[], &[machine("bctl-research-3", MachineState::Running)]);
         assert_eq!(
             actions,
             [
@@ -114,19 +183,19 @@ mod tests {
 
     #[test]
     fn a_stopped_session_never_adopts_its_old_machine() {
-        let actions = reconcile(&[session("research", SessionState::Stopped, 3)], &[], &[machine("bctl-research-3", true)]);
+        let actions = reconcile(&[session("research", SessionState::Stopped, 3)], &[], &[machine("bctl-research-3", MachineState::Running)]);
         assert_eq!(actions, [Action::StopStale { machine: MachineName::parse("bctl-research-3").unwrap() }]);
     }
 
     #[test]
     fn a_stop_that_finished_while_bctl_was_down_settles_as_stopped() {
-        let actions = reconcile(&[session("research", SessionState::Stopping, 2)], &[], &[machine("bctl-research-2", false)]);
+        let actions = reconcile(&[session("research", SessionState::Stopping, 2)], &[], &[machine("bctl-research-2", MachineState::Other)]);
         assert_eq!(actions, [Action::Settle { session: SessionName::new("research").unwrap(), state: SessionState::Stopped, reason: None }]);
     }
 
     #[test]
     fn foreign_and_unknown_machines_are_left_alone() {
-        let actions = reconcile(&[], &[], &[machine("vm-0a4a7c5c", true), machine("bctl-elsewhere-1", true)]);
+        let actions = reconcile(&[], &[], &[machine("vm-0a4a7c5c", MachineState::Running), machine("bctl-elsewhere-1", MachineState::Paused)]);
         assert_eq!(actions, []);
     }
 

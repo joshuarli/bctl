@@ -348,8 +348,14 @@ impl Daemon {
                 let text = runs::read_log(&path).map_err(internal)?;
                 Ok(Response { log: Some(Box::new(LogView { path: path.display().to_string(), text })), ..Response::empty() })
             }
-            Op::Pause => self.pause(request.run.ok_or_else(|| bad_request("pause needs a run id"))?),
-            Op::Resume => self.resume(request.run.ok_or_else(|| bad_request("resume needs a run id"))?),
+            Op::Pause => match request.run {
+                Some(run) => self.pause(run),
+                None => self.pause_session(&session()?),
+            },
+            Op::Resume => match request.run {
+                Some(run) => self.resume(run),
+                None => self.resume_session(&session()?),
+            },
             Op::Cancel => self.cancel(request.run.ok_or_else(|| bad_request("cancel needs a run id"))?),
             Op::Status => {
                 let sessions = self.store().sessions().map_err(internal)?;
@@ -461,6 +467,13 @@ impl Daemon {
             match record.state {
                 SessionState::Ready => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
                 SessionState::Starting | SessionState::Stopping => thread::sleep(Duration::from_millis(200)),
+                SessionState::Paused => {
+                    return Err(Response::failure(
+                        ErrorCode::Conflict,
+                        format!("session {name} is paused"),
+                        Some(format!("resume it with `bctl resume {name}` or stop it with `bctl down {name}`")),
+                    ).into());
+                }
                 SessionState::Stopped | SessionState::Failed => break,
             }
         }
@@ -520,6 +533,78 @@ impl Daemon {
                 Some(format!("the VM was removed; retry with `bctl up {name}`")),
             ).into())
         }
+    }
+
+    fn pause_session(&self, name: &SessionName) -> Outcome {
+        let record = self.store().session(name).map_err(store_failure)?;
+        if record.state != SessionState::Ready {
+            return Err(Response::failure(
+                ErrorCode::NotPausable,
+                format!("session {name} is {}, not ready", record.state.as_str()),
+                Some(format!("run `bctl up {name}` first")),
+            ).into());
+        }
+        tabs::close(self, name);
+        let machine = MachineName { session: name.clone(), generation: record.generation };
+        if let Err(error) = self.runtime.pause(&machine) {
+            return Err(Response::failure(ErrorCode::RuntimeError, error.to_string(), Some(format!("see `bctl inspect {name}`"))).into());
+        }
+        self.store().transition(name, record.generation, SessionState::Paused, None).map_err(store_failure)?;
+        let record = self.store().session(name).map_err(store_failure)?;
+        Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() })
+    }
+
+    fn resume_session(&self, name: &SessionName) -> Outcome {
+        let record = self.store().session(name).map_err(store_failure)?;
+        if record.state != SessionState::Paused {
+            return Err(Response::failure(
+                ErrorCode::NotResumable,
+                format!("session {name} is {}, not paused", record.state.as_str()),
+                Some(format!("see `bctl inspect {name}`")),
+            ).into());
+        }
+        let machine = MachineName { session: name.clone(), generation: record.generation };
+        let spec = match self.resume_spec(&record, &machine) {
+            Ok(spec) => spec,
+            Err(error) => return Err(internal(error).into()),
+        };
+        let endpoints = spec.endpoints;
+        if let Err(error) = self.runtime.resume(&spec) {
+            return Err(Response::failure(ErrorCode::RuntimeError, error.to_string(), Some(format!("see `bctl inspect {name}`"))).into());
+        }
+        self.await_ready(&machine, endpoints);
+        let record = self.store().session(name).map_err(store_failure)?;
+        if record.state == SessionState::Ready {
+            Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() })
+        } else {
+            Err(Response::failure(
+                ErrorCode::StartFailed,
+                record.failure.unwrap_or_else(|| format!("session ended {}", record.state.as_str())),
+                Some(format!("see `bctl inspect {name}`")),
+            ).into())
+        }
+    }
+
+    fn resume_spec(&self, record: &SessionRecord, machine: &MachineName) -> Result<LaunchSpec, String> {
+        let Resources { viewport: [width, height], cpus, memory_mib } = record.resources;
+        let display = (
+            u16::try_from(width).map_err(|_| format!("viewport width {width} does not fit a display"))?,
+            u16::try_from(height).map_err(|_| format!("viewport height {height} does not fit a display"))?,
+        );
+        let cpus = u8::try_from(cpus).map_err(|_| format!("{cpus} CPUs do not fit the runtime"))?;
+        let endpoints = record.endpoints.ok_or_else(|| format!("session {} has no recorded VNC endpoint", record.name))?;
+        let image = self.paths.image(&record.image).canonicalize().map_err(|e| format!("cannot resolve image {}: {e}", record.image))?;
+        Ok(LaunchSpec {
+            machine: machine.clone(),
+            image,
+            profile_dir: Some(self.paths.profile_dir(record.profile.as_str())),
+            endpoints,
+            cdp_socket: self.paths.cdp_socket(&machine.to_string()),
+            display,
+            memory_mib,
+            cpus,
+            allow_private: record.allow_private.iter().map(|r| r.as_str().to_string()).collect(),
+        })
     }
 
     /// Creates the user-only directory that will hold the machine's CDP socket and returns the socket path.
@@ -628,7 +713,7 @@ impl Daemon {
                 let record = self.store().session(name).map_err(store_failure)?;
                 return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() });
             }
-            SessionState::Starting | SessionState::Ready | SessionState::Stopping => {}
+            SessionState::Starting | SessionState::Ready | SessionState::Stopping | SessionState::Paused => {}
         }
         self.store().transition(name, record.generation, SessionState::Stopping, None).map_err(store_failure)?;
         let machine = MachineName { session: name.clone(), generation: record.generation };

@@ -6,6 +6,7 @@ pub enum SessionState {
     Starting,
     Ready,
     Stopping,
+    Paused,
     Failed,
 }
 
@@ -16,19 +17,20 @@ impl SessionState {
             SessionState::Starting => "starting",
             SessionState::Ready => "ready",
             SessionState::Stopping => "stopping",
+            SessionState::Paused => "paused",
             SessionState::Failed => "failed",
         }
     }
 
     pub fn parse(s: &str) -> Option<SessionState> {
-        [SessionState::Stopped, SessionState::Starting, SessionState::Ready, SessionState::Stopping, SessionState::Failed]
+        [SessionState::Stopped, SessionState::Starting, SessionState::Ready, SessionState::Stopping, SessionState::Paused, SessionState::Failed]
             .into_iter()
             .find(|state| state.as_str() == s)
     }
 
     /// Whether a VM for this session may exist, so its profile is held and the runtime must be consulted.
     pub fn holds_machine(self) -> bool {
-        matches!(self, SessionState::Starting | SessionState::Ready | SessionState::Stopping)
+        matches!(self, SessionState::Starting | SessionState::Ready | SessionState::Stopping | SessionState::Paused)
     }
 }
 
@@ -286,11 +288,18 @@ pub struct AttemptRecord {
     pub interaction: Option<Interaction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineState {
+    Running,
+    Paused,
+    Other,
+}
+
 /// What the runtime reports about one machine it knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineObservation {
     pub name: String,
-    pub running: bool,
+    pub state: MachineState,
 }
 
 #[cfg(test)]

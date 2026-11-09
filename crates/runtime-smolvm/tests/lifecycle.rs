@@ -2,7 +2,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bctl_core::{Endpoints, Generation, MachineName, SessionName};
+use bctl_core::{Endpoints, Generation, MachineName, MachineState, SessionName};
 use bctl_runtime_smolvm::{InputSupport, LaunchSpec, RuntimeError, SmolVm};
 
 fn workspace() -> PathBuf {
@@ -49,7 +49,7 @@ fn a_session_starts_becomes_ready_stops_and_restarts_under_a_new_generation() {
         let ready = ready.unwrap();
         assert_eq!(ready.input, InputSupport::Interactive);
         assert!(ready.browser.starts_with("Chrome/"), "{}", ready.browser);
-        assert!(listed.iter().any(|m| m.name == spec.machine.to_string() && m.running));
+        assert!(listed.iter().any(|m| m.name == spec.machine.to_string() && m.state == MachineState::Running));
         assert!(!runtime.list().unwrap().iter().any(|m| m.name == spec.machine.to_string()));
     }
 }
@@ -84,7 +84,7 @@ fn a_paused_session_resumes_ready_and_a_paused_machine_can_be_removed() {
     let session = SessionName::new(&format!("pause-{}", std::process::id())).unwrap();
     let spec = spec(&session, 1);
     let name = spec.machine.to_string();
-    let running = |runtime: &SmolVm| runtime.list().unwrap().into_iter().find(|m| m.name == name).map(|m| m.running);
+    let running = |runtime: &SmolVm| runtime.list().unwrap().into_iter().find(|m| m.name == name).map(|m| m.state);
     runtime.launch(&spec).unwrap();
     let outcome = (|| {
         runtime.wait_ready(&spec.machine, spec.endpoints, &spec.cdp_socket, Duration::from_secs(120), |_| {})?;
@@ -98,7 +98,7 @@ fn a_paused_session_resumes_ready_and_a_paused_machine_can_be_removed() {
     let removed = runtime.remove(&spec.machine);
 
     let (paused, resumed) = outcome.unwrap();
-    assert_eq!(paused, Some(false));
+    assert_eq!(paused, Some(MachineState::Paused));
     assert_eq!(resumed.input, InputSupport::Interactive);
     assert_eq!(removed, Ok(()));
     assert_eq!(running(&runtime), None);

@@ -7,7 +7,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bctl_core::{Endpoints, MachineName, MachineObservation};
+use bctl_core::{Endpoints, MachineName, MachineObservation, MachineState};
 use bctl_rfb::Client;
 use miniserde::{Deserialize, json};
 
@@ -192,7 +192,17 @@ impl SmolVm {
         let stdout = self.run("machine ls", &["machine", "ls", "--json"], &[])?;
         let machines: Vec<ListedMachine> = json::from_str(&stdout)
             .map_err(|_| RuntimeError::UnexpectedOutput { operation: "machine ls", detail: stdout.trim().chars().take(200).collect() })?;
-        Ok(machines.into_iter().map(|m| MachineObservation { running: m.state == "running", name: m.name }).collect())
+        Ok(machines
+            .into_iter()
+            .map(|m| {
+                let state = match m.state.as_str() {
+                    "running" => MachineState::Running,
+                    "paused" => MachineState::Paused,
+                    _ => MachineState::Other,
+                };
+                MachineObservation { name: m.name, state }
+            })
+            .collect())
     }
 
     /// Creates and starts the VM. The display and VNC endpoint are bound at start, so they travel with it.
@@ -279,7 +289,7 @@ impl SmolVm {
 
     fn probe(&self, name: &str, machine: &MachineName, endpoints: Endpoints, cdp_socket: &Path) -> Result<Ready, RuntimeError> {
         let not_ready = |stage, detail: String| RuntimeError::NotReady { stage, detail };
-        let running = self.list()?.into_iter().any(|m| m.name == name && m.running);
+        let running = self.list()?.into_iter().any(|m| m.name == name && m.state == MachineState::Running);
         if !running {
             return Err(not_ready(Stage::Machine, "machine is not running".into()));
         }

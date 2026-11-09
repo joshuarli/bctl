@@ -111,9 +111,12 @@ baselines until rerun with `PERF_GATE_MAX_LOAD=0.25`: cold `up` 2.1 s, warm
 gateway, pointer input to pixel 6.7 ms, 644 MiB VMM footprint and 5.5% of a
 core idle per session, Speedometer 3.1 at 81% (Sway) and 72% (Tinyland) of
 the same Chromium in a 2-CPU container. H1 findings: `smolvm machine pause`
-refuses any machine with an exposed socket, image layers, or `--gpu`, which is
-every session, so pause, resume, and X1's checkpoint restore are blocked on
-SmolVM; the guest Speedometer stalls (7 of 16 runs) were a macOS socket
+refused any machine with an exposed socket, image layers, or `--gpu`, which was
+every session; the vendored SmolVM now pauses 2D-GPU sessions in place
+(`52557a1`) and `bctl pause`/`bctl resume` drive it, with page state, tabs and
+the VNC frame intact (provisional, load 3.9: pause 1.9 to 2.6 s, resume to
+ready 2.9 to 3.1 s over 5 cycles); X1's portable checkpoint restore is still
+open; the guest Speedometer stalls (7 of 16 runs) were a macOS socket
 content filter on this host stalling TCP to the host's LAN address, not the
 guest: the bench now reaches the host at SmolVM's gateway `100.96.0.1`
 (`f38e3a4`, `--test host_http`), 24 of 24 runs finish that way, and

@@ -52,8 +52,15 @@ bctl status
 bctl grab https://example.com/ --session research   # crawl it with Grab
 bctl run mirror-docs --session docs            # run a job from ./bctl.toml
 bctl runs                                      # runs and their outcomes
+bctl pause research                            # checkpoint its VM; the browser keeps its pages
+bctl resume research                           # restore it, with the same tabs and page state
 bctl down research                             # stop it; the profile stays
 ```
+
+`bctl pause` and `bctl resume` take a session name or a run id; an argument
+made only of digits is a run id. A paused session holds its profile, refuses
+page and tab commands with `SESSION_NOT_READY`, and drops open DevTools
+connections, which reconnect after `bctl resume`.
 
 Jobs, runs, and their outcomes are described in [docs/jobs.md](docs/jobs.md).
 

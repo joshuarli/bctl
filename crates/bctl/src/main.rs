@@ -39,7 +39,9 @@ const USAGE: &str = "usage:
   bctl run JOB --session S [--config FILE] [--json]  run a bctl.toml job (default ./bctl.toml) in session S
   bctl runs [RUN] [--session S] [--json]             list runs, or one run with every resolved field
   bctl logs RUN                                      print a run's log
-  bctl pause RUN | resume RUN | cancel RUN [--json]  stop a grab at a page boundary, continue, or end a run
+  bctl pause (SESSION | RUN) [--json]                checkpoint a ready session's VM, or pause a grab at a page boundary
+  bctl resume (SESSION | RUN) [--json]               restore a paused session, or continue a grab
+  bctl cancel RUN [--json]                           end a run
   bctl tab list SESSION [--json]                     list page targets; * marks the one native commands act on
   bctl tab new SESSION [URL] [--json]                open a page target (default about:blank) and select it
   bctl tab use SESSION TARGET_ID [--json]            select a page target for native commands
@@ -179,6 +181,13 @@ fn parse_run_command(command: &str, mut parser: lexopt::Parser) -> Result<Cli, l
             [run] => request.run = Some(run.parse().map_err(|_| format!("{run:?} is not a run id"))?),
             _ => return Err("bctl runs takes at most one run id".into()),
         },
+        "pause" | "resume" => {
+            let [target] = positional.as_slice() else { return Err(format!("bctl {command} needs one run id or session name").into()) };
+            match target.parse::<i64>() {
+                Ok(run) => request.run = Some(run),
+                Err(_) => request.session = Some(target.clone()),
+            }
+        }
         _ => {
             let [run] = positional.as_slice() else { return Err(format!("bctl {command} needs one run id").into()) };
             request.run = Some(run.parse().map_err(|_| format!("{run:?} is not a run id"))?);
@@ -544,7 +553,14 @@ fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
             }
         }
         Op::Rm | Op::Ping | Op::CdpRevoke => {}
-        Op::Run | Op::Pause | Op::Resume | Op::Cancel => response.runs.iter().for_each(print_run),
+        Op::Run | Op::Cancel => response.runs.iter().for_each(print_run),
+        Op::Pause | Op::Resume => {
+            if response.sessions.is_empty() {
+                response.runs.iter().for_each(print_run);
+            } else {
+                response.sessions.iter().for_each(print_session);
+            }
+        }
         Op::Runs if detail => response.runs.iter().for_each(print_run),
         Op::Runs => {
             println!("{:<6} {:<20} {:<20} {:<5} {:<18} {:<20} PROGRESS", "RUN", "SESSION", "JOB", "KIND", "STATE", "OUTCOME");
