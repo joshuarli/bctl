@@ -64,12 +64,13 @@ parity until the valid measurement is available.
 
 ## Miri scope
 
-Miri validates the pure buffer and codec logic only. Run it with the
-pinned toolchain after installing the component once
-(`rustup component add --toolchain nightly-2026-09-15 miri`):
+Miri validates the pure buffer and codec logic only. The wire and
+connection code lives in the shared `seatd-protocol` crate, so run Miri
+from `guest/` with the pinned toolchain after installing the component
+once (`rustup component add --toolchain nightly-2026-09-15 miri`):
 
 ```sh
-cargo +nightly-2026-09-15 miri test --locked --offline --lib -- --exact \
+cargo +nightly-2026-09-15 miri test -p seatd-protocol --locked --offline --lib -- --exact \
   conn::tests::ring_wraparound_preserves_order \
   conn::tests::ring_counters_wrap_without_loss \
   conn::tests::ring_restore_recovers_frame_header \

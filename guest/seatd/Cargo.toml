@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 libc = "=0.2.182"
 rustix = { version = "=0.38.44", features = ["net", "fs"] }
+seatd-protocol = { path = "../seatd-protocol" }
 
 [[test]]
 name = "adversarial"

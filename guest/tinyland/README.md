@@ -2,7 +2,8 @@
 
 Minimal single-fullscreen Wayland kiosk that scans out real foot pixels
 through DRM and takes keyboard input. Proven on SmolVM arm64, where a
-Linux arm64 guest runs seatd, unprivileged tinyland, and foot.
+Linux arm64 guest runs the vendored Rust seatd, unprivileged tinyland, and
+foot. Tinyland's native seatd client replaces libseat.
 
 ## Verify
 
@@ -15,13 +16,13 @@ sh ../harness/smolvm-proof.sh
 ```
 
 The harness builds the Alpine arm64 image in `../harness/image`, boots it
-with `--gpu`, starts seatd, then tinyland as the unprivileged `tiny` user,
-then foot as the Wayland client. It asserts non-black foot pixels on the
-host VNC framebuffer, a pixel change after typing `laputa` over VNC, the
-seatd-mediated DRM path, and that `tiny` cannot open `/dev/dri/card0`
-directly. It stops and deletes its machine on success and
-failure. `SMOLVM_DISPLAY_SIZE`, `SMOLVM_VNC_PORT`, and
-`TINYLAND_SKIP_IMAGE_BUILD=1` adjust a run.
+with `--gpu`, starts the vendored `seatd` from this workspace, then
+tinyland as the unprivileged `tiny` user, then foot as the Wayland client.
+It asserts non-black foot pixels on the host VNC framebuffer, a pixel
+change after typing `laputa` over VNC, the seatd-mediated DRM path, and
+that `tiny` cannot open `/dev/dri/card0` directly. It stops and deletes
+its machine on success and failure. `SMOLVM_DISPLAY_SIZE`,
+`SMOLVM_VNC_PORT`, and `TINYLAND_SKIP_IMAGE_BUILD=1` adjust a run.
 
 Other checks: `make check`, `make test`, `make audit`.
 

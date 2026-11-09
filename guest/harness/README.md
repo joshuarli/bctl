@@ -1,7 +1,7 @@
 # guest harness
 
 One arm64 SmolVM proof for the vendored laputa stack: `guest/tinyland` as
-the compositor and Alpine's `seatd`/`libseat` as the broker.
+the compositor and `guest/seatd` (built from this tree) as the broker.
 
 ## Run
 
@@ -21,8 +21,10 @@ and `TINYLAND_SKIP_IMAGE_BUILD=1` adjust a run.
 
 ## What it proves
 
-- `image/tinyland-session` starts seatd as root with `SEATD_VTBOUND=0`,
-  then runs tinyland and foot as the unprivileged `tiny` user.
+- `image/tinyland-session` starts the vendored `/usr/local/bin/seatd` as
+  root with `SEATD_VTBOUND=0` and socket `/run/seatd.sock`, then runs
+  tinyland and foot as the unprivileged `tiny` user. The image carries no
+  Alpine `seatd` or `libseat` package.
 - `rfb.py` reads the host VNC framebuffer and requires non-black foot
   pixels (at least 0.5%).
 - Typing `laputa` plus Return as VNC key events changes at least 200
@@ -40,18 +42,21 @@ logs land under `.work/harness/`.
 
 ## Build notes
 
-`tinyland/.cargo/config.toml` has an `aarch64-unknown-linux-musl` section:
-mold as the linker, `/usr/lib` for the native libseat, and
-`-Ctarget-feature=-crt-static` because a static musl binary cannot link the
-dynamic libseat. The image carries `libgcc` for the dynamic musl binary.
+`guest/` is one Cargo workspace (`seatd`, `seatd-protocol`, `tinyland`).
+`guest/.cargo/config.toml` selects `mold` for the musl targets; the
+aarch64 musl tinyland build uses the target's default `crt-static`, so the
+binary has no program interpreter and no `DT_NEEDED` (including no
+libseat). `seatd` is built for the same target and copied into the image
+from this workspace.
 
 No component links libudev: tinyland reads evdev directly, and Alpine's
-foot, seatd, and libseat do not use it, so libudev-zero is not installed.
+foot and the vendored seatd do not use it, so libudev-zero is not
+installed.
 
 ## arm64 cargo tests
 
 The `tests` stage carries the pinned `nightly-2026-09-15` toolchain and
-prefetched locked dependencies.
+prefetched locked workspace dependencies.
 
 ```sh
 docker build --platform linux/arm64 --target tests \
@@ -60,4 +65,6 @@ docker run --rm --platform linux/arm64 --network none -w /src/seatd \
   bctl/tinyland-smolvm-tests:local cargo test --locked
 docker run --rm --platform linux/arm64 --network none -w /src/tinyland \
   bctl/tinyland-smolvm-tests:local cargo test --locked
+docker run --rm --platform linux/arm64 --network none -w /src \
+  bctl/tinyland-smolvm-tests:local cargo test -p seatd-protocol --locked
 ```

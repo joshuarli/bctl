@@ -1,64 +1,58 @@
-//! Brokered seat devices through the system libseat client, seatd-only.
+//! Brokered seat devices through the native seatd client, seatd-only.
 //!
-//! Links libseat at build time (host provides libseat-dev, the guest image
-//! provides libseat). LIBSEAT_BACKEND must select seatd; any other backend,
-//! a failed open, or a lost daemon is a hard error, never a silent
-//! direct-open fallback.
-//!
-//! This is the only module in src/ that uses unsafe. The surface is nine
-//! declared libseat symbols and two listener callbacks. All raw pointers
-//! stay inside Session; Session is !Send and !Sync.
+//! Speaks the libseat seatd protocol over SEATD_SOCK (or /run/seatd.sock)
+//! using the shared protocol crate. LIBSEAT_BACKEND must select seatd; a
+//! failed connect, a protocol violation, or a lost daemon is a hard error,
+//! never a silent direct-open fallback. Device descriptors arrive over
+//! SCM_RIGHTS and are owned by the caller.
 
-use core::ffi::{c_char, c_int, c_void};
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
+use seatd_protocol::conn::Conn;
+use seatd_protocol::wire::{
+    Header, CLIENT_CLOSE_DEVICE, CLIENT_DISABLE_SEAT, CLIENT_OPEN_DEVICE, CLIENT_OPEN_SEAT,
+    CLIENT_SWITCH_SESSION, MAX_PATH_LEN, MAX_SEAT_LEN, SERVER_DEVICE_CLOSED, SERVER_DEVICE_OPENED,
+    SERVER_DISABLE_SEAT, SERVER_ENABLE_SEAT, SERVER_ERROR, SERVER_PONG, SERVER_SEAT_CLOSED,
+    SERVER_SEAT_DISABLED, SERVER_SEAT_OPENED, SERVER_SESSION_SWITCHED,
+};
+use std::cell::{Cell, RefCell};
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 
-#[link(name = "seat", kind = "dylib")]
-extern "C" {
-    fn libseat_open_seat(listener: *const SeatListener, userdata: *mut c_void) -> *mut Libseat;
-    fn libseat_disable_seat(seat: *mut Libseat) -> c_int;
-    fn libseat_close_seat(seat: *mut Libseat) -> c_int;
-    fn libseat_open_device(seat: *mut Libseat, path: *const c_char, fd: *mut c_int) -> c_int;
-    fn libseat_close_device(seat: *mut Libseat, device_id: c_int) -> c_int;
-    fn libseat_seat_name(seat: *mut Libseat) -> *const c_char;
-    fn libseat_get_fd(seat: *mut Libseat) -> c_int;
-    fn libseat_dispatch(seat: *mut Libseat, timeout: c_int) -> c_int;
-    fn libseat_switch_session(seat: *mut Libseat, session: c_int) -> c_int;
+const DEFAULT_SOCKET_PATH: &str = "/run/seatd.sock";
+
+fn errno_text(context: &str, errno: i32) -> String {
+    format!("{context}: {}", io::Error::from_raw_os_error(errno))
 }
 
-#[repr(C)]
-struct Libseat {
-    _opaque: [u8; 0],
+fn would_block(errno: i32) -> bool {
+    io::Error::from_raw_os_error(errno).kind() == io::ErrorKind::WouldBlock
 }
 
-#[repr(C)]
-#[derive(Debug)]
-struct SeatListener {
-    enable_seat: Option<unsafe extern "C" fn(*mut Libseat, *mut c_void)>,
-    disable_seat: Option<unsafe extern "C" fn(*mut Libseat, *mut c_void)>,
+fn require_seatd_backend(selected: Option<String>) -> Result<(), String> {
+    match selected {
+        Some(value) if value == "seatd" => Ok(()),
+        other => Err(format!(
+            "LIBSEAT_BACKEND must be seatd for brokered devices, got {other:?}"
+        )),
+    }
 }
 
-#[derive(Debug)]
-struct ListenerState {
-    enabled: AtomicBool,
-    disabled: AtomicBool,
+fn seatd_socket_path(selected: Option<String>) -> String {
+    selected.unwrap_or_else(|| DEFAULT_SOCKET_PATH.to_string())
 }
 
-unsafe extern "C" fn enable_cb(_seat: *mut Libseat, userdata: *mut c_void) {
-    // SAFETY: userdata is our ListenerState, alive while the session is
-    // open; this callback only runs during dispatch on the owning thread.
-    let state = &*(userdata as *const ListenerState);
-    state.enabled.store(true, Ordering::SeqCst);
-}
-
-unsafe extern "C" fn disable_cb(_seat: *mut Libseat, userdata: *mut c_void) {
-    // SAFETY: same contract as enable_cb.
-    let state = &*(userdata as *const ListenerState);
-    state.disabled.store(true, Ordering::SeqCst);
-}
-
-fn last_error(context: &str) -> String {
-    format!("{context}: {}", std::io::Error::last_os_error())
+fn is_response(opcode: u16) -> bool {
+    matches!(
+        opcode,
+        SERVER_SEAT_OPENED
+            | SERVER_SEAT_CLOSED
+            | SERVER_DEVICE_OPENED
+            | SERVER_DEVICE_CLOSED
+            | SERVER_SESSION_SWITCHED
+            | SERVER_SEAT_DISABLED
+            | SERVER_ERROR
+    )
 }
 
 /// The daemon is gone when its side of the session socket hangs up.
@@ -91,89 +85,70 @@ fn daemon_liveness(fd: BorrowedFd<'_>) -> Result<(), String> {
     }
 }
 
-/// An open libseat session. Owns the listener, its state, and the session
-/// pointer. The listener and state are boxed: libseat keeps the listener
-/// pointer, so both must outlive the session at stable addresses.
-#[derive(Debug)]
-pub struct Session {
-    seat: *mut Libseat,
-    _listener: Box<SeatListener>,
-    state: Box<ListenerState>,
-    fd: OwnedFd,
+fn parse_seat_name(body: &[u8]) -> Result<String, String> {
+    if body.len() < 2 {
+        return Err("seatd seat name response is too short".to_string());
+    }
+    let len = u16::from_ne_bytes([body[0], body[1]]) as usize;
+    if body.len() != 2 + len {
+        return Err("seatd seat name length does not match the response".to_string());
+    }
+    if len > MAX_SEAT_LEN {
+        return Err(format!("seatd seat name too long: {len}"));
+    }
+    let mut name = &body[2..];
+    if let Some((&0, rest)) = name.split_last() {
+        name = rest;
+    }
+    if name.contains(&0) {
+        return Err("seatd seat name is not NUL terminated".to_string());
+    }
+    Ok(String::from_utf8_lossy(name).into_owned())
 }
 
-// Session holds raw pointers, so it is !Send and !Sync by default and
-// stays confined to its owning thread.
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        // Best effort: the daemon may already be gone.
-        // SAFETY: seat was returned by open_seat and not yet closed.
-        unsafe {
-            libseat_close_seat(self.seat);
-        }
-    }
+/// An open seatd session. Owns the connection, a duplicated poll descriptor,
+/// and the listener transition flags.
+pub struct Session {
+    conn: RefCell<Conn>,
+    fd: OwnedFd,
+    enabled: Cell<bool>,
+    disabled: Cell<bool>,
+    failed: Cell<bool>,
 }
 
 impl Session {
     /// Require the seatd backend and open the seat.
     pub fn open() -> Result<Self, String> {
-        match std::env::var("LIBSEAT_BACKEND") {
-            Ok(selected) if selected == "seatd" => {}
-            other => {
-                return Err(format!(
-                    "LIBSEAT_BACKEND must be seatd for brokered devices, got {other:?}"
-                ));
-            }
-        }
-        let mut state = Box::new(ListenerState {
-            enabled: AtomicBool::new(false),
-            disabled: AtomicBool::new(false),
-        });
-        let listener = Box::new(SeatListener {
-            enable_seat: Some(enable_cb),
-            disable_seat: Some(disable_cb),
-        });
-        // SAFETY: both boxes outlive the session; libseat only reads the
-        // listener through dispatch on this thread.
-        let seat = unsafe {
-            libseat_open_seat(
-                &*listener,
-                (&mut *state as *mut ListenerState).cast::<c_void>(),
-            )
-        };
-        if seat.is_null() {
-            return Err(last_error("libseat_open_seat"));
-        }
-        // SAFETY: get_fd returns a borrowed daemon fd; dup our own copy.
-        let raw = unsafe { libseat_get_fd(seat) };
-        if raw < 0 {
-            // SAFETY: seat was just opened and is still ours.
-            unsafe {
-                libseat_close_seat(seat);
-            }
-            return Err(last_error("libseat_get_fd"));
-        }
-        let fd = unsafe { BorrowedFd::borrow_raw(raw) }
-            .try_clone_to_owned()
+        require_seatd_backend(std::env::var("LIBSEAT_BACKEND").ok())?;
+        let path = seatd_socket_path(std::env::var("SEATD_SOCK").ok());
+        Self::open_path(&path)
+    }
+
+    fn open_path(path: &str) -> Result<Self, String> {
+        let stream = UnixStream::connect(path)
+            .map_err(|e| format!("seatd connect {path}: {e}"))?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|e| format!("seatd nonblocking {path}: {e}"))?;
+        Self::from_conn(stream.into())
+    }
+
+    fn from_conn(fd: OwnedFd) -> Result<Self, String> {
+        let poll_fd = fd
+            .try_clone()
             .map_err(|e| format!("dup seat fd: {e}"))?;
-        let name: String;
-        // SAFETY: seat is open; the name is owned by the session.
-        unsafe {
-            let p = libseat_seat_name(seat);
-            name = if p.is_null() {
-                "?".into()
-            } else {
-                core::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-            };
-        }
+        let session = Self {
+            conn: RefCell::new(Conn::new(fd)),
+            fd: poll_fd,
+            enabled: Cell::new(false),
+            disabled: Cell::new(false),
+            failed: Cell::new(false),
+        };
+        session.send(CLIENT_OPEN_SEAT, &[])?;
+        let body = session.exchange(SERVER_SEAT_OPENED)?;
+        let name = parse_seat_name(&body)?;
         eprintln!("TINYLAND_SEAT_OPEN seat={name}");
-        Ok(Self {
-            seat,
-            _listener: listener,
-            state,
-            fd,
-        })
+        Ok(session)
     }
 
     /// Borrow the duplicated session fd for the shared poll set.
@@ -182,16 +157,13 @@ impl Session {
     }
 
     /// Dispatch pending seat events without waiting. Daemon loss is fatal.
-    ///
-    /// `libseat_dispatch` with a zero timeout reports a dead daemon as an
-    /// empty read, so check the session fd for hangup first: without this,
-    /// a killed broker is silent and the session never exits.
     pub fn dispatch(&self) -> Result<(), String> {
-        daemon_liveness(self.fd.as_fd())?;
-        // SAFETY: seat is open; timeout 0 never blocks.
-        let n = unsafe { libseat_dispatch(self.seat, 0) };
-        if n < 0 {
-            return Err(last_error("libseat_dispatch"));
+        self.check()?;
+        if let Err(error) = daemon_liveness(self.fd.as_fd()) {
+            return self.fail(error);
+        }
+        if let Some((opcode, _)) = self.pump_once()? {
+            return self.fail(format!("unexpected seat response opcode {opcode}"));
         }
         Ok(())
     }
@@ -201,11 +173,25 @@ impl Session {
     /// notification arrives, so drain first and let a suspend win over
     /// an unplug verdict. Daemon loss is fatal here too.
     pub fn dispatch_wait(&self, timeout_ms: i32) -> Result<(), String> {
-        daemon_liveness(self.fd.as_fd())?;
-        // SAFETY: seat is open; timeout bounds the block below.
-        let n = unsafe { libseat_dispatch(self.seat, timeout_ms) };
-        if n < 0 {
-            return Err(last_error("libseat_dispatch"));
+        self.check()?;
+        if let Err(error) = daemon_liveness(self.fd.as_fd()) {
+            return self.fail(error);
+        }
+        if let Some((opcode, _)) = self.pump_once()? {
+            return self.fail(format!("unexpected seat response opcode {opcode}"));
+        }
+        let timespec = rustix::time::Timespec {
+            tv_sec: (timeout_ms / 1000) as i64,
+            tv_nsec: ((timeout_ms % 1000) * 1_000_000) as i64,
+        };
+        let timeout = if timeout_ms < 0 {
+            None
+        } else {
+            Some(&timespec)
+        };
+        self.wait_readable(timeout)?;
+        if let Some((opcode, _)) = self.pump_once()? {
+            return self.fail(format!("unexpected seat response opcode {opcode}"));
         }
         Ok(())
     }
@@ -215,122 +201,551 @@ impl Session {
     /// are grabbed hands a Ctrl+Alt+Fn switch to the privileged broker.
     /// Failure leaves the session unaffected by design.
     pub fn switch_session(&self, session: i32) -> Result<(), String> {
-        // SAFETY: seat is open; the daemon validates the session number.
-        let r = unsafe { libseat_switch_session(self.seat, session) };
-        if r != 0 {
-            return Err(last_error("libseat_switch_session"));
+        self.check()?;
+        if session < 0 {
+            return Err(format!("seatd switch_session: invalid session {session}"));
         }
-        Ok(())
+        self.send(CLIENT_SWITCH_SESSION, &session.to_ne_bytes())?;
+        self.exchange(SERVER_SESSION_SWITCHED)
+            .map(|_| ())
+            .map_err(|error| format!("seatd switch_session: {error}"))
     }
 
     /// True after disable_seat until devices are dropped and acknowledged.
     pub fn take_disabled(&self) -> bool {
-        self.state.disabled.swap(false, Ordering::SeqCst)
+        self.disabled.replace(false)
     }
 
     /// True after enable_seat until the session reopens its devices.
     pub fn take_enabled(&self) -> bool {
-        self.state.enabled.swap(false, Ordering::SeqCst)
+        self.enabled.replace(false)
     }
 
     /// Acknowledge a disable event after all seat devices are dropped.
     pub fn acknowledge_disable(&self) -> Result<(), String> {
-        // SAFETY: seat is open; caller dropped every device first.
-        let r = unsafe { libseat_disable_seat(self.seat) };
-        if r != 0 {
-            return Err(last_error("libseat_disable_seat"));
-        }
-        Ok(())
+        self.check()?;
+        self.send(CLIENT_DISABLE_SEAT, &[])?;
+        self.exchange(SERVER_SEAT_DISABLED)
+            .map(|_| ())
+            .map_err(|error| format!("seatd disable_seat: {error}"))
     }
 
     /// Open one brokered device. The returned fd is owned by the caller;
     /// pass the id to close_device when the fd is dropped or revoked.
-    pub fn open_device(&self, path: &std::path::Path) -> Result<(OwnedFd, i32), String> {
+    pub fn open_device(&self, path: &Path) -> Result<(OwnedFd, i32), String> {
+        self.check()?;
         let raw = path.as_os_str().as_encoded_bytes();
         if raw.contains(&0) {
             return Err(format!("device path has NUL: {}", path.display()));
         }
-        let mut arg = Vec::with_capacity(raw.len() + 1);
+        let path_len = raw.len() + 1;
+        if path_len > MAX_PATH_LEN {
+            return Err(format!("device path too long: {}", path.display()));
+        }
+        let mut arg = Vec::with_capacity(path_len);
         arg.extend_from_slice(raw);
         arg.push(0);
-        let mut out: c_int = -1;
-        // SAFETY: arg is NUL-terminated; out receives the new fd.
-        let id = unsafe {
-            libseat_open_device(self.seat, arg.as_ptr() as *const c_char, &mut out)
-        };
-        if id < 0 {
-            return Err(format!(
-                "libseat_open_device {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            ));
+        {
+            let mut conn = self.conn.borrow_mut();
+            conn.put(
+                &Header {
+                    opcode: CLIENT_OPEN_DEVICE,
+                    size: (2 + path_len) as u16,
+                }
+                .encode(),
+            )
+            .map_err(|e| errno_text("seatd open_device send", e))?;
+            conn.put(&(path_len as u16).to_ne_bytes())
+                .map_err(|e| errno_text("seatd open_device send", e))?;
         }
-        if out < 0 {
-            return Err(format!("libseat returned no fd for {}", path.display()));
+        self.flush()?;
+        {
+            let mut conn = self.conn.borrow_mut();
+            conn.put(&arg)
+                .map_err(|e| errno_text("seatd open_device send", e))?;
         }
-        // SAFETY: libseat transfers ownership of the new fd to the caller.
-        let fd = unsafe { OwnedFd::from_raw_fd(out) };
-        Ok((fd, id))
+        self.flush()?;
+        let body = self
+            .exchange(SERVER_DEVICE_OPENED)
+            .map_err(|error| format!("seatd open_device {}: {error}", path.display()))?;
+        if body.len() != 4 {
+            return self.fail("seatd device response has the wrong size".to_string());
+        }
+        let id = i32::from_ne_bytes([body[0], body[1], body[2], body[3]]);
+        let fd = self
+            .conn
+            .borrow_mut()
+            .get_fd()
+            .map_err(|e| errno_text("seatd device fd", e));
+        match fd {
+            Ok(fd) => Ok((fd, id)),
+            Err(error) => self.fail(format!(
+                "seatd returned no fd for {}: {error}",
+                path.display()
+            )),
+        }
     }
 
     /// Release the broker side of a device whose fd was already dropped.
     pub fn close_device(&self, id: i32, origin: &str) -> Result<(), String> {
-        // SAFETY: id came from open_device on this session.
-        let r = unsafe { libseat_close_device(self.seat, id) };
-        if r != 0 {
-            return Err(last_error(&format!("libseat_close_device {origin}")));
+        self.check()?;
+        if id < 0 {
+            return Err(format!("seatd close_device {origin}: invalid id {id}"));
         }
-        Ok(())
+        self.send(CLIENT_CLOSE_DEVICE, &id.to_ne_bytes())?;
+        self.exchange(SERVER_DEVICE_CLOSED)
+            .map(|_| ())
+            .map_err(|error| format!("seatd close_device {origin}: {error}"))
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.failed.get() {
+            Err("seat session failed".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fail<T>(&self, message: String) -> Result<T, String> {
+        self.failed.set(true);
+        Err(message)
+    }
+
+    fn send(&self, opcode: u16, body: &[u8]) -> Result<(), String> {
+        {
+            let mut conn = self.conn.borrow_mut();
+            conn.put(
+                &Header {
+                    opcode,
+                    size: body.len() as u16,
+                }
+                .encode(),
+            )
+            .map_err(|e| errno_text("seatd send", e))?;
+            if !body.is_empty() {
+                conn.put(body).map_err(|e| errno_text("seatd send", e))?;
+            }
+        }
+        self.flush()
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        loop {
+            match self.conn.borrow_mut().flush() {
+                Ok(_) => return Ok(()),
+                Err(e) if would_block(e) => self.wait_writable()?,
+                Err(e) => return self.fail(errno_text("seatd send", e)),
+            }
+        }
+    }
+
+    fn wait_writable(&self) -> Result<(), String> {
+        loop {
+            let mut fds = [rustix::event::PollFd::new(
+                &self.fd,
+                rustix::event::PollFlags::OUT,
+            )];
+            match rustix::event::poll(&mut fds, None) {
+                Ok(_) => {
+                    let revents = fds[0].revents();
+                    if revents.intersects(
+                        rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR,
+                    ) {
+                        return self.fail("seat daemon lost".to_string());
+                    }
+                    return Ok(());
+                }
+                Err(e) if e == rustix::io::Errno::INTR => {}
+                Err(e) => return self.fail(format!("seat poll failed: {e}")),
+            }
+        }
+    }
+
+    fn wait_readable(
+        &self,
+        timeout: Option<&rustix::time::Timespec>,
+    ) -> Result<(), String> {
+        loop {
+            let mut fds = [rustix::event::PollFd::new(
+                &self.fd,
+                rustix::event::PollFlags::IN,
+            )];
+            match rustix::event::poll(&mut fds, timeout) {
+                Ok(_) => {
+                    let revents = fds[0].revents();
+                    if revents.intersects(
+                        rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR,
+                    ) {
+                        return self.fail("seat daemon lost".to_string());
+                    }
+                    return Ok(());
+                }
+                Err(e) if e == rustix::io::Errno::INTR => {}
+                Err(e) => return self.fail(format!("seat poll failed: {e}")),
+            }
+        }
+    }
+
+    fn fill(&self) -> Result<(), String> {
+        match self.conn.borrow_mut().read() {
+            Ok(0) => self.fail("seat daemon lost".to_string()),
+            Ok(_) => Ok(()),
+            Err(e) if would_block(e) => Ok(()),
+            Err(e) => self.fail(errno_text("seatd read", e)),
+        }
+    }
+
+    fn parse_available(&self) -> Result<Option<(u16, Vec<u8>)>, String> {
+        loop {
+            let (header, body) = {
+                let mut conn = self.conn.borrow_mut();
+                if conn.pending() < 4 {
+                    return Ok(None);
+                }
+                let mut raw = [0u8; 4];
+                conn.get(&mut raw)
+                    .map_err(|e| errno_text("seatd frame header", e))?;
+                let header = Header::decode(&raw);
+                if conn.pending() < header.size as usize {
+                    conn.restore(4);
+                    return Ok(None);
+                }
+                let mut body = vec![0u8; header.size as usize];
+                if header.size > 0 {
+                    conn.get(&mut body)
+                        .map_err(|e| errno_text("seatd frame body", e))?;
+                }
+                (header, body)
+            };
+            match header.opcode {
+                SERVER_PONG => {
+                    if header.size != 0 {
+                        return self.fail("seatd pong has a body".to_string());
+                    }
+                }
+                SERVER_ENABLE_SEAT => {
+                    if header.size != 0 {
+                        return self.fail("seatd enable event has a body".to_string());
+                    }
+                    self.enabled.set(true);
+                }
+                SERVER_DISABLE_SEAT => {
+                    if header.size != 0 {
+                        return self.fail("seatd disable event has a body".to_string());
+                    }
+                    self.disabled.set(true);
+                }
+                opcode if is_response(opcode) => return Ok(Some((opcode, body))),
+                opcode => return self.fail(format!("unexpected seat message opcode {opcode}")),
+            }
+        }
+    }
+
+    fn pump_once(&self) -> Result<Option<(u16, Vec<u8>)>, String> {
+        if let Some(message) = self.parse_available()? {
+            return Ok(Some(message));
+        }
+        self.fill()?;
+        self.parse_available()
+    }
+
+    fn exchange(&self, expected: u16) -> Result<Vec<u8>, String> {
+        loop {
+            if let Some((opcode, body)) = self.pump_once()? {
+                if opcode == expected {
+                    return Ok(body);
+                }
+                if opcode == SERVER_ERROR {
+                    if body.len() != 4 {
+                        return self.fail("seatd error response has the wrong size".to_string());
+                    }
+                    let errno = i32::from_ne_bytes([body[0], body[1], body[2], body[3]]);
+                    return Err(format!(
+                        "seatd error: {}",
+                        io::Error::from_raw_os_error(errno)
+                    ));
+                }
+                return self.fail(format!("unexpected seat response opcode {opcode}"));
+            }
+            self.wait_readable(None)?;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::io::Read;
+    use std::thread;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn five_seconds() -> rustix::time::Timespec {
+        rustix::time::Timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        }
+    }
+
+    struct ServerConn {
+        conn: Conn,
+    }
+
+    impl ServerConn {
+        fn new(fd: OwnedFd) -> Self {
+            Self {
+                conn: Conn::new(fd),
+            }
+        }
+
+        fn read_msg(&mut self) -> (u16, Vec<u8>) {
+            loop {
+                if self.conn.pending() >= 4 {
+                    break;
+                }
+                self.fill();
+            }
+            let mut raw = [0u8; 4];
+            self.conn.get(&mut raw).unwrap();
+            let header = Header::decode(&raw);
+            loop {
+                if self.conn.pending() >= header.size as usize {
+                    break;
+                }
+                self.fill();
+            }
+            let mut body = vec![0u8; header.size as usize];
+            self.conn.get(&mut body).unwrap();
+            (header.opcode, body)
+        }
+
+        fn fill(&mut self) {
+            loop {
+                match self.conn.read() {
+                    Ok(0) => panic!("client closed the connection"),
+                    Ok(_) => return,
+                    Err(e) if would_block(e) => {
+                        let fd = self.conn.as_fd();
+                        let mut fds = [rustix::event::PollFd::new(
+                            &fd,
+                            rustix::event::PollFlags::IN,
+                        )];
+                        match rustix::event::poll(&mut fds, Some(&five_seconds())) {
+                            Ok(0) => panic!("timed out waiting for the client"),
+                            Ok(_) => {
+                                let revents = fds[0].revents();
+                                if revents.intersects(
+                                    rustix::event::PollFlags::HUP
+                                        | rustix::event::PollFlags::ERR,
+                                ) {
+                                    panic!("client hung up");
+                                }
+                            }
+                            Err(e) => panic!("poll: {e}"),
+                        }
+                    }
+                    Err(e) => panic!("read: {e}"),
+                }
+            }
+        }
+
+        fn send(&mut self, opcode: u16, body: &[u8]) {
+            self.conn
+                .put(&Header { opcode, size: body.len() as u16 }.encode())
+                .unwrap();
+            if !body.is_empty() {
+                self.conn.put(body).unwrap();
+            }
+            self.flush();
+        }
+
+        fn send_fd(&mut self, opcode: u16, body: &[u8], fd: OwnedFd) {
+            self.conn.put_fd(fd).unwrap();
+            self.send(opcode, body);
+        }
+
+        fn flush(&mut self) {
+            loop {
+                match self.conn.flush() {
+                    Ok(_) => return,
+                    Err(e) if would_block(e) => {
+                        let fd = self.conn.as_fd();
+                        let mut fds = [rustix::event::PollFd::new(
+                            &fd,
+                            rustix::event::PollFlags::OUT,
+                        )];
+                        match rustix::event::poll(&mut fds, Some(&five_seconds())) {
+                            Ok(0) => panic!("timed out flushing to the client"),
+                            Ok(_) => {
+                                let revents = fds[0].revents();
+                                if revents.intersects(
+                                    rustix::event::PollFlags::HUP
+                                        | rustix::event::PollFlags::ERR,
+                                ) {
+                                    panic!("client hung up");
+                                }
+                            }
+                            Err(e) => panic!("poll: {e}"),
+                        }
+                    }
+                    Err(e) => panic!("flush: {e}"),
+                }
+            }
+        }
+    }
+
+    fn start_server<F>(script: F) -> (OwnedFd, thread::JoinHandle<()>)
+    where
+        F: FnOnce(&mut ServerConn) + Send + 'static,
+    {
+        let (client, server) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        let handle = thread::spawn(move || {
+            let mut conn = ServerConn::new(server.into());
+            script(&mut conn);
+        });
+        (client.into(), handle)
+    }
+
+    fn seat_opened_body(name: &str) -> Vec<u8> {
+        let mut body = ((name.len() + 1) as u16).to_ne_bytes().to_vec();
+        body.extend_from_slice(name.as_bytes());
+        body.push(0);
+        body
+    }
 
     #[test]
     fn backend_is_required_to_be_seatd() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let saved = std::env::var_os("LIBSEAT_BACKEND");
-        unsafe {
-            std::env::remove_var("LIBSEAT_BACKEND");
+        for selected in [None, Some("builtin".to_string())] {
+            let error = require_seatd_backend(selected).unwrap_err();
+            assert!(error.contains("LIBSEAT_BACKEND"), "unexpected: {error}");
         }
-        assert!(Session::open().unwrap_err().contains("LIBSEAT_BACKEND"));
-        unsafe {
-            std::env::set_var("LIBSEAT_BACKEND", "builtin");
-        }
-        assert!(Session::open().unwrap_err().contains("LIBSEAT_BACKEND"));
-        match saved {
-            Some(v) => unsafe { std::env::set_var("LIBSEAT_BACKEND", v) },
-            None => unsafe { std::env::remove_var("LIBSEAT_BACKEND") },
-        }
+        assert!(require_seatd_backend(Some("seatd".to_string())).is_ok());
     }
 
     #[test]
-    fn closed_peer_reports_daemon_loss() {
-        use std::os::fd::AsFd;
-        use std::os::unix::net::UnixStream;
-        let (open, peer) = UnixStream::pair().unwrap();
-        assert!(daemon_liveness(open.as_fd()).is_ok());
-        drop(peer);
-        assert!(daemon_liveness(open.as_fd()).is_err());
+    fn socket_path_honors_seatd_sock() {
+        assert_eq!(seatd_socket_path(None), "/run/seatd.sock");
+        assert_eq!(
+            seatd_socket_path(Some("/run/isolated.sock".to_string())),
+            "/run/isolated.sock"
+        );
     }
 
     #[test]
-    fn open_without_daemon_is_a_hard_error() {        let _guard = ENV_LOCK.lock().unwrap();
-        let saved = std::env::var_os("LIBSEAT_BACKEND");
-        unsafe {
-            std::env::set_var("LIBSEAT_BACKEND", "seatd");
-            std::env::remove_var("SEATD_SOCK");
+    fn open_without_daemon_is_a_hard_error() {
+        let error = match Session::open_path("/nonexistent/bctl-seatd-test.sock") {
+            Ok(_) => panic!("open_path unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.contains("seatd connect"), "unexpected: {error}");
+        assert!(error.contains("bctl-seatd-test"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn client_opens_and_closes_brokered_device() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (client, server) = start_server(move |conn| {
+            let (opcode, body) = conn.read_msg();
+            assert_eq!(opcode, CLIENT_OPEN_SEAT);
+            assert!(body.is_empty());
+            conn.send(SERVER_SEAT_OPENED, &seat_opened_body("seat0"));
+
+            let (opcode, body) = conn.read_msg();
+            assert_eq!(opcode, CLIENT_OPEN_DEVICE);
+            let path_len = u16::from_ne_bytes([body[0], body[1]]) as usize;
+            assert_eq!(path_len, body.len() - 2);
+            assert_eq!(&body[2..], b"/dev/null\0");
+
+            let null = std::fs::File::open("/dev/null").unwrap();
+            conn.send_fd(SERVER_DEVICE_OPENED, &1i32.to_ne_bytes(), null.into());
+
+            let (opcode, body) = conn.read_msg();
+            assert_eq!(opcode, CLIENT_CLOSE_DEVICE);
+            assert_eq!(i32::from_ne_bytes(body.try_into().unwrap()), 1);
+            conn.send(SERVER_DEVICE_CLOSED, &[]);
+            wait.recv().unwrap();
+        });
+
+        let session = Session::from_conn(client).unwrap();
+        let (fd, id) = session.open_device(Path::new("/dev/null")).unwrap();
+        assert_eq!(id, 1);
+        let mut file = std::fs::File::from(fd);
+        let mut contents = [0u8; 4];
+        assert_eq!(file.read(&mut contents).unwrap(), 0);
+        session.close_device(1, "test").unwrap();
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn client_dispatches_enable_disable_and_acknowledges_disable() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (client, server) = start_server(move |conn| {
+            let (opcode, _) = conn.read_msg();
+            assert_eq!(opcode, CLIENT_OPEN_SEAT);
+            conn.send(SERVER_SEAT_OPENED, &seat_opened_body("seat0"));
+            conn.send(SERVER_ENABLE_SEAT, &[]);
+            conn.send(SERVER_DISABLE_SEAT, &[]);
+
+            let (opcode, body) = conn.read_msg();
+            assert_eq!(opcode, CLIENT_DISABLE_SEAT);
+            assert!(body.is_empty());
+            conn.send(SERVER_SEAT_DISABLED, &[]);
+            conn.send(SERVER_ENABLE_SEAT, &[]);
+            wait.recv().unwrap();
+        });
+
+        let session = Session::from_conn(client).unwrap();
+        let mut enabled = false;
+        let mut disabled = false;
+        for _ in 0..100 {
+            enabled |= session.take_enabled();
+            disabled |= session.take_disabled();
+            if enabled && disabled {
+                break;
+            }
+            session.dispatch_wait(50).unwrap();
         }
-        let err = Session::open().unwrap_err();
-        assert!(err.contains("libseat"), "unexpected: {err}");
-        match saved {
-            Some(v) => unsafe { std::env::set_var("LIBSEAT_BACKEND", v) },
-            None => unsafe { std::env::remove_var("LIBSEAT_BACKEND") },
+        assert!(enabled, "enable event was not dispatched");
+        assert!(disabled, "disable event was not dispatched");
+        session.acknowledge_disable().unwrap();
+        let mut enabled_again = false;
+        for _ in 0..100 {
+            session.dispatch_wait(50).unwrap();
+            if session.take_enabled() {
+                enabled_again = true;
+                break;
+            }
         }
+        assert!(enabled_again, "enable event was not dispatched after resume");
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn client_reports_daemon_loss_on_disconnect() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (client, server) = start_server(move |conn| {
+            let (opcode, _) = conn.read_msg();
+            assert_eq!(opcode, CLIENT_OPEN_SEAT);
+            conn.send(SERVER_SEAT_OPENED, &seat_opened_body("seat0"));
+            wait.recv().unwrap();
+        });
+
+        let session = Session::from_conn(client).unwrap();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        let mut loss = None;
+        for _ in 0..100 {
+            match session.dispatch() {
+                Ok(()) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                Err(error) => {
+                    loss = Some(error);
+                    break;
+                }
+            }
+        }
+        let error = loss.expect("closed broker was not reported as a loss");
+        assert!(error.contains("seat daemon lost"), "unexpected: {error}");
+        assert!(session.dispatch_wait(10).is_err());
     }
 }

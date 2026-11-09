@@ -36,9 +36,11 @@ before deployment.
 
 The daemon speaks the libseat seatd protocol over the socket: open and
 close seats and devices, enable and disable sessions, switch sessions,
-ping. The exact byte sequences are pinned in
-[harness/protocol.golden](harness/protocol.golden) and exercised by a
-raw-protocol guest client with no C dependencies. Read
+ping. The opcodes, framing, and SCM_RIGHTS descriptor passing live in the
+shared `../seatd-protocol` crate; tinyland's native client uses the same
+crate, so client and server cannot drift. The exact byte sequences are
+pinned in [harness/protocol.golden](harness/protocol.golden) and exercised
+by a raw-protocol guest client with no C dependencies. Read
 [validation](doc/validation.md) for what the checks cover.
 
 VT-bound operation, virtio DRM/evdev handoff, and compositor input were

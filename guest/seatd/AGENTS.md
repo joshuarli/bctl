@@ -22,9 +22,9 @@ Musl targets use the `kache` wrapper and link with `mold`; see [validation](doc/
 ## Map
 
 - Socket admission and single-instance lock → `src/admit.rs`
-- Frame buffers and descriptor transfer → `src/conn.rs`
+- Frame buffers and descriptor transfer → shared `seatd-protocol` crate (`src/conn.rs` re-exports)
 - Session transitions → `src/session.rs`
 - Devices, VT, effects → `src/device.rs`, `src/vt.rs`, `src/effect.rs`, `src/sys.rs`
-- Wire protocol → `src/wire.rs`, golden transcript → `harness/protocol.golden`
+- Wire protocol → shared `seatd-protocol` crate, golden transcript → `harness/protocol.golden`
 - Guest qualification → laputa's x86_64 harness (kept in laputa); compositor proof → `../harness/smolvm-proof.sh`
 - Runtime contract, recovery, validation, behavior rules → `doc/runtime.md`, `doc/recovery.md`, `doc/validation.md`, `doc/behavior.md`

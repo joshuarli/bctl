@@ -37,7 +37,9 @@ expose_devices() {
 }
 
 start_seatd() {
-    SEATD_VTBOUND=0 seatd -g seat -l info > "$state/seatd.log" 2>&1 &
+    broker_version=$(/usr/local/bin/seatd -v 2>/dev/null || true)
+    SEATD_VTBOUND=0 SEATD_SOCK=/run/seatd.sock \
+        /usr/local/bin/seatd -g seat -l info > "$state/seatd.log" 2>&1 &
     seatd_pid=$!
     for _ in $(seq 1 100); do
         [ -S /run/seatd.sock ] && break
@@ -45,6 +47,7 @@ start_seatd() {
         sleep 0.1
     done
     [ -S /run/seatd.sock ] || fail "seatd socket missing"
+    say "TINYLAND_SEATD_BROKER /usr/local/bin/seatd $broker_version"
     say "TINYLAND_SEATD_READY"
 }
 
