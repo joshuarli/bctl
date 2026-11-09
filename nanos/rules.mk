@@ -103,7 +103,7 @@ ifeq ($(findstring clang,$(COMPILER_VERSION)),clang)
 TARGET_CFLAGS=	-target $(ARCH)-elf
 endif
 
-KERNCFLAGS+=	$(TARGET_CFLAGS) -fno-omit-frame-pointer
+KERNCFLAGS+=	$(TARGET_CFLAGS) -fno-omit-frame-pointer $(KERNEL_TEST_CFLAGS)
 KERNLDFLAGS=	--gc-sections -z notext -z noexecstack -z max-page-size=4096 -L $(OBJDIR) -pie --no-dynamic-linker
 
 ifneq ($(UBSAN),)

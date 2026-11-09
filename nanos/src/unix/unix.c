@@ -13,8 +13,9 @@
 #define pf_debug(x, ...) thread_trace(current, TRACE_PAGE_FAULT, x, ##__VA_ARGS__);
 #endif
 
-#define MAX_PROCESSES 2
-process processes[MAX_PROCESSES];
+static struct list processes;
+static struct spinlock processes_lock;
+static process init_process;
 
 static timestamp oom_last_time;
 static u64 oom_count;
@@ -568,7 +569,33 @@ closure_func_basic(clock_now, timestamp, process_now)
     return proc_cputime(p);
 }
 
-process create_process(unix_heaps uh, tuple root, filesystem fs)
+closure_func_basic(thunk, void, process_free)
+{
+    process p = struct_from_closure(process, free);
+    heap locked = heap_locked(get_kernel_heaps());
+    spin_lock(&processes_lock);
+    list_delete(&p->l);
+    spin_unlock(&processes_lock);
+    if (p->vmaps != INVALID_ADDRESS)
+        mmap_process_free(p);
+    if (p->as)
+        address_space_release(p->as);
+    filesystem_release(p->cwd_fs);
+    destroy_heap((heap)p->fdallocator);
+    deallocate_vector(p->files);
+    deallocate_rbtree(p->threads, 0);
+    deallocate_notify_set(p->signalfds);
+    destroy_heap((heap)p->posix_timer_ids);
+    deallocate_vector(p->posix_timers);
+    deallocate_vector(p->itimers);
+    deallocate_timerqueue(p->cpu_timers);
+    destroy_heap((heap)p->aio_ids);
+    deallocate_vector(p->aio);
+    deallocate_u64((heap)p->uh->processes, p->pid, 1);
+    deallocate(locked, p, sizeof(struct process));
+}
+
+static process process_alloc(unix_heaps uh, tuple root, filesystem fs)
 {
     kernel_heaps kh = get_kernel_heaps();
     heap locked = heap_locked(kh);
@@ -578,18 +605,13 @@ process create_process(unix_heaps uh, tuple root, filesystem fs)
     p->uh = uh;
     p->brk = 0;
     p->pid = mem_alloc_u64((heap)uh->processes, 1, MEM_NOFAIL);
-
-    /* don't need these for kernel process */
-    if (p->pid > 1) {
-        p->as = allocate_address_space(locked);
-        assert(p->as != INVALID_ADDRESS);
-        mmap_process_init(p, root);
-        init_vdso(p);
-    } else {
-        p->as = 0;
-        p->virtual = 0;
-        p->vmaps = INVALID_ADDRESS;
-    }
+    p->ppid = 0;
+    p->exiting = false;
+    p->dumpable = true;
+    init_refcount(&p->refcount, 1, init_closure_func(&p->free, thunk, process_free));
+    p->as = 0;
+    p->virtual = 0;
+    p->vmaps = INVALID_ADDRESS;
     filesystem_reserve(fs); /* because it hosts the current working directory */
     p->root_fs = p->cwd_fs = fs;
     p->cwd = fs->get_inode(fs, filesystem_getroot(fs));
@@ -601,7 +623,6 @@ process create_process(unix_heaps uh, tuple root, filesystem fs)
     p->fdallocator = create_id_heap(locked, locked, 0, infinity, 1, false);
     p->files = allocate_vector(locked, 64);
     zero(p->files, sizeof(p->files));
-    create_stdfiles(uh, p);
     init_threads(p);
     init_closure_func(&p->fault_handler, fault_handler, unix_fault_handler);
     p->syscalls = linux_syscalls;
@@ -621,15 +642,151 @@ process create_process(unix_heaps uh, tuple root, filesystem fs)
     p->rlimit_stack = PROCESS_STACK_SIZE;
     p->trace = 0;
     p->trap = 0;
-    if ((u64)p->pid - 1 < MAX_PROCESSES)
-        processes[p->pid - 1] = p;
+    spin_lock(&processes_lock);
+    list_insert_before(&processes, &p->l);
+    spin_unlock(&processes_lock);
+    return p;
+}
+
+process create_process(unix_heaps uh, tuple root, filesystem fs)
+{
+    process p = process_alloc(uh, root, fs);
+    /* don't need these for kernel process */
+    if (p->pid > 1) {
+        p->as = allocate_address_space(heap_locked(get_kernel_heaps()));
+        assert(p->as != INVALID_ADDRESS);
+        mmap_process_init(p, root);
+        init_vdso(p);
+        if (!init_process)
+            init_process = p;
+    }
+    create_stdfiles(uh, p);
     return p;
 }
 
 process unix_process(void)
 {
-    /* The process at 0 is the kernel dummy process, the process at 1 is the real user process. */
-    return processes[1];
+    return init_process;
+}
+
+boolean process_is_init(process p)
+{
+    return p == init_process;
+}
+
+static void process_fork_files(process child, process parent)
+{
+    process_lock(parent);
+    for (int fd = 0; fd < vector_length(parent->files); fd++) {
+        fdesc f = vector_get(parent->files, fd);
+        if (!f)
+            continue;
+        fetch_and_add(&f->refcnt, 1);
+        assert(id_heap_set_area(child->fdallocator, fd, 1, true, true));
+        assert(vector_set(child->files, fd, f));
+    }
+    process_unlock(parent);
+}
+
+sysreturn fork_process(thread t)
+{
+#ifdef __x86_64__
+    process parent = t->p;
+    process c = process_alloc(parent->uh, parent->process_root, parent->root_fs);
+    filesystem_release(c->cwd_fs);
+    process_get_cwd(parent, &c->cwd_fs, &c->cwd);
+    c->ppid = parent->pid;
+    c->uid = parent->uid;
+    c->gid = parent->gid;
+    c->dumpable = parent->dumpable;
+    c->syscalls = parent->syscalls;
+    c->rlimit_stack = parent->rlimit_stack;
+    c->trace = parent->trace;
+    runtime_memcpy(c->sigactions, parent->sigactions, sizeof(c->sigactions));
+    runtime_memcpy(c->saved_aux, parent->saved_aux, sizeof(c->saved_aux));
+    c->saved_args_begin = parent->saved_args_begin;
+    c->saved_args_end = parent->saved_args_end;
+#ifdef VM_ISOLATION_SELFTEST_BREAK
+    address_space_reserve(parent->as);
+    c->as = parent->as;
+#else
+    c->as = allocate_address_space(heap_locked(get_kernel_heaps()));
+#endif
+    if (c->as == INVALID_ADDRESS) {
+        c->as = 0;
+        process_release(c);
+        return -ENOMEM;
+    }
+    sysreturn rv = mmap_process_fork(c, parent);
+    if (rv < 0) {
+        mmap_process_exit(c);
+        process_release(c);
+        return rv;
+    }
+    init_vdso(c);
+    process_fork_files(c, parent);
+
+    thread ct = create_thread(c, c->pid);
+    if (ct == INVALID_ADDRESS) {
+        process_teardown(c);
+        return -ENOMEM;
+    }
+    context_frame f = thread_frame(ct);
+    clone_frame_pstate(f, thread_frame(t));
+    thread_clone_sigmask(ct, t);
+    runtime_memcpy(ct->name, t->name, sizeof(ct->name));
+    ct->signal_stack = t->signal_stack;
+    ct->signal_stack_length = t->signal_stack_length;
+    set_syscall_return(ct, 0);
+    ct->syscall = 0;
+    f[FRAME_FULL] = true;
+    thread_reserve(ct);
+    schedule_thread(ct);
+    return c->pid;
+#else
+    return -ENOSYS;
+#endif
+}
+
+/* Runs once the last thread of a non-init process is gone. */
+void process_teardown(process p)
+{
+    assert(!process_is_init(p));
+    p->exiting = true;
+    unix_timers_process_exit(p);
+    aio_process_exit(p);
+    for (int fd = 0; fd < vector_length(p->files); fd++) {
+        process_lock(p);
+        fdesc f = vector_get(p->files, fd);
+        if (f) {
+            assert(vector_set(p->files, fd, 0));
+            deallocate_u64((heap)p->fdallocator, fd, 1);
+        }
+        process_unlock(p);
+        if (f)
+            fdesc_put(f);
+    }
+    mmap_process_exit(p);
+    process_release(p);
+}
+
+closure_function(1, 1, boolean, process_kill_thread,
+                 struct siginfo *, si,
+                 rbnode n)
+{
+    deliver_signal_to_thread(struct_from_field(n, thread, n), bound(si));
+    return true;
+}
+
+/* Every thread of the process exits at its next return to user mode. */
+void process_kill(process p)
+{
+    assert(!process_is_init(p));
+    struct siginfo si = { .si_signo = SIGKILL };
+    p->exiting = true;
+    spin_lock(&p->threads_lock);
+    rbtree_traverse(p->threads, RB_INORDER, stack_closure(process_kill_thread, &si));
+    spin_unlock(&p->threads_lock);
 }
 
 void process_get_cwd(process p, filesystem *cwd_fs, inode *cwd)
@@ -692,6 +849,8 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
 	return INVALID_ADDRESS;
 
     u_heap = uh;
+    list_init(&processes);
+    spin_lock_init(&processes_lock);
     init_address_spaces(h);
     mmap_init(root);
 #ifdef __x86_64__
@@ -786,18 +945,21 @@ void unix_shutdown(void)
 {
     heap h = heap_locked(get_kernel_heaps());
     /* Skip kernel unix process for shutdown */
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        process p = processes[i];
-        if (p == 0)
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (p->pid <= 1 || p->exiting)
             continue;
         struct siginfo *si = allocate_zero(h, sizeof(struct siginfo));
         if (si == INVALID_ADDRESS) {
+            spin_unlock(&processes_lock);
             kernel_shutdown(0);
             return;
         }
         si->si_signo = SIGTERM;
         deliver_signal_to_process(p, si);
     }
+    spin_unlock(&processes_lock);
     struct timer shutdown_timer = {0};
     init_timer(&shutdown_timer);
     timer_handler th = closure(h, shutdown_timeout, shutdown_timer);

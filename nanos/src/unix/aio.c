@@ -76,6 +76,7 @@ closure_func_basic(thunk, void, aio_free)
     address_space_unmap(aio->p->as, aio->user_ring, alloc_size);
     deallocate_u64((heap) heap_physical(aio->kh), aio->ring_phys, alloc_size);
     deallocate_u64(aio->p->virtual, aio->user_ring, alloc_size);
+    process_release(aio->p);
     deallocate(heap_locked(aio->kh), aio, sizeof(*aio));
 }
 
@@ -109,6 +110,7 @@ sysreturn io_setup(unsigned int nr_events, aio_context_t *ctx_idp)
     struct aio *aio = aio_alloc(current->p, kh, &ctx->id);
     assert(aio);
     aio->p = current->p;
+    process_reserve(aio->p);
     aio->ring = ctx;
     aio->user_ring = u64_from_pointer(user_ring);
     aio->ring_phys = phys;
@@ -467,4 +469,19 @@ sysreturn io_destroy(aio_context_t ctx_id)
     if (!aio)
         return -EINVAL;
     return io_destroy_internal(aio, current, false);
+}
+
+void aio_process_exit(process p)
+{
+    for (int id = 0; id < vector_length(p->aio); id++) {
+        process_lock(p);
+        struct aio *aio = vector_get(p->aio, id);
+        if (aio) {
+            assert(vector_set(p->aio, id, 0));
+            deallocate_u64((heap)p->aio_ids, id, 1);
+        }
+        process_unlock(p);
+        if (aio)
+            refcount_release(&aio->refcount);
+    }
 }

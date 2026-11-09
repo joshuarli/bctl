@@ -807,6 +807,42 @@ sysreturn alarm(unsigned int seconds)
 }
 #endif
 
+void unix_timers_process_exit(process p)
+{
+    for (int id = 0; id < vector_length(p->posix_timers); id++) {
+        process_lock(p);
+        unix_timer ut = vector_get(p->posix_timers, id);
+        if (ut) {
+            assert(vector_set(p->posix_timers, id, 0));
+            deallocate_u64((heap)p->posix_timer_ids, id, 1);
+        }
+        process_unlock(p);
+        if (!ut)
+            continue;
+        spin_lock(&ut->lock);
+        if (ut->info.posix.cputime_thread != INVALID_ADDRESS)
+            thread_release(ut->info.posix.cputime_thread);
+        if (ut->info.posix.recipient != INVALID_ADDRESS)
+            thread_release(ut->info.posix.recipient);
+        remove_unix_timer(ut);
+        spin_unlock(&ut->lock);
+        release_unix_timer(ut);
+    }
+    for (int which = 0; which < vector_length(p->itimers); which++) {
+        process_lock(p);
+        unix_timer ut = vector_get(p->itimers, which);
+        if (ut)
+            assert(vector_set(p->itimers, which, 0));
+        process_unlock(p);
+        if (!ut)
+            continue;
+        spin_lock(&ut->lock);
+        remove_unix_timer(ut);
+        spin_unlock(&ut->lock);
+        release_unix_timer(ut);
+    }
+}
+
 void register_timer_syscalls(struct syscall *map)
 {
 #ifdef __x86_64__

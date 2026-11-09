@@ -58,6 +58,7 @@ void pagecache_get_page(pagecache_node pn, u64 node_offset, u64 size, boolean pr
                         pagecache_page_handler handler);
 range pagecache_get_page_if_filled(pagecache_node pn, u64 node_offset, boolean private);
 void pagecache_release_page(pagecache_node pn, u64 node_offset);
+boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physical phys);
 
 void pagecache_node_unmap_pages(pagecache_node pn, address_space as, range v /* bytes */,
                                 u64 node_offset, boolean del_mappings);

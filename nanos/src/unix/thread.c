@@ -51,13 +51,15 @@ static sysreturn clone_internal(struct clone_args_internal *args)
      void *stack = args->stack;
      bytes stack_size = args->stack_size;
 
-     if (!stack_size)
-          return -EINVAL;
-
      if (!(flags & CLONE_THREAD)) {
-          msg_warn("clone: attempted to create new process");
+          if ((flags & ~CSIGNAL) == 0 && (flags & CSIGNAL) == SIGCHLD)
+               return fork_process(current);
+          msg_warn("clone: process creation with flags 0x%lx not supported", flags);
           return -ENOSYS;
      }
+
+     if (!stack_size)
+          return -EINVAL;
 
      if (!memory_is_user(stack, stack_size))
           return -EFAULT;
@@ -96,6 +98,13 @@ static sysreturn clone_internal(struct clone_args_internal *args)
      schedule_thread(t);
      return t->tid;
 }
+
+#ifdef __x86_64__
+sysreturn fork(void)
+{
+    return fork_process(current);
+}
+#endif
 
 #if defined(__x86_64__)
 sysreturn clone(unsigned long flags, void *child_stack, int *ptid, int *ctid, unsigned long newtls)
@@ -149,6 +158,7 @@ void register_thread_syscalls(struct syscall *map)
     register_syscall(map, clone3, clone3);
 #ifdef __x86_64__
     register_syscall(map, arch_prctl, arch_prctl);
+    register_syscall(map, fork, fork);
 #endif
     register_syscall(map, set_tid_address, set_tid_address);
     register_syscall(map, gettid, gettid);
@@ -174,7 +184,7 @@ void thread_log_internal(thread t, sstring desc, ...)
 #endif
 }
 
-static inline void check_stop_conditions(thread t)
+static inline boolean check_stop_conditions(thread t)
 {
     sstring cause;
     u64 pending = sigstate_get_pending(&t->signals);
@@ -195,8 +205,17 @@ static inline void check_stop_conditions(thread t)
         cause = is_sigkill ? ss("SIGKILL") : ss("SIGSTOP");
         goto terminate;
     }
-    return;
+    return false;
   terminate:
+    if (!process_is_init(t->p)) {
+        if (!t->p->exiting) {
+            rprintf("\nProcess abort: %s received by thread %d of pid %d\n\n", cause, t->tid,
+                    t->p->pid);
+            dump_context(&t->context);
+        }
+        process_kill(t->p);
+        return true;
+    }
     rprintf("\nProcess abort: %s received by thread %d\n\n", cause, t->tid);
     dump_context(&t->context);
     halt("Terminating.\n");
@@ -256,7 +275,14 @@ closure_func_basic(thunk, void, thread_return)
     use_fault_handler(t->context.fault_handler);
     dispatch_signals(t);
     current_cpu()->state = cpu_user;
-    check_stop_conditions(t);
+    if (check_stop_conditions(t)) {
+        clear_fault_handler();
+        process p = t->p;
+        if (exit_thread(t))
+            process_teardown(p);
+        thread_release(t);
+        runloop();
+    }
     // XXX fixme
     //ftrace_thread_switch(old, t);    /* ftrace needs to know about the switch event */
 
@@ -388,9 +414,11 @@ closure_func_basic(thunk, void, free_thread)
     deallocate_bitmap(t->task.affinity);
     /* XXX only free tids from non-leader threads. Leader threads will
      * need different handling */
-    if (t->p->pid != t->tid)
+    process p = t->p;
+    if (p->pid != t->tid)
         deallocate_u64((heap)get_unix_heaps()->processes, t->tid, 1);
     deallocate(heap_locked(get_kernel_heaps()), t, sizeof(struct thread));
+    process_release(p);
     /* TODO: Intentionally leaking tracelog_attrs; no accounting for attrs lifetime... */
 }
 
@@ -415,6 +443,7 @@ thread create_thread(process p, u64 tid)
         goto fail_bq;
 
     t->p = p;
+    process_reserve(p);
     t->context.as = p->as;
     t->syscall = 0;
     runtime_memcpy(&t->uh, p->uh, sizeof(*p->uh));
@@ -477,6 +506,7 @@ thread create_thread(process p, u64 tid)
 #endif
     return t;
   fail_affinity:
+    process_release(p);
     deallocate_blockq(t->thread_bq);
   fail_bq:
     destruct_context(&t->context);
@@ -488,10 +518,11 @@ thread create_thread(process p, u64 tid)
 }
 
 NOTRACE
-void exit_thread(thread t)
+boolean exit_thread(thread t)
 {
     spin_lock(&t->p->threads_lock);
     rbtree_remove_by_key(t->p->threads, &t->n);
+    boolean last = rbtree_get_count(t->p->threads) == 0;
     spin_unlock(&t->p->threads_lock);
 
     /* dequeue signals for thread */
@@ -513,6 +544,7 @@ void exit_thread(thread t)
     deallocate_blockq(t->thread_bq);
     t->thread_bq = INVALID_ADDRESS;
     thread_release(t);
+    return last;
 }
 
 closure_func_basic(rbnode_handler, boolean, tid_print_key,

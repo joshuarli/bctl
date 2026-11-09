@@ -2158,6 +2158,15 @@ range pagecache_get_page_if_filled(pagecache_node pn, u64 node_offset, boolean p
     return kvirt;
 }
 
+boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physical phys)
+{
+    pagecache_lock_node(pn);
+    pagecache_page pp = page_lookup_nodelocked(pn, node_offset >> pn->pv->pc->page_order);
+    boolean cached = (pp != INVALID_ADDRESS) && (pp->phys == (phys & ~MASK(pn->pv->pc->page_order)));
+    pagecache_unlock_node(pn);
+    return cached;
+}
+
 void pagecache_release_page(pagecache_node pn, u64 node_offset)
 {
     pagecache pc = pn->pv->pc;

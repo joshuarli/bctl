@@ -2153,6 +2153,11 @@ sysreturn getpid()
     return current->p->pid;
 }
 
+sysreturn getppid()
+{
+    return current->p->ppid;
+}
+
 sysreturn getuid()
 {
     return current->p->uid;
@@ -2168,22 +2173,29 @@ sysreturn sched_yield()
     thread_yield();             /* noreturn */
 }
 
+static void __attribute__((noreturn)) exit_current_thread(int code)
+{
+    process p = current->p;
+    if (exit_thread(current)) {
+        if (process_is_init(p))
+            kernel_shutdown(code);
+        process_teardown(p);
+    }
+    syscall_finish(true);
+}
+
 sysreturn exit_group(int status)
 {
-    kernel_shutdown(status);
+    process p = current->p;
+    if (process_is_init(p))
+        kernel_shutdown(status);
+    process_kill(p);
+    exit_current_thread(status);
 }
 
 void exit(int code)
 {
-    process p = current->p;
-    exit_thread(current);
-    spin_lock(&p->threads_lock);
-    int cnt = rbtree_get_count(p->threads);
-    spin_unlock(&p->threads_lock);
-    if (cnt == 0)
-        exit_group(code);
-    else
-        syscall_finish(true);
+    exit_current_thread(code);
 }
 
 sysreturn pipe2(int fds[2], int flags)
@@ -2342,6 +2354,13 @@ sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
         if (!copy_to_user((void *)arg2, current->name, sizeof(current->name)))
             return -EFAULT;
         break;
+    case PR_GET_DUMPABLE:
+        return current->p->dumpable;
+    case PR_SET_DUMPABLE:
+        if (arg2 > 1)
+            return -EINVAL;
+        current->p->dumpable = arg2;
+        break;
     }
 
     return 0;
@@ -2462,6 +2481,7 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, prlimit64, prlimit64);
     register_syscall(map, getrusage, getrusage);
     register_syscall(map, getpid, getpid);
+    register_syscall(map, getppid, getppid);
     register_syscall(map, exit_group, exit_group);
     register_syscall(map, exit, (sysreturn (*)())exit);
     register_syscall(map, getdents64, getdents64);

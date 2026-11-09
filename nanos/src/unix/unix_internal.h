@@ -100,7 +100,16 @@ typedef struct process *process;
 typedef struct thread *thread;
 
 thread create_thread(process, u64 tid);
-void exit_thread(thread);
+boolean exit_thread(thread);
+sysreturn fork_process(thread t);
+void process_kill(process p);
+boolean process_is_init(process p);
+void process_teardown(process p);
+void mmap_process_exit(process p);
+void mmap_process_free(process p);
+sysreturn mmap_process_fork(process child, process parent);
+void unix_timers_process_exit(process p);
+void aio_process_exit(process p);
 
 // Taken from the manual pages
 // License: http://man7.org/linux/man-pages/man2/getdents.2.license.html
@@ -518,6 +527,12 @@ struct syscall;
 typedef struct process {
     unix_heaps        uh;       /* non-thread-specific */
     int               pid;
+    int               ppid;
+    struct list       l;        /* live processes */
+    struct refcount   refcount; /* one for being alive, one per thread and aio context */
+    closure_struct(thunk, free);
+    boolean           exiting;
+    boolean           dumpable;
     u32               uid, gid;
     void             *brk;
     u64               heap_base;
@@ -567,6 +582,16 @@ static inline timestamp proc_cputime(process p)
 
 #define process_lock(p)     spin_lock(&(p)->lock)
 #define process_unlock(p)   spin_unlock(&(p)->lock)
+
+static inline void process_reserve(process p)
+{
+    refcount_reserve(&p->refcount);
+}
+
+static inline void process_release(process p)
+{
+    refcount_release(&p->refcount);
+}
 
 typedef struct sigaction *sigaction;
 
@@ -1027,6 +1052,8 @@ u64 fpreg_size(void);
 void fpreg_copy_out(void *b, thread t);
 
 /* Values to pass as first argument to prctl() */
+#define PR_GET_DUMPABLE 3
+#define PR_SET_DUMPABLE 4
 #define PR_SET_NAME    15               /* Set process name */
 #define PR_GET_NAME    16               /* Get process name */
 

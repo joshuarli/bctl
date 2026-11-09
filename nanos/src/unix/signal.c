@@ -1022,6 +1022,7 @@ closure_function(2, 2, void, coredump_shutdown_handler,
 {
     thread t = bound(t);
     struct siginfo *si = bound(si);
+    use_address_space(t->p->as);
     coredump(t, si, apply_merge(m));
     clear_fault_handler();
 }
@@ -1062,7 +1063,8 @@ static void default_signal_action(thread t, queued_signal qs)
     case SIGXFSZ:
         /* core dump */
         fate = ss("   core dump");
-        add_shutdown_completion(closure(h, coredump_shutdown_handler, t, &qs->si));
+        if (process_is_init(t->p))
+            add_shutdown_completion(closure(h, coredump_shutdown_handler, t, &qs->si));
         break;
 
     case SIGSTOP:
@@ -1074,6 +1076,12 @@ static void default_signal_action(thread t, queued_signal qs)
         break;
     default:
         /* ignore */
+        return;
+    }
+    if (!process_is_init(t->p)) {
+        if ((signum != SIGTERM) && (signum != SIGKILL) && !t->p->exiting)
+            dump_sig_info(t, qs);
+        process_kill(t->p);
         return;
     }
     if (signum != SIGTERM) {
