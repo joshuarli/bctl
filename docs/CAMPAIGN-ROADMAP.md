@@ -64,9 +64,20 @@ bring the selected tab to the front (a hidden tab stalls input); the binding
 never moves. N4 open: actions fail at once rather than waiting for
 actionability; popups an action opens are not reported; a `wait` holds the
 session's page lock; the lease is checked only at command start (N6).
-Next: N5 (batches and Rust API), N6 (authority), H1 (running); D2's
-acceptance on `ref-alpine-tinyland`.
-Resume: `implement N5 and N6 from docs/CAMPAIGN-ROADMAP.md`.
+N5 (`87a6c93`, `--test batches`): `bctl page batch`, the documented
+`bctl-automation` library with `examples/drive.rs`, and `docs/automation.md`.
+N6 (`774a538`, `--test authority` and the dashboard spec, 7/7): one in-memory
+`Automation | Yielding | Human` per session shared by native commands, the
+input lease, the CDP gateway, and run resume; a takeover ends a running
+`wait`, `goto`, or batch with `TAKEN_OVER`. M3N open: runs do not cooperate
+with a takeover (Grab and exec cannot pause without ending the attempt);
+a host program's own library connection is not interrupted; authority resets
+to Automation on daemon restart; native actions fail at once instead of
+waiting for actionability.
+Next: H1 (running); D2's acceptance on `ref-alpine-tinyland`; R1 (scratch
+rootfs); H3 (failure injection; includes the guest browser exiting on its
+last tab).
+Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
