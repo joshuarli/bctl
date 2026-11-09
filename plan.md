@@ -58,7 +58,7 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   completes (compare the native strace of the utility's channel with the
   Nanos trace); the owner's session maps `process_visible_pid` through
   `pid_nr_ns`.
-- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 PASS · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1–G3.4 accepted; process_visible_pid translation open) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
