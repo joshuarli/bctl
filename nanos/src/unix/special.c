@@ -150,51 +150,6 @@ static sysreturn mounts_read(file f, void *dest, u64 length, u64 offset)
     return length;
 }
 
-closure_function(1, 1, boolean, maps_handler,
-                 buffer, b,
-                 vmap map)
-{
-    buffer b = bound(b);
-
-    /* All mappings are assumed to be readable and private; offset, device and
-     * inode are unknown. */
-    bprintf(b, "%016lx-%016lx r%c%cp 00000000 00:00 0", map->node.r.start,
-            map->node.r.end, (map->flags & VMAP_FLAG_WRITABLE) ? 'w' : '-',
-            (map->flags & VMAP_FLAG_EXEC) ? 'x' : '-');
-
-    /* File path is unknown; only stack and heap pseudo-paths are known. */
-    if (map == current->p->vm->stack_map) {
-        buffer_write_cstring(b, "\t[stack]");
-    } else if (map == current->p->vm->heap_map) {
-        buffer_write_cstring(b, "\t[heap]");
-    }
-
-    buffer_write_cstring(b, "\n");
-    return true;
-}
-
-static sysreturn maps_read(file f, void *dest, u64 length, u64 offset)
-{
-    heap h = heap_locked(get_kernel_heaps());
-    buffer b = allocate_buffer(h, 512);
-    if (b == INVALID_ADDRESS) {
-        return -ENOMEM;
-    }
-    vmap_iterator(current->p, stack_closure(maps_handler, b));
-    context ctx = get_current_context(current_cpu());
-    if (!context_set_err(ctx))
-        length = buffer_read_at(b, offset, dest, length);
-    else
-        length = -EFAULT;
-    deallocate_buffer(b);
-    return length;
-}
-
-static u32 maps_events(file f)
-{
-    return EPOLLIN;
-}
-
 static sysreturn cpu_online_read(file f, void *dest, u64 length, u64 offset)
 {
     buffer b = little_stack_buffer(16);
@@ -252,7 +207,6 @@ static const special_file special_files[] = {
     { ss_static_init("/proc/mounts"), .open = mounts_open, .close = mounts_close,
       .read = mounts_read, .events = mounts_events,
       .alloc_size = sizeof(struct mounts_notify_data)},
-    { ss_static_init("/proc/self/maps"), .read = maps_read, .events = maps_events, },
     { ss_static_init("/sys/devices/system/cpu/online"), .read = cpu_online_read,
       .write = null_write, .events = cpu_online_events },
     FTRACE_SPECIAL_FILES
@@ -389,38 +343,21 @@ boolean create_special_file(sstring path, spec_file_open open, u64 size, u64 rde
 
 void register_special_files(process p)
 {
-    filesystem fs = p->root_fs;
-    sstring self_exe_path = ss("/proc/self/exe");
-    tuple self_exe;
     heap h = heap_locked(get_kernel_heaps());
+    sstring proc_prefix = ss("/proc/");
 
-    int fss = filesystem_get_node(&fs, p->cwd, self_exe_path, FS_NODE_FOLLOW,
-                                  &self_exe, 0, 0);
-    if (fss == 0) {
-        filesystem_put_node(fs, self_exe);
-    } else {
-        fss = filesystem_mkdirpath(p->root_fs, 0, ss("/proc/self"), true);
-        if ((fss == 0) || (fss == -EEXIST)) {
-            value program = get(p->process_root, sym(program));
-            assert(program);
-            buffer b = allocate_buffer(h, buffer_length(program) + 1);
-            assert(b != INVALID_ADDRESS);
-            /* glibc expects exe path to be absolute */
-            if (peek_char(program) != '/')
-                assert(buffer_write_byte(b, '/'));
-            assert(push_buffer(b, program));
-            filesystem_symlink(p->cwd_fs, p->cwd, self_exe_path, buffer_to_sstring(b));
-            deallocate_buffer(b);
-        }
-    }
-
+    procfs_init(p->root_fs);
     for (int i = 0; i < sizeof(special_files) / sizeof(special_files[0]); i++) {
         const special_file *sf = special_files + i;
-
-        /* create special file */
         spec_file_open open = closure(h, special_open, sf);
         assert(open != INVALID_ADDRESS);
-        assert(create_special_file(sf->path, open, sf->alloc_size, 0));
+        if ((sf->path.len > proc_prefix.len) &&
+            !runtime_memcmp(sf->path.ptr, proc_prefix.ptr, proc_prefix.len)) {
+            sstring name = isstring(sf->path.ptr + proc_prefix.len, sf->path.len - proc_prefix.len);
+            assert(procfs_add_static(name, open, sf->alloc_size));
+        } else {
+            assert(create_special_file(sf->path, open, sf->alloc_size, 0));
+        }
     }
 
     filesystem_mkdirpath(p->root_fs, 0, ss("/sys/devices/system/cpu/cpu0"), false);

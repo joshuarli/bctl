@@ -33,6 +33,8 @@ static struct {
     struct spinlock lock;
     u64 mount_generation;
     vector mounts_watchers;
+    tuple procfs_root;
+    inode procfs_mount_dir;
 } storage;
 
 #define storage_lock()      u64 _irqflags = spin_lock_irq(&storage.lock)
@@ -220,6 +222,8 @@ void init_volumes(heap h)
     storage.mount_complete = 0;
     spin_lock_init(&storage.lock);
     storage.mount_generation = 0;
+    storage.procfs_root = 0;
+    storage.procfs_mount_dir = 0;
     storage.mounts_watchers = allocate_vector(h, 1);
     assert(storage.mounts_watchers != INVALID_ADDRESS);
 }
@@ -351,6 +355,14 @@ filesystem storage_get_fs(tuple root)
     return fs;
 }
 
+void storage_set_procfs_mount(tuple root, inode mount_dir)
+{
+    storage_lock();
+    storage.procfs_root = root;
+    storage.procfs_mount_dir = mount_dir;
+    storage_unlock();
+}
+
 inode storage_get_mountpoint(tuple root, filesystem *fs)
 {
     inode mount_dir;
@@ -358,6 +370,9 @@ inode storage_get_mountpoint(tuple root, filesystem *fs)
     volume v = storage_get_volume(root);
     if (v) {
         mount_dir = v->mount_dir;
+        *fs = storage.root_fs;
+    } else if (root && (root == storage.procfs_root)) {
+        mount_dir = storage.procfs_mount_dir;
         *fs = storage.root_fs;
     } else {
         mount_dir = 0;

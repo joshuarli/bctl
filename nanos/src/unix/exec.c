@@ -179,10 +179,10 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
         {AT_BASE, interp_load_addr},
         {AT_FLAGS, 0},
         {AT_ENTRY, u64_from_pointer(start)},
-        {AT_UID, p->uid},
-        {AT_EUID, p->uid},
-        {AT_GID, p->gid},
-        {AT_EGID, p->gid},
+        {AT_UID, p->creds.uid},
+        {AT_EUID, p->creds.euid},
+        {AT_GID, p->creds.gid},
+        {AT_EGID, p->creds.egid},
         {AT_RANDOM, u64_from_pointer(randbuf)},
         {AT_EXECFN, u64_from_pointer(execfn)},
 #ifdef __aarch64__
@@ -1069,6 +1069,7 @@ static boolean exec_replace_image(thread t, exec_image img, exec_image interp, e
         vm->interp = interp->f;
         interp->f = 0;
     }
+    creds_exec(p);
     build_exec_stack(p, t, e, entry, load_range.start, interp_base, aslr, args);
 
     fdtable fdt = fdtable_copy(p->fdtable);

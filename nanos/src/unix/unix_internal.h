@@ -194,6 +194,29 @@ typedef struct user_cap_data {
     u32 inheritable;
 } *cap_user_data_t;
 
+#define _LINUX_CAPABILITY_VERSION_1 0x19980330
+#define _LINUX_CAPABILITY_VERSION_2 0x20071026
+#define _LINUX_CAPABILITY_VERSION_3 0x20080522
+
+#define CAP_KILL        5
+#define CAP_SETGID      6
+#define CAP_SETUID      7
+#define CAP_SETPCAP     8
+#define CAP_SYS_PTRACE  19
+#define CAP_SYS_RESOURCE 24
+#define CAP_LAST_CAP    40
+#define CAP_FULL_SET    ((1ull << (CAP_LAST_CAP + 1)) - 1)
+
+#define NGROUPS_MAX     65536
+
+struct creds {
+    u32 uid, euid, suid, fsuid;
+    u32 gid, egid, sgid, fsgid;
+    u32 ngroups;
+    u32 *groups;
+    u64 cap_inheritable, cap_permitted, cap_effective, cap_bset, cap_ambient;
+};
+
 /* unix-specific memory objects and ids */
 typedef struct unix_heaps {
     /* object caches */
@@ -609,7 +632,10 @@ typedef struct process {
     thread            vfork_waiter;
     boolean           exiting;
     boolean           dumpable;
-    u32               uid, gid;
+    boolean           no_new_privs;
+    int               ptracer;
+    int               pdeathsig;
+    struct creds      creds;
     process_vm        vm;
     fdtable           fdtable;
     filesystem        root_fs;
@@ -963,6 +989,7 @@ boolean unix_timers_init(unix_heaps uh);
 
 extern sysreturn syscall_ignore();
 sysreturn getgid();
+sysreturn getegid();
 status do_demand_page(process p, context ctx, u64 vaddr, vmap vm, boolean *done);
 void demand_page_done(context ctx, u64 vaddr, status s);
 vmap vmap_from_vaddr(process p, u64 vaddr);
@@ -1163,6 +1190,14 @@ typedef struct special_file_wrapper {
 closure_type(spec_file_open, sysreturn, file f);
 
 void register_special_files(process p);
+void procfs_init(filesystem root_fs);
+boolean procfs_add_static(sstring name, spec_file_open open, u64 alloc_size);
+boolean procfs_fd_link(tuple n, int *pid, int *fd);
+sysreturn procfs_fd_open(int pid, int fd, int flags);
+sysreturn procfs_fd_stat(int pid, int fd, struct stat *s);
+sysreturn procfs_fd_readlink(int pid, int fd, buffer b);
+sysreturn fdesc_stat(fdesc f, struct stat *s);
+void process_list_pids(vector pids);
 boolean create_special_file(sstring path, spec_file_open open, u64 size, u64 rdev);
 sysreturn spec_open(file f, tuple t);
 file spec_allocate(tuple t);
@@ -1173,11 +1208,30 @@ void reg_copy_out(struct core_regs *r, thread t);
 u64 fpreg_size(void);
 void fpreg_copy_out(void *b, thread t);
 
-/* Values to pass as first argument to prctl() */
-#define PR_GET_DUMPABLE 3
-#define PR_SET_DUMPABLE 4
-#define PR_SET_NAME    15               /* Set process name */
-#define PR_GET_NAME    16               /* Get process name */
+#define PR_SET_PDEATHSIG            1
+#define PR_GET_PDEATHSIG            2
+#define PR_GET_DUMPABLE             3
+#define PR_SET_DUMPABLE             4
+#define PR_SET_NAME                 15
+#define PR_GET_NAME                 16
+#define PR_GET_SECCOMP              21
+#define PR_SET_SECCOMP              22
+#define PR_CAPBSET_READ             23
+#define PR_CAPBSET_DROP             24
+#define PR_SET_NO_NEW_PRIVS         38
+#define PR_GET_NO_NEW_PRIVS         39
+#define PR_GET_SPECULATION_CTRL     52
+#define PR_SET_SPECULATION_CTRL     53
+#define PR_SET_VMA                  0x53564d41
+#define PR_SET_PTRACER              0x59616d61
+#define PR_SET_PTRACER_ANY          (-1ul)
+
+boolean creds_init(struct creds *c, u32 uid, u32 gid);
+boolean creds_copy(struct creds *dst, struct creds *src);
+void creds_free(struct creds *c);
+void creds_snapshot(process p, struct creds *c);
+boolean capable(process p, int cap);
+void creds_exec(process p);
 
 /* getrandom(2) flags */
 #define GRND_NONBLOCK               1

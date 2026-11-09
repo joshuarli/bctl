@@ -105,6 +105,7 @@ void storage_sync(status_handler sh);
 
 struct filesystem *storage_get_fs(tuple root);
 u64 storage_get_mountpoint(tuple root, struct filesystem **fs);
+void storage_set_procfs_mount(tuple root, u64 mount_dir);
 
 closure_type(volume_handler, void, u8 *uuid, sstring label, struct filesystem *fs, u64 mount_dir);
 void storage_iterate(volume_handler vh);

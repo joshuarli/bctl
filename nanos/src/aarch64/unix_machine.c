@@ -170,7 +170,7 @@ void register_other_syscalls(struct syscall *map)
     register_syscall(map, fchmod, syscall_ignore);
     register_syscall(map, fchown, syscall_ignore);
     register_syscall(map, getgid, getgid);
-    register_syscall(map, getegid, getgid);
+    register_syscall(map, getegid, getegid);
     register_syscall(map, mlock, syscall_ignore);
     register_syscall(map, munlock, syscall_ignore);
     register_syscall(map, mlockall, syscall_ignore);

@@ -295,7 +295,7 @@ void raise_sigpipe(context writer)
     struct siginfo si;
     init_siginfo(&si, SIGPIPE, SI_USER);
     si.sifields.kill.pid = t->p->pid;
-    si.sifields.kill.uid = t->p->uid;
+    si.sifields.kill.uid = t->p->creds.uid;
     deliver_signal_to_thread(t, &si);
 }
 
@@ -646,7 +646,7 @@ sysreturn kill(int pid, int sig)
     struct siginfo si;
     init_siginfo(&si, sig, SI_USER);
     si.sifields.kill.pid = p->pid;
-    si.sifields.kill.uid = p->uid;
+    si.sifields.kill.uid = p->creds.uid;
     return process_signal(p, pid, &si);
 }
 

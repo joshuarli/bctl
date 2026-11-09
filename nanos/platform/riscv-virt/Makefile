@@ -69,6 +69,7 @@ SRCS-kernel.elf= \
 	$(SRCDIR)/unix/netlink.c \
 	$(SRCDIR)/unix/notify.c \
 	$(SRCDIR)/unix/poll.c \
+	$(SRCDIR)/unix/procfs.c \
 	$(SRCDIR)/unix/signal.c \
 	$(SRCDIR)/unix/socket.c \
 	$(SRCDIR)/unix/special.c \

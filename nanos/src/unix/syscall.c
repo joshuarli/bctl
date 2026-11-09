@@ -757,7 +757,7 @@ int file_type_from_tuple(tuple n)
 {
     if (is_dir(n))
         return FDESC_TYPE_DIRECTORY;
-    else if (is_symlink(n))
+    else if (is_symlink(n) || get(n, sym(procfd)))
         return FDESC_TYPE_SYMLINK;
     else if (is_special(n))
         return FDESC_TYPE_SPECIAL;
@@ -771,7 +771,7 @@ static int dt_from_tuple(tuple n)
 {
     if (is_dir(n))
         return DT_DIR;
-    else if (is_symlink(n))
+    else if (is_symlink(n) || get(n, sym(procfd)))
         return DT_LNK;
     else if (is_socket(n))
         return DT_SOCK;
@@ -914,6 +914,13 @@ sysreturn open_internal(filesystem fs, inode cwd, sstring name, int flags,
     ret = filesystem_get_node(&fs, cwd, name, fs_flags, &n, &parent, &fsf);
     if (ret == -EFAULT)
         return ret;
+    int proc_pid, proc_fd;
+    if ((ret == 0) && !(flags & O_PATH) && procfs_fd_link(n, &proc_pid, &proc_fd)) {
+        filesystem_put_node(fs, n);
+        if (fsf)
+            fsfile_release(fsf);
+        return set_syscall_return(current, procfs_fd_open(proc_pid, proc_fd, flags));
+    }
     if ((ret == 0) && (flags & O_NOFOLLOW) && is_symlink(n) && !(flags & O_PATH)) {
         filesystem_put_node(fs, n);
         ret = -ELOOP;
@@ -1525,8 +1532,10 @@ static void fill_stat(int type, filesystem fs, fsfile f, tuple n, struct stat *s
     zero(s, sizeof(struct stat));
     s->st_mode = stat_mode(current->p, type, n);
 
-    s->st_uid = current->p->uid;
-    s->st_gid = current->p->gid;
+    struct creds c;
+    creds_snapshot(current->p, &c);
+    s->st_uid = c.fsuid;
+    s->st_gid = c.fsgid;
     switch (type) {
     case FDESC_TYPE_REGULAR:
         if (f) {
@@ -1544,10 +1553,14 @@ static void fill_stat(int type, filesystem fs, fsfile f, tuple n, struct stat *s
         s->st_rdev = filesystem_get_rdev(fs, n);
         break;
     case FDESC_TYPE_SYMLINK:
-        s->st_size = buffer_length(linktarget(n));
+        if (n && linktarget(n))
+            s->st_size = buffer_length(linktarget(n));
         break;
     }
     if (n) {
+        u64 nlink;
+        if (get_u64(n, sym(nlink), &nlink))
+            s->st_nlink = nlink;
         s->st_ino = fs->get_inode(fs, n);
         struct timespec ts;
         timespec_from_time(&ts, filesystem_get_atime(fs, n));
@@ -1559,17 +1572,11 @@ static void fill_stat(int type, filesystem fs, fsfile f, tuple n, struct stat *s
     }
 }
 
-static sysreturn fstat(int fd, struct stat *s)
+sysreturn fdesc_stat(fdesc f, struct stat *s)
 {
-    fdesc f = resolve_fd(current->p, fd);
     filesystem fs;
     tuple n;
     fsfile fsf = 0;
-    sysreturn rv = 0;
-    if (!fault_in_user_memory(s, sizeof(struct stat), true)) {
-        rv = -EFAULT;
-        goto out;
-    }
     switch (f->type) {
     case FDESC_TYPE_REGULAR:
         fsf = ((file)f)->fsf;
@@ -1588,7 +1595,13 @@ static sysreturn fstat(int fd, struct stat *s)
     fill_stat(f->type, fs, fsf, n, s);
     if (n)
         filesystem_put_meta(fs, n);
-  out:
+    return 0;
+}
+
+static sysreturn fstat(int fd, struct stat *s)
+{
+    fdesc f = resolve_fd(current->p, fd);
+    sysreturn rv = fault_in_user_memory(s, sizeof(struct stat), true) ? fdesc_stat(f, s) : -EFAULT;
     fdesc_put(f);
     return rv;
 }
@@ -1606,6 +1619,13 @@ static sysreturn stat_internal(filesystem fs, inode cwd, sstring name, boolean f
     if (fss != 0)
         return fss;
 
+    int pid, fd;
+    if (follow && procfs_fd_link(n, &pid, &fd)) {
+        filesystem_put_node(fs, n);
+        if (fsf)
+            fsfile_release(fsf);
+        return procfs_fd_stat(pid, fd, buf);
+    }
     fill_stat(file_type_from_tuple(n), fs, fsf, n, buf);
     filesystem_put_node(fs, n);
     if (fsf)
@@ -1766,7 +1786,7 @@ sysreturn setrlimit(int resource, const struct rlimit *rlim)
     case RLIMIT_NPROC:
         if (rlim->rlim_cur > rlim->rlim_max)
             rv = -EINVAL;
-        else if ((rlim->rlim_max > p->rlimit_nproc_max) && (p->uid != 0))
+        else if ((rlim->rlim_max > p->rlimit_nproc_max) && !capable(p, CAP_SYS_RESOURCE))
             rv = -EPERM;
         else {
             p->rlimit_nproc_cur = rlim->rlim_cur;
@@ -1912,6 +1932,20 @@ static sysreturn readlink_internal(filesystem fs, inode cwd, sstring pathname, c
     if (fss != 0)
         return fss;
     sysreturn rv;
+    int pid, fd;
+    if (procfs_fd_link(n, &pid, &fd)) {
+        filesystem_put_node(fs, n);
+        buffer target = allocate_buffer(heap_locked(get_kernel_heaps()), 64);
+        if (target == INVALID_ADDRESS)
+            return -ENOMEM;
+        rv = procfs_fd_readlink(pid, fd, target);
+        if (rv == 0) {
+            rv = MIN(bufsiz, buffer_length(target));
+            runtime_memcpy(buf, buffer_ref(target, 0), rv);
+        }
+        deallocate_buffer(target);
+        return rv;
+    }
     if (is_symlink(n)) {
         buffer target = linktarget(n);
         bytes len = buffer_length(target);
@@ -2204,14 +2238,335 @@ sysreturn getppid()
     return process_getppid(current->p);
 }
 
+#define CAP_FS_SET ((1ull << 0) | (1ull << 1) | (1ull << 2) | (1ull << 3) | (1ull << 4) | \
+                    (1ull << 9) | (1ull << 27) | (1ull << 32))
+
+boolean creds_init(struct creds *c, u32 uid, u32 gid)
+{
+    zero(c, sizeof(*c));
+    c->uid = c->euid = c->suid = c->fsuid = uid;
+    c->gid = c->egid = c->sgid = c->fsgid = gid;
+    c->cap_bset = CAP_FULL_SET;
+    if (uid == 0)
+        c->cap_permitted = c->cap_effective = CAP_FULL_SET;
+    return true;
+}
+
+boolean creds_copy(struct creds *dst, struct creds *src)
+{
+    *dst = *src;
+    if (!src->ngroups)
+        return true;
+    u64 size = src->ngroups * sizeof(u32);
+    dst->groups = allocate(heap_locked(get_kernel_heaps()), size);
+    if (dst->groups == INVALID_ADDRESS) {
+        dst->groups = 0;
+        dst->ngroups = 0;
+        return false;
+    }
+    runtime_memcpy(dst->groups, src->groups, size);
+    return true;
+}
+
+void creds_free(struct creds *c)
+{
+    if (c->ngroups)
+        deallocate(heap_locked(get_kernel_heaps()), c->groups, c->ngroups * sizeof(u32));
+    c->groups = 0;
+    c->ngroups = 0;
+}
+
+void creds_snapshot(process p, struct creds *c)
+{
+    process_lock(p);
+    *c = p->creds;
+    process_unlock(p);
+    c->groups = 0;
+}
+
+boolean capable(process p, int cap)
+{
+    process_lock(p);
+    boolean r = !!(p->creds.cap_effective & (1ull << cap));
+    process_unlock(p);
+    return r;
+}
+
+static void creds_fix_caps_locked(struct creds *c, u32 old_uid, u32 old_euid, u32 old_suid,
+                                  u32 old_fsuid)
+{
+    if ((old_uid == 0 || old_euid == 0 || old_suid == 0) &&
+        (c->uid != 0 && c->euid != 0 && c->suid != 0)) {
+        c->cap_permitted = c->cap_effective = c->cap_ambient = 0;
+    }
+    if (old_euid == 0 && c->euid != 0)
+        c->cap_effective = 0;
+    if (old_euid != 0 && c->euid == 0)
+        c->cap_effective = c->cap_permitted;
+    if (old_fsuid == 0 && c->fsuid != 0)
+        c->cap_effective &= ~CAP_FS_SET;
+    if (old_fsuid != 0 && c->fsuid == 0)
+        c->cap_effective |= c->cap_permitted & CAP_FS_SET;
+}
+
+void creds_exec(process p)
+{
+    process_lock(p);
+    struct creds *c = &p->creds;
+    u64 old_permitted = c->cap_permitted;
+    u64 permitted, effective;
+    if (c->uid == 0 || c->euid == 0) {
+        permitted = c->cap_bset | (c->cap_inheritable & c->cap_bset);
+        effective = (c->euid == 0) ? permitted : 0;
+        c->cap_ambient = 0;
+    } else {
+        permitted = effective = c->cap_ambient;
+    }
+    if (p->no_new_privs && (permitted & ~old_permitted)) {
+        permitted &= old_permitted;
+        effective &= permitted;
+    }
+    c->cap_permitted = permitted;
+    c->cap_effective = effective;
+    c->suid = c->fsuid = c->euid;
+    c->sgid = c->fsgid = c->egid;
+    process_unlock(p);
+}
+
+static inline boolean id_in(u32 id, u32 a, u32 b, u32 c)
+{
+    return id == a || id == b || id == c;
+}
+
 sysreturn getuid()
 {
-    return current->p->uid;
+    process p = current->p;
+    process_lock(p);
+    u32 id = p->creds.uid;
+    process_unlock(p);
+    return id;
+}
+
+sysreturn geteuid()
+{
+    process p = current->p;
+    process_lock(p);
+    u32 id = p->creds.euid;
+    process_unlock(p);
+    return id;
 }
 
 sysreturn getgid()
 {
-    return current->p->gid;
+    process p = current->p;
+    process_lock(p);
+    u32 id = p->creds.gid;
+    process_unlock(p);
+    return id;
+}
+
+sysreturn getegid()
+{
+    process p = current->p;
+    process_lock(p);
+    u32 id = p->creds.egid;
+    process_unlock(p);
+    return id;
+}
+
+static sysreturn getres_ids(u32 *ruid, u32 *euid, u32 *suid, boolean group)
+{
+    struct creds c;
+    creds_snapshot(current->p, &c);
+    u32 r = group ? c.gid : c.uid, e = group ? c.egid : c.euid, s = group ? c.sgid : c.suid;
+    if (!copy_to_user(ruid, &r, sizeof(r)) || !copy_to_user(euid, &e, sizeof(e)) ||
+        !copy_to_user(suid, &s, sizeof(s)))
+        return -EFAULT;
+    return 0;
+}
+
+static sysreturn getresuid(u32 *ruid, u32 *euid, u32 *suid)
+{
+    return getres_ids(ruid, euid, suid, false);
+}
+
+static sysreturn getresgid(u32 *rgid, u32 *egid, u32 *sgid)
+{
+    return getres_ids(rgid, egid, sgid, true);
+}
+
+static sysreturn set_ids(u32 nr, u32 ne, u32 ns, boolean is_setre, boolean group)
+{
+    process p = current->p;
+    boolean priv = capable(p, group ? CAP_SETGID : CAP_SETUID);
+    process_lock(p);
+    struct creds *c = &p->creds;
+    u32 *r = group ? &c->gid : &c->uid, *e = group ? &c->egid : &c->euid;
+    u32 *s = group ? &c->sgid : &c->suid, *fs = group ? &c->fsgid : &c->fsuid;
+    if (!priv) {
+        boolean ok;
+        if (is_setre)
+            ok = (nr == -1 || nr == *r || nr == *e) && (ne == -1 || id_in(ne, *r, *e, *s));
+        else
+            ok = (nr == -1 || id_in(nr, *r, *e, *s)) && (ne == -1 || id_in(ne, *r, *e, *s)) &&
+                 (ns == -1 || id_in(ns, *r, *e, *s));
+        if (!ok) {
+            process_unlock(p);
+            return -EPERM;
+        }
+    }
+    u32 old_uid = c->uid, old_euid = c->euid, old_suid = c->suid, old_fsuid = c->fsuid;
+    u32 old_r = *r;
+    if (nr != -1)
+        *r = nr;
+    if (ne != -1)
+        *e = ne;
+    if (is_setre) {
+        if (nr != -1 || (ne != -1 && ne != old_r))
+            *s = *e;
+    } else if (ns != -1) {
+        *s = ns;
+    }
+    *fs = *e;
+    if (!group)
+        creds_fix_caps_locked(c, old_uid, old_euid, old_suid, old_fsuid);
+    process_unlock(p);
+    return 0;
+}
+
+static sysreturn set_id(u32 id, boolean group)
+{
+    if (id == -1)
+        return -EINVAL;
+    process p = current->p;
+    if (capable(p, group ? CAP_SETGID : CAP_SETUID))
+        return set_ids(id, id, id, false, group);
+    struct creds c;
+    creds_snapshot(p, &c);
+    if (id != (group ? c.gid : c.uid) && id != (group ? c.sgid : c.suid))
+        return -EPERM;
+    return set_ids(-1, id, -1, false, group);
+}
+
+static sysreturn setuid(u32 uid)
+{
+    return set_id(uid, false);
+}
+
+static sysreturn setgid(u32 gid)
+{
+    return set_id(gid, true);
+}
+
+static sysreturn setreuid(u32 ruid, u32 euid)
+{
+    return set_ids(ruid, euid, -1, true, false);
+}
+
+static sysreturn setregid(u32 rgid, u32 egid)
+{
+    return set_ids(rgid, egid, -1, true, true);
+}
+
+static sysreturn setresuid(u32 ruid, u32 euid, u32 suid)
+{
+    return set_ids(ruid, euid, suid, false, false);
+}
+
+static sysreturn setresgid(u32 rgid, u32 egid, u32 sgid)
+{
+    return set_ids(rgid, egid, sgid, false, true);
+}
+
+static sysreturn set_fsid(u32 id, boolean group)
+{
+    process p = current->p;
+    boolean priv = capable(p, group ? CAP_SETGID : CAP_SETUID);
+    process_lock(p);
+    struct creds *c = &p->creds;
+    u32 *fs = group ? &c->fsgid : &c->fsuid;
+    u32 old = *fs;
+    if (id != -1 && (priv || id_in(id, group ? c->gid : c->uid, group ? c->egid : c->euid,
+                                   group ? c->sgid : c->suid) || id == old)) {
+        *fs = id;
+        if (!group)
+            creds_fix_caps_locked(c, c->uid, c->euid, c->suid, old);
+    }
+    process_unlock(p);
+    return old;
+}
+
+static sysreturn setfsuid(u32 fsuid)
+{
+    return set_fsid(fsuid, false);
+}
+
+static sysreturn setfsgid(u32 fsgid)
+{
+    return set_fsid(fsgid, true);
+}
+
+static sysreturn getgroups(int size, u32 *list)
+{
+    if (size < 0)
+        return -EINVAL;
+    process p = current->p;
+    heap h = heap_locked(get_kernel_heaps());
+    process_lock(p);
+    u32 n = p->creds.ngroups;
+    if (size == 0 || n == 0) {
+        process_unlock(p);
+        return n;
+    }
+    if (size < n) {
+        process_unlock(p);
+        return -EINVAL;
+    }
+    u32 *copy = allocate(h, n * sizeof(u32));
+    if (copy == INVALID_ADDRESS) {
+        process_unlock(p);
+        return -ENOMEM;
+    }
+    runtime_memcpy(copy, p->creds.groups, n * sizeof(u32));
+    process_unlock(p);
+    sysreturn rv = copy_to_user(list, copy, n * sizeof(u32)) ? n : -EFAULT;
+    deallocate(h, copy, n * sizeof(u32));
+    return rv;
+}
+
+static sysreturn setgroups(int size, const u32 *list)
+{
+    if (size < 0 || size > NGROUPS_MAX)
+        return -EINVAL;
+    process p = current->p;
+    if (!capable(p, CAP_SETGID))
+        return -EPERM;
+    heap h = heap_locked(get_kernel_heaps());
+    u32 *groups = 0;
+    if (size) {
+        groups = allocate(h, size * sizeof(u32));
+        if (groups == INVALID_ADDRESS)
+            return -ENOMEM;
+        if (!copy_from_user(list, groups, size * sizeof(u32))) {
+            deallocate(h, groups, size * sizeof(u32));
+            return -EFAULT;
+        }
+        for (int i = 1; i < size; i++)
+            for (int j = i; j > 0 && groups[j - 1] > groups[j]; j--) {
+                u32 tmp = groups[j];
+                groups[j] = groups[j - 1];
+                groups[j - 1] = tmp;
+            }
+    }
+    process_lock(p);
+    u32 *old = p->creds.groups;
+    u32 old_n = p->creds.ngroups;
+    p->creds.groups = groups;
+    p->creds.ngroups = size;
+    process_unlock(p);
+    if (old_n)
+        deallocate(h, old, old_n * sizeof(u32));
+    return 0;
 }
 
 sysreturn sched_yield()
@@ -2352,16 +2707,91 @@ sysreturn sched_getaffinity(int pid, u64 cpusetsize, u64 *mask)
     return cpusetsize;
 }
 
-sysreturn capget(cap_user_header_t hdrp, cap_user_data_t datap)
+static sysreturn cap_header(cap_user_header_t hdrp, int *copies, int *pid)
 {
-    if (datap) {
-        context ctx = get_current_context(current_cpu());
-        if (!memory_is_user(datap, sizeof(struct user_cap_data)) ||
-            context_set_err(ctx))
+    struct user_cap_header hdr;
+    if (!copy_from_user(hdrp, &hdr, sizeof(hdr)))
+        return -EFAULT;
+    switch (hdr.version) {
+    case _LINUX_CAPABILITY_VERSION_1:
+        *copies = 1;
+        break;
+    case _LINUX_CAPABILITY_VERSION_2:
+    case _LINUX_CAPABILITY_VERSION_3:
+        *copies = 2;
+        break;
+    default:
+        hdr.version = _LINUX_CAPABILITY_VERSION_3;
+        if (!copy_to_user(&hdrp->version, &hdr.version, sizeof(hdr.version)))
             return -EFAULT;
-        zero(datap, sizeof(*datap));
-        context_clear_err(ctx);
+        return -EINVAL;
     }
+    *pid = hdr.pid;
+    return 0;
+}
+
+static sysreturn capget(cap_user_header_t hdrp, cap_user_data_t datap)
+{
+    int copies, pid;
+    sysreturn rv = cap_header(hdrp, &copies, &pid);
+    if (!datap)
+        return (rv == -EINVAL) ? 0 : rv;
+    if (rv)
+        return rv;
+    if (pid < 0)
+        return -EINVAL;
+    process p = current->p;
+    struct creds c;
+    if (pid == 0 || pid == p->pid) {
+        creds_snapshot(p, &c);
+    } else {
+        process target = process_get(pid);
+        if (!target)
+            return -ESRCH;
+        creds_snapshot(target, &c);
+        process_release(target);
+    }
+    struct user_cap_data data[2];
+    for (int i = 0; i < 2; i++) {
+        data[i].effective = c.cap_effective >> (32 * i);
+        data[i].permitted = c.cap_permitted >> (32 * i);
+        data[i].inheritable = c.cap_inheritable >> (32 * i);
+    }
+    if (!copy_to_user(datap, data, copies * sizeof(data[0])))
+        return -EFAULT;
+    return 0;
+}
+
+static sysreturn capset(cap_user_header_t hdrp, const cap_user_data_t datap)
+{
+    int copies, pid;
+    sysreturn rv = cap_header(hdrp, &copies, &pid);
+    if (rv)
+        return rv;
+    process p = current->p;
+    if (pid != 0 && pid != p->pid)
+        return -EPERM;
+    struct user_cap_data data[2];
+    zero(data, sizeof(data));
+    if (!copy_from_user(datap, data, copies * sizeof(data[0])))
+        return -EFAULT;
+    u64 effective = (data[0].effective | ((u64)data[1].effective << 32)) & CAP_FULL_SET;
+    u64 permitted = (data[0].permitted | ((u64)data[1].permitted << 32)) & CAP_FULL_SET;
+    u64 inheritable = (data[0].inheritable | ((u64)data[1].inheritable << 32)) & CAP_FULL_SET;
+    process_lock(p);
+    struct creds *c = &p->creds;
+    boolean setpcap = !!(c->cap_effective & (1ull << CAP_SETPCAP));
+    if ((!setpcap && (inheritable & ~(c->cap_inheritable | c->cap_permitted))) ||
+        (inheritable & ~(c->cap_inheritable | c->cap_bset)) ||
+        (permitted & ~c->cap_permitted) || (effective & ~permitted)) {
+        process_unlock(p);
+        return -EPERM;
+    }
+    c->cap_effective = effective;
+    c->cap_permitted = permitted;
+    c->cap_inheritable = inheritable;
+    c->cap_ambient &= permitted & inheritable;
+    process_unlock(p);
     return 0;
 }
 
@@ -2419,28 +2849,92 @@ static sysreturn waitid(int idtype, int id, struct siginfo *infop, int options,
     return process_wait(idtype, id, options, 0, infop, rusage, false);
 }
 
-sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
+static sysreturn prctl_set_ptracer(u64 arg2)
 {
+    int ptracer;
+    if (arg2 == 0 || arg2 == PR_SET_PTRACER_ANY) {
+        ptracer = (int)arg2;
+    } else {
+        if (arg2 > S32_MAX)
+            return -EINVAL;
+        process tracer = process_get(arg2);
+        if (!tracer)
+            return -EINVAL;
+        process_release(tracer);
+        ptracer = arg2;
+    }
+    process p = current->p;
+    process_lock(p);
+    p->ptracer = ptracer;
+    process_unlock(p);
+    return 0;
+}
+
+static sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
+{
+    process p = current->p;
     switch (option) {
+    case PR_SET_PDEATHSIG:
+        if (arg2 > NSIG)
+            return -EINVAL;
+        process_lock(p);
+        p->pdeathsig = arg2;
+        process_unlock(p);
+        return 0;
+    case PR_GET_PDEATHSIG: {
+        process_lock(p);
+        int sig = p->pdeathsig;
+        process_unlock(p);
+        return copy_to_user((void *)arg2, &sig, sizeof(sig)) ? 0 : -EFAULT;
+    }
     case PR_SET_NAME:
         if (!copy_from_user((void *)arg2, current->name, sizeof(current->name)))
             return -EFAULT;
         current->name[sizeof(current->name) - 1] = '\0';
-        break;
+        return 0;
     case PR_GET_NAME:
         if (!copy_to_user((void *)arg2, current->name, sizeof(current->name)))
             return -EFAULT;
-        break;
+        return 0;
     case PR_GET_DUMPABLE:
-        return current->p->dumpable;
+        return p->dumpable;
     case PR_SET_DUMPABLE:
         if (arg2 > 1)
             return -EINVAL;
-        current->p->dumpable = arg2;
-        break;
+        p->dumpable = arg2;
+        return 0;
+    case PR_SET_NO_NEW_PRIVS:
+        if (arg2 != 1 || arg3 || arg4 || arg5)
+            return -EINVAL;
+        process_lock(p);
+        p->no_new_privs = true;
+        process_unlock(p);
+        return 0;
+    case PR_GET_NO_NEW_PRIVS:
+        if (arg2 || arg3 || arg4 || arg5)
+            return -EINVAL;
+        return p->no_new_privs;
+    case PR_CAPBSET_READ:
+        if (arg2 > CAP_LAST_CAP)
+            return -EINVAL;
+        process_lock(p);
+        sysreturn bit = !!(p->creds.cap_bset & (1ull << arg2));
+        process_unlock(p);
+        return bit;
+    case PR_CAPBSET_DROP:
+        if (arg2 > CAP_LAST_CAP)
+            return -EINVAL;
+        if (!capable(p, CAP_SETPCAP))
+            return -EPERM;
+        process_lock(p);
+        p->creds.cap_bset &= ~(1ull << arg2);
+        process_unlock(p);
+        return 0;
+    case PR_SET_PTRACER:
+        return prctl_set_ptracer(arg2);
+    default:
+        return -EINVAL;
     }
-
-    return 0;
 }
 
 sysreturn sysinfo(struct sysinfo *info)
@@ -2583,12 +3077,21 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, sched_get_priority_max, syscall_ignore);
     register_syscall(map, sched_setscheduler, syscall_ignore);
     register_syscall(map, getuid, getuid);
-    register_syscall(map, geteuid, getuid);
-    register_syscall(map, setgroups, syscall_ignore);
-    register_syscall(map, setuid, syscall_ignore);
-    register_syscall(map, setgid, syscall_ignore);
+    register_syscall(map, geteuid, geteuid);
+    register_syscall(map, getresuid, getresuid);
+    register_syscall(map, getresgid, getresgid);
+    register_syscall(map, getgroups, getgroups);
+    register_syscall(map, setgroups, setgroups);
+    register_syscall(map, setuid, setuid);
+    register_syscall(map, setgid, setgid);
+    register_syscall(map, setreuid, setreuid);
+    register_syscall(map, setregid, setregid);
+    register_syscall(map, setresuid, setresuid);
+    register_syscall(map, setresgid, setresgid);
+    register_syscall(map, setfsuid, setfsuid);
+    register_syscall(map, setfsgid, setfsgid);
     register_syscall(map, capget, capget);
-    register_syscall(map, capset, syscall_ignore);
+    register_syscall(map, capset, capset);
     register_syscall(map, prctl, prctl);
     register_syscall(map, wait4, wait4);
     register_syscall(map, waitid, waitid);

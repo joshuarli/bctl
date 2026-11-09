@@ -739,6 +739,7 @@ closure_func_basic(thunk, void, process_free)
         deallocate_buffer(p->cmdline);
     if (p->exe)
         deallocate_buffer(p->exe);
+    creds_free(&p->creds);
     if (p->pid)
         deallocate_u64((heap)p->uh->processes, p->pid, 1);
     deallocate(locked, p, sizeof(struct process));
@@ -791,8 +792,9 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->process_root = root;
 
     u64 id;
-    p->uid = get_u64(root, sym(uid), &id) ? id : 0;
-    p->gid = get_u64(root, sym(gid), &id) ? id : 0;
+    u32 uid = get_u64(root, sym(uid), &id) ? id : 0;
+    u32 gid = get_u64(root, sym(gid), &id) ? id : 0;
+    creds_init(&p->creds, uid, gid);
     init_threads(p);
     init_closure_func(&p->fault_handler, fault_handler, unix_fault_handler);
     p->syscalls = linux_syscalls;
@@ -872,6 +874,17 @@ process process_get(int pid)
     return found;
 }
 
+void process_list_pids(vector pids)
+{
+    spin_lock(&processes_lock);
+    list_foreach(&processes, l) {
+        process p = struct_from_list(l, process, l);
+        if (!process_is_kernel(p))
+            vector_push(pids, pointer_from_u64((u64)p->pid));
+    }
+    spin_unlock(&processes_lock);
+}
+
 int process_getppid(process p)
 {
     spin_lock(&processes_lock);
@@ -885,7 +898,7 @@ static u64 processes_of_uid_locked(u32 uid)
     u64 n = 0;
     list_foreach(&processes, l) {
         process p = struct_from_list(l, process, l);
-        if (!process_is_kernel(p) && (p->uid == uid))
+        if (!process_is_kernel(p) && (p->creds.uid == uid))
             n++;
     }
     return n;
@@ -926,8 +939,6 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     filesystem_release(c->cwd_fs);
     process_get_cwd(parent, &c->cwd_fs, &c->cwd);
     c->pgid = parent->pgid;
-    c->uid = parent->uid;
-    c->gid = parent->gid;
     c->dumpable = parent->dumpable;
     c->syscalls = parent->syscalls;
     c->rlimit_stack = parent->rlimit_stack;
@@ -940,8 +951,10 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     process_lock(parent);
     buffer cmdline = parent->cmdline ? clone_buffer(locked, parent->cmdline) : 0;
     buffer exe = parent->exe ? clone_buffer(locked, parent->exe) : 0;
+    boolean creds_ok = creds_copy(&c->creds, &parent->creds);
+    c->no_new_privs = parent->no_new_privs;
     process_unlock(parent);
-    if ((cmdline == INVALID_ADDRESS) || (exe == INVALID_ADDRESS)) {
+    if ((cmdline == INVALID_ADDRESS) || (exe == INVALID_ADDRESS) || !creds_ok) {
         if (cmdline && (cmdline != INVALID_ADDRESS))
             deallocate_buffer(cmdline);
         if (exe && (exe != INVALID_ADDRESS))
@@ -953,7 +966,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     c->exe = exe;
 
     spin_lock(&processes_lock);
-    if (processes_of_uid_locked(c->uid) >= parent->rlimit_nproc_cur) {
+    if (processes_of_uid_locked(c->creds.uid) >= parent->rlimit_nproc_cur) {
         spin_unlock(&processes_lock);
         process_release(c);
         return -EAGAIN;
@@ -1085,7 +1098,7 @@ static void process_send_exit_signal(process parent, process child)
         .si_code = wait_status_is_exit(status) ? CLD_EXITED : CLD_KILLED,
     };
     si.sifields.sigchld.pid = child->pid;
-    si.sifields.sigchld.uid = child->uid;
+    si.sifields.sigchld.uid = child->creds.uid;
     si.sifields.sigchld.status = wait_status_is_exit(status) ? (status >> 8) & 0xff : status & 0x7f;
     si.sifields.sigchld.utime = proc_utime(child) / (TIMESTAMP_SECOND / CLOCKS_PER_SEC);
     si.sifields.sigchld.stime = proc_stime(child) / (TIMESTAMP_SECOND / CLOCKS_PER_SEC);
@@ -1099,17 +1112,21 @@ void process_teardown(process p)
     p->exiting = true;
     unix_timers_process_exit(p);
     aio_process_exit(p);
+    process_lock(p);
     fdtable fdt = p->fdtable;
     p->fdtable = 0;
-    fdtable_release(fdt);
     process_vm vm = p->vm;
     p->vm = 0;
+    process_unlock(p);
+    fdtable_release(fdt);
     process_vm_release(vm);
     process_vfork_release(p);
 
     process init = init_process;
     vector orphaned_zombies = allocate_vector(heap_locked(get_kernel_heaps()), 4);
     assert(orphaned_zombies != INVALID_ADDRESS);
+    vector parent_death_notified = allocate_vector(heap_locked(get_kernel_heaps()), 4);
+    assert(parent_death_notified != INVALID_ADDRESS);
     spin_lock(&processes_lock);
     list l, next;
     for (l = p->children.next; l != &p->children; l = next) {
@@ -1121,6 +1138,9 @@ void process_teardown(process p)
         if (c->state == PROCESS_ZOMBIE) {
             process_reserve(c);
             vector_push(orphaned_zombies, c);
+        } else if (c->pdeathsig) {
+            process_reserve(c);
+            vector_push(parent_death_notified, c);
         }
     }
     process parent = p->parent;
@@ -1154,6 +1174,14 @@ void process_teardown(process p)
     if (vector_length(orphaned_zombies))
         blockq_wake_all(init->child_bq);
     deallocate_vector(orphaned_zombies);
+    vector_foreach(parent_death_notified, c) {
+        struct siginfo si = { .si_signo = c->pdeathsig, .si_code = SI_USER };
+        si.sifields.kill.pid = p->pid;
+        si.sifields.kill.uid = p->creds.uid;
+        deliver_signal_to_process(c, &si);
+        process_release(c);
+    }
+    deallocate_vector(parent_death_notified);
     if (reaped) {
         if (parent)
             blockq_wake_all(parent->child_bq);
@@ -1197,7 +1225,7 @@ static sysreturn wait_report(process c, int *wstatus, struct siginfo *infop, str
         infop->si_errno = 0;
         infop->si_code = wait_status_is_exit(status) ? CLD_EXITED : CLD_KILLED;
         infop->sifields.sigchld.pid = c->pid;
-        infop->sifields.sigchld.uid = c->uid;
+        infop->sifields.sigchld.uid = c->creds.uid;
         infop->sifields.sigchld.status = wait_status_is_exit(status) ? (status >> 8) & 0xff :
                                                                        status & 0x7f;
     }
@@ -1323,7 +1351,11 @@ static boolean process_may_signal(process sender, process target, int sig)
 
 static boolean process_signal_permitted(process sender, process target)
 {
-    return (sender->uid == 0) || (sender->uid == target->uid);
+    struct creds s, t;
+    creds_snapshot(sender, &s);
+    creds_snapshot(target, &t);
+    return (s.cap_effective & (1ull << CAP_KILL)) || (s.euid == t.suid) || (s.euid == t.uid) ||
+           (s.uid == t.suid) || (s.uid == t.uid);
 }
 
 sysreturn process_signal(process sender, int pid, struct siginfo *si)
