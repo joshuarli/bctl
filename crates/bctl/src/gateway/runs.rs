@@ -43,7 +43,7 @@ impl From<Response<BoxBody>> for Refusal {
 }
 
 fn ask(daemon: &Arc<Daemon>, request: Request) -> Result<Reply, Refusal> {
-    daemon.handle(&request).map_err(|e| failure(e).into())
+    daemon.handle(&request).map_err(|e| failure(*e.0).into())
 }
 
 fn parse_run(id: &str) -> Result<i64, Refusal> {

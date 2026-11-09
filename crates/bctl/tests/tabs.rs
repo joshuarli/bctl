@@ -3,12 +3,11 @@ mod common;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bctl_cdp::protocol::{AttachToTarget, Command as CdpCommand, Effect, Empty, TargetId};
-use bctl_cdp::{Connection, Endpoint, Generation, Scope};
-use common::{Home, assert_ok};
+use bctl_cdp::Scope;
+use common::{Home, assert_ok, eventually, outside_client, soon};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, Serialize, json};
 
@@ -60,44 +59,6 @@ fn ids(tabs: &[Tab]) -> Vec<&str> {
     let mut ids: Vec<&str> = tabs.iter().map(|t| t.id.as_str()).collect();
     ids.sort_unstable();
     ids
-}
-
-fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Some(value) = probe() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        thread::sleep(Duration::from_millis(200));
-    }
-}
-
-#[derive(Deserialize)]
-struct Version {
-    #[serde(rename = "webSocketDebuggerUrl")]
-    web_socket_debugger_url: String,
-}
-
-/// A CDP client outside bctl's automation, standing in for a page or a person acting on the browser.
-fn outside_client(home: &Home, session: &str) -> Connection {
-    let control_url = home.cdp_url(session);
-    let host = control_url.strip_prefix("http://").unwrap().to_string();
-    let port: u16 = host.rsplit(':').next().unwrap().parse().unwrap();
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    write!(stream, "GET /json/version HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    let body = response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or_else(|| panic!("{response}"));
-    let endpoint = Endpoint::parse(&json::from_str::<Version>(body).unwrap().web_socket_debugger_url).unwrap();
-    let (connection, driver) = block_on(bctl_cdp::connect(&endpoint, Generation::new(0))).unwrap();
-    thread::spawn(move || block_on(driver));
-    connection
-}
-
-fn soon() -> Instant {
-    Instant::now() + Duration::from_secs(10)
 }
 
 #[derive(Serialize)]

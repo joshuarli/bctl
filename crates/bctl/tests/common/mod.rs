@@ -1,7 +1,13 @@
 #![allow(dead_code)]
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use bctl_cdp::{Connection, Endpoint, Generation};
+use futures_lite::future::block_on;
 use miniserde::{Deserialize, json};
 
 #[derive(Deserialize)]
@@ -104,4 +110,42 @@ pub fn status_of<'a>(response: &'a Response, name: &str) -> &'a Session {
 
 pub fn assert_ok(output: &Output) {
     assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+}
+
+#[derive(Deserialize)]
+struct Version {
+    #[serde(rename = "webSocketDebuggerUrl")]
+    web_socket_debugger_url: String,
+}
+
+/// A CDP client outside bctl's automation, standing in for a page or a person acting on the browser.
+pub fn outside_client(home: &Home, session: &str) -> Connection {
+    let control_url = home.cdp_url(session);
+    let host = control_url.strip_prefix("http://").unwrap().to_string();
+    let port: u16 = host.rsplit(':').next().unwrap().parse().unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(stream, "GET /json/version HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let body = response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or_else(|| panic!("{response}"));
+    let endpoint = Endpoint::parse(&json::from_str::<Version>(body).unwrap().web_socket_debugger_url).unwrap();
+    let (connection, driver) = block_on(bctl_cdp::connect(&endpoint, Generation::new(0))).unwrap();
+    thread::spawn(move || block_on(driver));
+    connection
+}
+
+pub fn soon() -> Instant {
+    Instant::now() + Duration::from_secs(10)
+}
+
+pub fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(value) = probe() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(200));
+    }
 }

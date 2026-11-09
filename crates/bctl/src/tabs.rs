@@ -1,31 +1,37 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use async_net::unix::UnixStream;
-use bctl_automation::{Binding, BindingStore, BindingStoreError, Listing, PageTarget, SafeUrl, Selection, TabError, Tabs};
+use bctl_automation::{Binding, BindingStore, BindingStoreError, Listing, PageTarget, Pages, SafeUrl, Selection, TabError, Tabs};
 use bctl_cdp::protocol::TargetId;
 use bctl_cdp::{CallError, Connection, Endpoint};
 use bctl_core::{Generation, SelectedTarget, SessionName, SessionState, StoreError};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, json};
 
-use crate::daemon::Daemon;
+use crate::daemon::{Daemon, Refusal};
 use crate::gateway;
 use crate::protocol::{ErrorBody, ErrorCode, Request, Response, TabView, TabsView};
 
 /// The daemon's CDP connection to each ready session's browser, opened on first use and tagged with the
 /// generation it belongs to.
-pub(crate) type Browsers = Mutex<HashMap<SessionName, Connection>>;
+pub(crate) type Browsers = Mutex<HashMap<SessionName, Browser>>;
+
+#[derive(Clone)]
+pub(crate) struct Browser {
+    pub(crate) connection: Connection,
+    pub(crate) pages: Arc<Mutex<Pages>>,
+}
 
 const DEFAULT_URL: &str = "about:blank";
 
-fn lock(browsers: &Browsers) -> std::sync::MutexGuard<'_, HashMap<SessionName, Connection>> {
+fn lock(browsers: &Browsers) -> MutexGuard<'_, HashMap<SessionName, Browser>> {
     browsers.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn failure(code: ErrorCode, message: impl Into<String>, remedy: Option<String>, target: Option<&TargetId>, targets: Option<Vec<TabView>>) -> Response {
+pub(crate) fn failure(code: ErrorCode, message: impl Into<String>, remedy: Option<String>, target: Option<&TargetId>, targets: Option<Vec<TabView>>) -> Response {
     let mut body = ErrorBody::new(code, message, remedy);
     body.target = target.map(|t| t.to_string());
     body.targets = targets;
@@ -41,10 +47,10 @@ fn listed(targets: &[PageTarget], selected: Option<TargetId>) -> Response {
     Response { tabs: Some(Box::new(tabs)), ..Response::empty() }
 }
 
-fn target_id(request: &Request) -> Result<TargetId, Response> {
+fn target_id(request: &Request) -> Result<TargetId, Refusal> {
     let id = request.target.as_deref().ok_or_else(|| failure(ErrorCode::BadRequest, "a target id is required", None, None, None))?;
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-        return Err(failure(ErrorCode::BadRequest, format!("{id:?} is not a CDP target id"), Some("see `bctl tab list SESSION`".into()), None, None));
+        return Err(failure(ErrorCode::BadRequest, format!("{id:?} is not a CDP target id"), Some("see `bctl tab list SESSION`".into()), None, None).into());
     }
     Ok(TargetId::new(id))
 }
@@ -57,7 +63,7 @@ pub(crate) enum TabCommand {
     Close,
 }
 
-pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand, request: &Request) -> Result<Response, Response> {
+pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand, request: &Request) -> Result<Response, Refusal> {
     let mutates = matches!(command, TabCommand::New | TabCommand::Close);
     if mutates && gateway::person_in_control(daemon, session) {
         return Err(failure(
@@ -66,9 +72,9 @@ pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand
             Some("release control in the dashboard, then retry".into()),
             None,
             None,
-        ));
+        ).into());
     }
-    let connection = connection(daemon, session)?;
+    let connection = browser(daemon, session)?.connection;
     let store = SessionBindings { daemon, session };
     let tabs = Tabs::new(&connection, &store);
     let listing = match command {
@@ -80,13 +86,13 @@ pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand
     .map_err(|error| tab_failure(session, error))?;
     let Listing { targets, selection } = listing;
     match selection {
-        Selection::Gone(binding) => Err(tab_failure(session, TabError::TargetGone { binding, remaining: targets })),
+        Selection::Gone(binding) => Err(tab_failure(session, TabError::TargetGone { binding, remaining: targets }).into()),
         Selection::Selected(selected) => Ok(listed(&targets, Some(selected))),
         Selection::Unselected => Ok(listed(&targets, None)),
     }
 }
 
-fn tab_failure(session: &SessionName, error: TabError) -> Response {
+pub(crate) fn tab_failure(session: &SessionName, error: TabError) -> Response {
     let message = error.to_string();
     match error {
         TabError::TargetGone { binding, remaining } => failure(
@@ -121,15 +127,15 @@ fn tab_failure(session: &SessionName, error: TabError) -> Response {
     }
 }
 
-/// The session's connection for its current generation, opening one if there is none or the one held belongs
-/// to an earlier generation or has ended.
-fn connection(daemon: &Daemon, session: &SessionName) -> Result<Connection, Response> {
+/// The session's browser for its current generation, opening a connection if there is none or the one held
+/// belongs to an earlier generation or has ended.
+pub(crate) fn browser(daemon: &Daemon, session: &SessionName) -> Result<Browser, Refusal> {
     let record = daemon.store().session(session).map_err(|error| match error {
         StoreError::NoSuchSession(_) => failure(ErrorCode::NoSuchSession, format!("no session named {session}"), Some("see `bctl status`".into()), None, None),
         other => failure(ErrorCode::Internal, other.to_string(), None, None, None),
     })?;
     let not_ready = |detail: String| {
-        failure(ErrorCode::SessionNotReady, format!("session {session} {detail}"), Some(format!("see `bctl inspect {session}`")), None, None)
+        Refusal::from(failure(ErrorCode::SessionNotReady, format!("session {session} {detail}"), Some(format!("see `bctl inspect {session}`")), None, None))
     };
     if record.state != SessionState::Ready {
         return Err(not_ready(format!("is {}", record.state.as_str())));
@@ -137,16 +143,17 @@ fn connection(daemon: &Daemon, session: &SessionName) -> Result<Connection, Resp
     let generation = bctl_cdp::Generation::new(record.generation.0);
     let mut browsers = lock(&daemon.browsers);
     if let Some(held) = browsers.get(session)
-        && held.generation() == generation
-        && held.termination().is_none()
+        && held.connection.generation() == generation
+        && held.connection.termination().is_none()
     {
         return Ok(held.clone());
     }
     if let Some(stale) = browsers.remove(session) {
-        thread::spawn(move || block_on(stale.shutdown()));
+        thread::spawn(move || block_on(stale.connection.shutdown()));
     }
     let socket = daemon.cdp_socket(session).ok_or_else(|| not_ready("is no longer ready".into()))?;
-    let opened = open(&socket, generation).map_err(|e| not_ready(format!("does not answer CDP: {e}")))?;
+    let connection = open(&socket, generation).map_err(|e| not_ready(format!("does not answer CDP: {e}")))?;
+    let opened = Browser { pages: Arc::new(Mutex::new(Pages::new(connection.clone()))), connection };
     browsers.insert(session.clone(), opened.clone());
     Ok(opened)
 }
@@ -171,14 +178,14 @@ fn open(socket: &Path, generation: bctl_cdp::Generation) -> Result<Connection, S
 /// Closes the session's connection, if it has one, and waits for it to finish.
 pub(crate) fn close(daemon: &Daemon, session: &SessionName) {
     let held = lock(&daemon.browsers).remove(session);
-    if let Some(connection) = held {
-        block_on(connection.shutdown());
+    if let Some(browser) = held {
+        block_on(browser.connection.shutdown());
     }
 }
 
-struct SessionBindings<'a> {
-    daemon: &'a Daemon,
-    session: &'a SessionName,
+pub(crate) struct SessionBindings<'a> {
+    pub(crate) daemon: &'a Daemon,
+    pub(crate) session: &'a SessionName,
 }
 
 fn core_generation(generation: bctl_cdp::Generation) -> Generation {

@@ -1,4 +1,6 @@
-use miniserde::{Deserialize, Serialize, json};
+use std::borrow::Cow;
+
+use miniserde::{Deserialize, Serialize, json, ser};
 
 /// One request per connection line. `op` is one of the `Op` names; the other fields depend on it.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -15,6 +17,22 @@ pub struct Request {
     pub target: Option<String>,
     /// For `tab-new`: where the new target opens; absent opens `about:blank`.
     pub url: Option<String>,
+    /// For `page-snapshot`; absent takes the default snapshot.
+    pub snapshot: Option<Box<SnapshotRequest>>,
+    /// For `page-resolve`: an element ref from `page-snapshot`, as `e12` or `@e12`.
+    pub element: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SnapshotRequest {
+    /// Every node with content, not only interactive ones.
+    pub full: bool,
+    /// Rendered levels to keep, from 1.
+    pub depth: Option<u32>,
+    /// A CSS selector in the main frame; only its first match's subtree is shown.
+    pub scope: Option<String>,
+    /// Return the node tree instead of text.
+    pub nodes: bool,
 }
 
 /// A job for `run`, resolved by the CLI: exactly one of `exec` and `grab`. `browser` is absent for a one-off
@@ -87,6 +105,8 @@ pub enum Op {
     TabNew,
     TabUse,
     TabClose,
+    PageSnapshot,
+    PageResolve,
 }
 
 impl Op {
@@ -112,6 +132,8 @@ impl Op {
             Op::TabNew => "tab-new",
             Op::TabUse => "tab-use",
             Op::TabClose => "tab-close",
+            Op::PageSnapshot => "page-snapshot",
+            Op::PageResolve => "page-resolve",
         }
     }
 
@@ -137,6 +159,8 @@ impl Op {
             Op::TabNew,
             Op::TabUse,
             Op::TabClose,
+            Op::PageSnapshot,
+            Op::PageResolve,
         ]
         .into_iter()
         .find(|op| op.as_str() == s)
@@ -167,6 +191,8 @@ pub enum ErrorCode {
     NoTargetSelected,
     NoSuchTarget,
     LastTarget,
+    StaleRef,
+    ScopeNotFound,
     HumanInControl,
     UnknownOutcome,
     CdpFailed,
@@ -197,6 +223,8 @@ impl ErrorCode {
             ErrorCode::NoTargetSelected => "NO_TARGET_SELECTED",
             ErrorCode::NoSuchTarget => "NO_SUCH_TARGET",
             ErrorCode::LastTarget => "LAST_TARGET",
+            ErrorCode::StaleRef => "STALE_REF",
+            ErrorCode::ScopeNotFound => "SCOPE_NOT_FOUND",
             ErrorCode::HumanInControl => "HUMAN_IN_CONTROL",
             ErrorCode::UnknownOutcome => "UNKNOWN_OUTCOME",
             ErrorCode::CdpFailed => "CDP_FAILED",
@@ -235,6 +263,94 @@ pub struct TabView {
 pub struct TabsView {
     pub selected: Option<String>,
     pub targets: Vec<TabView>,
+}
+
+/// For `page-*`: what the operation returned about the selected target.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PageView {
+    pub snapshot: Option<SnapshotView>,
+    pub element: Option<ElementView>,
+}
+
+/// For `page-snapshot`: the selected target's snapshot, as `text` or, if asked, as `nodes`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotView {
+    pub target: String,
+    pub text: Option<String>,
+    pub nodes: Option<Vec<NodeView>>,
+    /// Nodes left out to keep the snapshot within its size bound.
+    pub omitted: u64,
+    /// Documents read: the main frame's and each iframe's.
+    pub documents: u32,
+    pub cdp_calls: u32,
+    /// The size of the text form, whichever form was returned.
+    pub text_bytes: u64,
+}
+
+/// One snapshot node. Absent fields are false or empty; `value` is absent and `redacted` true for a password.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeView {
+    #[serde(rename = "ref")]
+    pub element: Option<String>,
+    pub role: String,
+    pub name: Option<String>,
+    pub value: Option<String>,
+    pub redacted: Option<bool>,
+    pub disabled: Option<bool>,
+    /// `true`, `false`, or `mixed`.
+    pub checked: Option<String>,
+    pub selected: Option<bool>,
+    pub expanded: Option<bool>,
+    pub level: Option<u32>,
+    pub children: Option<Vec<NodeView>>,
+}
+
+impl Serialize for NodeView {
+    fn begin(&self) -> ser::Fragment<'_> {
+        ser::Fragment::Map(Box::new(NodeFields { node: self, next: 0 }))
+    }
+}
+
+struct NodeFields<'a> {
+    node: &'a NodeView,
+    next: usize,
+}
+
+impl ser::Map for NodeFields<'_> {
+    fn next(&mut self) -> Option<(Cow<'_, str>, &dyn Serialize)> {
+        let n = self.node;
+        loop {
+            self.next += 1;
+            let field: Option<(&'static str, &dyn Serialize)> = match self.next {
+                1 => n.element.as_ref().map(|v| ("ref", v as &dyn Serialize)),
+                2 => Some(("role", &n.role)),
+                3 => n.name.as_ref().map(|v| ("name", v as &dyn Serialize)),
+                4 => n.value.as_ref().map(|v| ("value", v as &dyn Serialize)),
+                5 => n.redacted.as_ref().map(|v| ("redacted", v as &dyn Serialize)),
+                6 => n.disabled.as_ref().map(|v| ("disabled", v as &dyn Serialize)),
+                7 => n.checked.as_ref().map(|v| ("checked", v as &dyn Serialize)),
+                8 => n.selected.as_ref().map(|v| ("selected", v as &dyn Serialize)),
+                9 => n.expanded.as_ref().map(|v| ("expanded", v as &dyn Serialize)),
+                10 => n.level.as_ref().map(|v| ("level", v as &dyn Serialize)),
+                11 => n.children.as_ref().map(|v| ("children", v as &dyn Serialize)),
+                _ => return None,
+            };
+            if let Some((name, value)) = field {
+                return Some((Cow::Borrowed(name), value));
+            }
+        }
+    }
+}
+
+/// For `page-resolve`: the live node a ref names, with its role and name as the browser computes them now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElementView {
+    #[serde(rename = "ref")]
+    pub element: String,
+    pub target: String,
+    pub frame: String,
+    pub role: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,6 +449,7 @@ pub struct Response {
     pub url: Option<String>,
     pub log: Option<Box<LogView>>,
     pub tabs: Option<Box<TabsView>>,
+    pub page: Option<Box<PageView>>,
 }
 
 impl Response {

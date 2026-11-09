@@ -1,5 +1,6 @@
 mod daemon;
 mod gateway;
+mod page;
 mod paths;
 mod protocol;
 mod runs;
@@ -17,7 +18,8 @@ use miniserde::json;
 
 use paths::Paths;
 use protocol::{
-    BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView, SessionView, TabView,
+    BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView, SessionView, SnapshotRequest,
+    TabView,
 };
 
 const USAGE: &str = "usage:
@@ -41,6 +43,9 @@ const USAGE: &str = "usage:
   bctl tab new SESSION [URL] [--json]                open a page target (default about:blank) and select it
   bctl tab use SESSION TARGET_ID [--json]            select a page target for native commands
   bctl tab close SESSION TARGET_ID [--json]          close a page target
+  bctl page snapshot SESSION [--full] [--depth N] [--scope CSS] [--json]
+                                                     the selected target's accessibility tree with element refs
+  bctl page resolve SESSION REF [--json]             the live role and name of the node an element ref names
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
@@ -87,6 +92,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
         },
         "grab" | "run" | "runs" | "logs" | "pause" | "resume" | "cancel" => return parse_run_command(&command, parser),
         "tab" => return parse_tab_command(parser),
+        "page" => return parse_page_command(parser),
         "doctor" | "daemon" => (Op::Ping, false),
         other => return Err(format!("unknown command {other:?}").into()),
     };
@@ -193,6 +199,44 @@ fn parse_tab_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
     }
     if positional.next().is_some() {
         return Err(TAB_USAGE.into());
+    }
+    Ok(Cli::Request { op, request, json, open: false })
+}
+
+const PAGE_USAGE: &str = "usage: bctl page snapshot SESSION [--full] [--depth N] [--scope CSS] | resolve SESSION REF [--json]";
+
+fn parse_page_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    let op = match parser.next()? {
+        Some(Value(v)) if v == "snapshot" => Op::PageSnapshot,
+        Some(Value(v)) if v == "resolve" => Op::PageResolve,
+        _ => return Err(PAGE_USAGE.into()),
+    };
+    let mut json = false;
+    let mut snapshot = SnapshotRequest::default();
+    let mut positional = Vec::new();
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Long("json") => json = true,
+            Long("full") if op == Op::PageSnapshot => snapshot.full = true,
+            Long("depth") if op == Op::PageSnapshot => {
+                let depth = parser.value()?.string()?;
+                snapshot.depth = Some(depth.parse().map_err(|_| format!("--depth {depth:?} is not a level count"))?);
+            }
+            Long("scope") if op == Op::PageSnapshot => snapshot.scope = Some(parser.value()?.string()?),
+            Value(v) => positional.push(v.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    snapshot.nodes = json;
+    let mut request = Request { op: op.as_str().to_string(), ..Request::empty() };
+    let mut positional = positional.into_iter();
+    request.session = Some(positional.next().ok_or(PAGE_USAGE)?);
+    match op {
+        Op::PageSnapshot => request.snapshot = Some(Box::new(snapshot)),
+        _ => request.element = Some(positional.next().ok_or(PAGE_USAGE)?),
+    }
+    if positional.next().is_some() {
+        return Err(PAGE_USAGE.into());
     }
     Ok(Cli::Request { op, request, json, open: false })
 }
@@ -371,6 +415,12 @@ fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
         Op::TabList | Op::TabNew | Op::TabUse | Op::TabClose => {
             if let Some(tabs) = &response.tabs {
                 tabs.targets.iter().for_each(|t| println!("{}", tab_line(t, tabs.selected.as_deref())));
+            }
+        }
+        Op::PageSnapshot => print!("{}", response.page.as_ref().and_then(|p| p.snapshot.as_ref()).and_then(|s| s.text.as_deref()).unwrap_or_default()),
+        Op::PageResolve => {
+            if let Some(e) = response.page.as_ref().and_then(|p| p.element.as_ref()) {
+                println!("{} {} {}  frame {}", e.element, e.role, json::to_string(&e.name), e.frame);
             }
         }
     }

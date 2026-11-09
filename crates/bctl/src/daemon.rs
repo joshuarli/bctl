@@ -22,6 +22,7 @@ use crate::protocol::{
     AttemptView, ErrorCode, InteractionView, JobRequest, LogView, Op, ProfileView, ProgressView, Request, ResourcesView, Response, RunView, SessionView, SessionsPayload,
 };
 use crate::runs::{self, BoundedLog, Intent, Launch, Ledger, Live, RunConfig, RunFiles};
+use crate::page::{self, PageCommand};
 use crate::tabs::{self, Browsers, TabCommand};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -43,7 +44,15 @@ pub(crate) struct Daemon {
     pub(crate) browsers: Browsers,
 }
 
-type Outcome = Result<Response, Response>;
+pub(crate) struct Refusal(pub(crate) Box<Response>);
+
+impl From<Response> for Refusal {
+    fn from(response: Response) -> Self {
+        Refusal(Box::new(response))
+    }
+}
+
+type Outcome = Result<Response, Refusal>;
 
 pub fn run(paths: Paths) -> Result<(), String> {
     fs::create_dir_all(&paths.home).map_err(|e| format!("cannot create {}: {e}", paths.home.display()))?;
@@ -236,7 +245,7 @@ impl Daemon {
             return;
         }
         let response = match json::from_str::<Request>(&line) {
-            Ok(request) => self.handle(&request).unwrap_or_else(|failure| failure),
+            Ok(request) => self.handle(&request).unwrap_or_else(|refusal| *refusal.0),
             Err(_) => Response::failure(ErrorCode::BadRequest, "request is not valid JSON", None),
         };
         let mut writer = &stream;
@@ -246,9 +255,9 @@ impl Daemon {
     pub(crate) fn handle(self: &Arc<Self>, request: &Request) -> Outcome {
         let op = Op::parse(&request.op)
             .ok_or_else(|| Response::failure(ErrorCode::BadRequest, format!("unknown operation {:?}", request.op), None))?;
-        let session = || -> Result<SessionName, Response> {
+        let session = || -> Result<SessionName, Refusal> {
             let name = request.session.as_deref().ok_or_else(|| Response::failure(ErrorCode::BadRequest, "a session name is required", None))?;
-            SessionName::new(name).map_err(|e| Response::failure(ErrorCode::BadRequest, e.to_string(), None))
+            SessionName::new(name).map_err(|e| Response::failure(ErrorCode::BadRequest, e.to_string(), None).into())
         };
         match op {
             Op::Ping => Ok(Response::empty()),
@@ -259,7 +268,7 @@ impl Daemon {
             Op::CdpUrl => {
                 let name = session()?;
                 if self.cdp_socket(&name).is_none() {
-                    return Err(Response::failure(ErrorCode::Conflict, format!("session {name} is not ready"), Some(format!("run `bctl up {name}`"))));
+                    return Err(Response::failure(ErrorCode::Conflict, format!("session {name} is not ready"), Some(format!("run `bctl up {name}`"))).into());
                 }
                 let url = gateway::mint_cdp_url(self, &name).map_err(internal)?;
                 Ok(Response { url: Some(url), ..Response::empty() })
@@ -281,6 +290,8 @@ impl Daemon {
             Op::TabNew => tabs::handle(self, &session()?, TabCommand::New, request),
             Op::TabUse => tabs::handle(self, &session()?, TabCommand::Use, request),
             Op::TabClose => tabs::handle(self, &session()?, TabCommand::Close, request),
+            Op::PageSnapshot => page::handle(self, &session()?, PageCommand::Snapshot, request),
+            Op::PageResolve => page::handle(self, &session()?, PageCommand::Resolve, request),
             Op::Rm => {
                 let name = session()?;
                 tabs::close(self, &name);
@@ -291,7 +302,7 @@ impl Daemon {
                     if let Err(error) = fs::remove_dir_all(&dir)
                         && error.kind() != std::io::ErrorKind::NotFound
                     {
-                        return Err(internal(format!("forgot {name} but cannot remove {}: {error}", dir.display())));
+                        return Err(internal(format!("forgot {name} but cannot remove {}: {error}", dir.display())).into());
                     }
                 }
                 Ok(Response::empty())
@@ -376,12 +387,12 @@ impl Daemon {
         let existing = match self.store().session(name) {
             Ok(record) => Some(record),
             Err(StoreError::NoSuchSession(_)) => None,
-            Err(e) => return Err(internal(e)),
+            Err(e) => return Err(internal(e).into()),
         };
         let image = match (image, &existing) {
             (Some(image), _) => image.to_string(),
             (None, Some(record)) => record.image.clone(),
-            (None, None) => return Err(self.image_required()),
+            (None, None) => return Err(self.image_required().into()),
         };
         let allow_private = allow_private.map(|mut ranges| {
             ranges.sort();
@@ -405,21 +416,21 @@ impl Daemon {
                     allowed.join(", ")
                 ),
                 Some(format!("use those, or `bctl down {name} && bctl rm {name}` to replace it")),
-            ));
+            ).into());
         }
         if !self.paths.image(&image).exists() {
             return Err(Response::failure(
                 ErrorCode::ImageMissing,
                 format!("no image {image} at {}", self.paths.image(&image).display()),
                 Some(format!("build it with `images/build.sh {image}` and copy the archive there")),
-            ));
+            ).into());
         }
         if !self.paths.runtime().exists() {
             return Err(Response::failure(
                 ErrorCode::RuntimeMissing,
                 format!("no runtime at {}", self.paths.runtime().display()),
                 Some("build it with `runtime/build.sh` and copy .work/runtime/smolvm there".into()),
-            ));
+            ).into());
         }
         if existing.is_none() {
             let resources = resources.unwrap_or(Resources::DEFAULT);
@@ -445,7 +456,7 @@ impl Daemon {
             Ok(path) => path,
             Err(error) => {
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
-                return Err(internal(error));
+                return Err(internal(error).into());
             }
         };
         let image_path = match self.paths.image(&image).canonicalize() {
@@ -453,14 +464,14 @@ impl Daemon {
             Err(error) => {
                 let message = format!("cannot resolve image {image}: {error}");
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&message));
-                return Err(Response::failure(ErrorCode::ImageMissing, message, None));
+                return Err(Response::failure(ErrorCode::ImageMissing, message, None).into());
             }
         };
         let cdp_socket = match self.private_cdp_dir(&machine) {
             Ok(path) => path,
             Err(error) => {
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
-                return Err(internal(error));
+                return Err(internal(error).into());
             }
         };
         let spec = LaunchSpec {
@@ -476,7 +487,7 @@ impl Daemon {
         };
         if let Err(error) = self.runtime.launch(&spec) {
             self.fail_start(&machine, &error);
-            return Err(Response::failure(ErrorCode::StartFailed, error.to_string(), Some(format!("see `bctl inspect {name}`"))));
+            return Err(Response::failure(ErrorCode::StartFailed, error.to_string(), Some(format!("see `bctl inspect {name}`"))).into());
         }
         self.await_ready(&machine, endpoints);
         let record = self.store().session(name).map_err(store_failure)?;
@@ -487,7 +498,7 @@ impl Daemon {
                 ErrorCode::StartFailed,
                 record.failure.unwrap_or_else(|| format!("session ended {}", record.state.as_str())),
                 Some(format!("the VM was removed; retry with `bctl up {name}`")),
-            ))
+            ).into())
         }
     }
 
@@ -541,7 +552,7 @@ impl Daemon {
     }
 
     pub(crate) fn down_session(&self, name: &SessionName) -> Result<(), String> {
-        self.down(name).map(drop).map_err(|failure| failure.error.map(|e| e.message).unwrap_or_default())
+        self.down(name).map(drop).map_err(|refusal| refusal.0.error.map(|e| e.message).unwrap_or_default())
     }
 
     fn image_required(&self) -> Response {
@@ -608,7 +619,7 @@ impl Daemon {
                 ErrorCode::RuntimeError,
                 record.failure.unwrap_or_else(|| "the VM did not stop".into()),
                 Some(format!("retry `bctl down {name}`")),
-            )),
+            ).into()),
         }
     }
 
@@ -616,20 +627,20 @@ impl Daemon {
         let (exec, grab) = match (&job.exec, &job.grab) {
             (Some(exec), None) => {
                 if exec.argv.first().is_none_or(String::is_empty) {
-                    return Err(bad_request("an exec job needs a non-empty argv"));
+                    return Err(bad_request("an exec job needs a non-empty argv").into());
                 }
                 if !std::path::Path::new(&exec.cwd).is_absolute() {
-                    return Err(bad_request(format!("exec cwd {:?} is not absolute", exec.cwd)));
+                    return Err(bad_request(format!("exec cwd {:?} is not absolute", exec.cwd)).into());
                 }
                 (Some(exec.clone()), None)
             }
             (None, Some(grab)) => {
                 if grab.urls.is_empty() {
-                    return Err(bad_request("a grab job needs at least one URL"));
+                    return Err(bad_request("a grab job needs at least one URL").into());
                 }
                 (None, Some(grab.clone()))
             }
-            _ => return Err(bad_request("a job is exactly one of exec and grab")),
+            _ => return Err(bad_request("a job is exactly one of exec and grab").into()),
         };
         match &job.browser {
             Some(browser) => {
@@ -670,7 +681,7 @@ impl Daemon {
                 ErrorCode::RunActive,
                 format!("session {session} is already running run {}", active.run),
                 Some(format!("wait for it, or `bctl cancel {}`", active.run)),
-            ));
+            ).into());
         }
         let spec = NewRun {
             session: session.clone(),
@@ -690,9 +701,9 @@ impl Daemon {
         self.run_response(run)
     }
 
-    fn browser_version(&self, session: &SessionName) -> Result<String, Response> {
+    fn browser_version(&self, session: &SessionName) -> Result<String, Refusal> {
         let not_ready = || {
-            Response::failure(ErrorCode::SessionNotReady, format!("session {session} does not answer CDP"), Some(format!("see `bctl inspect {session}`")))
+            Refusal::from(Response::failure(ErrorCode::SessionNotReady, format!("session {session} does not answer CDP"), Some(format!("see `bctl inspect {session}`"))))
         };
         let socket = self.cdp_socket(session).ok_or_else(not_ready)?;
         cdp_socket_browser(&socket).ok_or_else(not_ready)
@@ -768,12 +779,12 @@ impl Daemon {
                 ErrorCode::NotPausable,
                 format!("run {run} is an exec run, which has no event boundary to pause at"),
                 Some(format!("`bctl cancel {run}` stops it")),
-            ));
+            ).into());
         }
         match (record.current.state, self.live_handle(&record)) {
             (AttemptState::Paused, _) => {}
             (state, Some(live)) if state.is_live() => live.request(Intent::Pause),
-            (state, _) => return Err(not_live(run, state)),
+            (state, _) => return Err(not_live(run, state).into()),
         }
         self.run_response(run)
     }
@@ -792,7 +803,7 @@ impl Daemon {
                     ErrorCode::NotResumable,
                     format!("run {run} is {}; only a paused, interrupted, or needs-interaction run resumes", state.as_str()),
                     None,
-                ));
+                ).into());
             }
         }
         if record.spec.kind == RunKind::Exec {
@@ -800,16 +811,16 @@ impl Daemon {
                 ErrorCode::NotResumable,
                 format!("run {run} is an exec run, which keeps no state to continue from"),
                 Some("start a new one with `bctl run`".into()),
-            ));
+            ).into());
         }
         let session = record.spec.session.clone();
         if self.cdp_socket(&session).is_none() {
-            return Err(Response::failure(ErrorCode::SessionNotReady, format!("session {session} is not ready"), Some(format!("run `bctl up {session}` first"))));
+            return Err(Response::failure(ErrorCode::SessionNotReady, format!("session {session} is not ready"), Some(format!("run `bctl up {session}` first"))).into());
         }
         let config: RunConfig = json::from_str(&record.spec.config).map_err(|_| internal(format!("run {run} has an unreadable config")))?;
         let mut live = lock(&self.live);
         if let Some(active) = live.get(&session) {
-            return Err(Response::failure(ErrorCode::RunActive, format!("session {session} is already running run {}", active.run), None));
+            return Err(Response::failure(ErrorCode::RunActive, format!("session {session} is already running run {}", active.run), None).into());
         }
         let attempt = self.store().begin_attempt(run, now_ms()).map_err(store_failure)?;
         self.start_attempt(&mut live, &session, run, attempt, record.current.number + 1, &config);
@@ -822,7 +833,7 @@ impl Daemon {
         match (record.current.state, self.live_handle(&record)) {
             (AttemptState::Paused, _) => self.store().cancel_paused(record.current.id, now_ms()).map_err(internal)?,
             (state, Some(live)) if state.is_live() => live.request(Intent::Cancel),
-            (state, _) => return Err(not_live(run, state)),
+            (state, _) => return Err(not_live(run, state).into()),
         }
         self.run_response(run)
     }
