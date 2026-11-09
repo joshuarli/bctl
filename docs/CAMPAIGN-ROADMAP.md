@@ -131,6 +131,33 @@ every toplevel; one real bug fixed (a shrunk shm file now raises
 `wl_shm.invalid_fd`). Decided: patch WLCS's clients to ack configures rather
 than loosen tinyland, and stop reusing `wl_surface` error 0 for unrelated
 client errors.
+P2 (lane `lane/p2`; `images/helium`, `BCTL_BROWSER_ARCHIVE=DIR images/build.sh
+helium`): Helium 0.20.3.1 (`helium-0.20.3.1-r2`, SHA-256 `9f02f520…`) FROM
+scratch with the Rust `bctl-guest`, tinyland, seatd, kbvm's libxkbcommon,
+and musl 1.2.6 from the Alpine 3.24.1 base chromium-build builds on (the
+musl-loader question). The build refuses an archive whose sidecars do not
+bind its name, digest, product, and arm64, runs chromium-build's
+`install-runtime.py --verify-extract` at a pinned revision, and fails unless
+every ELF file resolves its interpreter, `DT_NEEDED` closure, and imported
+symbols; `/etc/bctl/receipt.json` records `Helium 0.20.3.1 (Chromium
+156.0.8078.79)` and the archive SHA-256. Image archive 256 MB, rootfs
+694 MiB. P1's checks, the daemon suites, and the dashboard suite (7/7) pass
+with `BCTL_TEST_IMAGE=helium`. B1 `--runs 10` passed in 7 of 10 invocations
+(113 of 118 runs): 5 runs stopped when a CDP command (`Runtime.evaluate`,
+`Page.enable`) exceeded its deadline just as a new renderer started (popup,
+cross-site navigation, new tab); 30 runs of `ref-scratch-chromium` under the
+same host load all passed, and the cause is not found, so the default image
+is not switched yet. Mesa's GL stack is not shipped (206 MiB): with the
+appliance's flags the GPU process cannot `dlopen` `libEGL.so.1` (musl keeps
+`LD_LIBRARY_PATH` as a pointer Chromium's process title overwrites), and even
+when it can, Chromium's blocklist leaves WebGL off on llvmpipe
+(`docs/userland.md`). Census: 87 gaps, 74.0 MiB, all browser closure (FFmpeg
+unbundled 65.3 MiB with libstdc++/libgcc_s/libgomp; ATK, AT-SPI, D-Bus, GLib
+6.2 MiB; X11/XCB 1.7 MiB). Helium imports 20 `xkb_*` symbols, all in kbvm's
+33. Helium segfaults at start when `$HOME` does not exist; the image has
+`/home/browser`. P2 open: the B1 stall; kbvm's cdylib links Alpine GCC's
+`crtbeginS.o`; T2's census needs a shell and a second Chromium, so it does
+not run on a scratch image; Chimera's recipe was not compared.
 Next: D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).
