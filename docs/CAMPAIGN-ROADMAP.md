@@ -158,6 +158,13 @@ unbundled 65.3 MiB with libstdc++/libgcc_s/libgomp; ATK, AT-SPI, D-Bus, GLib
 `/home/browser`. P2 open: the B1 stall; kbvm's cdylib links Alpine GCC's
 `crtbeginS.o`; T2's census needs a shell and a second Chromium, so it does
 not run on a scratch image; Chimera's recipe was not compared.
+chromium-build `e9809cb` closes the arm64 closure: FFmpeg, ANGLE and
+SwiftShader come from the Chromium tree, GLib, GIO, udev, system minigbm and
+VA-API are off, and NSS, NSPR, SQLite, expat, zlib, libffi and xkbcommon are
+built with the musl clang. Its `helium-0.20.3.1-r3` arm64 archive (138.4 MB,
+sha256 `a5dcb350…5b60`) bundles 13 libraries, `check-purity.sh` reports 0
+impure across its 23 ELF files and archives, and its acceptance sidecar
+passes all ten checks, headless included. P2 moves to r3.
 Next: D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).
