@@ -11,20 +11,21 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** G0.5 (see `git log`).
+- **Last accepted revision:** probe baseline (see `git log`).
 - **Accepted:** G0.1 (fork at `nanos/`, pinned vendoring, bootstrap/doctor/build;
   byte-identical clean rebuilds). G0.2 (`dev/image.sh`, `dev/run.sh`,
   `dev/test.sh harness`: every false-pass channel rejected; musl stdio
   fixtures known-red on the console `writev` bug). G0.5 (`dev/build.sh
   --debug`, `dev/debug.sh`, crash symbolization, `dev/test.sh metrics`).
+  Probe, native side of G4.1 and the raw variant: `dev/test.sh probe`, 38/38
+  and 6/6 natively; on unmodified Nanos 1/38 (`kernel_address_fault`) and
+  0/6, known-red.
   **Red:** none. **Parked:** none.
 - **Not yet run:** G0.4 needs G0.3 first: most upstream runtime tests print
-  through stdio and hang on the `writev` bug, so a baseline taken now would
-  measure only that bug.
-- **Next slice:** the native side of the probe (`tests/mini_chromium`
-  process, memory and IPC checks run with `--native`), then **stop for the
-  owner** before G0.3, the first kernel change (owner decision 7).
-- **Lanes:** `H` running in `.work/wt/h` (branch `lane/h`).
+  through stdio and hang on the `writev` bug.
+- **Next:** **owner decision** before G0.3, the first kernel change (owner
+  decision 7). Lanes: `H` (`.work/wt/h`), upstream suite on musl
+  (`.work/wt/upstream`), G1.1 design note (`.work/wt/g1-design`).
 - **Gate matrix:** G0 NOT RUN (3/5 slices) · H NOT RUN · G1 NOT RUN · G2 NOT RUN · G3 NOT RUN · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`

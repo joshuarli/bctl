@@ -8,11 +8,15 @@ CFLAGS:=	--sysroot=$(SYSROOT) -O2 -g -Wall -Wextra -Werror
 STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result meminfo
 DYNAMIC_FIXTURES:=	hello_stdio
 
-all: $(OUT)/mini_chromium $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES))
+all: $(OUT)/mini_chromium $(OUT)/mini_chromium_raw $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES))
 
 $(OUT)/mini_chromium: mini_chromium.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -Wno-sign-compare -pthread $< -o $@
+
+$(OUT)/mini_chromium_raw: mini_chromium_raw.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector $< -o $@
 
 $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES)): $(OUT)/fixtures/%: fixtures/%.c
 	@mkdir -p $(@D)

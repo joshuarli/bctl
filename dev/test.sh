@@ -63,35 +63,50 @@ suite_metrics() {
 	printf '%s\n' $samples | sort -n | awk '{ v[NR] = $1 } END { printf "metric boot_to_exit_seconds median=%.2f min=%.2f max=%.2f n=%d\n", (v[5] + v[6]) / 2, v[1], v[NR], NR }'
 }
 
-PROBE=$WORK/build/mini_chromium/mini_chromium
+PROBES=$WORK/build/mini_chromium
 
 probe_native() {
-	line=$("$ROOT/dev/run.sh" --native --timeout 120 --label probe "$PROBE" || :)
+	bin=$1
+	line=$("$ROOT/dev/run.sh" --native --timeout 120 --label "probe-$bin" "$PROBES/$bin" || :)
 	dir=${line##* dir=}
-	case $line in
-	"RUN verdict=PASS "*) printf 'PASS      probe              native  %s passing checks\n' "$(jaq '.tests | length' "$dir/result.json")" ;;
-	*) failures=$((failures + 1)); printf 'FAIL      probe              native  %s\n          log: %s\n' "${line%% dir=*}" "$dir" ;;
-	esac
 	probe_names=$(jaq -r '.tests[].name' "$dir/result.json")
+	case $line in
+	"RUN verdict=PASS "*) printf 'PASS      %-18s native  %s checks\n' "$bin" "$(printf '%s\n' $probe_names | wc -l)" ;;
+	*) failures=$((failures + 1)); printf 'FAIL      %-18s native  %s\n          log: %s\n' "$bin" "${line%% dir=*}" "$dir" ;;
+	esac
+}
+
+probe_nanos() {
+	bin=$1 known_red=$2
+	shift 2
+	probe_native "$bin"
+	[ -n "$probe_names" ] || { failures=$((failures + 1)); printf 'FAIL      %-18s no native check names\n' "$bin"; return; }
+	"$ROOT/dev/image.sh" "$@" -o "$IMAGES/$bin.img" "$PROBES/$bin" >/dev/null
+	set --
+	for n in $probe_names; do set -- "$@" --expect-test "$n"; done
+	total=$(printf '%s\n' $probe_names | wc -l)
+	for smp in 1 2 4; do
+		line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 180 --label "probe-$bin-smp$smp" "$@" "$IMAGES/$bin.img" || :)
+		dir=${line##* dir=}
+		pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
+		case $line in
+		"RUN verdict=PASS "*)
+			if [ -n "$known_red" ]; then status=FAIL note="known-red case now passes: delete its known-red marker"; failures=$((failures + 1))
+			else status=PASS note="$pass/$total checks"; fi ;;
+		*)
+			if [ -n "$known_red" ]; then status=KNOWN-RED note="$pass/$total checks pass; $known_red"
+			else status=FAIL note="${line%% dir=*}"; failures=$((failures + 1)); fi ;;
+		esac
+		printf '%-9s %-18s smp=%s  %s\n' "$status" "$bin" "$smp" "$note"
+		[ "$status" = PASS ] || printf '          log: %s\n' "$dir"
+	done
 }
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_native
-	[ -n "$probe_names" ] || { failures=$((failures + 1)); printf 'FAIL      probe              no native check names\n'; return; }
-	"$ROOT/dev/image.sh" --klib tmpfs --klib shmem -o "$IMAGES/mini_chromium.img" "$PROBE" >/dev/null
-	set --
-	for n in $probe_names; do set -- "$@" --expect-test "$n"; done
-	for smp in 1 2 4; do
-		line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 180 --label "probe-smp$smp" "$@" "$IMAGES/mini_chromium.img" || :)
-		dir=${line##* dir=}
-		pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
-		total=$(printf '%s\n' $probe_names | wc -l)
-		case $line in
-		"RUN verdict=PASS "*) printf 'FAIL      probe              smp=%s  known-red case now passes: delete its known-red marker\n' "$smp"; failures=$((failures + 1)) ;;
-		*) printf 'KNOWN-RED probe              smp=%s  %s/%s checks pass on Nanos; no fork, exec, wait4, seccomp or namespaces yet\n          log: %s\n' "$smp" "$pass" "$total" "$dir" ;;
-		esac
-	done
+	no_processes='no fork, exec, wait4, seccomp or namespaces yet'
+	probe_nanos mini_chromium "$no_processes" --klib tmpfs --klib shmem
+	probe_nanos mini_chromium_raw "$no_processes"
 }
 
 [ $# -ge 1 ] || usage
@@ -100,7 +115,7 @@ for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
 	metrics) suite_metrics ;;
-	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native ;;
+	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	*) usage ;;
