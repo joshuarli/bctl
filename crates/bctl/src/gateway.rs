@@ -271,7 +271,7 @@ struct CdpTarget {
     url: String,
 }
 
-fn cdp_get(socket: &Path, path: &str) -> Result<String, String> {
+pub(crate) fn cdp_get(socket: &Path, path: &str) -> Result<String, String> {
     let mut stream = StdUnixStream::connect(socket).map_err(|e| format!("CDP: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").map_err(|e| e.to_string())?;
@@ -584,6 +584,10 @@ fn control(daemon: &Daemon, name: &str, viewer: &str, request: ControlRequest) -
     }
     let holder = gateway.controllers.get(&session);
     json_response(&ControlState { held: holder.is_some(), mine: holder.is_some_and(|h| h == viewer) })
+}
+
+pub(crate) fn person_in_control(daemon: &Daemon, session: &SessionName) -> bool {
+    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).controllers.contains_key(session)
 }
 
 fn release_control(daemon: &Daemon, session: &SessionName) {

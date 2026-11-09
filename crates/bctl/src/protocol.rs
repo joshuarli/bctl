@@ -11,6 +11,10 @@ pub struct Request {
     pub allow_private: Vec<String>,
     pub run: Option<i64>,
     pub job: Option<Box<JobRequest>>,
+    /// For `tab-use` and `tab-close`: a CDP target id from `tab-list`.
+    pub target: Option<String>,
+    /// For `tab-new`: where the new target opens; absent opens `about:blank`.
+    pub url: Option<String>,
 }
 
 /// A job for `run`, resolved by the CLI: exactly one of `exec` and `grab`. `browser` is absent for a one-off
@@ -79,6 +83,10 @@ pub enum Op {
     Pause,
     Resume,
     Cancel,
+    TabList,
+    TabNew,
+    TabUse,
+    TabClose,
 }
 
 impl Op {
@@ -100,6 +108,10 @@ impl Op {
             Op::Pause => "pause",
             Op::Resume => "resume",
             Op::Cancel => "cancel",
+            Op::TabList => "tab-list",
+            Op::TabNew => "tab-new",
+            Op::TabUse => "tab-use",
+            Op::TabClose => "tab-close",
         }
     }
 
@@ -121,6 +133,10 @@ impl Op {
             Op::Pause,
             Op::Resume,
             Op::Cancel,
+            Op::TabList,
+            Op::TabNew,
+            Op::TabUse,
+            Op::TabClose,
         ]
         .into_iter()
         .find(|op| op.as_str() == s)
@@ -147,6 +163,13 @@ pub enum ErrorCode {
     NotResumable,
     NotLive,
     SessionNotReady,
+    TargetGone,
+    NoTargetSelected,
+    NoSuchTarget,
+    LastTarget,
+    HumanInControl,
+    UnknownOutcome,
+    CdpFailed,
     Internal,
 }
 
@@ -170,6 +193,13 @@ impl ErrorCode {
             ErrorCode::NotResumable => "NOT_RESUMABLE",
             ErrorCode::NotLive => "NOT_LIVE",
             ErrorCode::SessionNotReady => "SESSION_NOT_READY",
+            ErrorCode::TargetGone => "TARGET_GONE",
+            ErrorCode::NoTargetSelected => "NO_TARGET_SELECTED",
+            ErrorCode::NoSuchTarget => "NO_SUCH_TARGET",
+            ErrorCode::LastTarget => "LAST_TARGET",
+            ErrorCode::HumanInControl => "HUMAN_IN_CONTROL",
+            ErrorCode::UnknownOutcome => "UNKNOWN_OUTCOME",
+            ErrorCode::CdpFailed => "CDP_FAILED",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -180,12 +210,31 @@ pub struct ErrorBody {
     pub code: String,
     pub message: String,
     pub remedy: Option<String>,
+    /// For target errors: the CDP target id the request named or the session had selected.
+    pub target: Option<String>,
+    /// For target errors: every page target that exists, so a caller can choose one without another request.
+    pub targets: Option<Vec<TabView>>,
 }
 
 impl ErrorBody {
     pub fn new(code: ErrorCode, message: impl Into<String>, remedy: Option<String>) -> ErrorBody {
-        ErrorBody { code: code.as_str().to_string(), message: message.into(), remedy }
+        ErrorBody { code: code.as_str().to_string(), message: message.into(), remedy, target: None, targets: None }
     }
+}
+
+/// One page target. `url` has no userinfo, query, or fragment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabView {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+}
+
+/// For `tab-*`: the session's page targets after the operation and the one native commands act on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabsView {
+    pub selected: Option<String>,
+    pub targets: Vec<TabView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +332,7 @@ pub struct Response {
     /// For `serve`: a single-use dashboard login URL. For `cdp-url`: a new CDP control URL for the session.
     pub url: Option<String>,
     pub log: Option<Box<LogView>>,
+    pub tabs: Option<Box<TabsView>>,
 }
 
 impl Response {

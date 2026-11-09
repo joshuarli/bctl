@@ -3,6 +3,7 @@ mod gateway;
 mod paths;
 mod protocol;
 mod runs;
+mod tabs;
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -15,7 +16,9 @@ use lexopt::prelude::*;
 use miniserde::json;
 
 use paths::Paths;
-use protocol::{BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView, SessionView};
+use protocol::{
+    BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView, SessionView, TabView,
+};
 
 const USAGE: &str = "usage:
   bctl up NAME [--profile PROFILE] [--image IMAGE] [--allow-private CIDR]... [--json]
@@ -34,6 +37,10 @@ const USAGE: &str = "usage:
   bctl runs [RUN] [--session S] [--json]             list runs, or one run with every resolved field
   bctl logs RUN                                      print a run's log
   bctl pause RUN | resume RUN | cancel RUN [--json]  stop a grab at a page boundary, continue, or end a run
+  bctl tab list SESSION [--json]                     list page targets; * marks the one native commands act on
+  bctl tab new SESSION [URL] [--json]                open a page target (default about:blank) and select it
+  bctl tab use SESSION TARGET_ID [--json]            select a page target for native commands
+  bctl tab close SESSION TARGET_ID [--json]          close a page target
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
@@ -79,6 +86,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
             _ => return Err("usage: bctl profile list | bctl profile login PROFILE [--image IMAGE]".into()),
         },
         "grab" | "run" | "runs" | "logs" | "pause" | "resume" | "cancel" => return parse_run_command(&command, parser),
+        "tab" => return parse_tab_command(parser),
         "doctor" | "daemon" => (Op::Ping, false),
         other => return Err(format!("unknown command {other:?}").into()),
     };
@@ -152,6 +160,39 @@ fn parse_run_command(command: &str, mut parser: lexopt::Parser) -> Result<Cli, l
     }
     if op == Op::Run && request.session.is_none() {
         return Err(format!("bctl {command} needs --session SESSION").into());
+    }
+    Ok(Cli::Request { op, request, json, open: false })
+}
+
+const TAB_USAGE: &str = "usage: bctl tab list SESSION | new SESSION [URL] | use SESSION TARGET_ID | close SESSION TARGET_ID [--json]";
+
+fn parse_tab_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    let op = match parser.next()? {
+        Some(Value(v)) if v == "list" => Op::TabList,
+        Some(Value(v)) if v == "new" => Op::TabNew,
+        Some(Value(v)) if v == "use" => Op::TabUse,
+        Some(Value(v)) if v == "close" => Op::TabClose,
+        _ => return Err(TAB_USAGE.into()),
+    };
+    let mut json = false;
+    let mut positional = Vec::new();
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Long("json") => json = true,
+            Value(v) => positional.push(v.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    let mut request = Request { op: op.as_str().to_string(), ..Request::empty() };
+    let mut positional = positional.into_iter();
+    request.session = Some(positional.next().ok_or(TAB_USAGE)?);
+    match op {
+        Op::TabNew => request.url = positional.next(),
+        Op::TabUse | Op::TabClose => request.target = Some(positional.next().ok_or(TAB_USAGE)?),
+        _ => {}
+    }
+    if positional.next().is_some() {
+        return Err(TAB_USAGE.into());
     }
     Ok(Cli::Request { op, request, json, open: false })
 }
@@ -274,6 +315,9 @@ fn report(error: &ErrorBody, json: bool) -> ExitCode {
         if let Some(remedy) = &error.remedy {
             eprintln!("  {remedy}");
         }
+        if let Some(targets) = &error.targets {
+            targets.iter().for_each(|t| eprintln!("  {}", tab_line(t, None)));
+        }
     }
     ExitCode::FAILURE
 }
@@ -324,9 +368,18 @@ fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
             }
         }
         Op::Logs => print!("{}", response.log.as_ref().map_or("", |log| log.text.as_str())),
+        Op::TabList | Op::TabNew | Op::TabUse | Op::TabClose => {
+            if let Some(tabs) = &response.tabs {
+                tabs.targets.iter().for_each(|t| println!("{}", tab_line(t, tabs.selected.as_deref())));
+            }
+        }
     }
     let failed = matches!(op, Op::Run | Op::Resume) && response.runs.iter().any(|r| r.state == "failed");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn tab_line(tab: &TabView, selected: Option<&str>) -> String {
+    format!("{} {}  {}  {}", if selected == Some(tab.id.as_str()) { "*" } else { " " }, tab.id, tab.url, tab.title)
 }
 
 fn progress(run: &RunView) -> String {

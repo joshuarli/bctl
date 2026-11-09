@@ -22,6 +22,7 @@ use crate::protocol::{
     AttemptView, ErrorCode, InteractionView, JobRequest, LogView, Op, ProfileView, ProgressView, Request, ResourcesView, Response, RunView, SessionView, SessionsPayload,
 };
 use crate::runs::{self, BoundedLog, Intent, Launch, Ledger, Live, RunConfig, RunFiles};
+use crate::tabs::{self, Browsers, TabCommand};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_RUN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,6 +40,7 @@ pub(crate) struct Daemon {
     observed: Mutex<HashMap<SessionName, Observed>>,
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
     pub(crate) gateway: SharedGateway,
+    pub(crate) browsers: Browsers,
 }
 
 type Outcome = Result<Response, Response>;
@@ -65,6 +67,7 @@ pub fn run(paths: Paths) -> Result<(), String> {
         observed: Mutex::default(),
         live: Mutex::default(),
         gateway: Mutex::default(),
+        browsers: Mutex::default(),
     });
     if daemon.paths.runtime().exists() {
         daemon.restore()?;
@@ -274,8 +277,13 @@ impl Daemon {
                 self.up(&session()?, request.profile.as_deref(), request.image.as_deref(), None, allow)
             }
             Op::Down => self.down(&session()?),
+            Op::TabList => tabs::handle(self, &session()?, TabCommand::List, request),
+            Op::TabNew => tabs::handle(self, &session()?, TabCommand::New, request),
+            Op::TabUse => tabs::handle(self, &session()?, TabCommand::Use, request),
+            Op::TabClose => tabs::handle(self, &session()?, TabCommand::Close, request),
             Op::Rm => {
                 let name = session()?;
+                tabs::close(self, &name);
                 let runs: Vec<i64> = self.store().runs(Some(&name)).map_err(internal)?.iter().map(|r| r.id).collect();
                 self.store().delete_session(&name).map_err(store_failure)?;
                 for run in runs {
@@ -575,6 +583,7 @@ impl Daemon {
     fn down(&self, name: &SessionName) -> Outcome {
         self.stop_live_run(name);
         gateway::revoke_cdp(self, name);
+        tabs::close(self, name);
         let record = self.store().session(name).map_err(store_failure)?;
         match record.state {
             SessionState::Stopped => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
