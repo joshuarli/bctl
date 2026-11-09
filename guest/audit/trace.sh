@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run the B1 fixture (bctl-proof m1) on IMAGE_TAG with a /proc/*/maps sampler in the guest: a shell sampler when
 # the image has /bin/sh, otherwise the one bctl-guest runs under BCTL_TRACE_MAPS=1.
-# Usage: trace.sh IMAGE_TAG OUT.tsv   (build bctl-proof first; SMOLVM and PROOF override the paths)
+# Usage: trace.sh IMAGE_TAG OUT.tsv   (build bctl-proof first; SMOLVM and PROOF override the paths, BCTL_PROOF_NAME the VM name prefix)
 set -eu
 tag=${1:?usage: trace.sh IMAGE_TAG OUT.tsv}
 out=${2:?usage: trace.sh IMAGE_TAG OUT.tsv}
@@ -42,7 +42,7 @@ rm -rf "$build"
 
 BCTL_PROOF_IMAGE=$image "$proof" m1 &
 pid=$!
-machine=bctl-proof-$pid-1
+machine=${BCTL_PROOF_NAME:-bctl-proof}-$pid-1
 : > "$out.part"
 while kill -0 "$pid" 2>/dev/null; do
     # shellcheck disable=SC2086

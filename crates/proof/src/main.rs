@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use bctl_rfb::{Buttons, Client, KEY_DOWN, KEY_RETURN, Rgb};
+use bctl_rfb::{Buttons, Client, KEY_ALT, KEY_CAPS_LOCK, KEY_CONTROL, KEY_DOWN, KEY_RETURN, KEY_SHIFT, Rgb};
 use miniserde::json;
 use shadowdriver::crawler::{ChromiumSessionOptions, CrawlerSession, CrawlerTab, TabOptions};
 
@@ -177,7 +177,8 @@ fn wait_until<T>(what: &str, timeout: Duration, mut probe: impl FnMut() -> Optio
 fn m1(smolvm: &Path, image: &Path, run: usize) -> Proof<()> {
     let vnc_port = free_port()?;
     let cdp_port = free_port()?;
-    let name = format!("bctl-proof-{}-{run}", std::process::id());
+    let prefix = std::env::var("BCTL_PROOF_NAME").unwrap_or_else(|_| "bctl-proof".to_string());
+    let name = format!("{prefix}-{}-{run}", std::process::id());
     let machine = Machine::start(smolvm, image, &name, vnc_port, &[(cdp_port, 9222)])?;
     wait_until("CDP through the host forward", READY_TIMEOUT, || cdp_version(cdp_port))?;
     let check = machine.guest_check()?;
@@ -288,6 +289,8 @@ async fn drive(cdp_port: u16, vnc_port: u16) -> Proof<()> {
     vnc.type_text("!").map_err(io)?;
     wait_for_js(&tab, "document.getElementById('text').value === 'Hello bctl!!'").await?;
 
+    keyboard(&tab, &mut vnc).await?;
+
     let log = evaluate_string(&tab, "JSON.stringify(window.__bctl)").await?;
     for expected in [r#"["text","Hello bctl!"]"#, r#"["text","Hello bctl!!"]"#, r#"["choice","second"]"#, r#"["choice","third"]"#, r#"["click",true]"#, r#"["wheel","down"]"#, r#"["popup",true]"#] {
         if !log.contains(expected) {
@@ -307,6 +310,78 @@ async fn drive(cdp_port: u16, vnc_port: u16) -> Proof<()> {
 }
 
 const SELECT_HALF_HEIGHT: u16 = 18;
+const SHIFTED: &str = "Aa ~!@#$%^&*()_+{}|:\"<>?";
+const REPEAT_HOLD: Duration = Duration::from_millis(1500);
+const MIN_REPEATS: usize = 5;
+const KEY_PACE: Duration = Duration::from_millis(40);
+
+fn type_paced(vnc: &mut Client, text: &str) -> Proof<()> {
+    for c in text.chars() {
+        vnc.type_text(c.encode_utf8(&mut [0; 4])).map_err(io)?;
+        thread::sleep(KEY_PACE);
+    }
+    Ok(())
+}
+
+async fn keys_wait(tab: &CrawlerTab, condition: &str) -> Proof<()> {
+    match wait_for_js(tab, condition).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let seen = evaluate_string(
+                tab,
+                "JSON.stringify([document.getElementById('keys').value, window.__bctl.filter(([kind]) => kind === 'key').map(([, k]) => k)])",
+            )
+            .await?;
+            Err(format!("{error}; textarea and keydown log: {seen}"))
+        }
+    }
+}
+
+async fn keyboard(tab: &CrawlerTab, vnc: &mut Client) -> Proof<()> {
+    let value = |expected: &str| format!("document.getElementById('keys').value === {}", json::to_string(expected));
+    tab.evaluate("document.getElementById('keys').focus(); 'focused'").await.map_err(|e| format!("focusing the textarea failed: {e}"))?;
+    wait_for_js(tab, "document.activeElement.id === 'keys'").await?;
+
+    type_paced(vnc, SHIFTED)?;
+    keys_wait(tab, &value(SHIFTED)).await?;
+
+    vnc.tap(KEY_CAPS_LOCK).map_err(io)?;
+    type_paced(vnc, "caps1")?;
+    vnc.tap(KEY_CAPS_LOCK).map_err(io)?;
+    type_paced(vnc, "x")?;
+    keys_wait(tab, &value(&format!("{SHIFTED}CAPS1x"))).await?;
+
+    vnc.key(KEY_ALT, true).map_err(io)?;
+    vnc.tap(u32::from('q')).map_err(io)?;
+    vnc.key(KEY_ALT, false).map_err(io)?;
+    vnc.key(KEY_CONTROL, true).map_err(io)?;
+    vnc.tap(u32::from('a')).map_err(io)?;
+    vnc.key(KEY_CONTROL, false).map_err(io)?;
+    type_paced(vnc, "ctrl")?;
+    keys_wait(tab, &value("ctrl")).await?;
+
+    vnc.key(u32::from('z'), true).map_err(io)?;
+    thread::sleep(REPEAT_HOLD);
+    vnc.key(u32::from('z'), false).map_err(io)?;
+    keys_wait(tab, &format!("/^ctrlz{{{MIN_REPEATS},}}$/.test(document.getElementById('keys').value)")).await?;
+    let repeated = evaluate_string(tab, "document.getElementById('keys').value").await?;
+
+    vnc.key(KEY_CONTROL, true).map_err(io)?;
+    vnc.key(KEY_SHIFT, true).map_err(io)?;
+    vnc.tap(u32::from('U')).map_err(io)?;
+    vnc.key(KEY_SHIFT, false).map_err(io)?;
+    vnc.key(KEY_CONTROL, false).map_err(io)?;
+    type_paced(vnc, "e9 ")?;
+    keys_wait(tab, &value(&format!("{repeated}\u{e9}"))).await?;
+
+    let log = evaluate_string(tab, "JSON.stringify(window.__bctl.filter(([kind]) => kind === 'key').map(([, k]) => k))").await?;
+    for expected in ["A KeyA shift false", "~ Backquote shift false", "? Slash shift false", "C KeyC none false", "1 Digit1 none false", "q KeyQ alt false", "a KeyA ctrl false", "z KeyZ none true"] {
+        if !log.contains(&format!("\"{expected}\"")) {
+            return Err(format!("keydown log lacks {expected:?}: {log}"));
+        }
+    }
+    Ok(())
+}
 
 /// Bounding box `(left, top, right, bottom)` of the pixels that differ between two frames at or below row `from`.
 fn changed_box(before: &bctl_rfb::Frame, after: &bctl_rfb::Frame, from: u16) -> Option<(u16, u16, u16, u16)> {

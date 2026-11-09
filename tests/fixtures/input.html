@@ -8,7 +8,7 @@
   #marker { position: fixed; left: 0; top: 0; width: 24px; height: 24px; background: #ff00ff; }
   #controls { position: fixed; left: 40px; top: 40px; display: grid; gap: 12px; width: 320px; }
   #controls > * { box-sizing: border-box; height: 36px; font-size: 16px; }
-  #text { width: 320px; }
+  #text, #keys { width: 320px; }
   #spacer { height: 4000px; }
 </style>
 </head>
@@ -23,6 +23,7 @@
   </select>
   <button id="clicker">click</button>
   <button id="opener">open popup</button>
+  <textarea id="keys" autocomplete="off"></textarea>
 </div>
 <div id="spacer"></div>
 <script>
@@ -36,6 +37,11 @@
   document.getElementById("opener").addEventListener("click", () => {
     const popup = window.open("about:blank", "bctl-popup", "popup,width=400,height=300");
     log.push(["popup", popup !== null]);
+  });
+  const keys = document.getElementById("keys");
+  keys.addEventListener("keydown", (e) => {
+    const mods = ["shift", "ctrl", "alt", "meta"].filter((m) => e[`${m}Key`]).join("+") || "none";
+    log.push(["key", `${e.key} ${e.code} ${mods} ${e.repeat}`]);
   });
   window.addEventListener("wheel", (e) => log.push(["wheel", e.deltaY > 0 ? "down" : "up"]), { passive: true });
   window.addEventListener("scroll", () => log.push(["scroll", Math.round(window.scrollY)]), { passive: true });

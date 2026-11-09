@@ -16,6 +16,9 @@ pub const KEY_RETURN: u32 = 0xff0d;
 pub const KEY_DOWN: u32 = 0xff54;
 pub const KEY_SHIFT: u32 = 0xffe1;
 pub const KEY_ESCAPE: u32 = 0xff1b;
+pub const KEY_CONTROL: u32 = 0xffe3;
+pub const KEY_ALT: u32 = 0xffe9;
+pub const KEY_CAPS_LOCK: u32 = 0xffe5;
 
 /// Pointer button mask bits as RFB defines them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
