@@ -175,6 +175,34 @@ impl Store {
         Ok(())
     }
 
+    /// Forgets a session that holds no machine. Its profile and its runs stay.
+    pub fn delete_session(&mut self, name: &SessionName) -> Result<(), StoreError> {
+        let session = self.session(name)?;
+        if session.state.holds_machine() {
+            return Err(StoreError::NotStartable { session: name.clone(), state: session.state });
+        }
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM attempts WHERE run IN (SELECT id FROM runs WHERE session = ?1)", [name.as_str()])?;
+        tx.execute("DELETE FROM runs WHERE session = ?1", [name.as_str()])?;
+        tx.execute("DELETE FROM sessions WHERE name = ?1", [name.as_str()])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every profile with the session currently holding it, if any.
+    pub fn profiles(&self) -> Result<Vec<(ProfileName, Option<SessionName>)>, StoreError> {
+        let mut stmt = self.db.prepare(
+            "SELECT p.name, s.name FROM profiles p LEFT JOIN sessions s ON s.profile = p.name AND s.state IN ('starting', 'ready', 'stopping') ORDER BY p.name",
+        )?;
+        let raw = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter()
+            .map(|(profile, holder)| {
+                let profile = ProfileName::new(&profile).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                Ok((profile, holder.as_deref().map(parse_session_name).transpose()?))
+            })
+            .collect()
+    }
+
     pub fn create_run(&mut self, session: &SessionName, job: &str) -> Result<(i64, i64), StoreError> {
         let tx = self.db.transaction()?;
         tx.execute("INSERT INTO runs (session, job) VALUES (?1, ?2)", params![session.as_str(), job])?;

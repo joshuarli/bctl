@@ -1,0 +1,20 @@
+[package]
+name = "bctl"
+description = "browserctl: run, watch, and automate browser appliances"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bctl"
+path = "src/main.rs"
+
+[dependencies]
+bctl-core = { path = "../core" }
+bctl-runtime-smolvm = { path = "../runtime-smolvm" }
+lexopt = "0.3"
+miniserde = "0.1"
+
+[lints]
+workspace = true

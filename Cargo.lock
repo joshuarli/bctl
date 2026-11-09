@@ -76,6 +76,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "bctl"
+version = "0.1.0"
+dependencies = [
+ "bctl-core",
+ "bctl-runtime-smolvm",
+ "lexopt",
+ "miniserde",
+]
+
+[[package]]
 name = "bctl-core"
 version = "0.1.0"
 dependencies = [
@@ -436,6 +446,12 @@ name = "laputa-parking"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad447eb1edac8353805e8f17ea8dac6e7beddd938bb0999ce9d270a3a495a2a7"
+
+[[package]]
+name = "lexopt"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "803ec87c9cfb29b9d2633f20cba1f488db3fd53f2158b1024cbefb47ba05d413"
 
 [[package]]
 name = "libc"

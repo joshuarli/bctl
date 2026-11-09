@@ -33,7 +33,7 @@ fn a_session_starts_becomes_ready_stops_and_restarts_under_a_new_generation() {
     for generation in [1, 2] {
         let spec = spec(&session, generation);
         runtime.launch(&spec).unwrap();
-        let ready = runtime.wait_ready(&spec.machine, spec.endpoints, Duration::from_secs(120));
+        let ready = runtime.wait_ready(&spec.machine, spec.endpoints, Duration::from_secs(120), |_| {});
         let listed = runtime.list().unwrap();
         runtime.remove(&spec.machine).unwrap();
 

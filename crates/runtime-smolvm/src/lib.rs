@@ -242,14 +242,20 @@ impl SmolVm {
 
     /// Waits until every stage holds: machine, guest agent, seat, compositor, browser, sandbox, CDP through the
     /// host forward, and a display that has drawn something. An open port alone is never taken as ready.
-    pub fn wait_ready(&self, machine: &MachineName, endpoints: Endpoints, timeout: Duration) -> Result<Ready, RuntimeError> {
+    pub fn wait_ready(
+        &self,
+        machine: &MachineName,
+        endpoints: Endpoints,
+        timeout: Duration,
+        mut on_stage: impl FnMut(Stage),
+    ) -> Result<Ready, RuntimeError> {
         let deadline = Instant::now() + timeout;
         let name = machine.to_string();
         loop {
             match self.probe(&name, machine, endpoints) {
                 Ok(ready) => return Ok(ready),
                 Err(error @ RuntimeError::NotReady { .. }) if Instant::now() >= deadline => return Err(error),
-                Err(RuntimeError::NotReady { .. }) => {}
+                Err(RuntimeError::NotReady { stage, .. }) => on_stage(stage),
                 Err(error) => return Err(error),
             }
             thread::sleep(Duration::from_millis(250));
