@@ -27,22 +27,30 @@ static void *stack_prealloc(process p, void *start, u64 size)
 #define check_s(__p, __s, __a) do { if ((void*)(__s) < (__a))                \
             (__a) = stack_prealloc((__p), (__a), pad((__a) - (void*)(__s), PAGESIZE)); } while(0);
 
-#define spush(__p, __s, __a, __w) do { (__s)--; check_s((__p), (__s), (__a)); *(__s) = (u64)(__w); } while(0)
+typedef struct exec_args {
+    buffer strings;
+    u64 argc;
+    u64 envc;
+    u64 argv_bytes;
+    sstring execfn;
+} *exec_args;
 
-#define ppush(__p, __s, __a, __b, __f, ...) ({buffer_clear(__b);       \
-            bprintf((__b), (__f), __VA_ARGS__);                         \
-            (__s) -= pad((buffer_length(__b) + 1), STACK_ALIGNMENT) >> 3; \
-            check_s((__p), (__s), (__a));                               \
-            runtime_memcpy((__s), buffer_ref((__b), 0), buffer_length(__b)); \
-            ((char *)(__s))[buffer_length(__b)] = '\0';                 \
-            (char *)(__s);})
+static boolean exec_args_push(exec_args args, sstring s)
+{
+    return buffer_write_sstring(args->strings, s) && buffer_write_byte(args->strings, '\0');
+}
 
-closure_function(6, 2, boolean, environment_each,
-                 process, p, char **, envp, int *, envc, u64 **, s, void **, a, buffer, b,
+closure_function(2, 2, boolean, environment_each,
+                 exec_args, args, buffer, b,
                  value n, value v)
 {
     assert(is_symbol(n));
-    bound(envp)[(*bound(envc))++] = ppush(bound(p), *bound(s), *bound(a), bound(b), "%b=%b", symbol_string(n), v);
+    buffer b = bound(b);
+    buffer_clear(b);
+    bprintf(b, "%b=%b", symbol_string(n), v);
+    if (!exec_args_push(bound(args), buffer_to_sstring(b)))
+        return false;
+    bound(args)->envc++;
     return true;
 }
 
@@ -59,34 +67,11 @@ closure_function(1, 2, boolean, fill_arguments_each,
     return true;
 }
 
-static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
-        u64 va, u64 interp_load_addr, tuple process_root, boolean aslr)
+static void exec_args_from_manifest(exec_args args, tuple process_root, heap h)
 {
-    exec_debug("build_exec_stack start %p, tid %d, va 0x%lx\n", start, t->tid, va);
-
-    /* allocate process stack at top of 32-bit address space */
-    u64 stack_size = p->rlimit_stack;
-    u64 stack_start = 0x100000000 - stack_size;
-    if (aslr)
-        stack_start = (stack_start - PROCESS_STACK_ASLR_RANGE) +
-            get_aslr_offset(PROCESS_STACK_ASLR_RANGE);
-
-    p->vm->stack_map = allocate_vmap(p, irangel(stack_start, stack_size),
-                                 ivmap(VMAP_FLAG_STACK | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
-                                       0, 0, 0, 0));
-    assert(p->vm->stack_map != INVALID_ADDRESS);
-
-    u64 *s = (pointer_from_u64(stack_start) + stack_size);
-    void *stack_low = stack_prealloc(p, (void*)s, PROCESS_STACK_PREALLOC_SIZE);
-
-    /* 16 bytes of random data for userspace (e.g. SSP guard init) */
-    for (int i = 0; i < 2; i++) {
-        s -= sizeof(u64);
-        *(u64 *)s = random_u64();
-    }
-    u64 *randbuf = s;
-
-    // argv ASCIIZ strings
+    args->strings = allocate_buffer(h, 256);
+    assert(args->strings != INVALID_ADDRESS);
+    args->argc = args->envc = 0;
     value arg_value = get(process_root, sym(arguments));
     vector arguments;
     if (is_vector(arg_value)) {
@@ -102,62 +87,104 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
             halt("program arguments must be a vector or tuple\n");
         }
     }
-    if (vector_length(arguments) == 0) {
-        value p = get(process_root, sym(program));
-        assert(p);
-        vector_push(arguments, p);
-    }
-
-    char **argv = stack_allocate(vector_length(arguments) * sizeof(u64));
+    value program = get(process_root, sym(program));
+    assert(program);
+    if (vector_length(arguments) == 0)
+        vector_push(arguments, program);
     buffer a;
-    int argv_len = 0;
-    vector_foreach(arguments, a) {
-        if (a)
-            argv_len += buffer_length(a) + 1;
-    }
-    s -= pad(argv_len, STACK_ALIGNMENT) >> 3;
-    check_s(p, s, stack_low);
-    int argc = 0;
-    char * sp = (char *) s;
-    p->saved_args_begin = sp;
     vector_foreach(arguments, a) {
         if (!a)
             continue;
-        int len = buffer_length(a);
-        runtime_memcpy(sp, buffer_ref(a, 0), len);
-        sp[len] = '\0';
-        argv[argc++] = sp;
-        sp += len + 1;
+        assert(exec_args_push(args, buffer_to_sstring(a)));
+        args->argc++;
     }
-    p->saved_args_end = sp;
+    args->argv_bytes = buffer_length(args->strings);
     if (arguments != arg_value)
         deallocate_vector(arguments);
-
-    // envp ASCIIZ strings
-    char **envp = 0;
-    int envc = 0;
     tuple environment = get_tuple(process_root, sym(environment));
     if (environment) {
-        envp = stack_allocate(tuple_count(environment) * sizeof(u64));
         buffer b = allocate_buffer(transient, 128);
-        iterate(environment, stack_closure(environment_each, p, envp, &envc, &s, &stack_low, b));
+        assert(iterate(environment, stack_closure(environment_each, args, b)));
+        deallocate_buffer(b);
     }
+    args->execfn = buffer_to_sstring(program);
+}
 
-    // stack padding
-    if ((envc + 1 + argc + 1 + 1) % 2 == 1) {
-        spush(p, s, stack_low, 0);
+static void process_set_image_names(process p, buffer cmdline, buffer exe)
+{
+    process_lock(p);
+    buffer old_cmdline = p->cmdline;
+    buffer old_exe = p->exe;
+    p->cmdline = cmdline;
+    p->exe = exe;
+    process_unlock(p);
+    if (old_cmdline)
+        deallocate_buffer(old_cmdline);
+    if (old_exe)
+        deallocate_buffer(old_exe);
+}
+
+#define EXEC_STACK_SIZE_MIN     MB
+#define EXEC_STACK_SIZE_MAX     (256 * MB)
+
+static u64 exec_stack_size(process p)
+{
+    return MIN(MAX(p->rlimit_stack, EXEC_STACK_SIZE_MIN), EXEC_STACK_SIZE_MAX);
+}
+
+static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
+        u64 va, u64 interp_load_addr, boolean aslr, exec_args args)
+{
+    exec_debug("build_exec_stack start %p, tid %d, va 0x%lx\n", start, t->tid, va);
+
+    /* allocate process stack at top of 32-bit address space */
+    u64 stack_size = exec_stack_size(p);
+    u64 stack_start = 0x100000000 - stack_size;
+    if (aslr)
+        stack_start = (stack_start - PROCESS_STACK_ASLR_RANGE) +
+            get_aslr_offset(PROCESS_STACK_ASLR_RANGE);
+
+    p->vm->stack_map = allocate_vmap(p, irange(stack_start, stack_start + stack_size),
+                                 ivmap(VMAP_FLAG_STACK | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
+                                       0, 0, 0, 0));
+    assert(p->vm->stack_map != INVALID_ADDRESS);
+
+    u64 *s = (pointer_from_u64(stack_start) + stack_size);
+    void *stack_low = stack_prealloc(p, (void*)s, PROCESS_STACK_PREALLOC_SIZE);
+
+    /* 16 bytes of random data for userspace (e.g. SSP guard init) */
+    for (int i = 0; i < 2; i++) {
+        s--;
+        *s = random_u64();
     }
+    u64 *randbuf = s;
 
-    // auxiliary vector
+    s -= pad(args->execfn.len + 1, STACK_ALIGNMENT) >> 3;
+    check_s(p, s, stack_low);
+    char *execfn = (char *)s;
+    runtime_memcpy(execfn, args->execfn.ptr, args->execfn.len);
+    execfn[args->execfn.len] = '\0';
+
+    u64 strings_len = buffer_length(args->strings);
+    s -= pad(strings_len, STACK_ALIGNMENT) >> 3;
+    check_s(p, s, stack_low);
+    char *strings = (char *)s;
+    runtime_memcpy(strings, buffer_ref(args->strings, 0), strings_len);
+
     struct aux auxp[] = {
-        {AT_NULL, 0},
         {AT_PHDR, e->e_phoff + va},
         {AT_PHENT, e->e_phentsize},
         {AT_PHNUM, e->e_phnum},
         {AT_PAGESZ, PAGESIZE},
         {AT_BASE, interp_load_addr},
-        {AT_RANDOM, u64_from_pointer(randbuf)},
+        {AT_FLAGS, 0},
         {AT_ENTRY, u64_from_pointer(start)},
+        {AT_UID, p->uid},
+        {AT_EUID, p->uid},
+        {AT_GID, p->gid},
+        {AT_EGID, p->gid},
+        {AT_RANDOM, u64_from_pointer(randbuf)},
+        {AT_EXECFN, u64_from_pointer(execfn)},
 #ifdef __aarch64__
         /* This is aarch64 specific because it's needed for arm .so search paths */
         {AT_HWCAP, get_cpu_capabilities()},
@@ -165,29 +192,29 @@ static void build_exec_stack(process p, thread t, Elf64_Ehdr * e, void *start,
 #if defined(__x86_64__)
         {AT_HWCAP2, get_hwcap2()},
 #endif
-        {AT_SYSINFO_EHDR, p->vm->vdso_base}
+        {AT_SYSINFO_EHDR, p->vm->vdso_base},
+        {AT_NULL, 0},
     };
-    for (int i = 0; i < sizeof(auxp) / sizeof(auxp[0]); i++) {
-        spush(p, s, stack_low, auxp[i].val);
-        spush(p, s, stack_low, auxp[i].tag);
+    u64 naux = sizeof(auxp) / sizeof(auxp[0]);
+    u64 words = 1 + args->argc + 1 + args->envc + 1 + 2 * naux;
+    s = pointer_from_u64((u64_from_pointer(s - words)) & ~(STACK_ALIGNMENT - 1));
+    check_s(p, s, stack_low);
+    u64 *w = s;
+    *w++ = args->argc;
+    char *str = strings;
+    for (u64 i = 0; i < args->argc; i++) {
+        *w++ = u64_from_pointer(str);
+        while (*str++);
     }
-    runtime_memcpy(p->saved_aux, s, MIN(sizeof(auxp), sizeof(p->saved_aux)));
-
-    // envp
-    spush(p, s, stack_low, 0);
-    for (int i = envc - 1; i >= 0; i--)
-        spush(p, s, stack_low, envp[i]);
-
-    // argv
-    spush(p, s, stack_low, 0);
-    for (int i = argc - 1; i >= 0; i--)
-        spush(p, s, stack_low, argv[i]);
-
-    // argc
-    spush(p, s, stack_low, argc);
-
-    // stack should be 16-byte aligned
-    assert(pad(u64_from_pointer(s), STACK_ALIGNMENT) == u64_from_pointer(s));
+    *w++ = 0;
+    for (u64 i = 0; i < args->envc; i++) {
+        *w++ = u64_from_pointer(str);
+        while (*str++);
+    }
+    *w++ = 0;
+    runtime_memcpy(w, auxp, sizeof(auxp));
+    zero(p->saved_aux, sizeof(p->saved_aux));
+    runtime_memcpy(p->saved_aux, auxp, MIN(sizeof(auxp), sizeof(p->saved_aux)));
 
     frame_set_stack(thread_frame(t), u64_from_pointer(s));
 }
@@ -433,8 +460,20 @@ static void exec_elf_finish(buffer ex, fsfile f, process kp,
     /* XXX temporarily disable because it breaks ftrace. Will need to 
        eventually deal with this for issue #1269 */
     //current_cpu()->current_thread = (nanos_thread)t;
-    build_exec_stack(proc, t, e, entry, load_range.start, interp_load_addr, root, aslr);
+    struct exec_args args;
+    exec_args_from_manifest(&args, root, general);
+    build_exec_stack(proc, t, e, entry, load_range.start, interp_load_addr, aslr, &args);
     restore_address_space(prev_as);
+    buffer cmdline = allocate_buffer(general, args.argv_bytes);
+    assert(cmdline != INVALID_ADDRESS);
+    assert(buffer_write(cmdline, buffer_ref(args.strings, 0), args.argv_bytes));
+    deallocate_buffer(args.strings);
+    buffer exe = allocate_buffer(general, args.execfn.len + 1);
+    assert(exe != INVALID_ADDRESS);
+    if (args.execfn.len && (args.execfn.ptr[0] != '/'))
+        assert(buffer_write_byte(exe, '/'));
+    assert(buffer_write_sstring(exe, args.execfn));
+    process_set_image_names(proc, cmdline, exe);
 
     if (ingest_symbols) {
         exec_debug("ingesting program symbols\n");
@@ -578,3 +617,580 @@ void exec_elf(process kp, string program_path, status_handler complete)
     io_status_handler sh = closure(general, exec_elf_read, f, b, kp, complete);
     filesystem_read_linear(f, buffer_ref(b, 0), irange(0, length), sh);
 }
+
+#ifdef __x86_64__
+
+#define EXEC_ARG_STRLEN_MAX     (32 * PAGESIZE)
+#define EXEC_PHDRS_MAX_SIZE     PAGESIZE
+#define FXSAVE_FCW_OFFSET       0
+#define FXSAVE_MXCSR_OFFSET     24
+#define X87_FCW_RESET           0x37f
+#define MXCSR_RESET             0x1f80
+
+typedef struct exec_image {
+    fsfile f;
+    buffer hdr;
+    range load_range;
+    sstring interp;
+} *exec_image;
+
+closure_function(2, 2, void, exec_read_complete,
+                 context, ctx, status *, result,
+                 status s, bytes length)
+{
+    *bound(result) = s;
+    context_schedule_return(bound(ctx));
+}
+
+static sysreturn exec_read(fsfile f, buffer b, u64 length)
+{
+    buffer_clear(b);
+    if (!buffer_extend(b, pad(length, PAGESIZE)))
+        return -ENOMEM;
+    context ctx = get_current_context(current_cpu());
+    status s = STATUS_OK;
+    context_pre_suspend(ctx);
+    filesystem_read_linear(f, buffer_ref(b, 0), irangel(0, length),
+                           stack_closure(exec_read_complete, ctx, &s));
+    context_suspend();
+    if (!is_ok(s)) {
+        timm_dealloc(s);
+        return -EIO;
+    }
+    buffer_produce(b, length);
+    return 0;
+}
+
+static boolean exec_ehdr_valid(Elf64_Ehdr *e)
+{
+    return (e->e_ident[EI_MAG0] == ELFMAG0) && (e->e_ident[EI_MAG1] == ELFMAG1) &&
+        (e->e_ident[EI_MAG2] == ELFMAG2) && (e->e_ident[EI_MAG3] == ELFMAG3) &&
+        (e->e_ident[EI_CLASS] == ELFCLASS64) && (e->e_ident[EI_DATA] == ELFDATA2LSB) &&
+        (e->e_ident[EI_VERSION] == EV_CURRENT) && (e->e_machine == EM_X86_64) &&
+        ((e->e_type == ET_EXEC) || (e->e_type == ET_DYN)) &&
+        (e->e_phentsize == sizeof(Elf64_Phdr)) && (e->e_phnum > 0) &&
+        (e->e_phnum * sizeof(Elf64_Phdr) <= EXEC_PHDRS_MAX_SIZE);
+}
+
+static sysreturn exec_image_open(exec_image img, fsfile f, int bad_format)
+{
+    img->f = f;
+    img->interp = sstring_null();
+    img->hdr = allocate_buffer(heap_locked(get_kernel_heaps()), PAGESIZE);
+    if (img->hdr == INVALID_ADDRESS) {
+        img->hdr = 0;
+        return -ENOMEM;
+    }
+    u64 file_len = fsfile_get_length(f);
+    if (file_len < sizeof(Elf64_Ehdr))
+        return -bad_format;
+    sysreturn rv = exec_read(f, img->hdr, MIN(file_len, PAGESIZE));
+    if (rv)
+        return rv;
+    Elf64_Ehdr *e = buffer_ref(img->hdr, 0);
+    if (!exec_ehdr_valid(e))
+        return -bad_format;
+    u64 need = e->e_phoff + e->e_phnum * sizeof(Elf64_Phdr);
+    if ((need < e->e_phoff) || (need > file_len))
+        return -bad_format;
+    for (int pass = 0; pass < 2; pass++) {
+        if (need > buffer_length(img->hdr)) {
+            rv = exec_read(f, img->hdr, need);
+            if (rv)
+                return rv;
+            e = buffer_ref(img->hdr, 0);
+        }
+        foreach_phdr(e, p) {
+            if (p->p_type != PT_INTERP)
+                continue;
+            u64 end = p->p_offset + p->p_filesz;
+            if ((p->p_filesz < 2) || (p->p_filesz > PATH_MAX) || (end < p->p_offset) ||
+                (end > file_len))
+                return -bad_format;
+            need = MAX(need, end);
+        }
+    }
+    range load_range = irange(infinity, 0);
+    foreach_phdr(e, p) {
+        if (p->p_type == PT_INTERP) {
+            char *path = buffer_ref(img->hdr, p->p_offset);
+            if (path[p->p_filesz - 1] != '\0')
+                return -bad_format;
+            img->interp = isstring(path, p->p_filesz - 1);
+        } else if (p->p_type == PT_LOAD) {
+            if ((p->p_memsz < p->p_filesz) || (p->p_vaddr + p->p_memsz < p->p_vaddr) ||
+                (p->p_offset + p->p_filesz < p->p_offset) ||
+                ((p->p_vaddr & PAGEMASK) != (p->p_offset & PAGEMASK)))
+                return -bad_format;
+            load_range.start = MIN(load_range.start, p->p_vaddr);
+            load_range.end = MAX(load_range.end, p->p_vaddr + p->p_memsz);
+        }
+    }
+    if (load_range.start >= load_range.end)
+        return -bad_format;
+    img->load_range = load_range;
+    return 0;
+}
+
+static void exec_image_close(exec_image img)
+{
+    if (img->hdr)
+        deallocate_buffer(img->hdr);
+    if (img->f)
+        fsfile_release(img->f);
+}
+
+static sysreturn exec_copy_strings(exec_args args, char *const *uv, boolean env, u64 limit)
+{
+    if (!uv)
+        return 0;
+    for (u64 i = 0; ; i++) {
+        char *ustr;
+        if (!get_user_value(uv + i, &ustr))
+            return -EFAULT;
+        if (!ustr)
+            return 0;
+        sstring str;
+        if (!fault_in_user_string(ustr, &str))
+            return -EFAULT;
+        if (str.len + 1 > EXEC_ARG_STRLEN_MAX)
+            return -E2BIG;
+        u64 total = buffer_length(args->strings) + str.len + 1 +
+            (args->argc + args->envc + 1) * sizeof(u64);
+        if (total > limit)
+            return -E2BIG;
+        if (!buffer_extend(args->strings, str.len + 1))
+            return -ENOMEM;
+        context ctx = get_current_context(current_cpu());
+        if (context_set_err(ctx))
+            return -EFAULT;
+        boolean ok = exec_args_push(args, str);
+        context_clear_err(ctx);
+        if (!ok)
+            return -ENOMEM;
+        if (env)
+            args->envc++;
+        else
+            args->argc++;
+    }
+}
+
+static sysreturn exec_copy_args(exec_args args, sstring path, char *const *argv,
+                                char *const *envp, u64 stack_size)
+{
+    args->strings = allocate_buffer(heap_locked(get_kernel_heaps()), PAGESIZE);
+    if (args->strings == INVALID_ADDRESS) {
+        args->strings = 0;
+        return -ENOMEM;
+    }
+    args->argc = args->envc = 0;
+    args->execfn = path;
+    u64 limit = MAX(stack_size / 4, EXEC_ARG_STRLEN_MAX);
+    sysreturn rv = exec_copy_strings(args, argv, false, limit);
+    if (rv)
+        return rv;
+    if (args->argc == 0) {
+        if (!exec_args_push(args, ss("")))
+            return -ENOMEM;
+        args->argc = 1;
+    }
+    args->argv_bytes = buffer_length(args->strings);
+    return exec_copy_strings(args, envp, true, limit);
+}
+
+static sysreturn exec_resolve(int dirfd, sstring path, int flags, fsfile *fp, buffer exe)
+{
+    process p = current->p;
+    filesystem fs;
+    inode cwd;
+    tuple n;
+    fsfile fsf = 0;
+    if (path.len == 0) {
+        if (!(flags & AT_EMPTY_PATH))
+            return -ENOENT;
+        fdesc d = fdesc_get(p, dirfd);
+        if (!d)
+            return -EBADF;
+        sysreturn rv = 0;
+        if (d->type != FDESC_TYPE_REGULAR) {
+            rv = -EACCES;
+        } else {
+            file f = (file)d;
+            n = filesystem_get_meta(f->fs, f->n);
+            if (!(file_meta_perms(p, n) & ACCESS_PERM_EXEC))
+                rv = -EACCES;
+            if (n)
+                filesystem_put_meta(f->fs, n);
+            if (!rv) {
+                fsf = f->fsf;
+                fsfile_reserve(fsf);
+                bprintf(exe, "/dev/fd/%d", dirfd);
+            }
+        }
+        fdesc_put(d);
+        *fp = fsf;
+        return rv;
+    }
+    if (path.ptr[0] == '/') {
+        fs = p->root_fs;
+        filesystem_reserve(fs);
+        cwd = fs->get_inode(fs, filesystem_getroot(fs));
+    } else if (dirfd == AT_FDCWD) {
+        process_get_cwd(p, &fs, &cwd);
+    } else {
+        fdesc d = fdesc_get(p, dirfd);
+        if (!d)
+            return -EBADF;
+        if (d->type != FDESC_TYPE_DIRECTORY) {
+            fdesc_put(d);
+            return -ENOTDIR;
+        }
+        fs = ((file)d)->fs;
+        filesystem_reserve(fs);
+        cwd = ((file)d)->n;
+        fdesc_put(d);
+    }
+    if (path.ptr[0] != '/') {
+        char *dir = allocate(heap_locked(get_kernel_heaps()), PATH_MAX);
+        if (dir == INVALID_ADDRESS) {
+            filesystem_release(fs);
+            return -ENOMEM;
+        }
+        int len = file_get_path(fs, cwd, dir, PATH_MAX);
+        if (len > 1) {
+            buffer_write(exe, dir, len - 1);
+            if ((len > 2) || (dir[0] != '/'))
+                buffer_write_byte(exe, '/');
+        } else {
+            buffer_write_byte(exe, '/');
+        }
+        deallocate(heap_locked(get_kernel_heaps()), dir, PATH_MAX);
+    }
+    buffer_write_sstring(exe, path);
+    filesystem lookup_fs = fs;
+    u8 lookup_flags = (flags & AT_SYMLINK_NOFOLLOW) ? 0 : FS_NODE_FOLLOW;
+    sysreturn rv = filesystem_get_node(&lookup_fs, cwd, path, lookup_flags, &n, 0, &fsf);
+    if (rv == 0) {
+        if (is_symlink(n))
+            rv = -ELOOP;
+        else if (!is_regular(n) || !fsf || !(file_meta_perms(p, n) & ACCESS_PERM_EXEC))
+            rv = -EACCES;
+        filesystem_put_node(lookup_fs, n);
+        if (rv && fsf) {
+            fsfile_release(fsf);
+            fsf = 0;
+        }
+    }
+    filesystem_release(fs);
+    *fp = fsf;
+    return rv;
+}
+
+closure_function(1, 1, boolean, exec_kill_thread,
+                 thread, self,
+                 rbnode n)
+{
+    thread t = struct_from_field(n, thread, n);
+    if (t != bound(self)) {
+        struct siginfo si = { .si_signo = SIGKILL, .si_code = SI_KERNEL };
+        deliver_signal_to_thread(t, &si);
+    }
+    return true;
+}
+
+static boolean exec_kill_other_threads(thread t)
+{
+    process p = t->p;
+    spin_lock(&p->threads_lock);
+    boolean doomed = (p->exec_thread && (p->exec_thread != t));
+    if (!doomed)
+        p->exec_thread = t;
+    spin_unlock(&p->threads_lock);
+    if (doomed || p->exiting)
+        return false;
+    spin_lock(&p->threads_lock);
+    rbtree_traverse(p->threads, RB_INORDER, stack_closure(exec_kill_thread, t));
+    spin_unlock(&p->threads_lock);
+    context ctx = get_current_context(current_cpu());
+    while (true) {
+        spin_lock(&p->threads_lock);
+        boolean alone = rbtree_get_count(p->threads) == 1;
+        spin_unlock(&p->threads_lock);
+        if (alone)
+            break;
+        context_pre_suspend(ctx);
+        spin_lock(&p->threads_lock);
+        alone = rbtree_get_count(p->threads) == 1;
+        if (!alone)
+            p->exec_waiter = ctx;
+        spin_unlock(&p->threads_lock);
+        if (alone)
+            context_schedule_return(ctx);
+        context_suspend();
+    }
+    return !p->exiting;
+}
+
+static void exec_become_leader(thread t)
+{
+    process p = t->p;
+    if (t->tid == p->pid)
+        return;
+    spin_lock(&p->threads_lock);
+    rbtree_remove_by_key(p->threads, &t->n);
+    u64 old_tid = t->tid;
+    t->tid = p->pid;
+    init_rbnode(&t->n);
+    assert(rbtree_insert_node(p->threads, &t->n));
+    spin_unlock(&p->threads_lock);
+    deallocate_u64((heap)p->uh->processes, old_tid, 1);
+}
+
+static void exec_reset_frame(thread t, void *entry)
+{
+    context_frame f = thread_frame(t);
+    u64 sp = f[SYSCALL_FRAME_SP];
+    for (int i = FRAME_RAX; i <= FRAME_R15; i++)
+        f[i] = 0;
+    f[SYSCALL_FRAME_SP] = sp;
+    f[SYSCALL_FRAME_PC] = u64_from_pointer(entry);
+    f[FRAME_EFLAGS] = U64_FROM_BIT(EFLAG_INTERRUPT) | U64_FROM_BIT(1);
+    f[FRAME_FSBASE] = 0;
+    f[FRAME_GSBASE] = 0;
+    f[FRAME_SAVED_RAX] = 0;
+    u8 *x = frame_extended(f);
+    zero(x, extended_frame_size);
+    *(u16 *)(x + FXSAVE_FCW_OFFSET) = X87_FCW_RESET;
+    *(u32 *)(x + FXSAVE_MXCSR_OFFSET) = MXCSR_RESET;
+}
+
+static void exec_reset_signals(thread t)
+{
+    process p = t->p;
+    for (int i = 0; i < NSIG; i++) {
+        struct sigaction *sa = &p->sigactions[i];
+        void *handler = sa->sa_handler;
+        zero(sa, sizeof(*sa));
+        if (handler == SIG_IGN)
+            sa->sa_handler = SIG_IGN;
+    }
+    t->signal_stack = 0;
+    t->signal_stack_length = 0;
+}
+
+static void exec_set_name(thread t, buffer exe)
+{
+    int slash = buffer_strrchr(exe, '/');
+    u64 start = (slash < 0) ? 0 : slash + 1;
+    u64 len = MIN(buffer_length(exe) - start, sizeof(t->name) - 1);
+    runtime_memcpy(t->name, buffer_ref(exe, start), len);
+    t->name[len] = '\0';
+}
+
+static void *exec_map_image(process p, exec_image img, u64 load_offset, u32 allowed_flags)
+{
+    elf_map_handler emh = stack_closure(faulting_map, p, get_kernel_heaps(), allowed_flags, img->f);
+    return load_elf(img->hdr, load_offset, emh);
+}
+
+static boolean exec_replace_image(thread t, exec_image img, exec_image interp, exec_args args,
+                                  buffer exe)
+{
+    process p = t->p;
+    heap h = heap_locked(get_kernel_heaps());
+    exec_become_leader(t);
+    if (t->clear_tid) {
+        if (p->vm->refcount.c > 1) {
+            int zero_tid = 0;
+            if (set_user_value(t->clear_tid, zero_tid))
+                futex_wake_one_by_uaddr(p, t->clear_tid);
+        }
+        t->clear_tid = 0;
+    }
+    wake_robust_list(p, t->robust_list);
+    t->robust_list = 0;
+    t->set_child_tid = 0;
+    aio_process_exit(p);
+    posix_timers_delete_all(p);
+
+    process_vm vm = mmap_process_init(p->process_root);
+    process_lock(p);
+    process_vm old_vm = p->vm;
+    p->vm = vm;
+    process_unlock(p);
+    t->context.as = vm->as;
+    use_address_space(vm->as);
+    init_vdso(p);
+    process_vm_release(old_vm);
+    process_vfork_release(p);
+
+    Elf64_Ehdr *e = buffer_ref(img->hdr, 0);
+    boolean aslr = get(p->process_root, sym(noaslr)) == 0;
+    u64 load_offset = 0;
+    if (e->e_type == ET_DYN)
+        load_offset = DEFAULT_PROG_ADDR +
+            (aslr ? get_aslr_offset(PROCESS_PIE_LOAD_ASLR_RANGE) : 0);
+    range load_range = range_add(img->load_range, load_offset);
+    u32 allowed_flags = proc_is_exec_protected(p) ? 0 :
+            (VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE | VMAP_FLAG_EXEC);
+    void *entry = exec_map_image(p, img, load_offset, allowed_flags);
+    if (entry == INVALID_ADDRESS)
+        return false;
+    u64 brk = pad(load_range.end, PAGESIZE) +
+        (aslr ? get_aslr_offset(PROCESS_HEAP_ASLR_RANGE) : 0);
+    vm->brk = pointer_from_u64(brk);
+    vm->heap_base = brk;
+    vm->heap_map = allocate_vmap(p, irange(brk, brk),
+                                 ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
+                                       0, 0, 0, 0));
+    if (vm->heap_map == INVALID_ADDRESS)
+        return false;
+    vm->image = img->f;
+    img->f = 0;
+
+    u64 interp_base = 0;
+    void *start = entry;
+    if (interp->f) {
+        Elf64_Ehdr *ie = buffer_ref(interp->hdr, 0);
+        u64 span = pad(range_span(interp->load_range) + (interp->load_range.start & PAGEMASK),
+                       PAGESIZE);
+        u64 interp_offset = 0;
+        if (ie->e_type == ET_DYN) {
+            interp_base = process_get_virt_range(p, span, PROCESS_VIRTUAL_MMAP_RANGE);
+            if (interp_base == INVALID_PHYSICAL)
+                return false;
+            interp_offset = interp_base - (interp->load_range.start & ~PAGEMASK);
+        } else {
+            interp_base = interp->load_range.start & ~PAGEMASK;
+        }
+        start = exec_map_image(p, interp, interp_offset, allowed_flags);
+        if (start == INVALID_ADDRESS)
+            return false;
+        vm->interp = interp->f;
+        interp->f = 0;
+    }
+    build_exec_stack(p, t, e, entry, load_range.start, interp_base, aslr, args);
+
+    fdtable fdt = fdtable_copy(p->fdtable);
+    if (fdt == INVALID_ADDRESS)
+        return false;
+    process_lock(p);
+    fdtable old_fdt = p->fdtable;
+    p->fdtable = fdt;
+    process_unlock(p);
+    fdtable_release(old_fdt);
+    fdtable_close_on_exec(fdt);
+
+    exec_reset_signals(t);
+    exec_set_name(t, exe);
+    buffer cmdline = allocate_buffer(h, args->argv_bytes);
+    if (cmdline == INVALID_ADDRESS)
+        return false;
+    assert(buffer_write(cmdline, buffer_ref(args->strings, 0), args->argv_bytes));
+    process_set_image_names(p, cmdline, exe);
+    exec_reset_frame(t, start);
+    spin_lock(&p->threads_lock);
+    p->exec_thread = 0;
+    spin_unlock(&p->threads_lock);
+    return true;
+}
+
+static sysreturn exec_internal(int dirfd, const char *upath, char *const *argv, char *const *envp,
+                               int flags)
+{
+    if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW))
+        return -EINVAL;
+    thread t = current;
+    process p = t->p;
+    heap h = heap_locked(get_kernel_heaps());
+    sstring upath_ss;
+    if (!fault_in_user_string(upath, &upath_ss))
+        return -EFAULT;
+    if (upath_ss.len >= PATH_MAX)
+        return -ENAMETOOLONG;
+    buffer path = allocate_buffer(h, upath_ss.len + 1);
+    if (path == INVALID_ADDRESS)
+        return -ENOMEM;
+    buffer exe = 0;
+    struct exec_args args = { 0 };
+    struct exec_image img = { 0 }, interp = { 0 };
+    sysreturn rv;
+    context ctx = get_current_context(current_cpu());
+    if (context_set_err(ctx)) {
+        rv = -EFAULT;
+        goto out;
+    }
+    buffer_write_sstring(path, upath_ss);
+    context_clear_err(ctx);
+    sstring path_ss = buffer_to_sstring(path);
+    rv = exec_copy_args(&args, path_ss, argv, envp, exec_stack_size(p));
+    if (rv)
+        goto out;
+    exe = allocate_buffer(h, PATH_MAX);
+    if (exe == INVALID_ADDRESS) {
+        exe = 0;
+        rv = -ENOMEM;
+        goto out;
+    }
+    fsfile f;
+    rv = exec_resolve(dirfd, path_ss, flags, &f, exe);
+    if (rv)
+        goto out;
+    rv = exec_image_open(&img, f, ENOEXEC);
+    if (rv)
+        goto out;
+    u64 max_load_offset = (((Elf64_Ehdr *)buffer_ref(img.hdr, 0))->e_type == ET_DYN) ?
+        DEFAULT_PROG_ADDR + PROCESS_PIE_LOAD_ASLR_RANGE : 0;
+    if (img.load_range.end + max_load_offset > PROCESS_ELF_LOAD_END) {
+        rv = -ENOEXEC;
+        goto out;
+    }
+    if (!sstring_is_null(img.interp)) {
+        fsfile interp_f = fsfile_open(img.interp);
+        if (!interp_f) {
+            rv = -ENOENT;
+            goto out;
+        }
+        rv = exec_image_open(&interp, interp_f, ELIBBAD);
+        if (rv)
+            goto out;
+        if (!sstring_is_null(interp.interp)) {
+            rv = -ELIBBAD;
+            goto out;
+        }
+    }
+    if (!exec_kill_other_threads(t)) {
+        rv = -EINTR;
+        goto out;
+    }
+    if (!exec_replace_image(t, &img, &interp, &args, exe)) {
+        if (process_is_init(p))
+            halt("execve: failed to load the new image of init\n");
+        process_kill(p, wait_status_signaled(SIGSEGV));
+        rv = -ENOMEM;
+        goto out;
+    }
+    exe = 0;
+    rv = 0;
+  out:
+    exec_image_close(&interp);
+    exec_image_close(&img);
+    if (args.strings)
+        deallocate_buffer(args.strings);
+    if (exe)
+        deallocate_buffer(exe);
+    deallocate_buffer(path);
+    return rv;
+}
+
+sysreturn execve(const char *path, char *const argv[], char *const envp[])
+{
+    return exec_internal(AT_FDCWD, path, argv, envp, 0);
+}
+
+sysreturn execveat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags)
+{
+    return exec_internal(dirfd, path, argv, envp, flags);
+}
+
+#endif

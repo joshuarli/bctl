@@ -112,8 +112,8 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no execve, seccomp, namespaces, SCM data or shared futex keys yet' --klib tmpfs --klib shmem
-	probe_nanos mini_chromium_raw 'no execve or seccomp yet'
+	probe_nanos mini_chromium 'no seccomp, namespaces, credentials, procfs, SCM data, shared futex keys or membarrier yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium_raw 'no seccomp yet'
 }
 
 upstream_known() {
@@ -187,7 +187,7 @@ suite_helium() {
 
 EXTERNAL=$WORK/build/external
 EXTERNAL_BINS='gvisor_dup gvisor_fcntl gvisor_lseek gvisor_fork gvisor_exec gvisor_wait gvisor_socket_unix_cmsg gvisor_socket_unix_peercred'
-EXTERNAL_PASSING_ON_NANOS='gvisor_dup_DupTest_Dup3 gvisor_dup_DupTest_DupClearsCloExec gvisor_fcntl_FcntlTest_DupAfterO_ASYNC gvisor_fcntl_FcntlTest_IndependentDescriptorFlags gvisor_fork_ForkTest_Pipe gvisor_lseek_LseekTest_EtcPasswdDup gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_BasicFDPass gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_FDPassRecvEFAULT gvisor_wait_WaitTest_SignalExit gvisor_wait_WaitTest_WaitidWNOWAIT'
+EXTERNAL_PASSING_ON_NANOS='gvisor_dup_DupTest_Dup3 gvisor_dup_DupTest_DupClearsCloExec gvisor_exec_ExecTest_CloexecNormalFile gvisor_fcntl_FcntlTest_DupAfterO_ASYNC gvisor_fcntl_FcntlTest_IndependentDescriptorFlags gvisor_fork_ForkTest_Pipe gvisor_lseek_LseekTest_EtcPasswdDup gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_BasicFDPass gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_FDPassRecvEFAULT gvisor_wait_WaitTest_SignalExit gvisor_wait_WaitTest_WaitidWNOWAIT'
 
 suite_external() {
 	make -s -C "$ROOT/tests/external"

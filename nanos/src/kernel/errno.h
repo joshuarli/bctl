@@ -41,6 +41,7 @@
 #define ETIME           62      /* Timer expired */
 #define EOVERFLOW       75      /* Value too large for defined data type */
 #define EBADFD          77      /* File descriptor in bad state */
+#define ELIBBAD         80      /* Accessing a corrupted shared library */
 #define ENOTSOCK        88      /* Socket operation on non-socket */
 #define EDESTADDRREQ    89      /* Destination address required */
 #define EMSGSIZE        90      /* Message too long */

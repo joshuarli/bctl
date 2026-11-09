@@ -104,6 +104,8 @@ typedef struct fdtable *fdtable;
 thread create_thread(process, u64 tid);
 boolean exit_thread(thread);
 sysreturn fork_process(thread t, struct clone_args_internal *args);
+sysreturn execve(const char *path, char *const argv[], char *const envp[]);
+sysreturn execveat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags);
 void process_kill(process p, int wait_status);
 process process_get(int pid);
 
@@ -129,11 +131,13 @@ sysreturn process_wait(int idtype, int id, int options, int *wstatus, struct sig
                        struct rusage *ru, boolean report_pid);
 boolean process_is_init(process p);
 void process_teardown(process p);
+void process_vfork_release(process c);
 process_vm mmap_process_fork(process_vm parent, sysreturn *rv);
 void process_vm_free_mappings(process_vm vm);
 fdtable fdtable_alloc(void);
 fdtable fdtable_copy(fdtable parent);
 void unix_timers_process_exit(process p);
+void posix_timers_delete_all(process p);
 void aio_process_exit(process p);
 
 // Taken from the manual pages
@@ -569,6 +573,8 @@ struct process_vm {
     u64               mmap_min_addr;
     struct spinlock   futex_lock;
     table             futices;
+    fsfile            image;
+    fsfile            interp;
 };
 
 struct fdtable {
@@ -616,8 +622,10 @@ typedef struct process {
     struct spinlock   threads_lock;
     struct syscall   *syscalls;
     struct aux        saved_aux[NAUX];
-    char             *saved_args_begin;
-    char             *saved_args_end;
+    buffer            cmdline;
+    buffer            exe;
+    thread            exec_thread;
+    context           exec_waiter;
     struct sigstate   signals;
     struct sigaction  sigactions[NSIG];
     notify_set        signalfds;
@@ -1001,6 +1009,12 @@ static inline boolean thread_in_uninterruptible_sleep(thread t)
         return false;
     unix_context ctx = &t->syscall->uc;
     return ctx->blocked_on == INVALID_ADDRESS;
+}
+
+static inline boolean thread_replaced_by_exec(thread t)
+{
+    thread e = *(thread volatile *)&t->p->exec_thread;
+    return e && (e != t);
 }
 
 static inline boolean thread_is_runnable(thread t)

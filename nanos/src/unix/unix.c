@@ -735,6 +735,10 @@ closure_func_basic(thunk, void, process_free)
     destroy_heap((heap)p->aio_ids);
     deallocate_vector(p->aio);
     deallocate_blockq(p->child_bq);
+    if (p->cmdline)
+        deallocate_buffer(p->cmdline);
+    if (p->exe)
+        deallocate_buffer(p->exe);
     if (p->pid)
         deallocate_u64((heap)p->uh->processes, p->pid, 1);
     deallocate(locked, p, sizeof(struct process));
@@ -773,6 +777,9 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->cutime = p->cstime = 0;
     p->rlimit_nproc_cur = p->rlimit_nproc_max = default_rlimit_nproc();
     p->vfork_waiter = 0;
+    p->exec_thread = 0;
+    p->exec_waiter = 0;
+    p->cmdline = p->exe = 0;
     p->exiting = false;
     p->dumpable = true;
     init_refcount(&p->refcount, 1, init_closure_func(&p->free, thunk, process_free));
@@ -891,7 +898,7 @@ static void process_unlink_child_locked(process c)
     c->parent = 0;
 }
 
-static void process_vfork_release(process c)
+void process_vfork_release(process c)
 {
     process_lock(c);
     thread waiter = c->vfork_waiter;
@@ -929,8 +936,21 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     c->trace = parent->trace;
     runtime_memcpy(c->sigactions, parent->sigactions, sizeof(c->sigactions));
     runtime_memcpy(c->saved_aux, parent->saved_aux, sizeof(c->saved_aux));
-    c->saved_args_begin = parent->saved_args_begin;
-    c->saved_args_end = parent->saved_args_end;
+    heap locked = heap_locked(get_kernel_heaps());
+    process_lock(parent);
+    buffer cmdline = parent->cmdline ? clone_buffer(locked, parent->cmdline) : 0;
+    buffer exe = parent->exe ? clone_buffer(locked, parent->exe) : 0;
+    process_unlock(parent);
+    if ((cmdline == INVALID_ADDRESS) || (exe == INVALID_ADDRESS)) {
+        if (cmdline && (cmdline != INVALID_ADDRESS))
+            deallocate_buffer(cmdline);
+        if (exe && (exe != INVALID_ADDRESS))
+            deallocate_buffer(exe);
+        process_release(c);
+        return -ENOMEM;
+    }
+    c->cmdline = cmdline;
+    c->exe = exe;
 
     spin_lock(&processes_lock);
     if (processes_of_uid_locked(c->uid) >= parent->rlimit_nproc_cur) {

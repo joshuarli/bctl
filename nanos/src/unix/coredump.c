@@ -297,10 +297,11 @@ void coredump(thread t, struct siginfo *si, status_handler complete)
     psinfo->pr_pgrp = t->p->pid;
     psinfo->pr_sid = t->p->pid; // XXX?
 
-    u64 l = p->saved_args_end - p->saved_args_begin;
+    u64 l = p->cmdline ? buffer_length(p->cmdline) : 0;
     if (l >= ELF_PRARGSZ)
         l = ELF_PRARGSZ - 1;
-    runtime_memcpy(psinfo->pr_psargs, p->saved_args_begin, l);
+    if (l)
+        runtime_memcpy(psinfo->pr_psargs, buffer_ref(p->cmdline, 0), l);
     for (int i = 0; i < l; i++) {
         if (psinfo->pr_psargs[i] == 0)
             psinfo->pr_psargs[i] = ' ';

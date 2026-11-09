@@ -235,6 +235,8 @@ void register_thread_syscalls(struct syscall *map)
     register_syscall(map, arch_prctl, arch_prctl);
     register_syscall(map, fork, fork);
     register_syscall(map, vfork, vfork);
+    register_syscall(map, execve, execve);
+    register_syscall(map, execveat, execveat);
 #endif
     register_syscall(map, set_tid_address, set_tid_address);
     register_syscall(map, gettid, gettid);
@@ -358,19 +360,14 @@ closure_func_basic(thunk, void, thread_return)
     if ((t->scheduling_queue != &ci->thread_queue) && (bitmap_get(t->task.affinity, ci->id)))
         t->scheduling_queue = &ci->thread_queue;
     thread_unlock(t);
+    if (thread_replaced_by_exec(t))
+        goto exit;
     while (true) {
         dispatch_signals(t);
         ci->state = cpu_user;
         memory_barrier();
-        if (check_stop_conditions(t)) {
-            process p = t->p;
-            boolean last = exit_thread(t);
-            clear_fault_handler();
-            if (last)
-                process_teardown(p);
-            thread_release(t);
-            runloop();
-        }
+        if (check_stop_conditions(t))
+            goto exit;
         if (!thread_has_dispatchable_signal(t))
             break;
         ci->state = cpu_kernel;
@@ -392,6 +389,16 @@ closure_func_basic(thunk, void, thread_return)
     thread_release(t);
     frame_return(thread_frame(t));
     halt("return from frame_return!\n");
+  exit:
+    {
+        process p = t->p;
+        boolean last = exit_thread(t);
+        clear_fault_handler();
+        if (last)
+            process_teardown(p);
+        thread_release(t);
+        runloop();
+    }
 }
 
 void thread_sleep_interruptible(void)
@@ -609,10 +616,21 @@ thread create_thread(process p, u64 tid)
 NOTRACE
 boolean exit_thread(thread t)
 {
-    spin_lock(&t->p->threads_lock);
-    rbtree_remove_by_key(t->p->threads, &t->n);
-    boolean last = rbtree_get_count(t->p->threads) == 0;
-    spin_unlock(&t->p->threads_lock);
+    process p = t->p;
+    spin_lock(&p->threads_lock);
+    rbtree_remove_by_key(p->threads, &t->n);
+    u64 remaining = rbtree_get_count(p->threads);
+    boolean last = remaining == 0;
+    context exec_waiter = 0;
+    if (remaining == 1) {
+        exec_waiter = p->exec_waiter;
+        p->exec_waiter = 0;
+    }
+    if (p->exec_thread == t)
+        p->exec_thread = 0;
+    spin_unlock(&p->threads_lock);
+    if (exec_waiter)
+        context_schedule_return(exec_waiter);
     t->signal_mask = -1ull;
 
     /* dequeue signals for thread */

@@ -809,7 +809,7 @@ sysreturn alarm(unsigned int seconds)
 }
 #endif
 
-void unix_timers_process_exit(process p)
+void posix_timers_delete_all(process p)
 {
     for (int id = 0; id < vector_length(p->posix_timers); id++) {
         process_lock(p);
@@ -835,6 +835,11 @@ void unix_timers_process_exit(process p)
         spin_unlock(&ut->lock);
         release_unix_timer(ut);
     }
+}
+
+void unix_timers_process_exit(process p)
+{
+    posix_timers_delete_all(p);
     for (int which = 0; which < vector_length(p->itimers); which++) {
         process_lock(p);
         unix_timer ut = vector_get(p->itimers, which);

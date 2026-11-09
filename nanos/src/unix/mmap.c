@@ -1729,6 +1729,10 @@ closure_func_basic(thunk, void, process_vm_free)
     process_vm vm = struct_from_closure(process_vm, free);
     process_vm_free_mappings(vm);
     deallocate_futices(vm);
+    if (vm->image)
+        fsfile_release(vm->image);
+    if (vm->interp)
+        fsfile_release(vm->interp);
     deallocate_rangemap(vm->vmaps, 0);
     deallocate(mmap_info.h, vm->virtual, sizeof(struct vmap_heap));
     address_space_release(vm->as);
@@ -1764,6 +1768,7 @@ static process_vm process_vm_alloc(address_space as, u64 mmap_min_addr, boolean 
     vm->brk = 0;
     vm->heap_base = 0;
     vm->vdso_base = 0;
+    vm->image = vm->interp = 0;
     init_refcount(&vm->refcount, 1, init_closure_func(&vm->free, thunk, process_vm_free));
     return vm;
   fail_vmh:
@@ -1988,6 +1993,12 @@ process_vm mmap_process_fork(process_vm parent, sysreturn *rv)
     child->vdso_base = parent->vdso_base;
     child->brk = parent->brk;
     child->heap_base = parent->heap_base;
+    child->image = parent->image;
+    if (child->image)
+        fsfile_reserve(child->image);
+    child->interp = parent->interp;
+    if (child->interp)
+        fsfile_reserve(child->interp);
     rangemap_foreach(parent->vmaps, n) {
         vmap vm = (vmap)n;
         if (!vmap_inherited(parent, vm))
