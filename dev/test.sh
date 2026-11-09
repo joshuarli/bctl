@@ -49,6 +49,7 @@ suite_harness() {
 		case_verdict kill_race "$smp" 200 PASS '' "$FIXTURES/kill_race"
 		case_verdict exec_contract "$smp" 60 PASS '' --file "$FIXTURES/exec_contract_helper:/exec_contract_helper" \
 			--file "$SYSROOT/lib/ld-musl-x86_64.so.1:/lib/ld-musl-x86_64.so.1" "$FIXTURES/exec_contract"
+		case_verdict shmem_xproc "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/shmem_xproc"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
