@@ -1428,7 +1428,7 @@ static int allocate_sock(process p, int af, int type, u32 flags, boolean alloc_f
     s->ipv6only = 0;
     set_lwip_error(s, ERR_OK);
     if (alloc_fd) {
-        fd = s->sock.fd = allocate_fd(p, s);
+        fd = s->sock.fd = allocate_fd(p, s, fd_flags_from_open_flags(flags));
         if (fd == INVALID_PHYSICAL) {
             apply(s->sock.f.close, 0, io_completion_ignore);
             return -ENFILE;
@@ -1500,7 +1500,7 @@ sysreturn socket(int domain, int type, int protocol)
     boolean nonblock = false;
     if (check_flags_and_clear(flags, SOCK_NONBLOCK))
         nonblock = true;
-
+    u32 cloexec = flags & SOCK_CLOEXEC;
     flags &= ~SOCK_CLOEXEC;
 
     if ((flags & ~SOCK_TYPE_MASK) != 0)
@@ -1516,7 +1516,7 @@ sysreturn socket(int domain, int type, int protocol)
             return -ENOMEM;
 
         int fd = allocate_tcp_sock(current->p, domain, p,
-            nonblock ? SOCK_NONBLOCK : 0);
+            (nonblock ? SOCK_NONBLOCK : 0) | cloexec);
         net_debug("new tcp fd %d, pcb %p\n", fd, p);
         return fd;
     } else if (type == SOCK_DGRAM) {
@@ -1526,7 +1526,7 @@ sysreturn socket(int domain, int type, int protocol)
             return -ENOMEM;
 
         int fd = allocate_udp_sock(current->p, domain, p,
-            nonblock ? SOCK_NONBLOCK : 0);
+            (nonblock ? SOCK_NONBLOCK : 0) | cloexec);
         net_debug("new udp fd %d, pcb %p\n", fd, p);
         return fd;
     }
@@ -2309,7 +2309,7 @@ closure_function(5, 1, sysreturn, accept_bh,
         tcp_unref(tcp_lw);
     }
 
-    rv = allocate_fd(child->p, child);
+    rv = allocate_fd(child->p, child, fd_flags_from_open_flags(bound(flags)));
     if (rv == INVALID_PHYSICAL)
         rv = -ENFILE;
     else

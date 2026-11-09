@@ -305,7 +305,7 @@ sysreturn inotify_init1(int flags)
     list_init(&in->watches);
     in->watch_count = 0;
     in->next_wd = 0;
-    sysreturn fd = allocate_fd(current->p, in);
+    sysreturn fd = allocate_fd(current->p, in, fd_flags_from_open_flags(flags));
     if (fd == INVALID_PHYSICAL) {
         apply(in->f.close, 0, io_completion_ignore);
         return -EMFILE;

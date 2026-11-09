@@ -829,7 +829,7 @@ int unix_file_new(filesystem fs, tuple md, int type, int flags, fsfile fsf)
     }
     filesystem_reserve(fs);
     process p = t->p;
-    int fd = allocate_fd(p, f);
+    int fd = allocate_fd(p, f, fd_flags_from_open_flags(flags));
     if (fd == INVALID_PHYSICAL) {
         file_release(f);
         return -EMFILE;
@@ -983,7 +983,7 @@ sysreturn dup(int fd)
 {
     fdesc f = resolve_fd(current->p, fd);
 
-    int newfd = allocate_fd(current->p, f);
+    int newfd = allocate_fd(current->p, f, 0);
     if (newfd == INVALID_PHYSICAL) {
         fdesc_put(f);
         return set_syscall_error(current, EMFILE);
@@ -992,29 +992,33 @@ sysreturn dup(int fd)
     return newfd;
 }
 
-sysreturn dup2(int oldfd, int newfd)
+static sysreturn dup_to(int oldfd, int newfd, u32 fd_flags)
 {
     process p = current->p;
     fdesc f = resolve_fd(p, oldfd);
-    if (newfd != oldfd) {
-        fdesc newf = fdesc_get(p, newfd);
-        if (newf) {
-            spin_lock(&p->fdtable->lock);
-            assert(vector_set(p->fdtable->files, newfd, f));
-            spin_unlock(&p->fdtable->lock);
-            if (fetch_and_add(&newf->refcnt, -2) == 2) {
-                if (newf->close)
-                    apply(newf->close, get_current_context(current_cpu()), io_completion_ignore);
-            }
-        } else {
-            newfd = allocate_fd_gte(p, newfd, f);
-            if (newfd == INVALID_PHYSICAL) {
-                fdesc_put(f);
-                return -EMFILE;
-            }
+    if (newfd == oldfd) {
+        fdesc_put(f);
+        return newfd;
+    }
+    fdesc newf = fdtable_replace(p->fdtable, newfd, f, fd_flags);
+    if (newf) {
+        if (fetch_and_add(&newf->refcnt, -1) == 1) {
+            if (newf->close)
+                apply(newf->close, get_current_context(current_cpu()), io_completion_ignore);
+        }
+    } else {
+        newfd = allocate_fd_gte(p, newfd, f, fd_flags);
+        if (newfd == INVALID_PHYSICAL) {
+            fdesc_put(f);
+            return -EMFILE;
         }
     }
     return newfd;
+}
+
+sysreturn dup2(int oldfd, int newfd)
+{
+    return dup_to(oldfd, newfd, 0);
 }
 
 sysreturn dup3(int oldfd, int newfd, int flags)
@@ -1022,9 +1026,7 @@ sysreturn dup3(int oldfd, int newfd, int flags)
     if ((newfd == oldfd) || (flags & ~O_CLOEXEC)) {
         return -EINVAL;
     }
-
-    /* Setting file descriptor flags on newfd is not supported. */
-    return dup2(oldfd, newfd);
+    return dup_to(oldfd, newfd, fd_flags_from_open_flags(flags));
 }
 
 sysreturn mkdir(const char *pathname, int mode)
@@ -2042,10 +2044,10 @@ sysreturn fcntl(int fd, int cmd, s64 arg)
     fdesc_lock(f);
     switch (cmd) {
     case F_GETFD:
-        rv = f->flags & O_CLOEXEC;
+        rv = fdtable_get_fd_flags(current->p->fdtable, fd);
         break;
     case F_SETFD:
-        f->flags = (f->flags & ~O_CLOEXEC) | (arg & O_CLOEXEC);
+        rv = fdtable_set_fd_flags(current->p->fdtable, fd, arg & FD_CLOEXEC);
         break;
     case F_GETFL:
         rv = f->flags & ~O_CLOEXEC;
@@ -2070,8 +2072,10 @@ sysreturn fcntl(int fd, int cmd, s64 arg)
     case F_DUPFD_CLOEXEC: {
         if (arg < 0) {
             rv = -EINVAL;
+            break;
         }
-        int newfd = allocate_fd_gte(current->p, arg, f);
+        int newfd = allocate_fd_gte(current->p, arg, f,
+                                    (cmd == F_DUPFD_CLOEXEC) ? FD_CLOEXEC : 0);
         if (newfd == INVALID_PHYSICAL) {
             rv = -EMFILE;
         } else {

@@ -577,6 +577,7 @@ struct fdtable {
     struct spinlock   lock;
     id_heap           fdallocator;
     vector            files;
+    bitmap            cloexec;
 };
 
 enum process_state {
@@ -824,12 +825,21 @@ static inline void fdesc_notify_events(fdesc f)
     notify_dispatch(f->ns, events);
 }
 
-u64 allocate_fd(process p, void *f);
+static inline u32 fd_flags_from_open_flags(int flags)
+{
+    return (flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+}
+
+u64 allocate_fd(process p, void *f, u32 fd_flags);
 
 /* Allocate a file descriptor greater than or equal to min. */
-u64 allocate_fd_gte(process p, u64 min, void *f);
+u64 allocate_fd_gte(process p, u64 min, void *f, u32 fd_flags);
 
 void deallocate_fd(process p, int fd);
+fdesc fdtable_replace(fdtable fdt, int fd, fdesc f, u32 fd_flags);
+int fdtable_get_fd_flags(fdtable fdt, int fd);
+int fdtable_set_fd_flags(fdtable fdt, int fd, u32 fd_flags);
+void fdtable_close_on_exec(fdtable fdt);
 
 void init_vdso(process p);
 

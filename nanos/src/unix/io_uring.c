@@ -473,7 +473,7 @@ sysreturn io_uring_setup(unsigned int entries, struct io_uring_params *params)
     params->cq_off.cqes = (u8 *)iour->cqes - (u8 *)iour->rings;
     runtime_memset((u8 *)params->cq_off.resv, 0, sizeof(params->cq_off.resv));
     context_clear_err(ctx);
-    ret = allocate_fd(current->p, iour);
+    ret = allocate_fd(current->p, iour, FD_CLOEXEC);
     if (ret == INVALID_PHYSICAL) {
         apply(iour->f.close, 0, io_completion_ignore);
         return -EMFILE;

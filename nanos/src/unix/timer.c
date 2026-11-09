@@ -353,7 +353,7 @@ sysreturn timerfd_create(int clockid, int flags)
     ut->f.events = init_closure_func(&ut->info.timerfd.events, fdesc_events, timerfd_events);
     ut->f.close = init_closure_func(&ut->info.timerfd.close, fdesc_close, timerfd_close);
 
-    u64 fd = allocate_fd(current->p, ut);
+    u64 fd = allocate_fd(current->p, ut, fd_flags_from_open_flags(flags));
     if (fd == INVALID_PHYSICAL) {
         apply(ut->f.close, 0, io_completion_ignore);
         return -EMFILE;

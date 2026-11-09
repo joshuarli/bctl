@@ -347,7 +347,7 @@ sysreturn epoll_create(int flags)
     init_fdesc(e->h, &e->f, FDESC_TYPE_EPOLL);
     e->f.events = init_closure_func(&e->fd_events, fdesc_events, epoll_events);
     e->f.close = init_closure_func(&e->close, fdesc_close, epoll_close);
-    u64 fd = allocate_fd(current->p, e);
+    u64 fd = allocate_fd(current->p, e, fd_flags_from_open_flags(flags));
     if (fd == INVALID_PHYSICAL) {
         apply(e->f.close, 0, io_completion_ignore);
         return -EMFILE;

@@ -587,7 +587,7 @@ closure_function(5, 1, sysreturn, vsock_accept_bh,
         return blockq_block_required((unix_context)ctx, bqflags);
     }
     process p = is_syscall_context(ctx) ? ((syscall_context)ctx)->t->p : ((process_context)ctx)->p;
-    child->sock.fd = allocate_fd(p, child);
+    child->sock.fd = allocate_fd(p, child, fd_flags_from_open_flags(bound(flags)));
     if (child->sock.fd == INVALID_PHYSICAL) {
         apply(child->sock.f.close, 0, io_completion_ignore);
         rv = -ENFILE;
@@ -752,7 +752,7 @@ static sysreturn vsock_alloc(heap h, int type, int flags, boolean alloc_fd, vsoc
     s->flags = 0;
     s->state = VSOCK_STATE_INIT;
     if (alloc_fd) {
-        s->sock.fd = allocate_fd(current->p, s);
+        s->sock.fd = allocate_fd(current->p, s, fd_flags_from_open_flags(s->sock.f.flags));
         if (s->sock.fd == INVALID_PHYSICAL) {
             apply(s->sock.f.close, 0, io_completion_ignore);
             return -ENFILE;

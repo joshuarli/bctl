@@ -28,7 +28,12 @@ unix_heaps get_unix_heaps()
     return u_heap;
 }
 
-u64 allocate_fd(process p, void *f)
+static void fdtable_install_locked(fdtable fdt, u64 fd, u32 fd_flags)
+{
+    bitmap_set(fdt->cloexec, fd, (fd_flags & FD_CLOEXEC) != 0);
+}
+
+u64 allocate_fd(process p, void *f, u32 fd_flags)
 {
     fdtable fdt = p->fdtable;
     spin_lock(&fdt->lock);
@@ -40,13 +45,15 @@ u64 allocate_fd(process p, void *f)
     if (!vector_set(fdt->files, fd, f)) {
         deallocate_u64((heap)fdt->fdallocator, fd, 1);
         fd = INVALID_PHYSICAL;
+    } else {
+        fdtable_install_locked(fdt, fd, fd_flags);
     }
   out:
     spin_unlock(&fdt->lock);
     return fd;
 }
 
-u64 allocate_fd_gte(process p, u64 min, void *f)
+u64 allocate_fd_gte(process p, u64 min, void *f, u32 fd_flags)
 {
     fdtable fdt = p->fdtable;
     spin_lock(&fdt->lock);
@@ -58,10 +65,45 @@ u64 allocate_fd_gte(process p, u64 min, void *f)
         if (!vector_set(fdt->files, fd, f)) {
             deallocate_u64((heap)fdt->fdallocator, fd, 1);
             fd = INVALID_PHYSICAL;
+        } else {
+            fdtable_install_locked(fdt, fd, fd_flags);
         }
     }
     spin_unlock(&fdt->lock);
     return fd;
+}
+
+fdesc fdtable_replace(fdtable fdt, int fd, fdesc f, u32 fd_flags)
+{
+    spin_lock(&fdt->lock);
+    fdesc old = vector_get(fdt->files, fd);
+    if (old) {
+        assert(vector_set(fdt->files, fd, f));
+        fdtable_install_locked(fdt, fd, fd_flags);
+    }
+    spin_unlock(&fdt->lock);
+    return old;
+}
+
+int fdtable_get_fd_flags(fdtable fdt, int fd)
+{
+    spin_lock(&fdt->lock);
+    int flags = !vector_get(fdt->files, fd) ? -EBADF :
+                (bitmap_get(fdt->cloexec, fd) ? FD_CLOEXEC : 0);
+    spin_unlock(&fdt->lock);
+    return flags;
+}
+
+int fdtable_set_fd_flags(fdtable fdt, int fd, u32 fd_flags)
+{
+    spin_lock(&fdt->lock);
+    int rv = 0;
+    if (vector_get(fdt->files, fd))
+        fdtable_install_locked(fdt, fd, fd_flags);
+    else
+        rv = -EBADF;
+    spin_unlock(&fdt->lock);
+    return rv;
 }
 
 void deallocate_fd(process p, int fd)
@@ -69,8 +111,25 @@ void deallocate_fd(process p, int fd)
     fdtable fdt = p->fdtable;
     spin_lock(&fdt->lock);
     assert(vector_set(fdt->files, fd, 0));
+    bitmap_set(fdt->cloexec, fd, 0);
     deallocate_u64((heap)fdt->fdallocator, fd, 1);
     spin_unlock(&fdt->lock);
+}
+
+void fdtable_close_on_exec(fdtable fdt)
+{
+    for (int fd = 0; fd < vector_length(fdt->files); fd++) {
+        spin_lock(&fdt->lock);
+        fdesc f = bitmap_get(fdt->cloexec, fd) ? vector_get(fdt->files, fd) : 0;
+        if (f) {
+            assert(vector_set(fdt->files, fd, 0));
+            bitmap_set(fdt->cloexec, fd, 0);
+            deallocate_u64((heap)fdt->fdallocator, fd, 1);
+        }
+        spin_unlock(&fdt->lock);
+        if (f)
+            fdesc_put(f);
+    }
 }
 
 closure_func_basic(thunk, void, fdtable_free)
@@ -90,6 +149,7 @@ closure_func_basic(thunk, void, fdtable_free)
     heap locked = heap_locked(get_kernel_heaps());
     destroy_heap((heap)fdt->fdallocator);
     deallocate_vector(fdt->files);
+    deallocate_bitmap(fdt->cloexec);
     deallocate(locked, fdt, sizeof(*fdt));
 }
 
@@ -104,6 +164,12 @@ fdtable fdtable_alloc(void)
         goto fail;
     fdt->files = allocate_vector(locked, 64);
     if (fdt->files == INVALID_ADDRESS) {
+        destroy_heap((heap)fdt->fdallocator);
+        goto fail;
+    }
+    fdt->cloexec = allocate_bitmap(locked, locked, infinity);
+    if (fdt->cloexec == INVALID_ADDRESS) {
+        deallocate_vector(fdt->files);
         destroy_heap((heap)fdt->fdallocator);
         goto fail;
     }
@@ -131,6 +197,7 @@ fdtable fdtable_copy(fdtable parent)
             fdtable_release(fdt);
             return INVALID_ADDRESS;
         }
+        fdtable_install_locked(fdt, fd, bitmap_get(parent->cloexec, fd) ? FD_CLOEXEC : 0);
         fetch_and_add(&f->refcnt, 1);
     }
     spin_unlock(&parent->lock);
@@ -560,9 +627,9 @@ static boolean create_stdfiles(unix_heaps uh, process p)
         msg_err("Unix: failed to allocate standard files");
         return false;
     }
-    assert(allocate_fd(p, in) == 0);
-    assert(allocate_fd(p, out) == 1);
-    assert(allocate_fd(p, err) == 2);
+    assert(allocate_fd(p, in, 0) == 0);
+    assert(allocate_fd(p, out, 0) == 1);
+    assert(allocate_fd(p, err, 0) == 2);
 
     /* Writes to in, reads from out and err act as if handled by the
        out and in files respectively. */

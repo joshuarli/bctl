@@ -211,7 +211,7 @@ int do_eventfd2(unsigned int count, int flags)
 
     efd->counter = count;
     efd->io_event = false;
-    efd->fd = allocate_fd(current->p, efd);
+    efd->fd = allocate_fd(current->p, efd, fd_flags_from_open_flags(flags));
     if (efd->fd == INVALID_PHYSICAL) {
         msg_err("eventfd: failed to allocate fd");
         apply(efd->f.close, 0, io_completion_ignore);

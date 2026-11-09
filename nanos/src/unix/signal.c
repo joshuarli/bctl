@@ -961,7 +961,7 @@ static sysreturn allocate_signalfd(const u64 *mask, int flags)
     sfd->f.events = init_closure_func(&sfd->events, fdesc_events, signalfd_events);
     sfd->f.close = init_closure_func(&sfd->close, fdesc_close, signalfd_close);
 
-    u64 fd = allocate_fd(current->p, sfd);
+    u64 fd = allocate_fd(current->p, sfd, fd_flags_from_open_flags(flags));
     if (fd == INVALID_PHYSICAL) {
         apply(sfd->f.close, 0, io_completion_ignore);
         return -EMFILE;

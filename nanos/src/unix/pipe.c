@@ -327,7 +327,7 @@ int do_pipe2(int fds[2], int flags)
             apply(reader->f.close, 0, io_completion_ignore);
             return -ENOMEM;
         }
-        reader->fd = fds[PIPE_READ] = allocate_fd(pipe->proc, reader);
+        reader->fd = fds[PIPE_READ] = allocate_fd(pipe->proc, reader, fd_flags_from_open_flags(flags));
         if (reader->fd == INVALID_PHYSICAL) {
             msg_err("pipe: failed to allocate fd");
             apply(reader->f.close, 0, io_completion_ignore);
@@ -354,7 +354,7 @@ int do_pipe2(int fds[2], int flags)
             fdesc_put(&pipe->files[PIPE_READ].f);
             return -ENOMEM;
         }
-        writer->fd = fds[PIPE_WRITE] = allocate_fd(pipe->proc, writer);
+        writer->fd = fds[PIPE_WRITE] = allocate_fd(pipe->proc, writer, fd_flags_from_open_flags(flags));
         if (writer->fd == INVALID_PHYSICAL) {
             msg_err("pipe: failed to allocate fd");
             apply(writer->f.close, 0, io_completion_ignore);
