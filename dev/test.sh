@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0..."; }
+usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -145,6 +145,41 @@ suite_upstream() {
 	grep '^upstream: ' "$WORK/tmp/upstream.txt"
 }
 
+HELIUM_ROOT=$WORK/helium/rootfs
+HELIUM_INIT=$WORK/build/helium/guest_init
+
+helium_prepare() {
+	"$ROOT/dev/helium-rootfs.sh" >/dev/null
+	make -s -C "$ROOT/tests/helium"
+}
+
+suite_helium_native() {
+	helium_prepare
+	run=$WORK/run/helium-native
+	rm -rf "$run"
+	mkdir -p "$run"
+	line=$("$ROOT/dev/run.sh" --native --timeout 180 --label helium "$HELIUM_INIT" --root="$HELIUM_ROOT" \
+		--profile="$run/profile" --rundir="$run/xdg" --logdir="$run/logs" || :)
+	case $line in
+	"RUN verdict=PASS "*) printf 'PASS      helium             native  %s\n' "$(jaq -r '[.tests[] | .name] | join(",")' "${line##* dir=}/result.json")" ;;
+	*) failures=$((failures + 1)); printf 'FAIL      helium             native  %s\n' "$line" ;;
+	esac
+}
+
+suite_helium() {
+	helium_prepare
+	"$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
+		--dir /profile --dir /run/xdg --dir /tmp --dir /dev/shm \
+		--arg --root=/ --arg --profile=/profile --arg --rundir=/run/xdg --arg --logdir=/tmp "$HELIUM_INIT" >/dev/null
+	line=$("$ROOT/dev/run.sh" --mem 2G --smp 2 --timeout 240 --label helium "$IMAGES/helium.img" || :)
+	dir=${line##* dir=}
+	pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
+	case $line in
+	"RUN verdict=PASS "*) failures=$((failures + 1)); printf 'FAIL      helium             nanos   known-red case now passes: delete its known-red marker\n' ;;
+	*) printf 'KNOWN-RED helium             nanos   %s/11 records pass; guest_init cannot spawn the compositor without fork\n          log: %s\n' "$pass" "$dir" ;;
+	esac
+}
+
 [ $# -ge 1 ] || usage
 mkdir -p "$IMAGES"
 "$ROOT/dev/build.sh" >/dev/null
@@ -155,6 +190,8 @@ for suite in "$@"; do
 	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;
 	upstream) suite_upstream ;;
+	helium-native) suite_helium_native ;;
+	helium) suite_helium ;;
 	g0) suite_harness; suite_upstream; "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	*) usage ;;

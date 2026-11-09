@@ -3,7 +3,7 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--trace] BINARY"
+	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--dir GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--trace] BINARY"
 }
 
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
@@ -22,6 +22,16 @@ while [ $# -gt 0 ]; do
 	--root) root=$2; shift 2 ;;
 	--lib) printf '/lib/%s\t%s\n' "$(basename -- "$2")" "$(realpath "$2")" >>"$files"; shift 2 ;;
 	--file) printf '%s\t%s\n' "${2#*:}" "$(realpath "${2%%:*}")" >>"$files"; shift 2 ;;
+	--tree)
+		src=$(realpath "${2%%:*}") dst=${2#*:}
+		[ -d "$src" ] || die "--tree source is not a directory: $src"
+		find "$src" \( -type f -o -type l \) | while IFS= read -r f; do
+			[ -e "$f" ] || continue
+			[ ! -d "$f" ] || continue
+			printf '%s/%s\t%s\n' "${dst%/}" "${f#"$src"/}" "$(realpath "$f")"
+		done >>"$files"
+		shift 2 ;;
+	--dir) printf '%s\t\n' "$2" >>"$files"; shift 2 ;;
 	--arg) printf '%s\n' "$2" >>"$args"; shift 2 ;;
 	--env) printf '%s\n' "$2" >>"$envs"; shift 2 ;;
 	--klib) klibs="$klibs $2"; shift 2 ;;
@@ -71,14 +81,14 @@ manifest=$(mktemp "$WORK/tmp/manifest.XXXXXX")
 trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 {
 	sort -u "$files" | awk -F '\t' '
-		function emit(dir, indent,   n, i, k, child) {
+		function emit(dir, indent,   n, i, k, child, list, path) {
 			n = 0
 			for (k in kids) if (index(k, dir SUBSEP) == 1) { child = substr(k, length(dir) + 2); list[++n] = child }
 			for (i = 1; i <= n; i++) {
 				child = list[i]
 				delete list[i]
 				path = (dir == "" ? "" : dir "/") child
-				if (path in host) printf "%s%s:(contents:(host:%s))\n", indent, child, host[path]
+				if (path in host && host[path] != "") printf "%s%s:(contents:(host:%s))\n", indent, child, host[path]
 				else { printf "%s%s:(children:(\n", indent, child; emit(path, indent "  "); printf "%s))\n", indent }
 			}
 		}
