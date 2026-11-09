@@ -54,13 +54,31 @@ pub fn reconcile(sessions: &[SessionRecord], attempts: &[AttemptRecord], machine
 mod tests {
     use super::*;
     use crate::names::{Generation, ProfileName};
-    use crate::state::AttemptState;
+    use crate::state::{AttemptState, Resources};
+
+    fn attempt(id: i64, state: AttemptState) -> AttemptRecord {
+        AttemptRecord {
+            id,
+            run: 1,
+            number: 1,
+            state,
+            outcome: None,
+            detail: None,
+            pid: None,
+            started_ms: 0,
+            ended_ms: None,
+            progress: None,
+            interaction: None,
+        }
+    }
 
     fn session(name: &str, state: SessionState, generation: u64) -> SessionRecord {
         SessionRecord {
             name: SessionName::new(name).unwrap(),
             profile: ProfileName::new("personal").unwrap(),
             image: "ref-alpine-chromium".into(),
+            resources: Resources::DEFAULT,
+            allow_private: Vec::new(),
             state,
             generation: Generation(generation),
             endpoints: None,
@@ -115,10 +133,11 @@ mod tests {
     #[test]
     fn live_attempts_are_interrupted_and_finished_ones_untouched() {
         let attempts = [
-            AttemptRecord { id: 1, run: 1, state: AttemptState::Running },
-            AttemptRecord { id: 2, run: 1, state: AttemptState::NeedsInteraction },
-            AttemptRecord { id: 3, run: 2, state: AttemptState::Succeeded },
-            AttemptRecord { id: 4, run: 3, state: AttemptState::Starting },
+            attempt(1, AttemptState::Running),
+            attempt(2, AttemptState::NeedsInteraction),
+            attempt(3, AttemptState::Succeeded),
+            attempt(4, AttemptState::Starting),
+            attempt(5, AttemptState::Paused),
         ];
         let actions = reconcile(&[], &attempts, &[]);
         assert_eq!(actions, [Action::Interrupt { attempt: 1 }, Action::Interrupt { attempt: 2 }, Action::Interrupt { attempt: 4 }]);

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use bctl_core::{Action, Endpoints, Generation, MachineName, ProfileName, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile};
+use bctl_core::{Action, Endpoints, Resources, Generation, MachineName, ProfileName, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile};
 use bctl_runtime_smolvm::{InputSupport, LaunchSpec, RuntimeError, SmolVm};
 use miniserde::json;
 
@@ -120,7 +120,7 @@ impl Daemon {
             let store = self.store();
             reconcile(&store.sessions().map_err(|e| e.to_string())?, &store.attempts().map_err(|e| e.to_string())?, &machines)
         };
-        self.store().apply(&plan).map_err(|e| e.to_string())?;
+        self.store().apply(&plan, now_ms()).map_err(|e| e.to_string())?;
         for action in plan {
             match action {
                 Action::StopStale { machine } => {
@@ -272,7 +272,7 @@ impl Daemon {
             ));
         }
         if existing.is_none() {
-            self.store().create_session(name, &profile, &image).map_err(store_failure)?;
+            self.store().create_session(name, &profile, &image, Resources::DEFAULT, &[]).map_err(store_failure)?;
         }
         loop {
             let record = self.store().session(name).map_err(store_failure)?;
@@ -464,6 +464,11 @@ impl Daemon {
             }
         }
     }
+}
+
+pub(crate) fn now_ms() -> i64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn free_port() -> std::io::Result<u16> {

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use bctl_core::{ProfileName, SessionName};
+use bctl_core::{ProfileName, Resources, SessionName};
 use serde::Deserialize;
 
 use crate::BrowserName;
@@ -117,17 +117,17 @@ impl RawBrowser {
         if self.image.is_empty() {
             return Err(invalid(&format!("{base}.image"), "must not be empty"));
         }
-        let viewport = self.viewport.unwrap_or([1280, 800]);
+        let viewport = self.viewport.unwrap_or(Resources::DEFAULT.viewport);
         for (axis, edge) in ["width", "height"].into_iter().zip(viewport) {
             if !(320..=7680).contains(&edge) {
                 return Err(invalid(&format!("{base}.viewport"), &format!("{axis} must be between 320 and 7680")));
             }
         }
-        let cpus = self.cpus.unwrap_or(2);
+        let cpus = self.cpus.unwrap_or(Resources::DEFAULT.cpus);
         if !(1..=16).contains(&cpus) {
             return Err(invalid(&format!("{base}.cpus"), "must be between 1 and 16"));
         }
-        let memory_mib = self.memory_mib.unwrap_or(4096);
+        let memory_mib = self.memory_mib.unwrap_or(Resources::DEFAULT.memory_mib);
         if !(1024..=65536).contains(&memory_mib) {
             return Err(invalid(&format!("{base}.memory_mib"), "must be between 1024 and 65536"));
         }

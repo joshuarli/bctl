@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bctl_core::{InvalidName, ProfileName, SessionName};
+use bctl_core::{InvalidName, ProfileName, Resources, SessionName};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -82,6 +82,12 @@ pub struct ResolvedJob {
     pub cpus: u16,
     pub memory_mib: u32,
     pub kind: ResolvedKind,
+}
+
+impl ResolvedJob {
+    pub fn resources(&self) -> Resources {
+        Resources { viewport: self.viewport, cpus: self.cpus, memory_mib: self.memory_mib }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -5,7 +5,12 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, pa
 
 use crate::names::{Generation, MachineName, ProfileName, SessionName};
 use crate::reconcile::Action;
-use crate::state::{AttemptRecord, AttemptState, Endpoints, SessionRecord, SessionState};
+use crate::state::{
+    AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Interaction, LiveState, NewRun, Outcome, Progress, Resources, RunKind, RunRecord, SessionRecord,
+    SessionState,
+};
+
+const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS profiles (
@@ -18,21 +23,48 @@ CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'failed')),
     generation INTEGER NOT NULL CHECK (generation >= 0),
     vnc_port INTEGER CHECK (vnc_port BETWEEN 1 AND 65535),
-    failure TEXT
+    failure TEXT,
+    viewport_width INTEGER NOT NULL,
+    viewport_height INTEGER NOT NULL,
+    cpus INTEGER NOT NULL,
+    memory_mib INTEGER NOT NULL,
+    allow_private TEXT NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS one_writer_per_profile
     ON sessions(profile) WHERE state IN ('starting', 'ready', 'stopping');
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY,
     session TEXT NOT NULL REFERENCES sessions(name),
-    job TEXT NOT NULL
+    job TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('exec', 'grab')),
+    profile TEXT NOT NULL,
+    image TEXT NOT NULL,
+    image_digest TEXT NOT NULL,
+    browser_version TEXT NOT NULL,
+    config TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    created_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY,
     run INTEGER NOT NULL REFERENCES runs(id),
-    state TEXT NOT NULL CHECK (state IN ('starting', 'running', 'needs-interaction', 'succeeded', 'failed', 'cancelled', 'interrupted'))
+    number INTEGER NOT NULL CHECK (number >= 1),
+    state TEXT NOT NULL CHECK (state IN ('starting', 'running', 'needs-interaction', 'paused', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+    outcome TEXT,
+    detail TEXT,
+    pid INTEGER,
+    started_ms INTEGER NOT NULL,
+    ended_ms INTEGER,
+    pages_done INTEGER,
+    pages_queued INTEGER,
+    assets_done INTEGER,
+    interaction_reason TEXT,
+    interaction_url TEXT,
+    UNIQUE (run, number)
 ) STRICT;
 ";
+
+const LIVE_STATES: &str = "('starting', 'running', 'needs-interaction')";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -42,6 +74,9 @@ pub enum StoreError {
     ProfileBusy { profile: ProfileName, holder: SessionName },
     NotStartable { session: SessionName, state: SessionState },
     StaleGeneration { session: SessionName, expected: Generation },
+    NoSuchRun(i64),
+    NotResumable { run: i64, state: AttemptState },
+    StaleAttempt(i64),
     Corrupt(String),
 }
 
@@ -54,6 +89,9 @@ impl fmt::Display for StoreError {
             StoreError::ProfileBusy { profile, holder } => write!(f, "profile {profile} is in use by session {holder}"),
             StoreError::NotStartable { session, state } => write!(f, "session {session} is {}, not stopped or failed", state.as_str()),
             StoreError::StaleGeneration { session, expected } => write!(f, "session {session} is no longer at generation {expected}"),
+            StoreError::NoSuchRun(run) => write!(f, "no run {run}"),
+            StoreError::NotResumable { run, state } => write!(f, "run {run} is {}, not paused or interrupted", state.as_str()),
+            StoreError::StaleAttempt(attempt) => write!(f, "attempt {attempt} is no longer live"),
             StoreError::Corrupt(what) => write!(f, "state database holds an invalid value: {what}"),
         }
     }
@@ -84,16 +122,36 @@ impl Store {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "foreign_keys", true)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch(SCHEMA)?;
+        migrate(&db)?;
         Ok(Store { db })
     }
 
-    pub fn create_session(&mut self, name: &SessionName, profile: &ProfileName, image: &str) -> Result<SessionRecord, StoreError> {
+    pub fn create_session(
+        &mut self,
+        name: &SessionName,
+        profile: &ProfileName,
+        image: &str,
+        resources: Resources,
+        allow_private: &[AllowedRange],
+    ) -> Result<SessionRecord, StoreError> {
+        let mut allow: Vec<&str> = allow_private.iter().map(AllowedRange::as_str).collect();
+        allow.sort_unstable();
+        allow.dedup();
         let tx = self.db.transaction()?;
         tx.execute("INSERT OR IGNORE INTO profiles (name) VALUES (?1)", [profile.as_str()])?;
         let inserted = tx.execute(
-            "INSERT OR IGNORE INTO sessions (name, profile, image, state, generation) VALUES (?1, ?2, ?3, 'stopped', 0)",
-            params![name.as_str(), profile.as_str(), image],
+            "INSERT OR IGNORE INTO sessions (name, profile, image, state, generation, viewport_width, viewport_height, cpus, memory_mib, allow_private)
+             VALUES (?1, ?2, ?3, 'stopped', 0, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                name.as_str(),
+                profile.as_str(),
+                image,
+                resources.viewport[0],
+                resources.viewport[1],
+                resources.cpus,
+                resources.memory_mib,
+                allow.join(" ")
+            ],
         )?;
         if inserted == 0 {
             return Err(StoreError::SessionExists(name.clone()));
@@ -105,7 +163,7 @@ impl Store {
     pub fn session(&self, name: &SessionName) -> Result<SessionRecord, StoreError> {
         self.db
             .query_row(
-                "SELECT name, profile, image, state, generation, failure, vnc_port FROM sessions WHERE name = ?1",
+                &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE name = ?1"),
                 [name.as_str()],
                 raw_session,
             )
@@ -115,7 +173,7 @@ impl Store {
     }
 
     pub fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError> {
-        let mut stmt = self.db.prepare("SELECT name, profile, image, state, generation, failure, vnc_port FROM sessions ORDER BY name")?;
+        let mut stmt = self.db.prepare(&format!("SELECT {SESSION_COLUMNS} FROM sessions ORDER BY name"))?;
         let raw = stmt.query_map([], raw_session)?.collect::<Result<Vec<_>, _>>()?;
         raw.into_iter().map(session_record).collect()
     }
@@ -125,7 +183,7 @@ impl Store {
         let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let session = tx
             .query_row(
-                "SELECT name, profile, image, state, generation, failure, vnc_port FROM sessions WHERE name = ?1",
+                &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE name = ?1"),
                 [name.as_str()],
                 raw_session,
             )
@@ -202,36 +260,137 @@ impl Store {
             .collect()
     }
 
-    pub fn create_run(&mut self, session: &SessionName, job: &str) -> Result<(i64, i64), StoreError> {
-        let tx = self.db.transaction()?;
-        tx.execute("INSERT INTO runs (session, job) VALUES (?1, ?2)", params![session.as_str(), job])?;
-        let run = tx.last_insert_rowid();
-        tx.execute("INSERT INTO attempts (run, state) VALUES (?1, 'starting')", [run])?;
+    /// Records a run and its first attempt, `starting`, before any process exists.
+    pub fn create_run(&mut self, run: &NewRun) -> Result<(i64, i64), StoreError> {
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO runs (session, job, kind, profile, image, image_digest, browser_version, config, input_digest, created_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                run.session.as_str(),
+                run.job,
+                run.kind.as_str(),
+                run.profile.as_str(),
+                run.image,
+                run.image_digest,
+                run.browser_version,
+                run.config,
+                run.input_digest,
+                run.created_ms
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.execute("INSERT INTO attempts (run, number, state, started_ms) VALUES (?1, 1, 'starting', ?2)", params![id, run.created_ms])?;
         let attempt = tx.last_insert_rowid();
         tx.commit()?;
-        Ok((run, attempt))
+        Ok((id, attempt))
     }
 
-    pub fn set_attempt(&mut self, attempt: i64, state: AttemptState) -> Result<(), StoreError> {
-        self.db.execute("UPDATE attempts SET state = ?2 WHERE id = ?1", params![attempt, state.as_str()])?;
+    /// Starts the next attempt of a run whose current attempt is paused or interrupted.
+    pub fn begin_attempt(&mut self, run: i64, now_ms: i64) -> Result<i64, StoreError> {
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (number, state): (u32, String) = tx
+            .query_row("SELECT number, state FROM attempts WHERE run = ?1 ORDER BY number DESC LIMIT 1", [run], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()?
+            .ok_or(StoreError::NoSuchRun(run))?;
+        let state = parse_attempt_state(&state)?;
+        if !matches!(state, AttemptState::Paused | AttemptState::Interrupted) {
+            return Err(StoreError::NotResumable { run, state });
+        }
+        tx.execute("INSERT INTO attempts (run, number, state, started_ms) VALUES (?1, ?2, 'starting', ?3)", params![run, number + 1, now_ms])?;
+        let attempt = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(attempt)
+    }
+
+    pub fn set_pid(&mut self, attempt: i64, pid: u32) -> Result<(), StoreError> {
+        self.update_live(attempt, "UPDATE attempts SET pid = ?2 WHERE id = ?1", params![attempt, pid])
+    }
+
+    /// Moves a live attempt between live states; `interaction` is kept only while it needs one.
+    pub fn set_live(&mut self, attempt: i64, state: LiveState, interaction: Option<&Interaction>) -> Result<(), StoreError> {
+        let interaction = interaction.filter(|_| state == LiveState::NeedsInteraction);
+        self.update_live(
+            attempt,
+            "UPDATE attempts SET state = ?2, interaction_reason = ?3, interaction_url = ?4 WHERE id = ?1",
+            params![attempt, AttemptState::from(state).as_str(), interaction.map(|i| &i.reason), interaction.map(|i| &i.url)],
+        )
+    }
+
+    pub fn set_progress(&mut self, attempt: i64, progress: Progress) -> Result<(), StoreError> {
+        self.update_live(
+            attempt,
+            "UPDATE attempts SET pages_done = ?2, pages_queued = ?3, assets_done = ?4 WHERE id = ?1",
+            params![attempt, progress.pages_done, progress.pages_queued, progress.assets_done],
+        )
+    }
+
+    /// Ends a live attempt. An attempt that is no longer live is left as it is and reported stale.
+    pub fn finish_attempt(&mut self, attempt: i64, end: &AttemptEnd, now_ms: i64) -> Result<(), StoreError> {
+        let (state, outcome, detail) = match end {
+            AttemptEnd::Paused { detail } => (AttemptState::Paused, None, Some(detail.as_str())),
+            AttemptEnd::Ended { outcome, detail } => (outcome.attempt_state(), Some(outcome.as_str()), detail.as_deref()),
+        };
+        self.update_live(
+            attempt,
+            "UPDATE attempts SET state = ?2, outcome = ?3, detail = ?4, ended_ms = ?5, interaction_reason = NULL, interaction_url = NULL WHERE id = ?1",
+            params![attempt, state.as_str(), outcome, detail, now_ms],
+        )
+    }
+
+    /// Ends a paused attempt for good, so its run can no longer be resumed.
+    pub fn cancel_paused(&mut self, attempt: i64, now_ms: i64) -> Result<(), StoreError> {
+        let changed = self.db.execute(
+            "UPDATE attempts SET state = 'cancelled', outcome = 'cancelled', ended_ms = ?2 WHERE id = ?1 AND state = 'paused'",
+            params![attempt, now_ms],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::StaleAttempt(attempt));
+        }
         Ok(())
     }
 
+    fn update_live(&mut self, attempt: i64, sql: &str, params: impl rusqlite::Params) -> Result<(), StoreError> {
+        let guarded = format!("{sql} AND state IN {LIVE_STATES}");
+        if self.db.execute(&guarded, params)? == 0 {
+            return Err(StoreError::StaleAttempt(attempt));
+        }
+        Ok(())
+    }
+
+    pub fn run(&self, id: i64) -> Result<RunRecord, StoreError> {
+        let spec = self
+            .db
+            .query_row(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"), [id], raw_run)
+            .optional()?
+            .ok_or(StoreError::NoSuchRun(id))?;
+        self.assemble(spec)
+    }
+
+    /// Every run, newest first, optionally only those of one session.
+    pub fn runs(&self, session: Option<&SessionName>) -> Result<Vec<RunRecord>, StoreError> {
+        let mut stmt = self.db.prepare(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE ?1 IS NULL OR session = ?1 ORDER BY id DESC"))?;
+        let raw = stmt.query_map([session.map(SessionName::as_str)], raw_run)?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(|spec| self.assemble(spec)).collect()
+    }
+
+    fn assemble(&self, (id, spec): (i64, RawRun)) -> Result<RunRecord, StoreError> {
+        let mut stmt = self.db.prepare(&format!("SELECT {ATTEMPT_COLUMNS} FROM attempts WHERE run = ?1 ORDER BY number"))?;
+        let mut attempts = stmt.query_map([id], raw_attempt)?.collect::<Result<Vec<_>, _>>()?.into_iter().map(attempt_record).collect::<Result<Vec<_>, _>>()?;
+        let current = attempts.pop().ok_or_else(|| StoreError::Corrupt(format!("run {id} has no attempts")))?;
+        Ok(RunRecord { id, spec: run_spec(spec)?, previous: attempts, current })
+    }
+
     pub fn attempts(&self) -> Result<Vec<AttemptRecord>, StoreError> {
-        let mut stmt = self.db.prepare("SELECT id, run, state FROM attempts ORDER BY id")?;
-        let raw = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        raw.into_iter()
-            .map(|(id, run, state)| {
-                let state = AttemptState::parse(&state).ok_or_else(|| StoreError::Corrupt(format!("attempt state {state:?}")))?;
-                Ok(AttemptRecord { id, run, state })
-            })
-            .collect()
+        let mut stmt = self.db.prepare(&format!("SELECT {ATTEMPT_COLUMNS} FROM attempts ORDER BY id"))?;
+        let raw = stmt.query_map([], raw_attempt)?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(attempt_record).collect()
     }
 
     /// Applies the record-keeping half of a reconciliation plan. Stopping stale machines is the caller's effect.
-    pub fn apply(&mut self, actions: &[Action]) -> Result<(), StoreError> {
+    pub fn apply(&mut self, actions: &[Action], now_ms: i64) -> Result<(), StoreError> {
         let tx = self.db.transaction()?;
         for action in actions {
             match action {
@@ -242,7 +401,13 @@ impl Store {
                     )?;
                 }
                 Action::Interrupt { attempt } => {
-                    tx.execute("UPDATE attempts SET state = 'interrupted' WHERE id = ?1", [attempt])?;
+                    tx.execute(
+                        &format!(
+                            "UPDATE attempts SET state = 'interrupted', outcome = 'interrupted', detail = ?2, ended_ms = ?3,
+                             interaction_reason = NULL, interaction_url = NULL WHERE id = ?1 AND state IN {LIVE_STATES}"
+                        ),
+                        params![attempt, INTERRUPTED_DETAIL, now_ms],
+                    )?;
                 }
                 Action::Adopt { .. } | Action::StopStale { .. } => {}
             }
@@ -252,22 +417,216 @@ impl Store {
     }
 }
 
-type RawSession = (String, String, String, String, i64, Option<String>, Option<u16>);
+const INTERRUPTED_DETAIL: &str = "bctl stopped while this attempt was live; its effects are unknown and it was not retried";
 
-fn raw_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+const SESSION_COLUMNS: &str = "name, profile, image, state, generation, failure, vnc_port, viewport_width, viewport_height, cpus, memory_mib, allow_private";
+
+struct RawSession {
+    name: String,
+    profile: String,
+    image: String,
+    state: String,
+    generation: i64,
+    failure: Option<String>,
+    vnc_port: Option<u16>,
+    resources: Resources,
+    allow_private: String,
 }
 
-fn session_record((name, profile, image, state, generation, failure, vnc_port): RawSession) -> Result<SessionRecord, StoreError> {
+fn raw_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
+    Ok(RawSession {
+        name: row.get(0)?,
+        profile: row.get(1)?,
+        image: row.get(2)?,
+        state: row.get(3)?,
+        generation: row.get(4)?,
+        failure: row.get(5)?,
+        vnc_port: row.get(6)?,
+        resources: Resources { viewport: [row.get(7)?, row.get(8)?], cpus: row.get(9)?, memory_mib: row.get(10)? },
+        allow_private: row.get(11)?,
+    })
+}
+
+fn session_record(raw: RawSession) -> Result<SessionRecord, StoreError> {
+    let RawSession { name, profile, image, state, generation, failure, vnc_port, resources, allow_private } = raw;
     Ok(SessionRecord {
         name: parse_session_name(&name)?,
-        profile: ProfileName::new(&profile).map_err(|e| StoreError::Corrupt(e.to_string()))?,
+        profile: parse_profile_name(&profile)?,
         image,
+        resources,
+        allow_private: allow_private.split_whitespace().map(|range| AllowedRange::parse(range).map_err(StoreError::Corrupt)).collect::<Result<_, _>>()?,
         state: SessionState::parse(&state).ok_or_else(|| StoreError::Corrupt(format!("session state {state:?}")))?,
         generation: Generation(u64::try_from(generation).map_err(|_| StoreError::Corrupt(format!("generation {generation}")))?),
         endpoints: vnc_port.map(|vnc_port| Endpoints { vnc_port }),
         failure,
     })
+}
+
+const RUN_COLUMNS: &str = "id, session, job, kind, profile, image, image_digest, browser_version, config, input_digest, created_ms";
+
+struct RawRun {
+    session: String,
+    job: Option<String>,
+    kind: String,
+    profile: String,
+    image: String,
+    image_digest: String,
+    browser_version: String,
+    config: String,
+    input_digest: String,
+    created_ms: i64,
+}
+
+fn raw_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, RawRun)> {
+    Ok((
+        row.get(0)?,
+        RawRun {
+            session: row.get(1)?,
+            job: row.get(2)?,
+            kind: row.get(3)?,
+            profile: row.get(4)?,
+            image: row.get(5)?,
+            image_digest: row.get(6)?,
+            browser_version: row.get(7)?,
+            config: row.get(8)?,
+            input_digest: row.get(9)?,
+            created_ms: row.get(10)?,
+        },
+    ))
+}
+
+fn run_spec(raw: RawRun) -> Result<NewRun, StoreError> {
+    Ok(NewRun {
+        session: parse_session_name(&raw.session)?,
+        job: raw.job,
+        kind: RunKind::parse(&raw.kind).ok_or_else(|| StoreError::Corrupt(format!("run kind {:?}", raw.kind)))?,
+        profile: parse_profile_name(&raw.profile)?,
+        image: raw.image,
+        image_digest: raw.image_digest,
+        browser_version: raw.browser_version,
+        config: raw.config,
+        input_digest: raw.input_digest,
+        created_ms: raw.created_ms,
+    })
+}
+
+const ATTEMPT_COLUMNS: &str =
+    "id, run, number, state, outcome, detail, pid, started_ms, ended_ms, pages_done, pages_queued, assets_done, interaction_reason, interaction_url";
+
+struct RawAttempt {
+    id: i64,
+    run: i64,
+    number: u32,
+    state: String,
+    outcome: Option<String>,
+    detail: Option<String>,
+    pid: Option<u32>,
+    started_ms: i64,
+    ended_ms: Option<i64>,
+    progress: (Option<u32>, Option<u32>, Option<u32>),
+    interaction: (Option<String>, Option<String>),
+}
+
+fn raw_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAttempt> {
+    Ok(RawAttempt {
+        id: row.get(0)?,
+        run: row.get(1)?,
+        number: row.get(2)?,
+        state: row.get(3)?,
+        outcome: row.get(4)?,
+        detail: row.get(5)?,
+        pid: row.get(6)?,
+        started_ms: row.get(7)?,
+        ended_ms: row.get(8)?,
+        progress: (row.get(9)?, row.get(10)?, row.get(11)?),
+        interaction: (row.get(12)?, row.get(13)?),
+    })
+}
+
+fn attempt_record(raw: RawAttempt) -> Result<AttemptRecord, StoreError> {
+    let corrupt = |what: &str| StoreError::Corrupt(format!("attempt {}: {what}", raw.id));
+    let state = parse_attempt_state(&raw.state)?;
+    let outcome = raw.outcome.as_deref().map(|o| Outcome::parse(o).ok_or_else(|| corrupt(&format!("outcome {o:?}")))).transpose()?;
+    if outcome.map(Outcome::attempt_state) != (!state.is_live() && state != AttemptState::Paused).then_some(state) {
+        return Err(corrupt(&format!("state {} does not match outcome {outcome:?}", state.as_str())));
+    }
+    let progress = match raw.progress {
+        (Some(pages_done), Some(pages_queued), Some(assets_done)) => Some(Progress { pages_done, pages_queued, assets_done }),
+        (None, None, None) => None,
+        _ => return Err(corrupt("partial progress")),
+    };
+    let interaction = match raw.interaction {
+        (Some(reason), Some(url)) => Some(Interaction { reason, url }),
+        (None, None) => None,
+        _ => return Err(corrupt("partial interaction")),
+    };
+    Ok(AttemptRecord {
+        id: raw.id,
+        run: raw.run,
+        number: raw.number,
+        state,
+        outcome,
+        detail: raw.detail,
+        pid: raw.pid,
+        started_ms: raw.started_ms,
+        ended_ms: raw.ended_ms,
+        progress,
+        interaction,
+    })
+}
+
+fn parse_attempt_state(state: &str) -> Result<AttemptState, StoreError> {
+    AttemptState::parse(state).ok_or_else(|| StoreError::Corrupt(format!("attempt state {state:?}")))
+}
+
+fn parse_profile_name(name: &str) -> Result<ProfileName, StoreError> {
+    ProfileName::new(name).map_err(|e| StoreError::Corrupt(e.to_string()))
+}
+
+/// Brings a database from any earlier bctl up to `SCHEMA_VERSION`. Before version 1 no command created runs, so
+/// a pre-1 `runs` table can only be empty; one that is not is reported rather than dropped.
+fn migrate(db: &Connection) -> Result<(), StoreError> {
+    let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > SCHEMA_VERSION {
+        return Err(StoreError::Corrupt(format!("schema version {version} is newer than this bctl understands ({SCHEMA_VERSION})")));
+    }
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+    let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
+        db.query_row("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2", [table, column], |row| row.get::<_, i64>(0)).map(|n| n > 0)
+    };
+    let exists = |table: &str| -> rusqlite::Result<bool> {
+        db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |row| row.get::<_, i64>(0)).map(|n| n > 0)
+    };
+    db.execute_batch("BEGIN IMMEDIATE")?;
+    let migrated = (|| -> Result<(), StoreError> {
+        if exists("runs")? && !has_column("runs", "kind")? {
+            let rows: i64 = db.query_row("SELECT (SELECT COUNT(*) FROM runs) + (SELECT COUNT(*) FROM attempts)", [], |row| row.get(0))?;
+            if rows > 0 {
+                return Err(StoreError::Corrupt(format!("{rows} run rows from a schema before version 1 cannot be migrated")));
+            }
+            db.execute_batch("DROP TABLE attempts; DROP TABLE runs;")?;
+        }
+        if exists("sessions")? && !has_column("sessions", "cpus")? {
+            let Resources { viewport: [width, height], cpus, memory_mib } = Resources::DEFAULT;
+            db.execute_batch(&format!(
+                "ALTER TABLE sessions ADD COLUMN viewport_width INTEGER NOT NULL DEFAULT {width};
+                 ALTER TABLE sessions ADD COLUMN viewport_height INTEGER NOT NULL DEFAULT {height};
+                 ALTER TABLE sessions ADD COLUMN cpus INTEGER NOT NULL DEFAULT {cpus};
+                 ALTER TABLE sessions ADD COLUMN memory_mib INTEGER NOT NULL DEFAULT {memory_mib};
+                 ALTER TABLE sessions ADD COLUMN allow_private TEXT NOT NULL DEFAULT '';"
+            ))?;
+        }
+        db.execute_batch(SCHEMA)?;
+        db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        Ok(())
+    })();
+    match migrated {
+        Ok(()) => db.execute_batch("COMMIT")?,
+        Err(_) => db.execute_batch("ROLLBACK")?,
+    }
+    migrated
 }
 
 fn parse_session_name(name: &str) -> Result<SessionName, StoreError> {
@@ -293,9 +652,24 @@ mod tests {
     fn store_with(sessions: &[(&str, &str)]) -> Store {
         let mut store = Store::open_in_memory().unwrap();
         for (session, profile) in sessions {
-            store.create_session(&name(session), &ProfileName::new(profile).unwrap(), "ref-alpine-chromium").unwrap();
+            store.create_session(&name(session), &ProfileName::new(profile).unwrap(), "ref-alpine-chromium", Resources::DEFAULT, &[]).unwrap();
         }
         store
+    }
+
+    fn new_run(session: &str) -> NewRun {
+        NewRun {
+            session: name(session),
+            job: Some("mirror-docs".into()),
+            kind: RunKind::Grab,
+            profile: ProfileName::new("personal").unwrap(),
+            image: "ref-alpine-chromium".into(),
+            image_digest: "sha256:0".into(),
+            browser_version: "Chrome/142".into(),
+            config: "{}".into(),
+            input_digest: "sha256:1".into(),
+            created_ms: 10,
+        }
     }
 
     #[test]
@@ -343,15 +717,16 @@ mod tests {
         let mut store = store_with(&[("research", "personal")]);
         store.begin_start(&name("research"), PORTS).unwrap();
         store.transition(&name("research"), Generation(1), SessionState::Ready, None).unwrap();
-        let (_, attempt) = store.create_run(&name("research"), "mirror-docs").unwrap();
-        store.set_attempt(attempt, AttemptState::Running).unwrap();
+        let (run, attempt) = store.create_run(&new_run("research")).unwrap();
+        store.set_live(attempt, LiveState::Running, None).unwrap();
 
         let machines = [MachineObservation { name: "bctl-research-1".into(), running: true }];
         let plan = reconcile(&store.sessions().unwrap(), &store.attempts().unwrap(), &machines);
-        store.apply(&plan).unwrap();
+        store.apply(&plan, 20).unwrap();
 
         assert_eq!(store.session(&name("research")).unwrap().state, SessionState::Ready);
-        assert_eq!(store.attempts().unwrap()[0].state, AttemptState::Interrupted);
+        let current = store.run(run).unwrap().current;
+        assert_eq!((current.state, current.outcome, current.ended_ms), (AttemptState::Interrupted, Some(Outcome::Interrupted), Some(20)));
         let again = reconcile(&store.sessions().unwrap(), &store.attempts().unwrap(), &machines);
         assert!(again.iter().all(|a| !matches!(a, Action::Interrupt { .. })), "{again:?}");
     }
@@ -361,7 +736,7 @@ mod tests {
         let mut store = store_with(&[("a", "personal"), ("b", "personal")]);
         store.begin_start(&name("a"), PORTS).unwrap();
         let plan = reconcile(&store.sessions().unwrap(), &[], &[]);
-        store.apply(&plan).unwrap();
+        store.apply(&plan, 0).unwrap();
         let a = store.session(&name("a")).unwrap();
         assert_eq!(a.state, SessionState::Failed);
         assert!(a.failure.unwrap().contains("vanished"));
@@ -375,12 +750,73 @@ mod tests {
         let path = dir.join("state.db");
         {
             let mut store = Store::open(&path).unwrap();
-            store.create_session(&name("research"), &ProfileName::new("personal").unwrap(), "img").unwrap();
+            store.create_session(&name("research"), &ProfileName::new("personal").unwrap(), "img", Resources::DEFAULT, &[]).unwrap();
             store.begin_start(&name("research"), PORTS).unwrap();
         }
         let store = Store::open(&path).unwrap();
         let session = store.session(&name("research")).unwrap();
         assert_eq!((session.generation, session.endpoints), (Generation(1), Some(PORTS)));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_paused_or_interrupted_run_gets_another_attempt() {
+        let mut store = store_with(&[("research", "personal")]);
+        let (run, first) = store.create_run(&new_run("research")).unwrap();
+        assert!(matches!(store.begin_attempt(run, 11), Err(StoreError::NotResumable { state: AttemptState::Starting, .. })));
+
+        store.finish_attempt(first, &AttemptEnd::Paused { detail: "paused at a page boundary".into() }, 12).unwrap();
+        let second = store.begin_attempt(run, 13).unwrap();
+        store.set_live(second, LiveState::NeedsInteraction, Some(&Interaction { reason: "challenge".into(), url: "http://a/".into() })).unwrap();
+        let record = store.run(run).unwrap();
+        assert_eq!((record.previous.len(), record.current.number, record.current.state), (1, 2, AttemptState::NeedsInteraction));
+        assert_eq!(record.current.interaction.as_ref().map(|i| i.url.as_str()), Some("http://a/"));
+        assert_eq!((record.previous[0].state, record.previous[0].outcome), (AttemptState::Paused, None));
+
+        store.finish_attempt(second, &AttemptEnd::Ended { outcome: Outcome::LoginRequired, detail: None }, 14).unwrap();
+        let current = store.run(run).unwrap().current;
+        assert_eq!((current.state, current.outcome, current.interaction), (AttemptState::Failed, Some(Outcome::LoginRequired), None));
+        assert!(matches!(store.begin_attempt(run, 15), Err(StoreError::NotResumable { state: AttemptState::Failed, .. })));
+    }
+
+    #[test]
+    fn a_report_about_an_ended_attempt_changes_nothing() {
+        let mut store = store_with(&[("research", "personal")]);
+        let (run, attempt) = store.create_run(&new_run("research")).unwrap();
+        store.finish_attempt(attempt, &AttemptEnd::Ended { outcome: Outcome::Cancelled, detail: None }, 12).unwrap();
+        let progress = Progress { pages_done: 1, pages_queued: 0, assets_done: 0 };
+        assert!(matches!(store.set_progress(attempt, progress), Err(StoreError::StaleAttempt(_))));
+        assert!(matches!(store.set_live(attempt, LiveState::Running, None), Err(StoreError::StaleAttempt(_))));
+        let late = AttemptEnd::Ended { outcome: Outcome::Succeeded, detail: None };
+        assert!(matches!(store.finish_attempt(attempt, &late, 13), Err(StoreError::StaleAttempt(_))));
+        assert_eq!(store.run(run).unwrap().current.outcome, Some(Outcome::Cancelled));
+    }
+
+    const PRE_RUNS_SCHEMA: &str = "
+        CREATE TABLE profiles (name TEXT PRIMARY KEY) STRICT;
+        CREATE TABLE sessions (name TEXT PRIMARY KEY, profile TEXT NOT NULL REFERENCES profiles(name), image TEXT NOT NULL,
+            state TEXT NOT NULL, generation INTEGER NOT NULL, cdp_port INTEGER, vnc_port INTEGER, failure TEXT) STRICT;
+        CREATE TABLE runs (id INTEGER PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(name), job TEXT NOT NULL) STRICT;
+        CREATE TABLE attempts (id INTEGER PRIMARY KEY, run INTEGER NOT NULL REFERENCES runs(id), state TEXT NOT NULL) STRICT;
+        INSERT INTO profiles VALUES ('personal');
+        INSERT INTO sessions VALUES ('research', 'personal', 'img', 'stopped', 3, NULL, NULL, NULL);
+    ";
+
+    #[test]
+    fn a_database_from_before_run_records_keeps_its_sessions_with_default_resources() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(PRE_RUNS_SCHEMA).unwrap();
+        let mut store = Store::init(db).unwrap();
+        let session = store.session(&name("research")).unwrap();
+        assert_eq!((session.generation, session.resources), (Generation(3), Resources::DEFAULT));
+        store.create_run(&new_run("research")).unwrap();
+    }
+
+    #[test]
+    fn run_rows_from_before_run_records_are_refused_not_dropped() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(PRE_RUNS_SCHEMA).unwrap();
+        db.execute_batch("INSERT INTO runs VALUES (1, 'research', 'old'); INSERT INTO attempts VALUES (1, 1, 'running');").unwrap();
+        assert!(matches!(Store::init(db), Err(StoreError::Corrupt(_))));
     }
 }
