@@ -11,8 +11,8 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
-#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -32,7 +32,6 @@ static int passed, failed;
 static const char *volatile current_check = "";
 static uid_t map_uid;
 static gid_t map_gid;
-static int nanos;
 static pid_t outside_pid;
 
 static void record(const char *name, int ok, const char *fmt, ...)
@@ -74,12 +73,6 @@ static int wait_status(pid_t pid)
 static int child_exit_code(int status)
 {
 	return WIFEXITED(status) ? WEXITSTATUS(status) : 1000 + status;
-}
-
-static int is_nanos(void)
-{
-	struct utsname u;
-	return !uname(&u) && !strcmp(u.sysname, "Nanos");
 }
 
 static ssize_t read_file(const char *path, char *buf, size_t len)
@@ -178,26 +171,6 @@ static int dir_has(const char *path, const char *name)
 	return found;
 }
 
-static int proc_numeric_entries(char names[][16], int max)
-{
-	DIR *d = opendir("/proc");
-	if (!d)
-		return -1;
-	struct dirent *e;
-	int n = 0;
-	while ((e = readdir(d))) {
-		char *end;
-		long v = strtol(e->d_name, &end, 10);
-		if (*end || v <= 0)
-			continue;
-		if (n < max)
-			snprintf(names[n], 16, "%s", e->d_name);
-		n++;
-	}
-	closedir(d);
-	return n;
-}
-
 static volatile sig_atomic_t usr1_pid, usr1_code, chld_pid, chld_code;
 
 static void on_usr1(int sig, siginfo_t *si, void *uc)
@@ -287,35 +260,15 @@ static int body_init(void)
 		int nf = split_tabs(v, fields, 8);
 		if (nf < 1 || strcmp(fields[nf - 1], "1"))
 			_exit(28);
-		if (nanos) {
-			char link[32] = "";
-			ssize_t n = readlink("/proc/self", link, sizeof link - 1);
-			if (n <= 0)
-				_exit(29);
-			link[n] = 0;
-			if (strcmp(link, "1"))
-				_exit(30);
-			if (nf != 1 || strcmp(fields[0], "1"))
-				_exit(31);
-			if (!field_equals("/proc/self/status", "Pid", "1") ||
-			    !field_equals("/proc/self/status", "Tgid", "1") ||
-			    !field_equals("/proc/self/status", "PPid", "0"))
-				_exit(32);
-			char names[8][16];
-			int ne = proc_numeric_entries(names, 8);
-			if (ne != 1 || strcmp(names[0], "1"))
-				_exit(33);
-		} else {
-			char want[32];
-			if (!field_equals("/proc/self/status", "Pid", fields[0]) ||
-			    !field_equals("/proc/self/status", "Tgid", fields[0]))
-				_exit(34);
-			snprintf(want, sizeof want, "%d", (int)outside_pid);
-			if (!field_equals("/proc/self/status", "PPid", want))
-				_exit(35);
-			if (!dir_has("/proc", want))
-				_exit(36);
-		}
+		char want[32];
+		if (!field_equals("/proc/self/status", "Pid", fields[0]) ||
+		    !field_equals("/proc/self/status", "Tgid", fields[0]))
+			_exit(34);
+		snprintf(want, sizeof want, "%d", (int)outside_pid);
+		if (!field_equals("/proc/self/status", "PPid", want))
+			_exit(35);
+		if (!dir_has("/proc", want))
+			_exit(36);
 		_exit(0);
 	}
 	siginfo_t si;
@@ -426,18 +379,8 @@ static int body_nested(void)
 		int nf = split_tabs(v, fields, 8);
 		if (nf < 1 || strcmp(fields[nf - 1], "1"))
 			_exit(14);
-		if (nanos) {
-			if (nf != 1)
-				_exit(15);
-			char path[64], want[64];
-			snprintf(path, sizeof path, "/proc/%ld/status", g);
-			snprintf(want, sizeof want, "%ld\t1", g);
-			if (!field_equals(path, "NSpid", want))
-				_exit(16);
-		} else {
-			if (nf < 2 || atoi(fields[nf - 2]) != g)
-				_exit(17);
-		}
+		if (nf < 2 || atoi(fields[nf - 2]) != g)
+			_exit(17);
 		if (kill((pid_t)g, 0))
 			_exit(18);
 		int st = wait_status((pid_t)g);
@@ -643,6 +586,47 @@ static int body_orphan(void)
 	return 0;
 }
 
+static int body_proc_shared_view(void)
+{
+	int ready[2], go[2];
+	if (pipe(ready) || pipe(go))
+		return 2;
+	long c = syscall(SYS_clone, CLONE_NEWUSER | CLONE_NEWPID | SIGCHLD, 0, 0, 0, 0);
+	if (c < 0)
+		return 3;
+	if (c == 0) {
+		char ch;
+		close(ready[0]);
+		close(go[1]);
+		int dir = open("/proc/self/fdinfo", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		if (dir < 0)
+			_exit(10);
+		struct stat st;
+		if (stat("/proc", &st))
+			_exit(11);
+		if (write(ready[1], "r", 1) != 1 || read(go[0], &ch, 1) != 1)
+			_exit(12);
+		if (fstatat(dir, "0", &st, 0) || stat("/proc/self/status", &st))
+			_exit(13);
+		_exit(0);
+	}
+	close(ready[1]);
+	close(go[0]);
+	char ch;
+	if (read(ready[0], &ch, 1) != 1)
+		return 4;
+	char path[64];
+	snprintf(path, sizeof path, "/proc/%ld", c);
+	struct stat st;
+	int seen = !stat(path, &st) && S_ISDIR(st.st_mode);
+	int listed = dir_has("/proc", path + 6);
+	write(go[1], "g", 1);
+	int code = child_exit_code(wait_status((pid_t)c));
+	if (!seen || !listed)
+		return 5;
+	return code ? 20 + code : 0;
+}
+
 static int run_runner(int (*fn)(void))
 {
 	pid_t pid = fork();
@@ -668,7 +652,6 @@ int main(int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
-	nanos = is_nanos();
 	map_uid = getuid();
 	map_gid = getgid();
 	signal(SIGALRM, deadline);
@@ -678,6 +661,7 @@ int main(int argc, char **argv)
 	run_check("pidns_signals", body_signals);
 	run_check("pidns_init_exit", body_init_exit);
 	run_check("pidns_orphan", body_orphan);
+	run_check("pidns_proc_shared_view", body_proc_shared_view);
 	char line[96];
 	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n",
 		failed ? "FAIL" : "PASS", passed, failed);

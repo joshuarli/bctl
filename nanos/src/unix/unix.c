@@ -473,7 +473,7 @@ closure_func_basic(fault_handler, context, unix_fault_handler,
         }
     } else if (is_page_fault(f)) {
         u64 vaddr = frame_fault_address(f);
-        if (vaddr < USER_LIMIT && current_cpu()->current_as != p->vm->as) {
+        if (vaddr < USER_LIMIT && (!p->vm || current_cpu()->current_as != p->vm->as)) {
             errmsg = ss("fault on a user address with another process's address space loaded");
             goto bug;
         }

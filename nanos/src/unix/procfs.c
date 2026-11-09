@@ -36,6 +36,7 @@ enum procfs_kind {
 
 typedef struct procfs_node {
     tuple md;
+    tuple parent_md;
     inode ino;
     enum procfs_kind kind;
     int pid;
@@ -148,8 +149,8 @@ static void procfs_node_destroy(procfs_node node)
         set(md, sym(children), 0);
         deallocate_value(c);
     }
-    tuple parent = get_tuple(md, sym_this(".."));
-    if (parent && parent != md) {
+    tuple parent = node->parent_md;
+    if (parent) {
         tuple pc = children(parent);
         symbol name = pc ? tuple_get_symbol(pc, md) : 0;
         if (name)
@@ -278,10 +279,9 @@ static void procfs_tids(process p, vector v)
     spin_unlock(&p->threads_lock);
 }
 
-static pid_namespace procfs_current_pid_ns(void)
+static pid_namespace procfs_mount_pid_ns(void)
 {
-    thread t = current;
-    return (t && t->p && t->p->pid_ns) ? t->p->pid_ns : pid_ns_root();
+    return pid_ns_root();
 }
 
 static void procfs_refresh_pids(procfs_node dir, pid_namespace ns)
@@ -342,7 +342,7 @@ static void procfs_refresh(procfs_node node)
     process p;
     switch (node->kind) {
     case PROCFS_ROOT:
-        procfs_refresh_pids(node, procfs_current_pid_ns());
+        procfs_refresh_pids(node, procfs_mount_pid_ns());
         break;
     case PROCFS_FD_DIR:
     case PROCFS_FDINFO_DIR:
@@ -368,7 +368,7 @@ static void procfs_refresh(procfs_node node)
     case PROCFS_SELF:
     case PROCFS_THREAD_SELF: {
         process self = current->p;
-        pid_namespace ns = self->pid_ns;
+        pid_namespace ns = procfs_mount_pid_ns();
         buffer b = allocate_string(24);
         assert(b != INVALID_ADDRESS);
         procfs_buffer_append_number(b, pid_nr_ns(self, ns));
@@ -488,7 +488,7 @@ static void procfs_status(buffer b, process p, int tid)
     procfs_thread_name(p, tid, name);
     boolean zombie = (p->state == PROCESS_ZOMBIE);
     process viewer = current->p;
-    pid_namespace viewer_ns = viewer->pid_ns;
+    pid_namespace viewer_ns = procfs_mount_pid_ns();
     int ppid = process_ppid_nr_ns(p, viewer_ns);
     thread tt = (tid == p->pid) ? INVALID_ADDRESS : thread_from_tid(p, tid);
     int pid = tt != INVALID_ADDRESS ? thread_pid_nr_ns(tt, viewer_ns) : pid_nr_ns(p, viewer_ns);
@@ -569,7 +569,7 @@ static void procfs_stat(buffer b, process p)
     char name[16];
     procfs_thread_name(p, p->pid, name);
     boolean zombie = (p->state == PROCESS_ZOMBIE);
-    pid_namespace viewer_ns = current->p->pid_ns;
+    pid_namespace viewer_ns = procfs_mount_pid_ns();
     bprintf(b, "%d (%s) %c %d %d %d", pid_nr_ns(p, viewer_ns),
             sstring_from_cstring(name, sizeof(name)), zombie ? 'Z' : 'R',
             process_ppid_nr_ns(p, viewer_ns), pid_nr_from_kernel(p->pgid, viewer_ns),
@@ -1087,6 +1087,7 @@ static procfs_node procfs_node_new(procfs_node parent, symbol name, enum procfs_
     assert(node != INVALID_ADDRESS);
     node->md = allocate_tuple();
     assert(node->md != INVALID_ADDRESS);
+    node->parent_md = parent ? parent->md : 0;
     node->ino = procfs.next_ino++;
     node->kind = kind;
     node->pid = pid;
