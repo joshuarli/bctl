@@ -111,6 +111,7 @@ struct flock {
 #define F_SEAL_GROW         0x0004
 #define F_SEAL_WRITE        0x0008
 #define F_SEAL_FUTURE_WRITE 0x0010
+#define F_SEAL_EXEC         0x0020
 
 #define IOC_NR(req)     ((req) & 0x000000ff)
 #define IOC_TYPE(req)   (((req) & 0x0000ff00) >> 8)
@@ -986,6 +987,8 @@ struct io_uring_params {
 /* memfd flags */
 #define MFD_CLOEXEC         0x0001
 #define MFD_ALLOW_SEALING   0x0002
+#define MFD_NOEXEC_SEAL     0x0008
+#define MFD_EXEC            0x0010
 
 /* timex modes */
 #define ADJ_OFFSET              0x0001

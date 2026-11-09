@@ -6,7 +6,7 @@
     (XATTR_CREATE | XATTR_REPLACE)
 
 #define FS_KNOWN_SEALS  \
-    (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE)
+    (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE | F_SEAL_EXEC)
 
 sysreturn sysreturn_from_fs_status_value(status s)
 {
