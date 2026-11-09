@@ -45,8 +45,12 @@ N2 (`286a96b`, `cargo test -p bctl --test tabs -- --ignored`): `bctl tab`
 list/new/use/close, the selected target per generation, `TARGET_GONE`, and
 refusal of new/close under a person's lease. Its `2021087` clears Chromium's
 stale profile lock at start, which had stalled every second `up` of a profile.
-Next: D2's run views (running); N3 (snapshots and refs); D2's acceptance on
-`ref-alpine-tinyland`.
+D2 (`8743285`, `BCTL_GRAB=… pnpm --dir web exec playwright test`, 6/6): run
+pages, bounded logs, download-only artifacts, and takeover and resume of a
+login-walled crawl through the live view. D2 open: authority shows the lease
+only (N6); the viewer sends `:` as `;` (noVNC or SmolVM key mapping,
+unexplained); the takeover test has fixed waits.
+Next: N3 (running), H1 (running); D2's acceptance on `ref-alpine-tinyland`.
 Resume: `implement N3 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
