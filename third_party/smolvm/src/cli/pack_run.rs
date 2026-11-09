@@ -1,0 +1,2815 @@
+//! `pack run` subcommand: run a VM from a `.smolmachine` sidecar file.
+//!
+//! This module provides two entry points:
+//!
+//! 1. **`PackRunCmd`** — the explicit `smolvm pack run` subcommand
+//! 2. **`run_as_packed_binary()`** — auto-detected packed binary mode,
+//!    called from `main()` before clap parses the normal CLI
+//!
+//! Both paths converge on the same VM launch infrastructure.
+
+use crate::cli::parsers::{mounts_to_virtiofs_bindings, parse_env_spec};
+use clap::{Args, Parser, Subcommand};
+use smolvm::agent::launcher_dynamic::PackedMount;
+#[cfg(target_os = "linux")]
+use smolvm::agent::launcher_dynamic::{launch_agent_vm_dynamic, KrunFunctions, PackedLaunchConfig};
+use smolvm::agent::{AgentClient, RunConfig, VmResources};
+use smolvm::data::network::PortMappingSpec;
+use smolvm::data::resources::BlockIoEngine;
+use smolvm::data::storage::HostMount;
+use smolvm::network::{validate_requested_network_backend, NetworkBackend};
+use smolvm::platform::Platform;
+use smolvm::Error;
+use smolvm::DEFAULT_SHELL_CMD;
+use smolvm_pack::detect::PackedMode;
+use smolvm_pack::extract;
+use smolvm_pack::format::PackMode;
+use smolvm_pack::packer::{
+    read_footer_from_sidecar, read_manifest_from_sidecar, verify_sidecar_checksum,
+};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Default timeout waiting for the agent to become ready.
+///
+/// A packed VM assembles its container rootfs *inside the guest* on first boot
+/// (extract OCI layers to /storage, then overlayfs copy-up), so a machine that
+/// carries a large dependency tree — e.g. a ~6 GiB torch + CUDA-wheels overlay —
+/// can legitimately take longer than this to reach its vsock accept loop. Raise
+/// it for such machines with `SMOLVM_AGENT_READY_TIMEOUT_SECS`.
+const AGENT_READY_TIMEOUT_DEFAULT_SECS: u64 = 30;
+
+/// Truthy env-var flag (`1`, `true`, `yes`, case-insensitive).
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        })
+        .unwrap_or(false)
+}
+
+/// Resolve the host SSH-agent socket when forwarding is requested.
+fn resolve_ssh_agent_socket(enabled: bool) -> smolvm::Result<Option<PathBuf>> {
+    resolve_ssh_agent_socket_value(enabled, std::env::var_os("SSH_AUTH_SOCK"))
+}
+
+/// Resolve SSH-agent forwarding from an explicit environment value.
+///
+/// Keeping the environment lookup separate makes the launch-time contract
+/// testable without mutating the process environment.
+fn resolve_ssh_agent_socket_value(
+    enabled: bool,
+    socket: Option<std::ffi::OsString>,
+) -> smolvm::Result<Option<PathBuf>> {
+    if !enabled {
+        return Ok(None);
+    }
+
+    socket
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .map(Some)
+        .ok_or_else(|| {
+            Error::config(
+                "--ssh-agent",
+                "SSH_AUTH_SOCK is not set. Start an SSH agent with: eval $(ssh-agent) && ssh-add",
+            )
+        })
+}
+
+/// Resolve the agent-ready timeout, honoring `SMOLVM_AGENT_READY_TIMEOUT_SECS`.
+fn agent_ready_timeout() -> Duration {
+    let secs = std::env::var("SMOLVM_AGENT_READY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(AGENT_READY_TIMEOUT_DEFAULT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Detach the forked VM child from the terminal. When
+/// `SMOLVM_PACKED_KRUN_STDERR_LOG` names a path, the child's stderr (libkrun's
+/// own log, level from `SMOLVM_KRUN_LOG_LEVEL`) is captured there instead of
+/// discarded — the only way to see a libkrun-level boot failure in a packed run,
+/// since the guest's virtio-console goes to a separate file.
+#[cfg(target_os = "linux")]
+fn detach_vm_child_stdio() {
+    match std::env::var("SMOLVM_PACKED_KRUN_STDERR_LOG").ok() {
+        Some(p) if !p.trim().is_empty() => {
+            if smolvm::process::detach_stdio_to_stderr_file(std::path::Path::new(p.trim())).is_err()
+            {
+                smolvm::process::detach_stdio();
+            }
+        }
+        _ => smolvm::process::detach_stdio(),
+    }
+}
+
+/// Boot a packed VM in a fresh `_boot-vm` process rather than a forked child.
+///
+/// macOS Hypervisor.framework crashes a child forked from a process that
+/// already has threads, and a pack run that pulled from a registry has
+/// Security.framework's (#1819). Windows has no fork. `watch_parent` ends the
+/// VM with this process, as a foreground run's forked child does (#1193).
+/// `SMOLVM_PACKED_KRUN_STDERR_LOG` still captures libkrun's log.
+#[cfg(not(target_os = "linux"))]
+fn spawn_packed_boot_vm(
+    boot_config: &smolvm::agent::boot_config::BootConfig,
+    config_path: &Path,
+    lib_dir: &Path,
+    watch_parent: bool,
+    debug: bool,
+) -> smolvm::Result<smolvm::process::Pid> {
+    let config_json = serde_json::to_vec(boot_config)
+        .map_err(|e| Error::agent("serialize boot config", e.to_string()))?;
+    std::fs::write(config_path, &config_json)
+        .map_err(|e| Error::agent("write boot config", e.to_string()))?;
+
+    let exe = smolvm::process::self_exe_for_spawn()
+        .map_err(|e| Error::agent("find smolvm binary", e.to_string()))?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(["_boot-vm", &config_path.to_string_lossy()])
+        // The boot subprocess loads libkrun/libkrunfw from here.
+        .env("SMOLVM_LIB_DIR", lib_dir)
+        .env(
+            "SMOLVM_BOOT_WATCH_PARENT",
+            if watch_parent { "1" } else { "0" },
+        )
+        // Per-VM readiness marker name so the agent writes its own marker.
+        .env(
+            smolvm_protocol::guest_env::READY_MARKER,
+            smolvm_protocol::AGENT_READY_MARKER,
+        )
+        .stdin(std::process::Stdio::null());
+    let krun_log = std::env::var("SMOLVM_PACKED_KRUN_STDERR_LOG")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .and_then(|path| std::fs::File::create(path.trim()).ok());
+    if debug {
+        cmd.stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+    } else {
+        cmd.stdout(std::process::Stdio::null());
+        match krun_log {
+            Some(file) => cmd.stderr(file),
+            None => cmd.stderr(std::process::Stdio::null()),
+        };
+    }
+    // Its own process group, so a Ctrl-C meant for the CLI isn't also sent to
+    // the VM, as the forked child's setsid() ensures on Linux.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    // Detach from the launching console, mirroring the `_boot-vm` spawn in
+    // `src/agent/manager.rs`.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    let child = cmd
+        .spawn()
+        .map_err(|e| Error::agent("spawn boot subprocess", e.to_string()))?;
+    // `Pid` is `i32` on Windows while `Child::id` returns `u32`; the downstream
+    // liveness/start-time/kill helpers take `Pid`.
+    Ok(child.id() as smolvm::process::Pid)
+}
+
+/// Resolve the lib directory containing libkrun/libkrunfw.
+///
+/// Two-file mode: libs embedded in stub binary (SMOLLIBS footer).
+/// Single-file mode: libs extracted from Mach-O section to cache_dir/lib/.
+/// `smolvm pack run`: uses the host-installed libs.
+fn resolve_lib_dir(cache_dir: &Path, debug: bool) -> smolvm::Result<PathBuf> {
+    // Explicit override (matches the non-packed launcher). Lets a dev run a
+    // packed sidecar with a freshly-built smolvm binary pointed at a known-good
+    // libkrun, instead of the libs embedded in the original stub.
+    if let Ok(dir) = std::env::var(smolvm::data::consts::ENV_SMOLVM_LIB_DIR) {
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            let p = PathBuf::from(dir);
+            if p.exists() {
+                if debug {
+                    eprintln!("debug: using libs from SMOLVM_LIB_DIR: {}", p.display());
+                }
+                return Ok(p);
+            }
+        }
+    }
+
+    // Two-file mode: libs embedded in stub binary (SMOLLIBS footer)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Ok(Some(lib_dir)) = extract::extract_libs_from_binary(&exe_path, debug) {
+            if debug {
+                eprintln!("debug: using libs from stub binary: {}", lib_dir.display());
+            }
+            return Ok(lib_dir);
+        }
+    }
+
+    // Single-file mode: libs extracted from Mach-O section alongside other assets
+    let cache_lib = cache_dir.join("lib");
+    if cache_lib.exists() {
+        if debug {
+            eprintln!("debug: using libs from cache: {}", cache_lib.display());
+        }
+        return Ok(cache_lib);
+    }
+
+    // Host-installed libs (for `smolvm pack run .smolmachine`)
+    if let Some(host_lib) = smolvm::agent::find_lib_dir() {
+        if debug {
+            eprintln!(
+                "debug: using libs from host install: {}",
+                host_lib.display()
+            );
+        }
+        return Ok(host_lib);
+    }
+
+    Err(Error::agent(
+        "find libraries",
+        "libkrun/libkrunfw not found. The binary may be corrupted or the libraries are missing.",
+    ))
+}
+
+/// Convert parsed mounts to PackedMount format for the VM launcher.
+fn mounts_to_packed(mounts: &[smolvm::data::storage::HostMount]) -> Vec<PackedMount> {
+    mounts
+        .iter()
+        .enumerate()
+        .map(|(i, m)| PackedMount {
+            tag: HostMount::mount_tag(i),
+            runtime_tag: m.runtime_mount_tag(i),
+            host_path: m.source.to_string_lossy().to_string(),
+            guest_path: m.target.to_string_lossy().to_string(),
+            read_only: m.read_only,
+            staged: m.staged,
+        })
+        .collect()
+}
+
+/// Run a VM from a packed `.smolmachine` sidecar file.
+///
+/// Extracts runtime assets (if not already cached), boots a VM using
+/// dynamically loaded libkrun, and executes a command using the full
+/// smolvm agent infrastructure.
+///
+/// Examples:
+///   smolvm pack run -- echo hello
+///   smolvm pack run --sidecar my-app.smolmachine -it -- /bin/sh
+///   smolvm pack run -p 8080:80 --net
+#[derive(Args, Debug)]
+pub struct PackRunCmd {
+    /// Path to the `.smolmachine` sidecar file.
+    ///
+    /// If not specified, looks for `<exe_name>.smolmachine` next to the
+    /// smolvm binary, or any `.smolmachine` file in the current directory.
+    #[arg(long, value_name = "PATH")]
+    pub sidecar: Option<PathBuf>,
+
+    /// Command and arguments to run (default: image entrypoint)
+    #[arg(trailing_var_arg = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
+
+    /// Keep stdin open for interactive input
+    #[arg(short = 'i', long, help_heading = "Execution")]
+    pub interactive: bool,
+
+    /// Allocate a pseudo-TTY (use with -i for interactive shells)
+    #[arg(short = 't', long, help_heading = "Execution")]
+    pub tty: bool,
+
+    /// Kill command after duration (e.g., "30s", "5m")
+    #[arg(
+        long,
+        value_parser = crate::cli::parsers::parse_duration,
+        value_name = "DURATION",
+        help_heading = "Execution"
+    )]
+    pub timeout: Option<Duration>,
+
+    /// Set working directory inside container
+    #[arg(short = 'w', long, value_name = "DIR", help_heading = "Container")]
+    pub workdir: Option<String>,
+
+    /// Run as this user (name or `uid[:gid]`); defaults to the user the
+    /// machine was packed with, then the image's USER.
+    #[arg(short = 'u', long, value_name = "USER", help_heading = "Container")]
+    pub user: Option<String>,
+
+    /// Set environment variable (can be used multiple times)
+    #[arg(
+        short = 'e',
+        long = "env",
+        value_name = "KEY=VALUE",
+        help_heading = "Container"
+    )]
+    pub env: Vec<String>,
+
+    /// Mount host directory into container (can be used multiple times)
+    #[arg(
+        short = 'v',
+        long = "volume",
+        value_name = "HOST:CONTAINER[:ro]",
+        help_heading = "Container"
+    )]
+    pub volume: Vec<String>,
+
+    /// Allow trusted read-only host `/etc` and `/var/log` mounts below `/host`.
+    #[arg(long, help_heading = "Container")]
+    pub allow_system_mounts: bool,
+
+    /// Expose port from container to host (can be used multiple times)
+    #[arg(
+        short = 'p',
+        long = "port",
+        value_parser = PortMappingSpec::parse,
+        value_name = "HOST:GUEST",
+        help_heading = "Network"
+    )]
+    pub port: Vec<PortMappingSpec>,
+
+    /// Enable outbound network access
+    #[arg(long, help_heading = "Network")]
+    pub net: bool,
+
+    /// Select the networking backend.
+    #[arg(long = "net-backend", value_enum, help_heading = "Network")]
+    pub net_backend: Option<NetworkBackend>,
+
+    /// Forward the host SSH agent into the VM via a vsock bridge.
+    #[arg(long, help_heading = "Security")]
+    pub ssh_agent: bool,
+
+    /// Custom DNS resolver for the guest (implies --net). Defaults to the
+    /// host's own resolver; use this when that is not the resolver to use.
+    #[arg(long, value_name = "IP", help_heading = "Network")]
+    pub dns: Option<std::net::Ipv4Addr>,
+
+    /// Resolver option for the guest resolv.conf (repeatable, in order); see
+    /// `machine create --dns-option`.
+    #[arg(long = "dns-option", value_name = "OPTION", value_parser = crate::cli::machine::parse_dns_option, help_heading = "Network")]
+    pub dns_option: Vec<String>,
+
+    /// Number of virtual CPUs (overrides manifest default)
+    #[arg(long, value_name = "N", help_heading = "Resources")]
+    pub cpus: Option<u8>,
+
+    /// Memory allocation in MiB (overrides manifest default)
+    #[arg(long, value_name = "MiB", help_heading = "Resources")]
+    pub mem: Option<u32>,
+
+    /// Storage disk size in GiB (for OCI layers and container data)
+    #[arg(long, value_name = "GiB", help_heading = "Resources")]
+    pub storage: Option<u64>,
+
+    /// Overlay disk size in GiB (for persistent rootfs changes)
+    #[arg(long, value_name = "GiB", help_heading = "Resources")]
+    pub overlay: Option<u64>,
+
+    /// Block I/O engine. `sync` preserves the default single-request path;
+    /// `async` uses restricted io_uring for raw disks on Linux.
+    #[arg(long = "block-io", value_enum, help_heading = "Resources")]
+    pub block_io: Option<BlockIoEngine>,
+
+    /// Re-extract assets even if already cached
+    #[arg(long)]
+    pub force_extract: bool,
+
+    /// Show manifest info and exit
+    #[arg(long)]
+    pub info: bool,
+
+    /// Enable debug output
+    #[arg(long)]
+    pub debug: bool,
+
+    /// The sidecar is an image cache this engine baked for itself
+    /// (`machine run --oci-cache`), not a pack someone published. It carries
+    /// the agent of whichever engine baked it, but boots this engine's own
+    /// agent, so the layer decisions are made for that agent and an entry
+    /// staged by an older engine gets its layers unpacked on the host.
+    #[arg(skip)]
+    pub local_bake: bool,
+
+    /// Enable CUDA-over-vsock: run a host CUDA server and bridge the guest's
+    /// CUDA client to it. Also enabled automatically when the packed machine
+    /// was created with CUDA, or via `SMOLVM_CUDA=1`.
+    #[arg(long)]
+    pub cuda: bool,
+
+    /// Ask compatible CUDA frameworks to graph safe compiled regions.
+    /// Implies --cuda; arbitrary eager CUDA calls are not captured.
+    #[arg(long)]
+    pub auto_graph: bool,
+
+    /// Egress policy already resolved by `machine run` when it serves a run
+    /// through this command instead of the direct boot path. Not a CLI flag:
+    /// direct `pack run` invocations carry no policy and keep the
+    /// manifest-driven behavior.
+    #[clap(skip)]
+    pub egress: Option<ResolvedEgressPolicy>,
+
+    /// Secret refs the LOCAL caller supplied on the CLI (`--secret-env` /
+    /// `--secret-file`), keyed by guest env var. `machine run` sets these when it
+    /// serves a run through this command; a direct `pack run` carries none. They
+    /// are resolved `TrustedLocal` at exec — distinct from the manifest's own
+    /// refs, which stay `Untrusted` — so the caller's own env/files resolve while
+    /// a portable artifact's refs still cannot. Not a CLI flag.
+    #[clap(skip)]
+    pub secret_refs: std::collections::BTreeMap<String, smolvm::secrets::SecretRef>,
+}
+
+/// Network policy resolved from `--allow-cidr`/`--allow-host`/
+/// `--outbound-localhost-only` and the Smolfile before a run is handed to the
+/// pack-run boot path. Without this the hand-off would silently drop the
+/// policy and boot the workload with unrestricted egress.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedEgressPolicy {
+    /// Overrides the manifest-driven network default entirely when set. A baked
+    /// cache artifact's manifest records the BAKE VM's networking (enabled, to
+    /// pull the image), not the workload's requested posture, so serving from
+    /// the cache must not let it re-enable outbound access. `None` keeps the
+    /// manifest fallback — a user-supplied `.smolmachine`'s manifest is the
+    /// packaged intent.
+    pub network_override: Option<bool>,
+    /// Outbound CIDR allow-list, with `--allow-host` names already resolved.
+    pub allowed_cidrs: Option<Vec<String>>,
+    /// Hostnames the guest DNS filter permits resolving.
+    pub dns_filter_hosts: Option<Vec<String>>,
+    /// `--block-private` and its `--allow-private` exceptions.
+    pub block_private: Option<Vec<String>>,
+    /// Ordered egress rules, deny CIDRs first.
+    pub egress_rules: Vec<smolvm_protocol::EgressRule>,
+}
+
+/// Outbound-network decision for a pack-run boot: a resolved policy's override
+/// is absolute (matching the direct `machine run` path, where ports and the
+/// artifact manifest never re-enable networking); otherwise the manifest and
+/// flags decide as before.
+fn effective_network(
+    egress: Option<&ResolvedEgressPolicy>,
+    net_flag: bool,
+    manifest_network: bool,
+    has_ports: bool,
+) -> bool {
+    match egress.and_then(|policy| policy.network_override) {
+        Some(network) => network,
+        None => net_flag || manifest_network || has_ports,
+    }
+}
+
+impl PackRunCmd {
+    /// Execute the pack run command.
+    pub fn run(self) -> smolvm::Result<()> {
+        // 1. Resolve sidecar path
+        let sidecar_path = resolve_sidecar_path(self.sidecar.as_deref())?;
+
+        if self.debug {
+            eprintln!("debug: using sidecar: {}", sidecar_path.display());
+        }
+
+        // 2. Read footer and verify checksum before trusting any content
+        let footer = read_footer_from_sidecar(&sidecar_path)
+            .map_err(|e| Error::agent("read footer", e.to_string()))?;
+
+        match verify_sidecar_checksum(&sidecar_path, &footer) {
+            Ok(true) => {
+                if self.debug {
+                    eprintln!("debug: sidecar checksum verified ({:08x})", footer.checksum);
+                }
+            }
+            Ok(false) => {
+                return Err(Error::agent(
+                    "verify sidecar",
+                    format!(
+                        "checksum mismatch for {}: sidecar may be corrupt or tampered with.\n\
+                         Try re-packing the image with `smolvm pack`.",
+                        sidecar_path.display()
+                    ),
+                ));
+            }
+            Err(e) => {
+                return Err(Error::agent(
+                    "verify sidecar",
+                    format!("failed to verify checksum: {}", e),
+                ));
+            }
+        }
+
+        // 3. Read manifest (safe now that checksum is verified)
+        let manifest = read_manifest_from_sidecar(&sidecar_path)
+            .map_err(|e| Error::agent("read manifest", e.to_string()))?;
+
+        // 4. Handle --info: show manifest and exit
+        if self.info {
+            print_manifest_info(&manifest, footer.checksum);
+            return Ok(());
+        }
+
+        // 4b. Legacy-format heads-up. Packs built before the format was reset lack
+        //     a recorded `smolvm_version` (it deserializes empty via the compat
+        //     default). They read fine — `--info` and extraction work — but their
+        //     embedded runtime speaks an older wire protocol the current agent may
+        //     not understand, so a run can still fail deep in the agent exchange
+        //     with an opaque error. Surface a clear, actionable note up front.
+        if manifest.smolvm_version.is_empty() {
+            let sidecar = sidecar_path.display();
+            if manifest.image.starts_with("vm://") {
+                eprintln!(
+                    "Note: '{sidecar}' was built with an older smolvm (legacy pack format) \
+                     from a VM snapshot. It may not run on this engine; re-create the VM \
+                     and re-pack it. Its contents remain inspectable with `--info`."
+                );
+            } else {
+                eprintln!(
+                    "Note: '{sidecar}' was built with an older smolvm (legacy pack format). \
+                     It may not run on this engine; if it fails, rebuild it from source:\n  \
+                     smolvm pack create --image {} -o <name>",
+                    manifest.image,
+                );
+            }
+        }
+
+        // 5. Platform compatibility check — fail before extraction so the error
+        //    is immediate and actionable rather than a cryptic dlopen failure.
+        {
+            let current = Platform::current().host_oci_platform();
+            // Legacy packs (pre-reset format) don't record `host_platform`; it
+            // deserializes empty. Skip the early check for those and let the run
+            // proceed on the current host — a genuine arch mismatch still fails
+            // later at lib load. Only enforce when the pack actually declares one.
+            if !manifest.host_platform.is_empty() && manifest.host_platform != current {
+                return Err(Error::agent(
+                    "platform mismatch",
+                    format!(
+                        "this artifact was built for {} but the current platform is {}\
+                         \n\nTo run on {}, create a new pack:\
+                         \n\n  smolvm pack create --image <image> -o <output>\
+                         \n\nOr push platform-specific artifacts under separate tags:\
+                         \n\n  smolvm pack push myrepo:v1-darwin-arm64 -f myapp-darwin.smolmachine\
+                         \n  smolvm pack push myrepo:v1-linux-amd64  -f myapp-linux.smolmachine",
+                        manifest.host_platform, current, current,
+                    ),
+                ));
+            }
+        }
+        let ssh_agent_socket = resolve_ssh_agent_socket(self.ssh_agent)?;
+
+        // 6. Extract assets to cache (locked to prevent concurrent extraction races)
+        let cache_dir = extract::get_cache_dir(footer.checksum)
+            .map_err(|e| Error::agent("get cache dir", e.to_string()))?;
+
+        extract::extract_sidecar_for_agent(
+            &sidecar_path,
+            &cache_dir,
+            &footer,
+            self.force_extract,
+            self.debug,
+            self.local_bake.then_some(smolvm::VERSION),
+        )
+        .map_err(|e| Error::agent("extract assets", e.to_string()))?;
+
+        // 7. Set up paths — use a unique runtime directory per invocation so
+        //    concurrent runs of the same checksum don't conflict on
+        //    storage.ext4 / agent.sock.  tempdir_in gives us a truly unique
+        //    directory that survives PID reuse and abrupt termination.
+        // A locally baked image cache boots this engine's agent: the packed one
+        // is whatever engine baked it, and the layer decisions above were made
+        // for the engine's. A published pack keeps the agent it shipped with.
+        let rootfs_path = if self.local_bake {
+            smolvm::agent::AgentManager::default_rootfs_path()?
+        } else {
+            cache_dir.join("agent-rootfs")
+        };
+        let lib_dir = resolve_lib_dir(&cache_dir, self.debug)?;
+        let layers_lease = extract::acquire_layers_lease(&cache_dir, self.debug)
+            .map_err(|e| Error::agent("acquire layers lease", e.to_string()))?;
+        let layers_dir = &layers_lease.path;
+        let runtime_parent = cache_dir.join("runtime");
+        std::fs::create_dir_all(&runtime_parent)
+            .map_err(|e| Error::agent("create runtime parent", e.to_string()))?;
+        let runtime_dir = tempfile::tempdir_in(&runtime_parent)
+            .map_err(|e| Error::agent("create runtime dir", e.to_string()))?;
+
+        let storage_path = runtime_dir.path().join("storage.ext4");
+        let vsock_path = runtime_dir.path().join("agent.sock");
+
+        // CUDA-over-vsock: enabled by the packed machine's manifest flag, the
+        // `--cuda` override, or `SMOLVM_CUDA=1`. When on, the parent runs a host
+        // CUDA server on `cuda_sock` and the launcher bridges the guest's vsock
+        // CUDA port to it (the guest's LD_PRELOADed shims connect out).
+        let cuda_enabled = manifest.cuda || self.cuda || self.auto_graph || env_flag("SMOLVM_CUDA");
+        let cuda_sock = runtime_dir.path().join("cuda.sock");
+
+        // Compute auto-sized storage before creating the disk so both the
+        // disk file and VmResources use the same value.
+        let storage_gib = storage_gib_for_manifest(self.storage, &manifest);
+
+        // Create storage disk (each invocation gets its own copy)
+        let template = manifest
+            .assets
+            .storage_template
+            .as_ref()
+            .map(|t| t.path.as_str());
+        extract::create_or_copy_storage_disk(
+            &cache_dir,
+            template,
+            &storage_path,
+            manifest.assets.storage_logical_size,
+            storage_gib,
+        )
+        .map_err(|e| Error::agent("create storage disk", e.to_string()))?;
+
+        let overlay_runtime_path = setup_vm_overlay(
+            &manifest,
+            &cache_dir,
+            &runtime_dir.path().join("overlay.raw"),
+            self.overlay,
+        )?;
+
+        // 8. Parse CLI args
+        let (volume_specs, disk_volumes) =
+            smolvm::data::storage::split_disk_volume_specs(&self.volume)?;
+        let mounts = HostMount::parse_with_system_mounts(&volume_specs, self.allow_system_mounts)?;
+        smolvm::data::storage::ensure_disk_volumes_distinct(
+            &disk_volumes,
+            mounts.iter().filter_map(|m| m.target.to_str()),
+        )?;
+        let ports = PortMappingSpec::expand_all(&self.port)
+            .map_err(|e| Error::config("pack run ports", e))?;
+        let port_mappings = ports.clone();
+
+        let resources = VmResources {
+            cpus: self.cpus.unwrap_or(manifest.cpus),
+            memory_mib: self.mem.unwrap_or(manifest.mem),
+            network: effective_network(
+                self.egress.as_ref(),
+                self.net,
+                manifest.network,
+                !ports.is_empty(),
+            ),
+            network_backend: self.net_backend,
+            dns: self.dns,
+            dns_options: self.dns_option.clone(),
+            shm_size: None,
+            network_name: None,
+            guest_subnet: None,
+            gpu: manifest.gpu,
+            nested_virt: false,
+            cuda: cuda_enabled,
+            storage_gib,
+            overlay_gib: self.overlay,
+            block_io: self.block_io.unwrap_or_default(),
+            disk_durability: Default::default(),
+            disks: Vec::new(),
+            cache_disk: None,
+            disk_volumes: disk_volumes.clone(),
+            block_private: self
+                .egress
+                .as_ref()
+                .and_then(|policy| policy.block_private.clone()),
+            gpu_vram_mib: None,
+            rosetta: false,
+            allowed_cidrs: self
+                .egress
+                .as_ref()
+                .and_then(|policy| policy.allowed_cidrs.clone()),
+            egress_rules: self
+                .egress
+                .as_ref()
+                .map(|policy| policy.egress_rules.clone())
+                .unwrap_or_default(),
+        };
+        validate_requested_network_backend(
+            &resources,
+            self.egress
+                .as_ref()
+                .and_then(|policy| policy.dns_filter_hosts.as_deref()),
+            ports.len(),
+        )?;
+
+        // Build packed mounts for the launcher
+        let packed_mounts = mounts_to_packed(&mounts);
+
+        if self.debug {
+            eprintln!("debug: rootfs={}", rootfs_path.display());
+            eprintln!("debug: lib_dir={}", lib_dir.display());
+            eprintln!("debug: storage={}", storage_path.display());
+            eprintln!("debug: vsock={}", vsock_path.display());
+            eprintln!(
+                "debug: resources cpus={} mem={} net={} gpu={}",
+                resources.cpus, resources.memory_mib, resources.network, resources.gpu
+            );
+        }
+
+        // 9. Launch VM with dynamically loaded libkrun.
+        //
+        // On Unix we fork a session-leader child that dlopen's libkrun directly.
+        // On Windows there is no usable fork, so we mirror the non-packed
+        // launcher's subprocess model: serialize a `BootConfig` and re-spawn this
+        // executable as `current_exe _boot-vm <config.json>`, which loads libkrun
+        // from `SMOLVM_LIB_DIR` and boots the VM. See `src/agent/manager.rs`.
+        smolvm::process::install_sigchld_handler();
+        let ready_doorbell = bind_ready_doorbell(&vsock_path);
+
+        let console_log_path = runtime_dir.path().join("console.log");
+
+        // Linux forks the VM child. macOS boots it in a fresh `_boot-vm` process
+        // instead: Hypervisor.framework crashes a child forked from a process
+        // that already has threads, and a registry pull leaves this one with
+        // Security.framework's (#1819). Windows has no fork.
+        //
+        // Watched from the parent, which owns the run (#1192); `_boot-vm`
+        // watches its own mounts.
+        #[cfg(target_os = "linux")]
+        let watched_mounts = watched_packed_mounts(&packed_mounts);
+        // The CLI as the forked VM child will see its parent (#1193).
+        #[cfg(target_os = "linux")]
+        let cli_pid = std::process::id() as smolvm::process::Pid;
+        #[cfg(target_os = "linux")]
+        let child_pid = {
+            let vsock_path_clone = vsock_path.clone();
+            let cuda_sock_clone = cuda_sock.clone();
+            let dns_filter_hosts = self
+                .egress
+                .as_ref()
+                .and_then(|policy| policy.dns_filter_hosts.clone());
+            smolvm::process::fork_session_leader(move || {
+                // A foreground run's VM ends with the CLI, however the CLI ends:
+                // Ctrl-C reaches only the CLI, since this child leads its own
+                // session, and a signal skips the CLI's cleanup (#1193).
+                smolvm::process::exit_when_parent_is_not(cli_pid);
+
+                // Child process: load libkrun via dlopen and launch VM
+                let krun = match unsafe { KrunFunctions::load(&lib_dir) } {
+                    Ok(k) => k,
+                    Err(e) => {
+                        eprintln!("failed to load libkrun: {}", e);
+                        smolvm::process::exit_child(1);
+                    }
+                };
+
+                let config = PackedLaunchConfig {
+                    rootfs_path: &rootfs_path,
+                    storage_path: &storage_path,
+                    vsock_socket: &vsock_path_clone,
+                    layers_dir,
+                    mounts: &packed_mounts,
+                    port_mappings: &port_mappings,
+                    resources,
+                    overlay_path: overlay_runtime_path.as_deref(),
+                    debug: self.debug,
+                    console_log: console_log_path,
+                    cuda_socket: if cuda_enabled {
+                        Some(cuda_sock_clone.as_path())
+                    } else {
+                        None
+                    },
+                    ssh_agent_socket: ssh_agent_socket.as_deref(),
+                    dns_filter_hosts,
+                };
+
+                // Detach from parent's terminal so libkrun doesn't
+                // steal keystrokes or corrupt terminal state.
+                detach_vm_child_stdio();
+
+                if let Err(e) = launch_agent_vm_dynamic(&krun, &config) {
+                    let msg = format!("launch_agent_vm_dynamic failed: {}\n", e);
+                    let _ = std::fs::write(&config.console_log, &msg);
+                }
+
+                smolvm::process::exit_child(1);
+            })
+            .map_err(|e| Error::agent("fork VM process", e.to_string()))?
+        };
+        #[cfg(target_os = "linux")]
+        let _fsnotify_watcher =
+            smolvm::agent::FsNotifyWatcher::start_tagged(vsock_path.clone(), watched_mounts);
+
+        #[cfg(not(target_os = "linux"))]
+        let child_pid = {
+            // These bindings are consumed by the Unix fork closure above; on
+            // Windows the BootConfig carries the same data, so silence the
+            // unused-variable warnings rather than reshape the surrounding code.
+            // `cuda_enabled`/`cuda_sock` drive the unix-only shared-daemon path.
+            let _ = (&packed_mounts, &port_mappings, cuda_enabled, &cuda_sock);
+
+            // The overlay file is always created on disk before this point
+            // (`setup_vm_overlay`); fall back to the well-known runtime path when
+            // the helper returned None so the boot subprocess attaches it.
+            let overlay_disk_path = overlay_runtime_path
+                .clone()
+                .unwrap_or_else(|| runtime_dir.path().join("overlay.raw"));
+
+            let boot_config = smolvm::agent::boot_config::BootConfig {
+                rootfs_path: rootfs_path.clone(),
+                storage_disk_path: storage_path.clone(),
+                overlay_disk_path,
+                vsock_socket: vsock_path.clone(),
+                console_log: Some(console_log_path.clone()),
+                startup_error_log: runtime_dir.path().join("startup-error.log"),
+                storage_size_gb: storage_gib.unwrap_or(smolvm::storage::DEFAULT_STORAGE_SIZE_GIB),
+                overlay_size_gb: self
+                    .overlay
+                    .unwrap_or(smolvm::storage::DEFAULT_OVERLAY_SIZE_GIB),
+                mounts: mounts.clone(),
+                ports: ports.clone(),
+                resources: resources.clone(),
+                ssh_agent_socket,
+                cuda: false,
+                expose_docker: false,
+                published_sockets: Vec::new(),
+                dns_filter_hosts: self
+                    .egress
+                    .as_ref()
+                    .and_then(|policy| policy.dns_filter_hosts.clone()),
+                packed_layers_dir: Some(layers_dir.to_path_buf()),
+                packed_layers_dax_window: smolvm::agent::legacy_packed_layers_dax_window(),
+                pack_idmap_source: None,
+                extra_disks: vec![],
+                pod_netns: None,
+                workload_log: None,
+                credentials: None,
+                external_interceptor: None,
+                mediated_egress: false,
+                mediated_parent_id: [0; 16],
+            };
+
+            spawn_packed_boot_vm(
+                &boot_config,
+                &runtime_dir.path().join("boot-config.json"),
+                &lib_dir,
+                true,
+                self.debug,
+            )?
+        };
+
+        // Capture the child's start time so we can verify PID identity
+        // later (guards against PID reuse).  The proc info may not be
+        // available on the very first try if the kernel hasn't finished
+        // setting up the child, so retry briefly.
+        let child_start_time = {
+            let mut st = smolvm::process::process_start_time(child_pid);
+            if st.is_none() && smolvm::process::is_alive(child_pid) {
+                for _ in 0..5 {
+                    std::thread::sleep(Duration::from_millis(1));
+                    st = smolvm::process::process_start_time(child_pid);
+                    if st.is_some() {
+                        break;
+                    }
+                }
+            }
+            // If the child is alive but we still can't get its start
+            // time, we have no way to safely verify PID identity later.
+            // Kill it now (we KNOW it's our child — we just forked it)
+            // rather than risk either an orphan or a misidentified kill.
+            if st.is_none() && smolvm::process::is_alive(child_pid) {
+                let _ = smolvm::process::stop_process_fast(child_pid, Duration::from_secs(5), true);
+                // Clean up runtime dir ourselves since the guard won't
+                // be created.
+                if let Err(e) = std::fs::remove_dir_all(runtime_dir.path()) {
+                    tracing::debug!(error = %e, "cleanup: remove runtime dir after failed child start");
+                }
+                return Err(Error::agent(
+                    "verify child process",
+                    "unable to capture child start time for safe lifecycle management",
+                ));
+            }
+            st
+        };
+
+        if self.debug {
+            eprintln!("debug: forked VM process with PID {}", child_pid);
+        }
+
+        // Start the host CUDA server in the parent (which owns the run's
+        // lifetime). The guest's LD_PRELOADed shims connect out to vsock port
+        // `ports::CUDA`, which the launcher (in the child) bridges to this
+        // AF_UNIX socket. Started after the fork so the child never inherits any
+        // CUDA-driver state, and before `wait_for_agent` so the socket is
+        // serving well before the guest workload dials in.
+        #[cfg(unix)]
+        if cuda_enabled {
+            match smolvm::cuda_host::start(&cuda_sock) {
+                Ok(()) => {
+                    if self.debug {
+                        eprintln!("debug: CUDA host serving {}", cuda_sock.display());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to start CUDA host server: {e} — CUDA disabled");
+                }
+            }
+        }
+
+        // Guard ensures the VM child is terminated and runtime dir is
+        // cleaned up on every exit path — including ? propagation,
+        // panics, AND the explicit process::exit() on the success path
+        // (which skips Rust destructors, so we must drop manually).
+        // start_time is guaranteed Some when the child is alive (enforced
+        // above), so is_our_process_strict always has data to verify.
+        let child_guard = ChildGuard {
+            pid: child_pid,
+            start_time: child_start_time,
+            runtime_dir,
+        };
+
+        // 10. Parent: wait for agent, connect, execute command
+        let mut client = wait_for_agent(&vsock_path, self.debug, ready_doorbell.as_ref())?;
+
+        let exit_code = execute_command(&mut client, &manifest, &self, &mounts)?;
+
+        // std::process::exit skips destructors, so drop explicitly first.
+        drop(child_guard);
+        drop(layers_lease); // releases layers volume lease (detaches if last)
+        std::process::exit(exit_code);
+    }
+}
+
+/// The `(host path, virtiofs tag)` of every live-coherent mount, for the
+/// host-to-guest change watcher. Staged mounts have no live coherence.
+#[cfg(target_os = "linux")]
+fn watched_packed_mounts(mounts: &[PackedMount]) -> Vec<(PathBuf, String)> {
+    mounts
+        .iter()
+        .filter(|mount| !mount.staged)
+        .map(|mount| (PathBuf::from(&mount.host_path), mount.tag.clone()))
+        .collect()
+}
+
+/// RAII guard that terminates the VM child process and cleans up the
+/// per-invocation runtime directory on drop.
+struct ChildGuard {
+    pid: smolvm::process::Pid,
+    start_time: Option<u64>,
+    runtime_dir: tempfile::TempDir,
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        // Only signal the child if we can verify it's still ours via
+        // start_time.  When start_time is None (child exited before we
+        // could query it), we skip signaling entirely — the PID may have
+        // been recycled and we must not target an unrelated process.
+        if smolvm::process::is_our_process_strict(self.pid, self.start_time) {
+            let _ = smolvm::process::stop_process_fast(self.pid, Duration::from_secs(5), true);
+        }
+        // TempDir removes itself on drop, but we also do an explicit
+        // remove to handle partially-cleaned states.
+        if let Err(e) = std::fs::remove_dir_all(self.runtime_dir.path()) {
+            tracing::debug!(error = %e, "cleanup: remove runtime dir on drop");
+        }
+    }
+}
+
+/// Resolve the path to the `.smolmachine` sidecar file.
+fn resolve_sidecar_path(explicit: Option<&Path>) -> smolvm::Result<PathBuf> {
+    // Explicit path
+    if let Some(path) = explicit {
+        if path.exists() {
+            return Ok(path.to_path_buf());
+        }
+        return Err(Error::agent(
+            "find sidecar",
+            format!(
+                "sidecar file not found: {}\nSpecify with --sidecar PATH",
+                path.display()
+            ),
+        ));
+    }
+
+    // Try next to the executable: <exe>.smolmachine
+    if let Ok(exe) = std::env::current_exe() {
+        let sidecar = smolvm_pack::sidecar_path_for(&exe);
+        if sidecar.exists() {
+            return Ok(sidecar);
+        }
+    }
+
+    // Try any .smolmachine file in the current directory
+    if let Ok(cwd) = std::env::current_dir() {
+        let entries: Vec<_> = std::fs::read_dir(&cwd)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "smolmachine"))
+            .collect();
+
+        if entries.len() == 1 {
+            return Ok(entries[0].path());
+        }
+        if entries.len() > 1 {
+            return Err(Error::agent(
+                "find sidecar",
+                "multiple .smolmachine files in current directory. Specify with --sidecar PATH"
+                    .to_string(),
+            ));
+        }
+    }
+
+    Err(Error::agent(
+        "find sidecar",
+        "no .smolmachine sidecar file found.\n\
+         Specify with: smolvm pack run --sidecar PATH",
+    ))
+}
+
+/// Set up the overlay disk for VM mode.
+///
+/// If the manifest specifies VM mode, copies the overlay template from
+/// `cache_dir` to `dest`. Returns the overlay path (for `PackedLaunchConfig`)
+/// or `None` for container mode.
+///
+/// Fails hard if the manifest is VM mode but the overlay template is missing.
+fn setup_vm_overlay(
+    manifest: &smolvm_pack::PackManifest,
+    cache_dir: &Path,
+    dest: &Path,
+    overlay_gb: Option<u64>,
+) -> smolvm::Result<Option<PathBuf>> {
+    if manifest.mode == PackMode::Vm {
+        // VM mode: use the overlay template from the pack
+        let overlay_template = manifest
+            .assets
+            .overlay_template
+            .as_ref()
+            .map(|t| t.path.as_str());
+
+        extract::copy_overlay_template(
+            cache_dir,
+            overlay_template,
+            dest,
+            overlay_gb,
+            manifest.assets.overlay_logical_size,
+        )
+        .map_err(|e| {
+            Error::agent(
+                "setup overlay",
+                format!(
+                    "VM mode overlay template is missing or corrupt: {}. \
+                         Try re-packing with `smolvm pack --from-vm`.",
+                    e
+                ),
+            )
+        })?;
+
+        return Ok(Some(dest.to_path_buf()));
+    }
+
+    // OCI image mode: create a fresh overlay disk so the guest has a
+    // writable root (needed for crun to mkdir /dev, mount proc, etc.)
+    if !dest.exists() {
+        let size_gb = overlay_gb.unwrap_or(smolvm::storage::DEFAULT_OVERLAY_SIZE_GIB);
+        smolvm::storage::OverlayDisk::open_or_create_at(dest, size_gb)
+            .map_err(|e| Error::agent("create overlay disk", e.to_string()))?;
+    }
+
+    Ok(Some(dest.to_path_buf()))
+}
+
+/// Listen for the guest's readiness doorbell, which the launcher registers
+/// beside the control socket. Bound before the VM is forked so the guest's
+/// dial at the end of init is always answered.
+fn bind_ready_doorbell(vsock_path: &Path) -> Option<socket2::Socket> {
+    smolvm::agent::bind_ready_listener(&vsock_path.with_extension("ready"))
+}
+
+/// Wait for the agent to become ready on the vsock socket.
+///
+/// The doorbell rings when the guest finishes init, so the agent is pinged
+/// right away instead of on the next poll. Without a doorbell the socket is
+/// pinged every 100 ms as before.
+fn wait_for_agent(
+    vsock_path: &Path,
+    debug: bool,
+    ready_doorbell: Option<&socket2::Socket>,
+) -> smolvm::Result<AgentClient> {
+    use std::thread;
+    use std::time::Instant;
+
+    let start = Instant::now();
+    let poll_interval = Duration::from_millis(100);
+    let doorbell_interval = Duration::from_millis(5);
+    let timeout = agent_ready_timeout();
+    let mut rung = false;
+    let mut next_probe = start;
+
+    loop {
+        if start.elapsed() > timeout {
+            return Err(Error::agent(
+                "wait for agent",
+                format!(
+                    "agent did not become ready within {} seconds",
+                    timeout.as_secs()
+                ),
+            ));
+        }
+
+        if !rung {
+            rung = ready_doorbell.is_some_and(|listener| listener.accept().is_ok());
+        }
+        if (rung || Instant::now() >= next_probe) && vsock_path.exists() {
+            next_probe = Instant::now() + poll_interval;
+            // Connect opens the Unix socket to the muxer, but the guest agent
+            // may not be listening on vsock port 6000 yet. We must ping to
+            // verify end-to-end connectivity before declaring the agent ready.
+            match AgentClient::connect(vsock_path) {
+                Ok(mut client) => match client.ping() {
+                    Ok(_) => {
+                        if debug {
+                            eprintln!(
+                                "debug: agent ready after {:.1}s",
+                                start.elapsed().as_secs_f64()
+                            );
+                        }
+                        return Ok(client);
+                    }
+                    Err(_) => {
+                        // Muxer accepted but guest agent not ready yet
+                    }
+                },
+                Err(_) => {
+                    // Socket exists but not connectable yet
+                }
+            }
+        }
+
+        thread::sleep(if ready_doorbell.is_some() {
+            doorbell_interval
+        } else {
+            poll_interval
+        });
+    }
+}
+
+/// Compute storage size for a packed VM.
+///
+/// If the user passed `--storage`, use that. Otherwise, auto-size based on the
+/// image's extracted on-disk size (recorded in manifest during `pack create`).
+/// Formula: `max(20, image_gib * 3 + 5)` — the 3x covers overlay copy-up,
+/// container setup, and ext4 metadata; the +5 gives headroom for user data.
+fn storage_gib_for_manifest(
+    explicit: Option<u64>,
+    manifest: &smolvm_pack::PackManifest,
+) -> Option<u64> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    if manifest.image_size == 0 {
+        // Legacy manifest without image_size — use default.
+        return None;
+    }
+    let image_gib = manifest.image_size / (1024 * 1024 * 1024);
+    // Layers are extracted to /storage, then overlayfs copies writable parts,
+    // and crun sets up the container rootfs. 3x the image size + 10 GiB
+    // headroom covers the worst case. Floor at 20 GiB for small images.
+    let needed = std::cmp::max(image_gib * 3 + 10, 20);
+    Some(needed)
+}
+
+/// Build the command to execute from manifest defaults and CLI overrides.
+fn build_command(manifest: &smolvm_pack::PackManifest, cli_command: &[String]) -> Vec<String> {
+    if !cli_command.is_empty() {
+        return cli_command.to_vec();
+    }
+
+    // Use manifest entrypoint + cmd
+    let mut cmd = manifest.entrypoint.clone();
+    cmd.extend(manifest.cmd.clone());
+
+    if cmd.is_empty() {
+        vec![DEFAULT_SHELL_CMD.to_string()]
+    } else {
+        cmd
+    }
+}
+
+/// What a packed machine launches with, after the command line has had its
+/// say over the manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackedLaunch {
+    pub command: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub workdir: Option<String>,
+    pub user: Option<String>,
+}
+
+/// The one place a packed manifest and the command line are combined into a
+/// launch. Every packed entry point (`pack run`, the standalone binary's run
+/// and exec) goes through here, so a setting the manifest carries cannot be
+/// honoured by one of them and ignored by another. The command line wins for
+/// each setting it gives; the manifest fills the rest.
+pub(crate) fn resolve_packed_launch(
+    manifest: &smolvm_pack::PackManifest,
+    cli_command: &[String],
+    cli_env: &[String],
+    cli_secret_refs: &std::collections::BTreeMap<String, smolvm::secrets::SecretRef>,
+    cli_workdir: Option<String>,
+    cli_user: Option<String>,
+) -> smolvm::Result<PackedLaunch> {
+    Ok(PackedLaunch {
+        command: build_command(manifest, cli_command),
+        env: build_env(manifest, cli_env, cli_secret_refs)?,
+        workdir: cli_workdir.or_else(|| manifest.workdir.clone()),
+        user: cli_user.or_else(|| manifest.user.clone()),
+    })
+}
+
+/// Build environment variables from manifest defaults and CLI overrides.
+fn build_env(
+    manifest: &smolvm_pack::PackManifest,
+    cli_env: &[String],
+    cli_secret_refs: &std::collections::BTreeMap<String, smolvm::secrets::SecretRef>,
+) -> smolvm::Result<Vec<(String, String)>> {
+    let mut env: Vec<(String, String)> = manifest
+        .env
+        .iter()
+        .filter_map(|e| parse_env_spec(e))
+        .collect();
+
+    // A .smolmachine is a portable artifact that may have been authored on
+    // another host or by another party. Validate every packed ref under the
+    // Untrusted scope FIRST — which now rejects every source kind — so a packed
+    // `from_env`/`from_file` ref cannot be resolved against the running host's
+    // env or files (an exfil primitive). Resolution does not enforce scope on
+    // its own, so this gate is what makes the path fail closed. In practice a
+    // pack carries no resolvable secret; configure secrets locally instead.
+    for (key, r) in &manifest.secret_refs {
+        smolvm::secrets::validate_ref(r, smolvm::secrets::ResolutionScope::Untrusted).map_err(
+            |e| {
+                smolvm::Error::config(
+                    "run packed machine",
+                    format!("secret '{}': {} (packs may not carry secret refs)", key, e),
+                )
+            },
+        )?;
+    }
+    env.extend(smolvm::secrets::expose_into_env(
+        smolvm::secrets::resolve_refs_to_env(
+            &manifest.secret_refs,
+            smolvm::secrets::ResolutionScope::Untrusted,
+        )?,
+    ));
+
+    // Secrets the local caller passed on the CLI (`--secret-env`/`--secret-file`)
+    // are their own, so resolve them `TrustedLocal` — the scope the manifest's
+    // refs are denied. They override a manifest env/secret of the same key
+    // (explicit caller intent beats the baked artifact); an explicit `--env`
+    // below still wins over a `--secret-env` of the same name. Without this the
+    // cached/pack-run path silently dropped CLI secrets that the direct
+    // `machine run` path honors.
+    for (key, value) in smolvm::secrets::expose_into_env(smolvm::secrets::resolve_refs_to_env(
+        cli_secret_refs,
+        smolvm::secrets::ResolutionScope::TrustedLocal,
+    )?) {
+        env.retain(|(k, _)| k != &key);
+        env.push((key, value));
+    }
+
+    // CLI env overrides manifest env and resolved secrets
+    for spec in cli_env {
+        if let Some((key, value)) = parse_env_spec(spec) {
+            // Remove existing key if present
+            env.retain(|(k, _)| k != &key);
+            env.push((key, value));
+        }
+    }
+
+    Ok(env)
+}
+
+/// Execute the command in the VM using the existing AgentClient.
+///
+/// In Container mode, runs via `client.run_non_interactive()` / `client.run_interactive()` (crun container).
+/// In VM mode, runs via `client.vm_exec()` / `client.vm_exec_interactive()` (direct in rootfs).
+fn execute_command(
+    client: &mut AgentClient,
+    manifest: &smolvm_pack::PackManifest,
+    args: &PackRunCmd,
+    mounts: &[smolvm::data::storage::HostMount],
+) -> smolvm::Result<i32> {
+    let PackedLaunch {
+        command,
+        mut env,
+        workdir,
+        user,
+    } = resolve_packed_launch(
+        manifest,
+        &args.command,
+        &args.env,
+        &args.secret_refs,
+        args.workdir.clone(),
+        args.user.clone(),
+    )?;
+    if args.auto_graph {
+        smolvm::util::enable_cuda_auto_graph_env(&mut env);
+    }
+
+    let params = ExecParams {
+        launch: PackedLaunch {
+            command,
+            env,
+            workdir,
+            user,
+        },
+        interactive: args.interactive,
+        tty: args.tty,
+        timeout: args.timeout,
+    };
+    execute_packed_command(client, manifest, params, mounts, None)
+}
+
+/// Resolved execution parameters for a packed command.
+struct ExecParams {
+    launch: PackedLaunch,
+    interactive: bool,
+    tty: bool,
+    timeout: Option<Duration>,
+}
+
+/// Execute a command in the VM — shared by both `PackRunCmd` and packed binary paths.
+#[allow(clippy::too_many_arguments)]
+fn execute_packed_command(
+    client: &mut AgentClient,
+    manifest: &smolvm_pack::PackManifest,
+    params: ExecParams,
+    mounts: &[smolvm::data::storage::HostMount],
+    persistent_overlay_id: Option<String>,
+) -> smolvm::Result<i32> {
+    let ExecParams {
+        launch:
+            PackedLaunch {
+                command,
+                env,
+                workdir,
+                user,
+            },
+        interactive,
+        tty,
+        timeout,
+    } = params;
+    match manifest.mode {
+        PackMode::Vm => {
+            // VM mode: execute directly in the VM rootfs
+            if interactive || tty {
+                client.vm_exec_interactive(command, env, workdir, timeout, tty)
+            } else {
+                let (exit_code, stdout, stderr) =
+                    client.vm_exec(command, env, workdir, timeout, None)?;
+
+                if !stdout.is_empty() {
+                    let _ = std::io::stdout().write_all(&stdout);
+                }
+                if !stderr.is_empty() {
+                    let _ = std::io::stderr().write_all(&stderr);
+                }
+                crate::cli::flush_output();
+                Ok(exit_code)
+            }
+        }
+        PackMode::Container => {
+            // Container mode: run inside crun container
+            let mount_bindings = mounts_to_virtiofs_bindings(mounts);
+
+            if interactive || tty {
+                let config = RunConfig::new(&manifest.image, command)
+                    .with_env(env)
+                    .with_workdir(workdir)
+                    .with_user(user.clone())
+                    .with_mounts(mount_bindings)
+                    .with_timeout(timeout)
+                    .with_tty(tty)
+                    .with_persistent_overlay(persistent_overlay_id.clone());
+                client.run_interactive(config)
+            } else {
+                let config = RunConfig::new(&manifest.image, command)
+                    .with_env(env)
+                    .with_workdir(workdir)
+                    .with_user(user)
+                    .with_mounts(mount_bindings)
+                    .with_timeout(timeout)
+                    .with_persistent_overlay(persistent_overlay_id);
+                let (exit_code, stdout, stderr) = client.run_non_interactive(config)?;
+
+                if !stdout.is_empty() {
+                    let _ = std::io::stdout().write_all(&stdout);
+                }
+                if !stderr.is_empty() {
+                    let _ = std::io::stderr().write_all(&stderr);
+                }
+                crate::cli::flush_output();
+                Ok(exit_code)
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Packed binary auto-detection entry point
+// ===========================================================================
+
+// CLI for packed binary mode. Parsed in `run_as_packed_binary()` before
+// the normal smolvm CLI. Uses subcommands matching the smolvm pattern.
+#[derive(Parser, Debug)]
+#[command(about = "a smol machine")]
+#[command(
+    long_about = "A portable, self-contained virtual machine.\n\nRun with no arguments to execute the packaged entrypoint.\nUse subcommands for more control."
+)]
+#[command(version)]
+#[command(subcommand_required = false)]
+struct PackedCli {
+    /// Subcommand to execute (defaults to `run` if omitted)
+    #[command(subcommand)]
+    command: Option<PackedCmd>,
+
+    /// Force re-extraction of assets
+    #[arg(long, global = true)]
+    force_extract: bool,
+
+    /// Print debug information
+    #[arg(long, global = true)]
+    debug: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum PackedCmd {
+    /// Run a command in an ephemeral VM (cleaned up after exit)
+    Run(PackedRunArgs),
+    /// Start a persistent VM
+    Start(PackedStartArgs),
+    /// Execute a command in a running VM
+    Exec(PackedExecArgs),
+    /// Open an interactive shell in a running VM
+    #[command(visible_alias = "sh")]
+    Shell,
+    /// Stop the VM
+    Stop,
+    /// Show VM status
+    Status,
+    /// Show packed binary info
+    Info,
+}
+
+/// Arguments for the `run` subcommand (ephemeral execution).
+#[derive(Args, Debug, Default)]
+struct PackedRunArgs {
+    /// Command to run (overrides image entrypoint/cmd)
+    #[arg(trailing_var_arg = true, value_name = "COMMAND")]
+    command: Vec<String>,
+
+    /// Keep stdin open for interactive input
+    #[arg(short = 'i', long)]
+    interactive: bool,
+
+    /// Allocate a pseudo-TTY (use with -i for interactive shells)
+    #[arg(short = 't', long)]
+    tty: bool,
+
+    /// Kill command after duration (e.g., "30s", "5m")
+    #[arg(long, value_parser = crate::cli::parsers::parse_duration, value_name = "DURATION")]
+    timeout: Option<Duration>,
+
+    /// Working directory inside the container
+    #[arg(short = 'w', long = "workdir", value_name = "PATH")]
+    workdir: Option<String>,
+
+    /// Run as this user (name or `uid[:gid]`); defaults to the user the
+    /// machine was packed with, then the image's USER.
+    #[arg(short = 'u', long = "user", value_name = "USER")]
+    user: Option<String>,
+
+    /// Set environment variable (KEY=VALUE)
+    #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
+
+    /// Mount a volume (HOST:GUEST[:ro|rw|staged])
+    #[arg(short = 'v', long = "volume", value_name = "HOST:GUEST[:ro|rw|staged]")]
+    volume: Vec<String>,
+
+    /// Allow trusted read-only host `/etc` and `/var/log` mounts below `/host`.
+    #[arg(long)]
+    allow_system_mounts: bool,
+
+    /// Expose port from container to host (single port or one-to-one range; append /udp for UDP)
+    #[arg(short = 'p', long = "port", value_parser = PortMappingSpec::parse, value_name = "PORT[-END]|HOST[-END]:GUEST[-END][/udp]")]
+    port: Vec<PortMappingSpec>,
+
+    /// Enable outbound network access
+    #[arg(long)]
+    net: bool,
+
+    /// Select the networking backend.
+    #[arg(long = "net-backend", value_enum)]
+    net_backend: Option<NetworkBackend>,
+
+    /// Forward the host SSH agent into the VM via a vsock bridge.
+    #[arg(long)]
+    ssh_agent: bool,
+
+    /// Custom DNS resolver for the guest (implies --net). Defaults to the
+    /// host's own resolver; use this when that is not the resolver to use.
+    #[arg(long, value_name = "IP")]
+    dns: Option<std::net::Ipv4Addr>,
+
+    /// Resolver option for the guest resolv.conf (repeatable, in order); see
+    /// `machine create --dns-option`.
+    #[arg(long = "dns-option", value_name = "OPTION", value_parser = crate::cli::machine::parse_dns_option)]
+    dns_option: Vec<String>,
+
+    /// Number of vCPUs (overrides default)
+    #[arg(long, value_name = "N")]
+    cpus: Option<u8>,
+
+    /// Memory in MiB (overrides default)
+    #[arg(long, value_name = "MiB")]
+    mem: Option<u32>,
+
+    /// Storage disk size in GiB
+    #[arg(long, value_name = "GiB")]
+    storage: Option<u64>,
+
+    /// Overlay disk size in GiB
+    #[arg(long, value_name = "GiB")]
+    overlay: Option<u64>,
+
+    /// Block I/O engine. `sync` is the default; `async` adaptively overlaps
+    /// queued raw-disk reads on Linux.
+    #[arg(long = "block-io", value_enum)]
+    block_io: Option<BlockIoEngine>,
+
+    /// Enable CUDA-over-vsock (also implied by the packed machine's manifest or
+    /// `SMOLVM_CUDA=1`).
+    #[arg(long)]
+    cuda: bool,
+}
+
+/// Arguments for the `start` subcommand (persistent daemon).
+#[derive(Args, Debug)]
+struct PackedStartArgs {
+    /// Number of vCPUs (overrides default)
+    #[arg(long, value_name = "N")]
+    cpus: Option<u8>,
+
+    /// Memory in MiB (overrides default)
+    #[arg(long, value_name = "MiB")]
+    mem: Option<u32>,
+
+    /// Storage disk size in GiB
+    #[arg(long, value_name = "GiB")]
+    storage: Option<u64>,
+
+    /// Overlay disk size in GiB
+    #[arg(long, value_name = "GiB")]
+    overlay: Option<u64>,
+
+    /// Block I/O engine. `sync` is the default; `async` adaptively overlaps
+    /// queued raw-disk reads on Linux.
+    #[arg(long = "block-io", value_enum)]
+    block_io: Option<BlockIoEngine>,
+
+    /// Mount a volume (HOST:GUEST[:ro|rw|staged])
+    #[arg(short = 'v', long = "volume", value_name = "HOST:GUEST[:ro|rw|staged]")]
+    volume: Vec<String>,
+
+    /// Allow trusted read-only host `/etc` and `/var/log` mounts below `/host`.
+    #[arg(long)]
+    allow_system_mounts: bool,
+
+    /// Expose port from container to host (single port or one-to-one range; append /udp for UDP)
+    #[arg(short = 'p', long = "port", value_parser = PortMappingSpec::parse, value_name = "PORT[-END]|HOST[-END]:GUEST[-END][/udp]")]
+    port: Vec<PortMappingSpec>,
+
+    /// Enable outbound network access
+    #[arg(long)]
+    net: bool,
+
+    /// Select the networking backend.
+    #[arg(long = "net-backend", value_enum)]
+    net_backend: Option<NetworkBackend>,
+
+    /// Forward the host SSH agent into the VM via a vsock bridge.
+    #[arg(long)]
+    ssh_agent: bool,
+
+    /// Custom DNS resolver for the guest (implies --net). Defaults to the
+    /// host's own resolver; use this when that is not the resolver to use.
+    #[arg(long, value_name = "IP")]
+    dns: Option<std::net::Ipv4Addr>,
+
+    /// Resolver option for the guest resolv.conf (repeatable, in order); see
+    /// `machine create --dns-option`.
+    #[arg(long = "dns-option", value_name = "OPTION", value_parser = crate::cli::machine::parse_dns_option)]
+    dns_option: Vec<String>,
+}
+
+/// Arguments for the `exec` subcommand (run in existing VM).
+#[derive(Args, Debug, Default)]
+struct PackedExecArgs {
+    /// Command to run
+    #[arg(trailing_var_arg = true, value_name = "COMMAND")]
+    command: Vec<String>,
+
+    /// Keep stdin open for interactive input
+    #[arg(short = 'i', long)]
+    interactive: bool,
+
+    /// Allocate a pseudo-TTY (use with -i for interactive shells)
+    #[arg(short = 't', long)]
+    tty: bool,
+
+    /// Kill command after duration (e.g., "30s", "5m")
+    #[arg(long, value_parser = crate::cli::parsers::parse_duration, value_name = "DURATION")]
+    timeout: Option<Duration>,
+
+    /// Working directory inside the container
+    #[arg(short = 'w', long = "workdir", value_name = "PATH")]
+    workdir: Option<String>,
+
+    /// Run as this user (name or `uid[:gid]`); defaults to the user the
+    /// machine was packed with, then the image's USER.
+    #[arg(short = 'u', long = "user", value_name = "USER")]
+    user: Option<String>,
+
+    /// Set environment variable (KEY=VALUE)
+    #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
+    // Note: -v/--volume is intentionally absent from exec. Virtiofs devices
+    // are fixed at VM boot time, so mounts must be specified on `start`.
+}
+
+/// Entry point when auto-detection determines we are a packed binary.
+///
+/// Called from `main()` before clap parses the normal CLI.
+/// Parses its own `PackedCli` args and executes accordingly.
+/// Never returns — calls `std::process::exit()`.
+pub fn run_as_packed_binary(mode: PackedMode) -> ! {
+    // Use argv[0] as the binary name so --help and --version display
+    // "my-app 0.5.1" instead of "smolvm 0.5.1".
+    let bin_name = std::env::args()
+        .next()
+        .and_then(|a| {
+            std::path::Path::new(&a)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "packed-binary".to_string());
+
+    let args: Vec<String> = std::iter::once(bin_name.clone())
+        .chain(std::env::args().skip(1))
+        .collect();
+    // Leak is safe: this function is `-> !` so the process exits after parsing.
+    let name_static: &'static str = Box::leak(bin_name.into_boxed_str());
+    let matches = <PackedCli as clap::CommandFactory>::command()
+        .name(name_static)
+        .get_matches_from(args);
+    let cli = <PackedCli as clap::FromArgMatches>::from_arg_matches(&matches)
+        .unwrap_or_else(|e| e.exit());
+
+    let result = pack_run_inner(mode, cli);
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn pack_run_inner(mode: PackedMode, cli: PackedCli) -> smolvm::Result<()> {
+    let debug = cli.debug;
+    let force_extract = cli.force_extract;
+    let command = cli
+        .command
+        .unwrap_or(PackedCmd::Run(PackedRunArgs::default()));
+
+    match command {
+        PackedCmd::Run(args) => run_ephemeral(mode, args, debug, force_extract),
+        PackedCmd::Start(args) => daemon_start(&mode, args, debug, force_extract),
+        PackedCmd::Exec(args) => {
+            let checksum = mode_checksum(&mode);
+            let manifest = read_manifest_for_mode(&mode)?;
+            daemon_exec(checksum, args, debug, &manifest)
+        }
+        PackedCmd::Shell => {
+            let checksum = mode_checksum(&mode);
+            let manifest = read_manifest_for_mode(&mode)?;
+            daemon_exec(
+                checksum,
+                PackedExecArgs {
+                    command: vec!["/bin/sh".to_string()],
+                    interactive: true,
+                    tty: true,
+                    ..Default::default()
+                },
+                debug,
+                &manifest,
+            )
+        }
+        PackedCmd::Stop => {
+            let checksum = mode_checksum(&mode);
+            daemon_stop(checksum, debug)
+        }
+        PackedCmd::Status => {
+            let checksum = mode_checksum(&mode);
+            daemon_status(checksum)
+        }
+        PackedCmd::Info => {
+            let checksum = mode_checksum(&mode);
+            let manifest = read_manifest_for_mode(&mode)?;
+            print_manifest_info(&manifest, checksum);
+            Ok(())
+        }
+    }
+}
+
+/// Run an ephemeral VM from the packed binary (cleaned up after exit).
+fn run_ephemeral(
+    mode: PackedMode,
+    args: PackedRunArgs,
+    debug: bool,
+    force_extract: bool,
+) -> smolvm::Result<()> {
+    match mode {
+        PackedMode::Sidecar {
+            sidecar_path,
+            footer: _,
+        } => {
+            // Construct PackRunCmd from PackedRunArgs and delegate to existing path
+            let cmd = PackRunCmd {
+                sidecar: Some(sidecar_path),
+                local_bake: false,
+                command: args.command,
+                interactive: args.interactive,
+                tty: args.tty,
+                timeout: args.timeout,
+                workdir: args.workdir,
+                user: args.user,
+                env: args.env,
+                volume: args.volume,
+                allow_system_mounts: args.allow_system_mounts,
+                port: args.port,
+                net: args.net,
+                net_backend: args.net_backend,
+                ssh_agent: args.ssh_agent,
+                dns: args.dns,
+                dns_option: args.dns_option.clone(),
+                cpus: args.cpus,
+                mem: args.mem,
+                storage: args.storage,
+                overlay: args.overlay,
+                block_io: args.block_io,
+                egress: None,
+                force_extract,
+                info: false,
+                debug,
+                cuda: args.cuda,
+                auto_graph: false,
+                // A standalone packed binary carries no CLI secret refs.
+                secret_refs: Default::default(),
+            };
+            cmd.run()
+        }
+
+        #[cfg(target_os = "macos")]
+        PackedMode::Section {
+            manifest,
+            checksum,
+            assets_ptr,
+            assets_size,
+        } => run_section_mode(
+            *manifest,
+            checksum,
+            assets_ptr,
+            assets_size,
+            args,
+            debug,
+            force_extract,
+        ),
+
+        PackedMode::Embedded { exe_path, footer } => {
+            run_embedded_mode(exe_path, footer, args, debug, force_extract)
+        }
+    }
+}
+
+/// Run from Mach-O section-embedded assets.
+#[cfg(target_os = "macos")]
+fn run_section_mode(
+    manifest: smolvm_pack::PackManifest,
+    checksum: u32,
+    assets_ptr: *const u8,
+    assets_size: usize,
+    args: PackedRunArgs,
+    debug: bool,
+    force_extract: bool,
+) -> smolvm::Result<()> {
+    let cache_dir = extract::get_cache_dir(checksum)
+        .map_err(|e| Error::agent("get cache dir", e.to_string()))?;
+
+    let needs_extract = force_extract || !extract::is_extracted(&cache_dir);
+    if needs_extract {
+        unsafe {
+            extract::extract_from_section(&cache_dir, assets_ptr, assets_size, debug)
+                .map_err(|e| Error::agent("extract section assets", e.to_string()))?;
+        }
+    }
+
+    run_from_cache(&cache_dir, &manifest, args, debug)
+}
+
+/// Run from binary-appended assets.
+fn run_embedded_mode(
+    exe_path: PathBuf,
+    footer: smolvm_pack::PackFooter,
+    args: PackedRunArgs,
+    debug: bool,
+    force_extract: bool,
+) -> smolvm::Result<()> {
+    // Read manifest from the binary
+    let manifest = smolvm_pack::read_manifest(&exe_path)
+        .map_err(|e| Error::agent("read manifest", e.to_string()))?;
+
+    let cache_dir = extract::get_cache_dir(footer.checksum)
+        .map_err(|e| Error::agent("get cache dir", e.to_string()))?;
+
+    let needs_extract = force_extract || !extract::is_extracted(&cache_dir);
+    if needs_extract {
+        extract::extract_from_binary(&exe_path, &cache_dir, &footer, debug)
+            .map_err(|e| Error::agent("extract embedded assets", e.to_string()))?;
+    }
+
+    run_from_cache(&cache_dir, &manifest, args, debug)
+}
+
+/// Shared launch path for section and embedded modes.
+///
+/// Assets are already extracted to `cache_dir`. Boot VM and run the command.
+fn run_from_cache(
+    cache_dir: &Path,
+    manifest: &smolvm_pack::PackManifest,
+    args: PackedRunArgs,
+    debug: bool,
+) -> smolvm::Result<()> {
+    let rootfs_path = cache_dir.join("agent-rootfs");
+    let lib_dir = resolve_lib_dir(cache_dir, debug)?;
+    let layers_lease = extract::acquire_layers_lease(cache_dir, debug)
+        .map_err(|e| Error::agent("acquire layers lease", e.to_string()))?;
+    let layers_dir = &layers_lease.path;
+    let runtime_parent = cache_dir.join("runtime");
+    std::fs::create_dir_all(&runtime_parent)
+        .map_err(|e| Error::agent("create runtime parent", e.to_string()))?;
+    let runtime_dir = tempfile::tempdir_in(&runtime_parent)
+        .map_err(|e| Error::agent("create runtime dir", e.to_string()))?;
+
+    let storage_path = runtime_dir.path().join("storage.ext4");
+    let vsock_path = runtime_dir.path().join("agent.sock");
+
+    let storage_gib = storage_gib_for_manifest(args.storage, manifest);
+    let ssh_agent_socket = resolve_ssh_agent_socket(args.ssh_agent)?;
+
+    let template = manifest
+        .assets
+        .storage_template
+        .as_ref()
+        .map(|t| t.path.as_str());
+    extract::create_or_copy_storage_disk(
+        cache_dir,
+        template,
+        &storage_path,
+        manifest.assets.storage_logical_size,
+        storage_gib,
+    )
+    .map_err(|e| Error::agent("create storage disk", e.to_string()))?;
+
+    let overlay_runtime_path = setup_vm_overlay(
+        manifest,
+        cache_dir,
+        &runtime_dir.path().join("overlay.raw"),
+        args.overlay,
+    )?;
+
+    let (volume_specs, disk_volumes) =
+        smolvm::data::storage::split_disk_volume_specs(&args.volume)?;
+    let mounts = HostMount::parse_with_system_mounts(&volume_specs, args.allow_system_mounts)?;
+    smolvm::data::storage::ensure_disk_volumes_distinct(
+        &disk_volumes,
+        mounts.iter().filter_map(|m| m.target.to_str()),
+    )?;
+    let ports = PortMappingSpec::expand_all(&args.port)
+        .map_err(|e| Error::config("packed run ports", e))?;
+    let port_mappings = ports.clone();
+    let resources = VmResources {
+        cpus: args.cpus.unwrap_or(manifest.cpus),
+        memory_mib: args.mem.unwrap_or(manifest.mem),
+        network: args.net || manifest.network || !ports.is_empty(),
+        network_backend: args.net_backend,
+        dns: args.dns,
+        dns_options: args.dns_option.clone(),
+        shm_size: None,
+        network_name: None,
+        guest_subnet: None,
+        gpu: manifest.gpu,
+        nested_virt: false,
+        cuda: manifest.cuda,
+        storage_gib,
+        overlay_gib: args.overlay,
+        block_io: args.block_io.unwrap_or_default(),
+        disk_durability: Default::default(),
+        disks: Vec::new(),
+        cache_disk: None,
+        disk_volumes: disk_volumes.clone(),
+        block_private: None,
+        gpu_vram_mib: None,
+        rosetta: false,
+        allowed_cidrs: None,
+        egress_rules: Vec::new(),
+    };
+    validate_requested_network_backend(&resources, None, ports.len())?;
+
+    let packed_mounts = mounts_to_packed(&mounts);
+
+    smolvm::process::install_sigchld_handler();
+    let ready_doorbell = bind_ready_doorbell(&vsock_path);
+
+    let console_log_path = runtime_dir.path().join("console.log");
+    let vsock_path_clone = vsock_path.clone();
+    // As in a packed `run`: Linux forks, macOS and Windows boot in `_boot-vm`
+    // (#1819), the parent watches mounts (#1192) and the VM ends with the CLI
+    // (#1193).
+    #[cfg(target_os = "linux")]
+    let watched_mounts = watched_packed_mounts(&packed_mounts);
+    #[cfg(target_os = "linux")]
+    let cli_pid = std::process::id() as smolvm::process::Pid;
+    #[cfg(target_os = "linux")]
+    let child_pid = smolvm::process::fork_session_leader(move || {
+        smolvm::process::exit_when_parent_is_not(cli_pid);
+
+        let krun = match unsafe { KrunFunctions::load(&lib_dir) } {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("failed to load libkrun: {}", e);
+                smolvm::process::exit_child(1);
+            }
+        };
+
+        let config = PackedLaunchConfig {
+            rootfs_path: &rootfs_path,
+            storage_path: &storage_path,
+            vsock_socket: &vsock_path_clone,
+            layers_dir,
+            mounts: &packed_mounts,
+            port_mappings: &port_mappings,
+            resources,
+            overlay_path: overlay_runtime_path.as_deref(),
+            debug,
+            console_log: console_log_path,
+            // CUDA-over-vsock for the persistent/daemon packed paths is not
+            // wired yet; the `run` path starts the host server.
+            cuda_socket: None,
+            ssh_agent_socket: ssh_agent_socket.as_deref(),
+            // Packed binaries carry no egress flags; policy comes only from a
+            // `machine run` hand-off.
+            dns_filter_hosts: None,
+        };
+
+        // Detach from parent's terminal so libkrun doesn't
+        // steal keystrokes or corrupt terminal state.
+        detach_vm_child_stdio();
+
+        if let Err(e) = launch_agent_vm_dynamic(&krun, &config) {
+            let msg = format!("launch_agent_vm_dynamic failed: {}\n", e);
+            let _ = std::fs::write(&config.console_log, &msg);
+        }
+        smolvm::process::exit_child(1);
+    })
+    .map_err(|e| Error::agent("fork VM process", e.to_string()))?;
+    #[cfg(target_os = "linux")]
+    let _fsnotify_watcher =
+        smolvm::agent::FsNotifyWatcher::start_tagged(vsock_path.clone(), watched_mounts);
+
+    // Re-spawn this executable as `_boot-vm <config>`, mirroring the non-packed
+    // launcher and the `--sidecar` path. BootConfig carries the same packed
+    // launch data (rootfs/disks/layers/ports).
+    #[cfg(not(target_os = "linux"))]
+    let child_pid = {
+        let _ = (&packed_mounts, &port_mappings, &vsock_path_clone);
+        let overlay_disk_path = overlay_runtime_path
+            .clone()
+            .unwrap_or_else(|| runtime_dir.path().join("overlay.raw"));
+        let boot_config = smolvm::agent::boot_config::BootConfig {
+            rootfs_path: rootfs_path.clone(),
+            storage_disk_path: storage_path.clone(),
+            overlay_disk_path,
+            vsock_socket: vsock_path.clone(),
+            console_log: Some(console_log_path.clone()),
+            startup_error_log: runtime_dir.path().join("startup-error.log"),
+            storage_size_gb: storage_gib.unwrap_or(smolvm::storage::DEFAULT_STORAGE_SIZE_GIB),
+            overlay_size_gb: args
+                .overlay
+                .unwrap_or(smolvm::storage::DEFAULT_OVERLAY_SIZE_GIB),
+            mounts: mounts.clone(),
+            ports: ports.clone(),
+            resources: resources.clone(),
+            ssh_agent_socket,
+            cuda: false,
+            expose_docker: false,
+            published_sockets: Vec::new(),
+            dns_filter_hosts: None,
+            packed_layers_dir: Some(layers_dir.to_path_buf()),
+            packed_layers_dax_window: smolvm::agent::legacy_packed_layers_dax_window(),
+            pack_idmap_source: None,
+            extra_disks: vec![],
+            pod_netns: None,
+            workload_log: None,
+            credentials: None,
+            external_interceptor: None,
+            mediated_egress: false,
+            mediated_parent_id: [0; 16],
+        };
+        spawn_packed_boot_vm(
+            &boot_config,
+            &runtime_dir.path().join("boot-config.json"),
+            &lib_dir,
+            true,
+            debug,
+        )?
+    };
+
+    let child_start_time = {
+        let mut st = smolvm::process::process_start_time(child_pid);
+        if st.is_none() && smolvm::process::is_alive(child_pid) {
+            for _ in 0..5 {
+                std::thread::sleep(Duration::from_millis(1));
+                st = smolvm::process::process_start_time(child_pid);
+                if st.is_some() {
+                    break;
+                }
+            }
+        }
+        if st.is_none() && smolvm::process::is_alive(child_pid) {
+            let _ = smolvm::process::stop_process_fast(child_pid, Duration::from_secs(5), true);
+            if let Err(e) = std::fs::remove_dir_all(runtime_dir.path()) {
+                tracing::debug!(error = %e, "cleanup: remove runtime dir after failed daemon child start");
+            }
+            return Err(Error::agent(
+                "verify child process",
+                "unable to capture child start time for safe lifecycle management",
+            ));
+        }
+        st
+    };
+
+    let child_guard = ChildGuard {
+        pid: child_pid,
+        start_time: child_start_time,
+        runtime_dir,
+    };
+
+    let mut client = wait_for_agent(&vsock_path, debug, ready_doorbell.as_ref())?;
+
+    let params = ExecParams {
+        launch: resolve_packed_launch(
+            manifest,
+            &args.command,
+            &args.env,
+            &std::collections::BTreeMap::new(),
+            args.workdir,
+            args.user,
+        )?,
+        interactive: args.interactive,
+        tty: args.tty,
+        timeout: args.timeout,
+    };
+    let exit_code = execute_packed_command(&mut client, manifest, params, &mounts, None)?;
+
+    drop(child_guard);
+    drop(layers_lease);
+    std::process::exit(exit_code);
+}
+
+fn print_manifest_info(manifest: &smolvm_pack::PackManifest, checksum: u32) {
+    let mode_str = match manifest.mode {
+        PackMode::Container => "container",
+        PackMode::Vm => "vm",
+    };
+    println!("Mode:       {}", mode_str);
+    println!("Image:      {}", manifest.image);
+    println!("Digest:     {}", manifest.digest);
+    println!("Platform:   {}", manifest.platform);
+    println!("CPUs:       {}", manifest.cpus);
+    println!("Memory:     {} MiB", manifest.mem);
+    if manifest.network {
+        println!("Network:    enabled");
+    }
+    if !manifest.entrypoint.is_empty() {
+        println!("Entrypoint: {}", manifest.entrypoint.join(" "));
+    }
+    if !manifest.cmd.is_empty() {
+        println!("Cmd:        {}", manifest.cmd.join(" "));
+    }
+    if let Some(ref wd) = manifest.workdir {
+        println!("Workdir:    {}", wd);
+    }
+    if !manifest.env.is_empty() {
+        println!("Env:");
+        for e in &manifest.env {
+            println!("  {}", e);
+        }
+    }
+    println!("Checksum:   {:08x}", checksum);
+}
+
+// ===========================================================================
+// Daemon mode helpers and implementation
+// ===========================================================================
+
+/// Extract the checksum from any PackedMode variant.
+fn mode_checksum(mode: &PackedMode) -> u32 {
+    match mode {
+        #[cfg(target_os = "macos")]
+        PackedMode::Section { checksum, .. } => *checksum,
+        PackedMode::Embedded { footer, .. } => footer.checksum,
+        PackedMode::Sidecar { footer, .. } => footer.checksum,
+    }
+}
+
+/// Get the daemon state directory for a given checksum.
+///
+/// Returns `~/.cache/smolvm-pack/{checksum:08x}/daemon/`.
+fn daemon_dir(checksum: u32) -> smolvm::Result<PathBuf> {
+    let cache_dir = extract::get_cache_dir(checksum)
+        .map_err(|e| Error::agent("get cache dir", e.to_string()))?;
+    Ok(cache_dir.join("daemon"))
+}
+
+/// Read PID and start time from the daemon PID file.
+///
+/// The PID file format is: `{pid}\n{start_time}`.
+/// Returns `None` if the file doesn't exist or is malformed.
+fn read_daemon_pid(checksum: u32) -> Option<(smolvm::process::Pid, Option<u64>)> {
+    let dir = daemon_dir(checksum).ok()?;
+    let pid_path = dir.join("agent.pid");
+    let contents = std::fs::read_to_string(&pid_path).ok()?;
+    let mut lines = contents.lines();
+    let pid: smolvm::process::Pid = lines.next()?.parse().ok()?;
+    let start_time: Option<u64> = lines.next().and_then(|s| s.parse().ok());
+    Some((pid, start_time))
+}
+
+/// Write PID and start time to the daemon PID file.
+fn write_daemon_pid(
+    checksum: u32,
+    pid: smolvm::process::Pid,
+    start_time: Option<u64>,
+) -> smolvm::Result<()> {
+    let dir = daemon_dir(checksum)?;
+    let pid_path = dir.join("agent.pid");
+    let contents = match start_time {
+        Some(st) => format!("{}\n{}", pid, st),
+        None => format!("{}", pid),
+    };
+    std::fs::write(&pid_path, contents).map_err(|e| Error::agent("write PID file", e.to_string()))
+}
+
+/// Read the manifest for any PackedMode variant.
+fn read_manifest_for_mode(mode: &PackedMode) -> smolvm::Result<smolvm_pack::PackManifest> {
+    match mode {
+        #[cfg(target_os = "macos")]
+        PackedMode::Section { manifest, .. } => Ok((**manifest).clone()),
+        PackedMode::Embedded { exe_path, .. } => smolvm_pack::read_manifest(exe_path)
+            .map_err(|e| Error::agent("read manifest", e.to_string())),
+        PackedMode::Sidecar { sidecar_path, .. } => {
+            smolvm_pack::read_manifest_from_sidecar(sidecar_path)
+                .map_err(|e| Error::agent("read manifest", e.to_string()))
+        }
+    }
+}
+
+/// Ensure assets are extracted to the cache directory for the given mode.
+fn ensure_extracted(mode: &PackedMode, force: bool, debug: bool) -> smolvm::Result<PathBuf> {
+    let checksum = mode_checksum(mode);
+    let cache_dir = extract::get_cache_dir(checksum)
+        .map_err(|e| Error::agent("get cache dir", e.to_string()))?;
+
+    let needs_extract = force || !extract::is_extracted(&cache_dir);
+    if needs_extract {
+        match mode {
+            #[cfg(target_os = "macos")]
+            PackedMode::Section {
+                assets_ptr,
+                assets_size,
+                ..
+            } => unsafe {
+                extract::extract_from_section(&cache_dir, *assets_ptr, *assets_size, debug)
+                    .map_err(|e| Error::agent("extract section assets", e.to_string()))?;
+            },
+            PackedMode::Embedded {
+                exe_path, footer, ..
+            } => {
+                extract::extract_from_binary(exe_path, &cache_dir, footer, debug)
+                    .map_err(|e| Error::agent("extract embedded assets", e.to_string()))?;
+            }
+            PackedMode::Sidecar {
+                sidecar_path,
+                footer,
+                ..
+            } => {
+                extract::extract_sidecar(sidecar_path, &cache_dir, footer, force, debug)
+                    .map_err(|e| Error::agent("extract sidecar assets", e.to_string()))?;
+            }
+        }
+    }
+
+    Ok(cache_dir)
+}
+
+/// Check if the daemon is currently running and connectable.
+fn is_daemon_running(checksum: u32) -> bool {
+    let Some((pid, start_time)) = read_daemon_pid(checksum) else {
+        return false;
+    };
+
+    // Check PID identity (guards against PID reuse)
+    if !smolvm::process::is_our_process_strict(pid, start_time) {
+        return false;
+    }
+
+    // Try to actually connect and ping
+    let dir = match daemon_dir(checksum) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let sock_path = dir.join("agent.sock");
+    if !sock_path.exists() {
+        return false;
+    }
+
+    AgentClient::connect(&sock_path)
+        .and_then(|mut c| c.ping())
+        .is_ok()
+}
+
+/// Start the daemon VM.
+///
+/// Extracts assets if needed, creates the daemon directory, forks a child
+/// process that runs the VM, writes a PID file, and waits for the agent
+/// to become ready.
+fn daemon_start(
+    mode: &PackedMode,
+    args: PackedStartArgs,
+    debug: bool,
+    force_extract: bool,
+) -> smolvm::Result<()> {
+    let checksum = mode_checksum(mode);
+    let manifest = read_manifest_for_mode(mode)?;
+
+    // Extract assets to cache
+    let cache_dir = ensure_extracted(mode, force_extract, debug)?;
+
+    // Create daemon directory
+    let daemon = cache_dir.join("daemon");
+    std::fs::create_dir_all(&daemon)
+        .map_err(|e| Error::agent("create daemon dir", e.to_string()))?;
+
+    // Check if already running
+    if is_daemon_running(checksum) {
+        let (pid, _) = read_daemon_pid(checksum).unwrap();
+        println!("Daemon already running (PID: {})", pid);
+        return Ok(());
+    }
+    let ssh_agent_socket = resolve_ssh_agent_socket(args.ssh_agent)?;
+
+    // Clean up stale PID/socket files from previous runs
+    if let Err(e) = std::fs::remove_file(daemon.join("agent.pid")) {
+        tracing::debug!(error = %e, "cleanup: remove stale daemon PID file");
+    }
+    if let Err(e) = std::fs::remove_file(daemon.join("agent.sock")) {
+        tracing::debug!(error = %e, "cleanup: remove stale daemon socket");
+    }
+
+    // Create storage disk if not exists (preserves existing disk on restart)
+    let storage_gib = storage_gib_for_manifest(args.storage, &manifest);
+    let storage_path = daemon.join("storage.ext4");
+    if !storage_path.exists() {
+        let template = manifest
+            .assets
+            .storage_template
+            .as_ref()
+            .map(|t| t.path.as_str());
+        extract::create_or_copy_storage_disk(
+            &cache_dir,
+            template,
+            &storage_path,
+            manifest.assets.storage_logical_size,
+            storage_gib,
+        )
+        .map_err(|e| Error::agent("create storage disk", e.to_string()))?;
+    }
+
+    // Create overlay disk (preserves existing disk on restart)
+    let overlay_daemon_path = {
+        let overlay_path = daemon.join("overlay.raw");
+        if !overlay_path.exists() {
+            setup_vm_overlay(&manifest, &cache_dir, &overlay_path, args.overlay)?;
+        }
+        Some(overlay_path)
+    };
+
+    let vsock_path = daemon.join("agent.sock");
+
+    // Parse CLI args
+    let (volume_specs, disk_volumes) =
+        smolvm::data::storage::split_disk_volume_specs(&args.volume)?;
+    let mounts = HostMount::parse_with_system_mounts(&volume_specs, args.allow_system_mounts)?;
+    smolvm::data::storage::ensure_disk_volumes_distinct(
+        &disk_volumes,
+        mounts.iter().filter_map(|m| m.target.to_str()),
+    )?;
+    let ports = PortMappingSpec::expand_all(&args.port)
+        .map_err(|e| Error::config("packed start ports", e))?;
+    let port_mappings = ports.clone();
+    let resources = VmResources {
+        cpus: args.cpus.unwrap_or(manifest.cpus),
+        memory_mib: args.mem.unwrap_or(manifest.mem),
+        network: args.net || manifest.network || !ports.is_empty(),
+        network_backend: args.net_backend,
+        dns: args.dns,
+        dns_options: args.dns_option.clone(),
+        shm_size: None,
+        network_name: None,
+        guest_subnet: None,
+        gpu: manifest.gpu,
+        nested_virt: false,
+        cuda: manifest.cuda,
+        storage_gib,
+        overlay_gib: args.overlay,
+        block_io: args.block_io.unwrap_or_default(),
+        disk_durability: Default::default(),
+        disks: Vec::new(),
+        cache_disk: None,
+        disk_volumes: disk_volumes.clone(),
+        block_private: None,
+        gpu_vram_mib: None,
+        rosetta: false,
+        allowed_cidrs: None,
+        egress_rules: Vec::new(),
+    };
+    validate_requested_network_backend(&resources, None, ports.len())?;
+
+    let packed_mounts = mounts_to_packed(&mounts);
+
+    let rootfs_path = cache_dir.join("agent-rootfs");
+    let lib_dir = resolve_lib_dir(&cache_dir, debug)?;
+    // Use a temporary RAII lease to mount the volume for the launch config.
+    // The persistent daemon lease is created after fork with the real child
+    // PID. If fork fails, the RAII lease cleans up normally. If fork
+    // succeeds, the daemon lease keeps the volume mounted after the RAII
+    // lease drops.
+    let layers_lease = extract::acquire_layers_lease(&cache_dir, debug)
+        .map_err(|e| Error::agent("acquire layers lease", e.to_string()))?;
+    let layers_dir = layers_lease.path.clone();
+
+    if debug {
+        eprintln!("debug: daemon dir={}", daemon.display());
+        eprintln!("debug: rootfs={}", rootfs_path.display());
+        eprintln!("debug: lib_dir={}", lib_dir.display());
+        eprintln!("debug: storage={}", storage_path.display());
+        eprintln!("debug: vsock={}", vsock_path.display());
+        eprintln!(
+            "debug: resources cpus={} mem={} net={}",
+            resources.cpus, resources.memory_mib, resources.network
+        );
+    }
+
+    // Fork child → launch VM
+    smolvm::process::install_sigchld_handler();
+    let ready_doorbell = bind_ready_doorbell(&vsock_path);
+
+    let console_log_path = daemon.join("console.log");
+    let vsock_path_clone = vsock_path.clone();
+    // Linux forks; macOS and Windows boot in `_boot-vm`, which watches the
+    // daemon's mounts itself (#1819).
+    #[cfg(not(target_os = "linux"))]
+    let child_pid = {
+        let _ = (&packed_mounts, &port_mappings, &vsock_path_clone);
+        let boot_config = smolvm::agent::boot_config::BootConfig {
+            rootfs_path: rootfs_path.clone(),
+            storage_disk_path: storage_path.clone(),
+            overlay_disk_path: overlay_daemon_path
+                .clone()
+                .unwrap_or_else(|| daemon.join("overlay.raw")),
+            vsock_socket: vsock_path.clone(),
+            console_log: Some(console_log_path.clone()),
+            startup_error_log: daemon.join("startup-error.log"),
+            storage_size_gb: storage_gib.unwrap_or(smolvm::storage::DEFAULT_STORAGE_SIZE_GIB),
+            overlay_size_gb: args
+                .overlay
+                .unwrap_or(smolvm::storage::DEFAULT_OVERLAY_SIZE_GIB),
+            mounts: mounts.clone(),
+            ports: ports.clone(),
+            resources: resources.clone(),
+            ssh_agent_socket: ssh_agent_socket.clone(),
+            cuda: false,
+            expose_docker: false,
+            published_sockets: Vec::new(),
+            dns_filter_hosts: None,
+            packed_layers_dir: Some(layers_dir.to_path_buf()),
+            packed_layers_dax_window: smolvm::agent::legacy_packed_layers_dax_window(),
+            pack_idmap_source: None,
+            extra_disks: vec![],
+            pod_netns: None,
+            workload_log: None,
+            credentials: None,
+            external_interceptor: None,
+            mediated_egress: false,
+            mediated_parent_id: [0; 16],
+        };
+        spawn_packed_boot_vm(
+            &boot_config,
+            &daemon.join("boot-config.json"),
+            &lib_dir,
+            false,
+            debug,
+        )?
+    };
+    #[cfg(target_os = "linux")]
+    let child_pid = smolvm::process::fork_session_leader(move || {
+        let krun = match unsafe { KrunFunctions::load(&lib_dir) } {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("failed to load libkrun: {}", e);
+                smolvm::process::exit_child(1);
+            }
+        };
+
+        let config = PackedLaunchConfig {
+            rootfs_path: &rootfs_path,
+            storage_path: &storage_path,
+            vsock_socket: &vsock_path_clone,
+            layers_dir: &layers_dir,
+            mounts: &packed_mounts,
+            port_mappings: &port_mappings,
+            resources,
+            overlay_path: overlay_daemon_path.as_deref(),
+            debug,
+            console_log: console_log_path,
+            // CUDA-over-vsock for the persistent/daemon packed paths is not
+            // wired yet; the `run` path starts the host server.
+            cuda_socket: None,
+            ssh_agent_socket: ssh_agent_socket.as_deref(),
+            // Packed binaries carry no egress flags; policy comes only from a
+            // `machine run` hand-off.
+            dns_filter_hosts: None,
+        };
+
+        // Detach from parent's terminal before launching the VM.
+        // Without this, libkrun's threads inherit stdin and steal
+        // keystrokes from the user's shell.
+        detach_vm_child_stdio();
+
+        // The daemon outlives the CLI, so it watches its own mounts, with a
+        // watcher that works in a forked child on macOS (#1192).
+        let _fsnotify_watcher = smolvm::agent::FsNotifyWatcher::start_tagged_after_fork(
+            config.vsock_socket.to_path_buf(),
+            config
+                .mounts
+                .iter()
+                .filter(|mount| !mount.staged)
+                .map(|mount| (PathBuf::from(&mount.host_path), mount.tag.clone())),
+        );
+
+        if let Err(e) = launch_agent_vm_dynamic(&krun, &config) {
+            let msg = format!("launch_agent_vm_dynamic failed: {}\n", e);
+            let _ = std::fs::write(&config.console_log, &msg);
+        }
+
+        smolvm::process::exit_child(1);
+    })
+    .map_err(|e| Error::agent("fork VM process", e.to_string()))?;
+
+    // Capture child start time for PID identity verification
+    let child_start_time = {
+        let mut st = smolvm::process::process_start_time(child_pid);
+        if st.is_none() && smolvm::process::is_alive(child_pid) {
+            for _ in 0..5 {
+                std::thread::sleep(Duration::from_millis(1));
+                st = smolvm::process::process_start_time(child_pid);
+                if st.is_some() {
+                    break;
+                }
+            }
+        }
+        if st.is_none() && smolvm::process::is_alive(child_pid) {
+            let _ = smolvm::process::stop_process_fast(child_pid, Duration::from_secs(5), true);
+            return Err(Error::agent(
+                "verify child process",
+                "unable to capture child start time for safe lifecycle management",
+            ));
+        }
+        st
+    };
+
+    // Write PID file
+    write_daemon_pid(checksum, child_pid, child_start_time)?;
+
+    // Create the persistent daemon lease with the real child PID.
+    // This must happen before the RAII layers_lease drops — otherwise the
+    // volume would be detached between Drop and this call.
+    extract::acquire_daemon_lease(&cache_dir, child_pid, debug)
+        .map_err(|e| Error::agent("acquire daemon lease", e.to_string()))?;
+
+    if debug {
+        eprintln!("debug: forked VM process with PID {}", child_pid);
+    }
+
+    // Wait for agent to become ready
+    println!("Starting daemon...");
+    let _client = wait_for_agent(&vsock_path, debug, ready_doorbell.as_ref())?;
+
+    println!("Daemon started (PID: {})", child_pid);
+    Ok(())
+}
+
+/// Execute a command in the running daemon VM.
+fn daemon_exec(
+    checksum: u32,
+    args: PackedExecArgs,
+    debug: bool,
+    manifest: &smolvm_pack::PackManifest,
+) -> smolvm::Result<()> {
+    let dir = daemon_dir(checksum)?;
+    let sock_path = dir.join("agent.sock");
+
+    // Check daemon is running
+    if !is_daemon_running(checksum) {
+        return Err(Error::agent(
+            "daemon exec",
+            "daemon is not running. Start it with: <binary> start",
+        ));
+    }
+
+    if debug {
+        eprintln!("debug: connecting to daemon at {}", sock_path.display());
+    }
+
+    // Connect to agent
+    let mut client = AgentClient::connect(&sock_path)?;
+
+    // Build command from args or manifest defaults
+    // Virtiofs devices are fixed at boot — exec cannot add new host mounts.
+    let mounts: Vec<smolvm::data::storage::HostMount> = Vec::new();
+    let params = ExecParams {
+        launch: resolve_packed_launch(
+            manifest,
+            &args.command,
+            &args.env,
+            &std::collections::BTreeMap::new(),
+            args.workdir,
+            args.user,
+        )?,
+        interactive: args.interactive,
+        tty: args.tty,
+        timeout: args.timeout,
+    };
+
+    // Daemon exec uses a persistent overlay so filesystem changes (package
+    // installs, config writes) survive across exec calls, matching the
+    // behavior of `machine exec` on persistent machines.
+    let overlay_id = Some("daemon".to_string());
+    let exit_code = execute_packed_command(&mut client, manifest, params, &mounts, overlay_id)?;
+
+    std::process::exit(exit_code);
+}
+
+/// Stop the daemon VM.
+fn daemon_stop(checksum: u32, debug: bool) -> smolvm::Result<()> {
+    let Some((pid, start_time)) = read_daemon_pid(checksum) else {
+        println!("Daemon not running");
+        return Ok(());
+    };
+
+    let dir = daemon_dir(checksum)?;
+    let sock_path = dir.join("agent.sock");
+
+    // Try graceful shutdown via agent protocol.
+    // If the agent responds, this also confirms the PID belongs to our VM.
+    let mut vsock_confirmed = false;
+    if sock_path.exists() {
+        if let Ok(mut client) = AgentClient::connect(&sock_path) {
+            vsock_confirmed = true;
+            if debug {
+                eprintln!("debug: sending shutdown to agent");
+            }
+            let _ = client.shutdown();
+        }
+    }
+
+    // Identity check: vsock acknowledgement OR strict PID start-time match.
+    // We intentionally do NOT use the lenient is_our_process() here because
+    // it treats any alive PID as "ours" when start_time is None — which risks
+    // killing an unrelated process if the OS reused the PID.
+    let identity_ok = vsock_confirmed || smolvm::process::is_our_process_strict(pid, start_time);
+    if identity_ok {
+        if debug {
+            eprintln!(
+                "debug: stopping process {} (start_time: {:?})",
+                pid, start_time
+            );
+        }
+        let _ = smolvm::process::stop_vm_process(
+            pid,
+            Duration::from_secs(5),
+            smolvm::process::VM_SIGKILL_TIMEOUT,
+        );
+    }
+
+    // Clean up PID and socket files (keep storage.ext4 for persistence)
+    if let Err(e) = std::fs::remove_file(dir.join("agent.pid")) {
+        tracing::debug!(error = %e, "cleanup: remove daemon PID file");
+    }
+    if let Err(e) = std::fs::remove_file(dir.join("agent.sock")) {
+        tracing::debug!(error = %e, "cleanup: remove daemon socket");
+    }
+
+    // Release the persistent daemon lease. Detaches the case-sensitive
+    // volume if no other leases remain.
+    let cache_dir = extract::get_cache_dir(checksum)
+        .map_err(|e| Error::agent("get cache dir", e.to_string()))?;
+    extract::release_daemon_lease(&cache_dir);
+
+    println!("Daemon stopped");
+    Ok(())
+}
+
+/// Check daemon status.
+fn daemon_status(checksum: u32) -> smolvm::Result<()> {
+    let Some((pid, start_time)) = read_daemon_pid(checksum) else {
+        println!("Status: not running");
+        return Ok(());
+    };
+
+    // Check if PID is still our process
+    if !smolvm::process::is_our_process_strict(pid, start_time) {
+        println!("Status: not running (stale PID file)");
+        // Clean up stale files
+        if let Ok(dir) = daemon_dir(checksum) {
+            if let Err(e) = std::fs::remove_file(dir.join("agent.pid")) {
+                tracing::debug!(error = %e, "cleanup: remove stale status PID file");
+            }
+            if let Err(e) = std::fs::remove_file(dir.join("agent.sock")) {
+                tracing::debug!(error = %e, "cleanup: remove stale status socket");
+            }
+        }
+        return Ok(());
+    }
+
+    // Try to connect and ping
+    let dir = daemon_dir(checksum)?;
+    let sock_path = dir.join("agent.sock");
+
+    if sock_path.exists() {
+        if let Ok(mut client) = AgentClient::connect(&sock_path) {
+            if client.ping().is_ok() {
+                println!("Status: running (PID: {})", pid);
+                return Ok(());
+            }
+        }
+    }
+
+    println!("Status: running (PID: {}, agent not responding)", pid);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for #1315: CLI `--secret-env`/`--secret-file` refs must reach
+    /// the workload env when a run is served through the pack-run path (e.g.
+    /// `--oci-cache`), resolved TrustedLocal — where the manifest's own refs are
+    /// denied. Before the fix these CLI secrets were silently dropped.
+    #[test]
+    fn cli_secret_refs_resolve_and_override_manifest_env() {
+        use std::collections::BTreeMap;
+        // Unique name so parallel tests don't collide on process-global env.
+        let src = "GATE_1315_SECRET_SRC";
+        std::env::set_var(src, "hunter2");
+
+        let mut manifest = smolvm_pack::PackManifest::new(
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        // A manifest env the CLI secret of the same key must override.
+        manifest.env = vec!["KEK=from-manifest".to_string()];
+
+        let mut cli_secret_refs: BTreeMap<String, smolvm::secrets::SecretRef> = BTreeMap::new();
+        cli_secret_refs.insert("KEK".to_string(), smolvm::secrets::env_ref(src));
+
+        let env = build_env(&manifest, &[], &cli_secret_refs).expect("build_env");
+        let kek: Vec<&String> = env
+            .iter()
+            .filter(|(k, _)| k == "KEK")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(
+            kek,
+            vec!["hunter2"],
+            "CLI secret resolves and overrides manifest env"
+        );
+
+        // An explicit --env still wins over a --secret-env of the same key.
+        let env2 = build_env(
+            &manifest,
+            &["KEK=from-cli-env".to_string()],
+            &cli_secret_refs,
+        )
+        .expect("build_env");
+        let kek2: Vec<&String> = env2
+            .iter()
+            .filter(|(k, _)| k == "KEK")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(
+            kek2,
+            vec!["from-cli-env"],
+            "explicit --env beats --secret-env"
+        );
+
+        std::env::remove_var(src);
+    }
+
+    #[test]
+    fn resolved_policy_decides_network_instead_of_the_baked_manifest() {
+        // The baked artifact's manifest records the bake VM's networking
+        // (enabled, for the pull); the workload asked for none. The override
+        // must win, and ports must not re-enable it either.
+        let closed = ResolvedEgressPolicy {
+            network_override: Some(false),
+            allowed_cidrs: None,
+            dns_filter_hosts: None,
+            block_private: None,
+            egress_rules: Vec::new(),
+        };
+        assert!(!effective_network(Some(&closed), false, true, true));
+
+        let open = ResolvedEgressPolicy {
+            network_override: Some(true),
+            ..Default::default()
+        };
+        assert!(effective_network(Some(&open), false, false, false));
+    }
+
+    #[test]
+    fn policy_without_override_keeps_the_manifest_default() {
+        // A user-supplied `.smolmachine` carries its packaged intent: the
+        // allow-list rides along but the manifest still decides the default.
+        let policy = ResolvedEgressPolicy {
+            network_override: None,
+            allowed_cidrs: Some(vec!["140.82.112.0/20".to_string()]),
+            dns_filter_hosts: Some(vec!["github.com".to_string()]),
+            block_private: None,
+            egress_rules: Vec::new(),
+        };
+        assert!(effective_network(Some(&policy), false, true, false));
+        assert!(!effective_network(Some(&policy), false, false, false));
+    }
+
+    #[test]
+    fn no_policy_preserves_the_flag_manifest_port_default() {
+        assert!(!effective_network(None, false, false, false));
+        assert!(effective_network(None, true, false, false));
+        assert!(effective_network(None, false, true, false));
+        assert!(effective_network(None, false, false, true));
+    }
+
+    #[test]
+    fn ssh_agent_forwarding_is_disabled_without_flag() {
+        assert_eq!(resolve_ssh_agent_socket_value(false, None).unwrap(), None);
+    }
+
+    #[test]
+    fn ssh_agent_forwarding_requires_a_host_socket() {
+        let error = resolve_ssh_agent_socket_value(true, None).unwrap_err();
+        assert!(error.to_string().contains("SSH_AUTH_SOCK"));
+    }
+
+    #[test]
+    fn ssh_agent_forwarding_uses_the_host_socket_path() {
+        let socket = std::ffi::OsString::from("/tmp/ssh-agent.sock");
+        assert_eq!(
+            resolve_ssh_agent_socket_value(true, Some(socket)).unwrap(),
+            Some(PathBuf::from("/tmp/ssh-agent.sock"))
+        );
+    }
+}

@@ -1,0 +1,132 @@
+//! Centralized path constants and helpers for the smolvm agent.
+//!
+//! All filesystem paths used by the agent are defined here for consistency
+//! and easy modification.
+
+use std::path::PathBuf;
+
+// =============================================================================
+// Binary Paths
+// =============================================================================
+
+/// Path to crun OCI runtime binary.
+pub const CRUN_PATH: &str = "/usr/bin/crun";
+
+/// crun state root directory.
+/// Stored on the persistent storage disk instead of `/run/crun` because
+/// `/run` may not be writable under the overlayfs rootfs.
+pub const CRUN_ROOT_DIR: &str = "/storage/containers/crun";
+
+/// crun cgroup manager setting.
+/// Set to "disabled" because libkrun mounts cgroup2 as read-only.
+/// Without this, crun create/start hang trying to create container cgroups.
+pub const CRUN_CGROUP_MANAGER: &str = "disabled";
+
+// =============================================================================
+// Mount Paths
+// =============================================================================
+
+/// Root directory for virtiofs mounts from the host.
+// Keep internal staging outside `/mnt`: users commonly mount a host directory
+// at `/mnt`, and bind-mounting it there must not hide the virtio-fs source that
+// backs the bind itself.
+pub const VIRTIOFS_MOUNT_ROOT: &str = "/run/smolvm/virtiofs";
+
+/// Guest path at which the shared workspace is exposed inside containers.
+/// Used both when mounting /storage/workspace as the fallback workspace and
+/// when checking whether a user-provided volume already claims this path.
+pub const WORKSPACE_GUEST_PATH: &str = "/workspace";
+
+// =============================================================================
+// Storage Paths
+// =============================================================================
+
+/// Root directory for all persistent storage.
+pub const STORAGE_ROOT: &str = "/storage";
+
+/// Directory for overlay filesystems.
+pub const OVERLAYS_DIR: &str = "/storage/overlays";
+
+// =============================================================================
+// Container Runtime Paths
+// =============================================================================
+
+/// Directory for per-container runtime state (pidfile, etc).
+pub const CONTAINERS_RUN_DIR: &str = "/storage/containers/run";
+
+/// Directory for container logs.
+pub const CONTAINERS_LOGS_DIR: &str = "/storage/containers/logs";
+
+/// Directory for container exit code files.
+pub const CONTAINERS_EXIT_DIR: &str = "/storage/containers/exit";
+
+// =============================================================================
+// Path Helper Functions
+// =============================================================================
+
+/// Get the overlay directory for a workload.
+pub fn overlay_dir(workload_id: &str) -> PathBuf {
+    PathBuf::from(OVERLAYS_DIR).join(workload_id)
+}
+
+/// Path to the file recording the main container ID for a persistent overlay.
+/// Written when a detached container is started; read on every subsequent exec.
+pub fn main_container_id_path(workload_id: &str) -> PathBuf {
+    overlay_dir(workload_id).join("main_container_id")
+}
+
+// =============================================================================
+// Filesystem Helpers
+// =============================================================================
+
+/// Check if a path is a mountpoint by reading /proc/mounts.
+///
+/// Returns true if the path appears as a mount destination in /proc/mounts.
+#[cfg(target_os = "linux")]
+pub fn is_mount_point(path: &std::path::Path) -> bool {
+    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+        let path_str = path.to_string_lossy();
+        for line in mounts.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && parts[1] == path_str {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Stub for non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
+pub fn is_mount_point(_path: &std::path::Path) -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_overlay_paths() {
+        let wl = "workload-123";
+        assert_eq!(
+            overlay_dir(wl),
+            PathBuf::from("/storage/overlays/workload-123")
+        );
+    }
+
+    #[test]
+    fn test_main_container_id_path() {
+        assert_eq!(
+            main_container_id_path("persistent-myvm"),
+            PathBuf::from("/storage/overlays/persistent-myvm/main_container_id")
+        );
+    }
+
+    #[test]
+    fn virtiofs_staging_is_not_below_the_user_mount_tree() {
+        let staging = std::path::Path::new(VIRTIOFS_MOUNT_ROOT);
+        assert!(staging.starts_with("/run/smolvm"));
+        assert!(!staging.starts_with("/mnt"));
+    }
+}

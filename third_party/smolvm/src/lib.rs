@@ -1,0 +1,177 @@
+//! smolvm - OCI-native microVM runtime
+//!
+//! smolvm is a library and CLI for running microVMs with strong isolation
+//! and OCI container compatibility.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────┐
+//! │  smolvm CLI / Library                           │
+//! ├─────────────────────────────────────────────────┤
+//! │  VM abstraction (VmBackend, VmHandle)           │
+//! ├─────────────────────────────────────────────────┤
+//! │  libkrun (Hypervisor.framework / KVM)           │
+//! ├─────────────────────────────────────────────────┤
+//! │  libkrunfw (embedded Linux kernel)              │
+//! └─────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Example
+//!
+//! ```no_run
+//! use smolvm::{VmConfig, RootfsSource, default_backend};
+//!
+//! // Create a VM configuration
+//! let config = VmConfig::builder(RootfsSource::path("/path/to/rootfs"))
+//!     .memory(1024)  // 1 GB
+//!     .cpus(2)
+//!     .command(vec!["/bin/sh".into()])
+//!     .build();
+//!
+//! // Get the default backend for this platform
+//! let backend = default_backend().unwrap();
+//!
+//! // Create and run the VM
+//! let mut vm = backend.create(config).unwrap();
+//! let exit = vm.wait().unwrap();
+//!
+//! println!("VM exited with: {}", exit);
+//! ```
+//!
+//! # Features
+//!
+//! - VM creation and lifecycle management
+//! - Rootfs from path or OCI images
+//! - Host directory mounts via virtiofs
+//! - Network egress via NAT
+//! - vsock control channel
+//! - Persistent overlay disks
+//! - `exec` into running VMs
+//!
+//! # Platform Support
+//!
+//! | Platform | Backend | Status |
+//! |----------|---------|--------|
+//! | macOS (Apple Silicon) | libkrun + Hypervisor.framework | ✅ |
+//! | macOS (Intel) | libkrun + Hypervisor.framework | ✅ |
+//! | Linux (arm64) | libkrun + KVM | ✅ |
+//! | Linux (x86_64) | libkrun + KVM | ✅ |
+
+#![warn(missing_docs)]
+#![warn(clippy::all)]
+
+pub mod agent;
+pub mod api;
+/// Reference-safe lifecycle management for Linux shared pack and COW caches.
+#[cfg(target_os = "linux")]
+pub mod artifact_cache;
+pub mod attach;
+pub mod config;
+pub mod credentials;
+// The shared CUDA daemon manages unix-domain sockets, flock, and detached
+// process groups — all POSIX. GPU acceleration is unavailable on Windows anyway,
+// so the module (and its callers in cuda_host) are unix-only.
+pub mod checkpoint_delta;
+pub mod checkpoint_retention;
+pub mod checkpoint_store;
+/// The engine's command-line commands, usable by other front ends (the `smol` CLI
+/// flattens them so every engine flag is available without a second implementation).
+#[allow(missing_docs)]
+pub mod cli;
+// The CLI modules name this crate as a dependency would, so they compile
+// unchanged inside it.
+extern crate self as smolvm;
+#[cfg(unix)]
+pub mod cuda_daemon;
+pub mod cuda_host;
+/// Canonical shared data models and constants used across adapters.
+pub mod data;
+pub mod db;
+pub mod disk_utils;
+pub mod dns_filter;
+pub mod dns_filter_listener;
+pub mod docker_config;
+/// Language-neutral embedded runtime support shared by SDK adapters.
+pub mod embedded;
+pub mod image_seed;
+pub mod image_store;
+/// Boots a VM from a written boot-config: the `_boot-vm` subprocess entry point.
+/// Lives in the library, not the CLI, so any binary that links the engine (the
+/// containerd shim) can serve `_boot-vm` from its own executable instead of
+/// needing a separate `_boot-vm`-capable helper on disk.
+pub mod internal_boot;
+pub mod log_rotation;
+/// One machine description, resolved the same way by every creation path.
+pub mod machine_spec;
+pub mod network;
+/// Shared from-VM pack export used by every `pack create --from-vm` front-end.
+pub mod pack_export;
+pub mod pack_seed;
+pub mod platform;
+pub mod pool;
+/// Portable live-checkpoint compatibility and one-shot restore support.
+pub mod portable_checkpoint;
+pub mod process;
+pub mod registry;
+pub mod remote_volume;
+pub mod secrets;
+pub mod settings;
+pub mod smolfile;
+/// Guest-local staged mount synchronization.
+pub mod staged_mount;
+pub mod storage;
+pub mod systemd_scope;
+#[cfg(test)]
+pub(crate) mod test_support;
+pub mod usage;
+pub mod util;
+pub mod vm;
+pub mod vm_exit;
+/// Shared machine-workload launch used by every machine-start front-end.
+pub mod workload;
+pub mod workload_log;
+
+/// Compatibility re-exports for smolvm error types.
+///
+/// The canonical error model lives under [`crate::data::error`]. This module
+/// remains as a stable facade for existing `crate::error` and `smolvm::error`
+/// imports.
+pub mod error {
+    pub use crate::data::error::{AgentErrorKind, Error, Result};
+}
+
+// ============================================================================
+// Default Command Constants
+// ============================================================================
+
+/// Default interactive command — spawns a shell.
+pub const DEFAULT_SHELL_CMD: &str = "/bin/sh";
+
+/// Default idle command — keeps a container alive without doing work.
+pub const DEFAULT_IDLE_CMD: &[&str] = &["sleep", "infinity"];
+
+// Re-export main types for convenience
+pub use agent::{AgentClient, AgentManager};
+pub use api::ApiDoc;
+pub use config::{RecordState, RestartConfig, RestartPolicy, SmolvmConfig, VmRecord};
+pub use data::resources::VmResources;
+pub use data::storage::HostMount;
+pub use db::SmolvmDb;
+pub use error::{Error, Result};
+pub use process::ChildProcess;
+pub use registry::{RegistryAuth, RegistryConfig};
+pub use settings::SmolSettings;
+pub use vm::config::{NetworkPolicy, RootfsSource, Timeouts, VmConfig, VmId};
+pub use vm::state::{ExitReason, VmState};
+pub use vm::{default_backend, VmBackend, VmHandle};
+
+/// Library version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// This engine build: the version plus the git commit it was built from
+/// (`unknown` for a build without git, such as one from a crates.io
+/// tarball). Recorded on a machine when it starts, and compared, not the
+/// executable's path or inode, when another engine asks to branch it: the
+/// same release installed as two files is one build.
+pub const ENGINE_BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("SMOLVM_GIT_COMMIT"));

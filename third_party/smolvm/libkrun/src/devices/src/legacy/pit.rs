@@ -1,0 +1,216 @@
+// Copyright 2026 The libkrun Authors. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Minimal i8254 PIT (channel 0 only) for the WHP backend.
+//!
+//! WHP has no PIT, and its emulated LAPIC timer does not deliver interrupts on
+//! the WHP builds we target, so a guest is left with no working clockevent —
+//! `nanosleep`, scheduling and timeouts hang. This device emulates the i8254
+//! channel-0 counter wired to IRQ 0: it tracks the reload value and mode the
+//! guest programs through ports 0x40/0x43, and a background thread asserts IRQ 0
+//! through the IOAPIC at the programmed cadence. Combined with `nolapic_timer`
+//! on the kernel command line (so the guest selects its i8253 clockevent instead
+//! of the dead LAPIC timer), this gives the guest a working tick.
+//!
+//! Only channel 0 is modeled; channels 1 (legacy DRAM refresh) and 2 (PC
+//! speaker) are not used by the Linux clockevent. Counter-latch / read-back is
+//! not implemented (the clockevent reprograms the counter each tick in one-shot
+//! mode and never depends on a precise read), so reads return 0 and latch
+//! commands are ignored.
+
+use std::io;
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::bus::BusDevice;
+use crate::legacy::IrqChip;
+
+/// i8254 input clock: 1.193182 MHz.
+const PIT_FREQ_HZ: u64 = 1_193_182;
+/// Channel 0 is wired to IRQ 0.
+const PIT_IRQ: u32 = 0;
+
+/// Arm request sent to the timer thread when the guest finishes programming
+/// channel 0.
+struct Arm {
+    period: Duration,
+    periodic: bool,
+}
+
+/// i8254 channel-0 timer. Registered on the PIO bus at ports 0x40–0x43.
+pub struct Pit {
+    tx: Sender<Arm>,
+    /// `true` when the access mode is lobyte/hibyte (two writes per reload).
+    access_lohi: bool,
+    /// In lobyte/hibyte mode, `true` once the low byte has been written and the
+    /// high byte is expected next.
+    expect_hi: bool,
+    /// Latched low byte for lobyte/hibyte programming.
+    reload_lo: u8,
+    /// Channel-0 operating mode (0–5); modes 2 and 3 are periodic.
+    mode: u8,
+    /// Last programmed counter, needed to arm a replacement timer thread when
+    /// a checkpoint resumes in a new process.
+    reload: Option<u16>,
+}
+
+impl Pit {
+    /// Creates the PIT and spawns its background interrupt thread, which asserts
+    /// IRQ 0 through `intc` at the programmed cadence. Fails only if the timer
+    /// thread cannot be spawned.
+    pub fn new(intc: IrqChip) -> io::Result<Self> {
+        let (tx, rx) = channel::<Arm>();
+        thread::Builder::new()
+            .name("pit-timer".into())
+            .spawn(move || timer_loop(rx, intc))?;
+        Ok(Pit {
+            tx,
+            access_lohi: true,
+            expect_hi: false,
+            reload_lo: 0,
+            mode: 2,
+            reload: None,
+        })
+    }
+
+    /// Logical channel-0 state. A new host timer thread starts unarmed, so
+    /// retaining only the guest's I/O register state would stop guest time.
+    pub fn save_state(&self) -> [u8; 8] {
+        let [reload_lo, reload_hi] = self.reload.unwrap_or(0).to_le_bytes();
+        [
+            u8::from(self.access_lohi),
+            u8::from(self.expect_hi),
+            self.reload_lo,
+            self.mode,
+            u8::from(self.reload.is_some()),
+            reload_lo,
+            reload_hi,
+            0,
+        ]
+    }
+
+    /// Rebuild the timer cadence before the restored guest resumes.
+    pub fn restore_state(&mut self, state: [u8; 8]) {
+        self.access_lohi = state[0] != 0;
+        self.expect_hi = state[1] != 0;
+        self.reload_lo = state[2];
+        self.mode = state[3];
+        self.reload = (state[4] != 0).then(|| u16::from_le_bytes([state[5], state[6]]));
+        if let Some(reload) = self.reload {
+            self.arm(reload);
+        }
+    }
+
+    /// A one-shot event can expire while vCPUs are paused. Supply a fresh
+    /// clock event after they resume so the guest can schedule its next tick.
+    pub fn rearm_after_resume(&self) {
+        if let Some(reload) = self.reload {
+            self.arm(reload);
+        }
+    }
+
+    fn arm(&self, reload: u16) {
+        let ticks = if reload == 0 {
+            65_536
+        } else {
+            u64::from(reload)
+        };
+        let period_ns = (ticks * 1_000_000_000 / PIT_FREQ_HZ).max(1);
+        let periodic = matches!(self.mode, 2 | 3);
+        let _ = self.tx.send(Arm {
+            period: Duration::from_nanos(period_ns),
+            periodic,
+        });
+    }
+}
+
+impl BusDevice for Pit {
+    fn write(&mut self, _vcpuid: u64, offset: u64, data: &[u8]) {
+        let Some(&val) = data.first() else {
+            return;
+        };
+        match offset {
+            // Port 0x43: mode/command register.
+            3 => {
+                // Only channel 0 (bits 6-7 == 0) drives IRQ 0; ignore the rest.
+                if val >> 6 != 0 {
+                    return;
+                }
+                let access = (val >> 4) & 0b11;
+                // access == 0 is a counter-latch command (latch the current count
+                // for read-back); it does not change the access mode. We don't
+                // implement read-back, so ignore it rather than corrupting the
+                // lobyte/hibyte state machine.
+                if access == 0 {
+                    return;
+                }
+                self.mode = (val >> 1) & 0b111;
+                self.access_lohi = access == 0b11;
+                self.expect_hi = false;
+            }
+            // Port 0x40: channel 0 counter (reload value).
+            0 => {
+                if self.access_lohi {
+                    if self.expect_hi {
+                        let reload = (u16::from(val) << 8) | u16::from(self.reload_lo);
+                        self.expect_hi = false;
+                        self.reload = Some(reload);
+                        self.arm(reload);
+                    } else {
+                        self.reload_lo = val;
+                        self.expect_hi = true;
+                    }
+                } else {
+                    // Lobyte-only or hibyte-only access: a single write completes it.
+                    self.reload = Some(u16::from(val));
+                    self.arm(u16::from(val));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn read(&mut self, _vcpuid: u64, _offset: u64, data: &mut [u8]) {
+        data.fill(0);
+    }
+}
+
+/// Background thread: assert IRQ 0 at the cadence the guest programs. While the
+/// timer is unarmed it blocks on the channel (so it wakes immediately on the
+/// next arm, or exits promptly once the device is dropped); while armed it waits
+/// until the deadline, preempted by a re-arm.
+fn timer_loop(rx: std::sync::mpsc::Receiver<Arm>, intc: IrqChip) {
+    let mut deadline: Option<Instant> = None;
+    let mut period = Duration::from_millis(10);
+    let mut periodic = false;
+
+    loop {
+        let next = match deadline {
+            // Unarmed: block until armed or the device is dropped.
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(d) => rx.recv_timeout(d.saturating_duration_since(Instant::now())),
+        };
+        match next {
+            Ok(arm) => {
+                period = arm.period;
+                periodic = arm.periodic;
+                deadline = Some(Instant::now() + period);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    // Recover from a poisoned irqchip lock rather than killing the
+                    // guest clock — a transient poison must not permanently wedge
+                    // timers.
+                    let chip = intc.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = chip.set_irq(Some(PIT_IRQ), None);
+                    drop(chip);
+                    // Re-arm from "now" rather than the old deadline so a slow
+                    // host can't accumulate a backlog of catch-up ticks.
+                    deadline = periodic.then(|| Instant::now() + period);
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}

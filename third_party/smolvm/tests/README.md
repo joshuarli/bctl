@@ -1,0 +1,120 @@
+# smolvm Tests
+
+Integration tests for smolvm. All tests invoke the `smolvm` binary directly
+against real VMs — no mocking.
+
+---
+## Runner: `run_tests.sh`
+
+Single entry point for all test suites.
+
+```bash
+./tests/run_tests.sh                      # all 12 feature suites (~10 min)
+SMOLVM_SKIP_SLOW=1 ./tests/run_tests.sh   # skip tests with long sleeps (~5 min)
+./tests/run_tests.sh bare network         # specific groups only
+```
+
+### Feature suites (run by default)
+
+| Group | Suite file | Tests | Notes |
+|---|---|---|---|
+| `bare` | `test_machine_bare.sh` | 22 | Lifecycle, exec, shell, file I/O, observability |
+| `db` | `test_db.sh` | 6 | DB state persistence, VM state transitions |
+| `network` | `test_network.sh` | 17 | Network disable, DNS, egress, DNS filter, Smolfile allow_hosts |
+| `volumes` | `test_volumes.sh` | 9 | virtiofs mounts, hot reload, DAX, /workspace priority |
+| `ports` | `test_ports.sh` | 2 | Port mapping, cross-VM conflict detection |
+| `storage` | `test_storage.sh` | 12 | Overlay, image list, prune, storage resize |
+| `resources` | `test_resources.sh` | 8 | CLI validation — no VMs required |
+| `reliability` | `test_reliability.sh` | 5 | Concurrency, state probe, ls-does-not-kill-vm |
+| `run` | `test_machine_run.sh` | 25 | Ephemeral `machine run` scenarios |
+| `image` | `test_machine_image.sh` | 13 | Image-based VMs, exec-join, large stdout |
+| `local-image` | `test_machine_local_image.sh` | 6 | Local images: save-archive (file/stdin), rootfs dir, stdin + Dockerfile guards (needs docker) |
+| `packed` | `test_machine_packed.sh` | 2 | `.smolmachine` create and cp |
+
+### Extended suites (opt-in only)
+
+These are not included in the default run. Pass the group name explicitly:
+
+```bash
+./tests/run_tests.sh cli
+./tests/run_tests.sh api
+./tests/run_tests.sh virtio-net
+./tests/run_tests.sh smolfile
+./tests/run_tests.sh pack
+./tests/run_tests.sh pack-quick     # pack tests, skip large image pulls
+./tests/run_tests.sh gpu            # requires GPU hardware
+./tests/run_tests.sh connections    # 10k concurrent + 100k churned guest connections per backend
+```
+
+| Group | Suite file | Tests |
+|---|---|---|
+| `cli` | `test_cli.sh` | 10 |
+| `api` | `test_api.sh` | 25 |
+| `virtio-net` | `test_virtio_net.sh` | 6 |
+| `smolfile` | `test_smolfile.sh` | 49 |
+| `pack` / `pack-quick` | `test_pack.sh` | 39 |
+| `gpu` | `test_gpu.sh` | 14 |
+| `connections` | `test_connections.sh` | 4 |
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `SMOLVM` | Override binary path |
+| `SMOLVM_SKIP_SLOW=1` | Skip tests with intentional sleeps ≥ 25 s (docker-in-vm, ls-probe loops, egress refresh) |
+| `TEST_FILTER` | Only run tests whose display name contains this substring |
+| `FAIL_FAST=1` | Stop on first failure |
+
+---
+
+## Unit tests
+
+No VM required. Run via cargo:
+
+```bash
+cargo test
+```
+
+## HTTP deletion failure recovery (Linux and macOS)
+
+`test_api_delete_cleanup.py` starts a dedicated server with private state and
+real machines. Run as a non-root user so the host permission fault is effective:
+
+```bash
+SMOLVM_LIB_DIR=/path/to/lib SMOLVM_AGENT_ROOTFS=/path/to/agent-rootfs \
+  python3 tests/test_api_delete_cleanup.py /path/to/smolvm
+```
+
+On Linux, the user needs KVM access. On macOS, the binary must be signed with
+`smolvm.entitlements`; set `DYLD_LIBRARY_PATH` to the runtime library directory
+if needed. The test gives only its child server a temporary home on macOS,
+keeping the user's normal database and machines separate.
+
+Use matching runtime libraries, guest rootfs, and the usual disk templates beside
+the binary. The test checks HTTP errors, retained records after a server restart,
+suppression of automatic restart, explicit cleanup retry, and pool retirement
+retry. It restores permissions and cleans up its own machines in `finally`.
+Logs and JSON observations remain in the printed temporary directory. Add
+`--expect-bug` when testing the previous implementation to reproduce its false
+success and missing records. This test does not assert a total pool capacity limit.
+
+---
+
+## Benchmarks
+
+```bash
+./tests/bench_vm_startup.sh         # VM cold/warm start time
+./tests/run_tests.sh bench          # same, via runner
+```
+
+---
+
+## Binary discovery
+
+Tests find the `smolvm` binary in this order:
+
+1. `$SMOLVM` environment variable
+2. `target/release/smolvm` (cargo build output)
+3. `dist/smolvm-*-darwin-*/smolvm` or `dist/smolvm-*-linux-*/smolvm`
+
+---

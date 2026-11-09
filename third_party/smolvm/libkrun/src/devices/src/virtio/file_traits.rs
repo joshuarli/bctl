@@ -1,0 +1,728 @@
+// Copyright 2018 The Chromium OS Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+use std::fs::File;
+use std::io::{Error, ErrorKind, Result};
+#[cfg(not(windows))]
+use std::os::unix::io::AsRawFd;
+
+#[cfg(feature = "blk")]
+use imago::io_buffers::{IoVector, IoVectorMut};
+use vm_memory::VolatileSlice;
+
+#[cfg(not(windows))]
+use libc::{c_int, c_void, read, readv, size_t, write, writev};
+
+#[cfg(not(windows))]
+use super::bindings::{off64_t, pread64, preadv64, pwrite64, pwritev64};
+#[cfg(feature = "blk")]
+use super::block::device::DiskProperties;
+
+/// A trait for setting the size of a file.
+/// This is equivalent to File's `set_len` method, but
+/// wrapped in a trait so that it can be implemented for
+/// other types.
+pub trait FileSetLen {
+    // Set the size of this file.
+    // This is the moral equivalent of `ftruncate()`.
+    fn set_len(&self, _len: u64) -> Result<()>;
+}
+
+impl FileSetLen for File {
+    fn set_len(&self, len: u64) -> Result<()> {
+        File::set_len(self, len)
+    }
+}
+
+/// A trait similar to `Read` and `Write`, but uses volatile memory as buffers.
+pub trait FileReadWriteVolatile {
+    /// Read bytes from this file into the given slice, returning the number of bytes read on
+    /// success.
+    fn read_volatile(&mut self, slice: VolatileSlice) -> Result<usize>;
+
+    /// Like `read_volatile`, except it reads to a slice of buffers. Data is copied to fill each
+    /// buffer in order, with the final buffer written to possibly being only partially filled. This
+    /// method must behave as a single call to `read_volatile` with the buffers concatenated would.
+    /// The default implementation calls `read_volatile` with either the first nonempty buffer
+    /// provided, or returns `Ok(0)` if none exists.
+    fn read_vectored_volatile(&mut self, bufs: &[VolatileSlice]) -> Result<usize> {
+        bufs.iter()
+            .find(|b| !b.is_empty())
+            .map(|&b| self.read_volatile(b))
+            .unwrap_or(Ok(0))
+    }
+
+    /// Reads bytes from this into the given slice until all bytes in the slice are written, or an
+    /// error is returned.
+    fn read_exact_volatile(&mut self, mut slice: VolatileSlice) -> Result<()> {
+        while !slice.is_empty() {
+            let bytes_read = self.read_volatile(slice)?;
+            if bytes_read == 0 {
+                return Err(Error::from(ErrorKind::UnexpectedEof));
+            }
+            // Will panic if read_volatile read more bytes than we gave it, which would be worthy of
+            // a panic.
+            slice = slice.offset(bytes_read).unwrap();
+        }
+        Ok(())
+    }
+
+    /// Write bytes from the slice to the given file, returning the number of bytes written on
+    /// success.
+    fn write_volatile(&mut self, slice: VolatileSlice) -> Result<usize>;
+
+    /// Like `write_volatile`, except that it writes from a slice of buffers. Data is copied from
+    /// each buffer in order, with the final buffer read from possibly being only partially
+    /// consumed. This method must behave as a call to `write_volatile` with the buffers
+    /// concatenated would. The default implementation calls `write_volatile` with either the first
+    /// nonempty buffer provided, or returns `Ok(0)` if none exists.
+    fn write_vectored_volatile(&mut self, bufs: &[VolatileSlice]) -> Result<usize> {
+        bufs.iter()
+            .find(|b| !b.is_empty())
+            .map(|&b| self.write_volatile(b))
+            .unwrap_or(Ok(0))
+    }
+
+    /// Write bytes from the slice to the given file until all the bytes from the slice have been
+    /// written, or an error is returned.
+    fn write_all_volatile(&mut self, mut slice: VolatileSlice) -> Result<()> {
+        while !slice.is_empty() {
+            let bytes_written = self.write_volatile(slice)?;
+            if bytes_written == 0 {
+                return Err(Error::from(ErrorKind::WriteZero));
+            }
+            // Will panic if read_volatile read more bytes than we gave it, which would be worthy of
+            // a panic.
+            slice = slice.offset(bytes_written).unwrap();
+        }
+        Ok(())
+    }
+}
+
+impl<T: FileReadWriteVolatile + ?Sized> FileReadWriteVolatile for &mut T {
+    fn read_volatile(&mut self, slice: VolatileSlice) -> Result<usize> {
+        (**self).read_volatile(slice)
+    }
+
+    fn read_vectored_volatile(&mut self, bufs: &[VolatileSlice]) -> Result<usize> {
+        (**self).read_vectored_volatile(bufs)
+    }
+
+    fn read_exact_volatile(&mut self, slice: VolatileSlice) -> Result<()> {
+        (**self).read_exact_volatile(slice)
+    }
+
+    fn write_volatile(&mut self, slice: VolatileSlice) -> Result<usize> {
+        (**self).write_volatile(slice)
+    }
+
+    fn write_vectored_volatile(&mut self, bufs: &[VolatileSlice]) -> Result<usize> {
+        (**self).write_vectored_volatile(bufs)
+    }
+
+    fn write_all_volatile(&mut self, slice: VolatileSlice) -> Result<()> {
+        (**self).write_all_volatile(slice)
+    }
+}
+
+/// A trait similar to the unix `ReadExt` and `WriteExt` traits, but for volatile memory.
+pub trait FileReadWriteAtVolatile {
+    /// Reads bytes from this file at `offset` into the given slice, returning the number of bytes
+    /// read on success.
+    fn read_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize>;
+
+    /// Like `read_at_volatile`, except it reads to a slice of buffers. Data is copied to fill each
+    /// buffer in order, with the final buffer written to possibly being only partially filled. This
+    /// method must behave as a single call to `read_at_volatile` with the buffers concatenated
+    /// would. The default implementation calls `read_at_volatile` with either the first nonempty
+    /// buffer provided, or returns `Ok(0)` if none exists.
+    fn read_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        if let Some(&slice) = bufs.first() {
+            self.read_at_volatile(slice, offset)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Reads bytes from this file at `offset` into the given slice until all bytes in the slice are
+    /// read, or an error is returned.
+    fn read_exact_at_volatile(&self, mut slice: VolatileSlice, mut offset: u64) -> Result<()> {
+        while !slice.is_empty() {
+            match self.read_at_volatile(slice, offset) {
+                Ok(0) => return Err(Error::from(ErrorKind::UnexpectedEof)),
+                Ok(n) => {
+                    slice = slice.offset(n).unwrap();
+                    offset = offset.checked_add(n as u64).unwrap();
+                }
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes bytes from this file at `offset` into the given slice, returning the number of bytes
+    /// written on success.
+    fn write_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize>;
+
+    /// Like `write_at_at_volatile`, except that it writes from a slice of buffers. Data is copied
+    /// from each buffer in order, with the final buffer read from possibly being only partially
+    /// consumed. This method must behave as a call to `write_at_volatile` with the buffers
+    /// concatenated would. The default implementation calls `write_at_volatile` with either the
+    /// first nonempty buffer provided, or returns `Ok(0)` if none exists.
+    fn write_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        if let Some(&slice) = bufs.first() {
+            self.write_at_volatile(slice, offset)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Writes bytes from this file at `offset` into the given slice until all bytes in the slice
+    /// are written, or an error is returned.
+    fn write_all_at_volatile(&self, mut slice: VolatileSlice, mut offset: u64) -> Result<()> {
+        while !slice.is_empty() {
+            match self.write_at_volatile(slice, offset) {
+                Ok(0) => return Err(Error::from(ErrorKind::WriteZero)),
+                Ok(n) => {
+                    slice = slice.offset(n).unwrap();
+                    offset = offset.checked_add(n as u64).unwrap();
+                }
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: FileReadWriteAtVolatile + ?Sized> FileReadWriteAtVolatile for &T {
+    fn read_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+        (**self).read_at_volatile(slice, offset)
+    }
+
+    fn read_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        (**self).read_vectored_at_volatile(bufs, offset)
+    }
+
+    fn read_exact_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<()> {
+        (**self).read_exact_at_volatile(slice, offset)
+    }
+
+    fn write_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+        (**self).write_at_volatile(slice, offset)
+    }
+
+    fn write_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        (**self).write_vectored_at_volatile(bufs, offset)
+    }
+
+    fn write_all_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<()> {
+        (**self).write_all_at_volatile(slice, offset)
+    }
+}
+
+#[cfg(not(windows))]
+macro_rules! volatile_impl {
+    ($ty:ty) => {
+        impl FileReadWriteVolatile for $ty {
+            fn read_volatile(&mut self, slice: VolatileSlice) -> Result<usize> {
+                // Safe because only bytes inside the slice are accessed and the kernel is expected
+                // to handle arbitrary memory for I/O.
+                let ret = unsafe {
+                    read(
+                        self.as_raw_fd(),
+                        slice.ptr_guard_mut().as_ptr() as *mut c_void,
+                        slice.len(),
+                    )
+                };
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+
+            fn read_vectored_volatile(&mut self, bufs: &[VolatileSlice]) -> Result<usize> {
+                let iovecs: Vec<libc::iovec> = bufs
+                    .iter()
+                    .map(|s| libc::iovec {
+                        iov_base: s.ptr_guard_mut().as_ptr() as *mut c_void,
+                        iov_len: s.len() as size_t,
+                    })
+                    .collect();
+
+                if iovecs.is_empty() {
+                    return Ok(0);
+                }
+
+                // Safe because only bytes inside the buffers are accessed and the kernel is
+                // expected to handle arbitrary memory for I/O.
+                let ret = unsafe { readv(self.as_raw_fd(), &iovecs[0], iovecs.len() as c_int) };
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+
+            fn write_volatile(&mut self, slice: VolatileSlice) -> Result<usize> {
+                // Safe because only bytes inside the slice are accessed and the kernel is expected
+                // to handle arbitrary memory for I/O.
+                let ret = unsafe {
+                    write(
+                        self.as_raw_fd(),
+                        slice.ptr_guard().as_ptr() as *const c_void,
+                        slice.len(),
+                    )
+                };
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+
+            fn write_vectored_volatile(&mut self, bufs: &[VolatileSlice]) -> Result<usize> {
+                let iovecs: Vec<libc::iovec> = bufs
+                    .iter()
+                    .map(|s| libc::iovec {
+                        iov_base: s.ptr_guard_mut().as_ptr() as *mut c_void,
+                        iov_len: s.len() as size_t,
+                    })
+                    .collect();
+
+                if iovecs.is_empty() {
+                    return Ok(0);
+                }
+
+                // Safe because only bytes inside the buffers are accessed and the kernel is
+                // expected to handle arbitrary memory for I/O.
+                let ret = unsafe { writev(self.as_raw_fd(), &iovecs[0], iovecs.len() as c_int) };
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+        }
+
+        impl FileReadWriteAtVolatile for $ty {
+            fn read_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+                // Safe because only bytes inside the slice are accessed and the kernel is expected
+                // to handle arbitrary memory for I/O.
+                let ret = unsafe {
+                    pread64(
+                        self.as_raw_fd(),
+                        slice.ptr_guard_mut().as_ptr() as *mut c_void,
+                        slice.len(),
+                        offset as off64_t,
+                    )
+                };
+
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+
+            fn read_vectored_at_volatile(
+                &self,
+                bufs: &[VolatileSlice],
+                offset: u64,
+            ) -> Result<usize> {
+                let iovecs: Vec<libc::iovec> = bufs
+                    .iter()
+                    .map(|s| libc::iovec {
+                        iov_base: s.ptr_guard_mut().as_ptr() as *mut c_void,
+                        iov_len: s.len() as size_t,
+                    })
+                    .collect();
+
+                if iovecs.is_empty() {
+                    return Ok(0);
+                }
+
+                // Safe because only bytes inside the buffers are accessed and the kernel is
+                // expected to handle arbitrary memory for I/O.
+                let ret = unsafe {
+                    preadv64(
+                        self.as_raw_fd(),
+                        &iovecs[0],
+                        iovecs.len() as c_int,
+                        offset as off64_t,
+                    )
+                };
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+
+            fn write_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+                // Safe because only bytes inside the slice are accessed and the kernel is expected
+                // to handle arbitrary memory for I/O.
+                let ret = unsafe {
+                    pwrite64(
+                        self.as_raw_fd(),
+                        slice.ptr_guard().as_ptr() as *const c_void,
+                        slice.len(),
+                        offset as off64_t,
+                    )
+                };
+
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+
+            fn write_vectored_at_volatile(
+                &self,
+                bufs: &[VolatileSlice],
+                offset: u64,
+            ) -> Result<usize> {
+                let iovecs: Vec<libc::iovec> = bufs
+                    .iter()
+                    .map(|s| libc::iovec {
+                        iov_base: s.ptr_guard_mut().as_ptr() as *mut c_void,
+                        iov_len: s.len() as size_t,
+                    })
+                    .collect();
+
+                if iovecs.is_empty() {
+                    return Ok(0);
+                }
+
+                // Safe because only bytes inside the buffers are accessed and the kernel is
+                // expected to handle arbitrary memory for I/O.
+                let ret = unsafe {
+                    pwritev64(
+                        self.as_raw_fd(),
+                        &iovecs[0],
+                        iovecs.len() as c_int,
+                        offset as off64_t,
+                    )
+                };
+                if ret >= 0 {
+                    Ok(ret as usize)
+                } else {
+                    Err(Error::last_os_error())
+                }
+            }
+        }
+    };
+}
+
+#[cfg(not(windows))]
+volatile_impl!(File);
+
+// On Windows there are no libc `pread`/`pwrite`/`readv` over a raw fd; use the
+// std positioned-I/O extension (`seek_read`/`seek_write`) and sequential
+// `Read`/`Write` over the file HANDLE instead. The volatile buffer is host
+// memory, so a transient `&mut [u8]`/`&[u8]` view over its pointer is sound for
+// the duration of the call (mirrors what the Unix path hands to libc).
+#[cfg(windows)]
+impl FileReadWriteVolatile for File {
+    fn read_volatile(&mut self, slice: VolatileSlice) -> Result<usize> {
+        use std::io::Read;
+        let buf =
+            unsafe { std::slice::from_raw_parts_mut(slice.ptr_guard_mut().as_ptr(), slice.len()) };
+        self.read(buf)
+    }
+
+    fn write_volatile(&mut self, slice: VolatileSlice) -> Result<usize> {
+        use std::io::Write;
+        let buf = unsafe { std::slice::from_raw_parts(slice.ptr_guard().as_ptr(), slice.len()) };
+        self.write(buf)
+    }
+}
+
+
+/// Per-thread bounce buffer for gathered host I/O. Allocating a fresh zeroed
+/// buffer per request made Windows fault in and zero every page of it each
+/// time; reusing one keeps the cost to the copy itself.
+#[cfg(windows)]
+fn with_bounce<R>(len: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
+    thread_local! {
+        static BOUNCE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    BOUNCE.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.len() < len {
+            b.resize(len, 0);
+        }
+        f(&mut b[..len])
+    })
+}
+
+/// Merge slices that are back to back in host memory into (ptr, len) runs.
+#[cfg(windows)]
+fn host_runs(bufs: &[VolatileSlice]) -> Vec<(*mut u8, usize)> {
+    let mut runs: Vec<(*mut u8, usize)> = Vec::new();
+    for b in bufs {
+        let p = b.ptr_guard_mut().as_ptr();
+        match runs.last_mut() {
+            Some((rp, rl)) if (*rp as usize) + *rl == p as usize => *rl += b.len(),
+            _ => runs.push((p, b.len())),
+        }
+    }
+    runs
+}
+
+/// Use per-run host calls instead of a bounce copy once runs average this much.
+#[cfg(windows)]
+fn direct_run_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("SMOLVM_WHP_DIRECT_RUN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64 << 10)
+    })
+}
+
+/// True when the slices are back to back in host memory, so one host call can
+/// fill or drain them in place without a bounce buffer.
+#[cfg(windows)]
+fn host_contiguous(bufs: &[VolatileSlice]) -> bool {
+    bufs.windows(2).all(|w| {
+        // SAFETY: only addresses are compared; nothing is dereferenced.
+        let a = w[0].ptr_guard().as_ptr() as usize;
+        let b = w[1].ptr_guard().as_ptr() as usize;
+        a + w[0].len() == b
+    })
+}
+
+#[cfg(windows)]
+impl FileReadWriteAtVolatile for File {
+    fn read_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+        use std::os::windows::fs::FileExt;
+        let buf =
+            unsafe { std::slice::from_raw_parts_mut(slice.ptr_guard_mut().as_ptr(), slice.len()) };
+        // `seek_read` (ReadFile) may return a short read; loop until the whole
+        // slice is filled or EOF. A short virtiofs read leaves the rest of an
+        // mmap'd page zero-filled in the guest, which corrupts code/data pages
+        // of demand-paged binaries (the dynamic loader and its targets) and
+        // crashes them. The FUSE protocol expects a full-length reply up to EOF.
+        let mut total = 0;
+        while total < buf.len() {
+            match self.seek_read(&mut buf[total..], offset + total as u64) {
+                Ok(0) => break, // EOF
+                Ok(n) => total += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(total)
+    }
+
+    fn read_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        // A FUSE read arrives as one descriptor per guest page. Issue a single
+        // ReadFile for the whole request and scatter it, instead of one
+        // ReadFile per 4 KiB page; filter drivers make each call costly.
+        if bufs.len() == 1 {
+            return self.read_at_volatile(bufs[0], offset);
+        }
+        let len: usize = bufs.iter().map(|b| b.len()).sum();
+        if host_contiguous(bufs) {
+            // SAFETY: the slices are adjacent and together span `len` bytes of
+            // live guest memory.
+            let whole = unsafe {
+                VolatileSlice::new(bufs[0].ptr_guard_mut().as_ptr(), len)
+            };
+            return self.read_at_volatile(whole, offset);
+        }
+        use std::os::windows::fs::FileExt;
+        let runs = host_runs(bufs);
+        if len / runs.len() >= direct_run_bytes() {
+            // Long runs: read each straight into guest memory.
+            let mut total = 0;
+            for (p, rl) in runs {
+                // SAFETY: each run spans adjacent, live guest memory slices.
+                let dst = unsafe { std::slice::from_raw_parts_mut(p, rl) };
+                let mut done = 0;
+                while done < rl {
+                    match self.seek_read(&mut dst[done..], offset + (total + done) as u64) {
+                        Ok(0) => return Ok(total + done), // EOF
+                        Ok(n) => done += n,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                total += rl;
+            }
+            return Ok(total);
+        }
+        with_bounce(len, |tmp| {
+            let mut total = 0;
+            while total < len {
+                match self.seek_read(&mut tmp[total..], offset + total as u64) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => total += n,
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            // Plain copies: vm-memory's volatile copy routine is several
+            // times slower than memcpy, and no other agent writes these
+            // guest buffers while the request is outstanding.
+            let mut copied = 0;
+            for slice in bufs {
+                if copied >= total {
+                    break;
+                }
+                let n = slice.len().min(total - copied);
+                // SAFETY: `slice` is live guest memory of at least `n` bytes.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        tmp[copied..].as_ptr(),
+                        slice.ptr_guard_mut().as_ptr(),
+                        n,
+                    )
+                };
+                copied += n;
+            }
+            Ok(total)
+        })
+    }
+
+    fn write_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        // Gather the per-page descriptors into one buffer and write it with a
+        // single WriteFile (see read_vectored_at_volatile).
+        if bufs.len() == 1 {
+            return self.write_at_volatile(bufs[0], offset);
+        }
+        let len: usize = bufs.iter().map(|b| b.len()).sum();
+        if host_contiguous(bufs) {
+            // SAFETY: see read_vectored_at_volatile.
+            let whole = unsafe {
+                VolatileSlice::new(bufs[0].ptr_guard_mut().as_ptr(), len)
+            };
+            return self.write_at_volatile(whole, offset);
+        }
+        use std::os::windows::fs::FileExt;
+        let runs = host_runs(bufs);
+        if len / runs.len() >= direct_run_bytes() {
+            let mut total = 0;
+            for (p, rl) in runs {
+                // SAFETY: each run spans adjacent, live guest memory slices.
+                let src = unsafe { std::slice::from_raw_parts(p as *const u8, rl) };
+                let mut done = 0;
+                while done < rl {
+                    match self.seek_write(&src[done..], offset + (total + done) as u64) {
+                        Ok(0) => return Ok(total + done),
+                        Ok(n) => done += n,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                total += rl;
+            }
+            return Ok(total);
+        }
+        with_bounce(len, |tmp| {
+            let mut at = 0;
+            for slice in bufs {
+                // SAFETY: `slice` is live guest memory; see the read path.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        slice.ptr_guard().as_ptr(),
+                        tmp[at..].as_mut_ptr(),
+                        slice.len(),
+                    )
+                };
+                at += slice.len();
+            }
+            let mut total = 0;
+            while total < len {
+                match self.seek_write(&tmp[total..], offset + total as u64) {
+                    Ok(0) => break,
+                    Ok(n) => total += n,
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(total)
+        })
+    }
+
+    fn write_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+        use std::os::windows::fs::FileExt;
+        let buf = unsafe { std::slice::from_raw_parts(slice.ptr_guard().as_ptr(), slice.len()) };
+        self.seek_write(buf, offset)
+    }
+}
+
+#[cfg(feature = "blk")]
+impl FileReadWriteAtVolatile for DiskProperties {
+    fn read_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+        self.read_vectored_at_volatile(&[slice], offset)
+    }
+
+    fn read_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        if bufs.is_empty() {
+            return Ok(0);
+        }
+
+        // imago's Windows backend issues one ReadFile per buffer, and a
+        // virtio-blk request arrives as one buffer per guest page. Bounce the
+        // request through one contiguous buffer so it is a single host call.
+        #[cfg(windows)]
+        if bufs.len() > 1 {
+            let len: usize = bufs.iter().map(|b| b.len()).sum();
+            let mut tmp = vec![0u8; len];
+            self.file.readv(IoVectorMut::from(&mut tmp), offset)?;
+            let mut at = 0;
+            for slice in bufs {
+                slice.copy_from(&tmp[at..at + slice.len()]);
+                at += slice.len();
+            }
+            return Ok(len);
+        }
+
+        let (iovec, _guard) = IoVectorMut::from_volatile_slice(bufs);
+        let full_length = iovec
+            .len()
+            .try_into()
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        self.file.readv(iovec, offset)?;
+        Ok(full_length)
+    }
+
+    fn write_at_volatile(&self, slice: VolatileSlice, offset: u64) -> Result<usize> {
+        self.write_vectored_at_volatile(&[slice], offset)
+    }
+
+    fn write_vectored_at_volatile(&self, bufs: &[VolatileSlice], offset: u64) -> Result<usize> {
+        if bufs.is_empty() {
+            return Ok(0);
+        }
+
+        // See read_vectored_at_volatile: one host WriteFile per request.
+        #[cfg(windows)]
+        if bufs.len() > 1 {
+            let len: usize = bufs.iter().map(|b| b.len()).sum();
+            let mut tmp = vec![0u8; len];
+            let mut at = 0;
+            for slice in bufs {
+                slice.copy_to(&mut tmp[at..at + slice.len()]);
+                at += slice.len();
+            }
+            self.file.writev(IoVector::from(&tmp), offset)?;
+            return Ok(len);
+        }
+
+        let (iovec, _guard) = IoVector::from_volatile_slice(bufs);
+        let full_length = iovec
+            .len()
+            .try_into()
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        self.file.writev(iovec, offset)?;
+        Ok(full_length)
+    }
+}

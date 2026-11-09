@@ -1,0 +1,36 @@
+[import]
+format = 1
+target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
+source_identity = "sha256:33e7e1e7521f63e2ae0634f7ecc7ee857d6e0aa8f178cc27cbd706e40d078607"
+components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch"]
+
+[smolvm]
+url = "https://github.com/smol-machines/smolvm.git"
+revision = "8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
+version = "1.34.0"
+branch = "main"
+
+[libkrun]
+url = "https://github.com/smol-machines/libkrun.git"
+revision = "9df62257098acb5a3cd4f6807cf84f09e1b13323"
+features = "blk,net,gpu,input"
+
+[libkrunfw]
+url = "https://github.com/smol-machines/libkrunfw.git"
+revision = "7f4d4950688f259344044db0465162295a1b8255"
+
+[kernel]
+url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.60.tar.xz"
+version = "linux-6.18.60"
+revision = "f45ed76d6791cf72ff1265ee93511175bbbc2f18"
+sha256 = "3c2f44ef6acc021a7ad444d9a2e6ec1ef488ff09368793d0004a6080f69d621e"
+
+[toolchain]
+init = "nightly-2026-09-15"
+guest = "1.99.1"
+
+[[patch]]
+path = "libkrun-0001-rutabaga-2d-beside-3d.patch"
+tree = "libkrun"
+sha256 = "80cbf562d19aa957d675e3fb6700c5c31b2d1d01a23069877020bfbe01894714"

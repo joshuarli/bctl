@@ -1,0 +1,848 @@
+// Copyright 2026 The libkrun Authors. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Portions Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Windows Hypervisor Platform (WHP) vCPU/VM integration.
+//!
+//! This is the Windows counterpart to `linux/vstate.rs` (KVM) and
+//! `macos/vstate.rs` (HVF). It exposes the same `Vm` / `Vcpu` / `VcpuHandle`
+//! surface the rest of the VMM drives, implemented on top of the `krun-whp`
+//! wrappers (`WhpVm`, `WhpVcpu`, `VcpuExitReason`, ...).
+//!
+//! Scope: WHP targets x86_64, so the register-configuration and exit-handling
+//! shape follows the Linux x86_64 path (PIO -> `io_bus`, MMIO -> `mmio_bus`,
+//! CPUID/MSR completion), while the threading + channel plumbing mirrors the
+//! single-hypervisor macOS backend.
+//!
+//! Verification status: this module is wired against the `whp` crate API but the
+//! guest-visible behaviour (initial register/segment state for the Linux boot
+//! protocol, MMIO instruction emulation, interrupt injection timing) has NOT been
+//! validated on a real Windows host with the Windows Hypervisor Platform enabled.
+//! Such sites are marked `TODO(whp-host)`.
+
+// Snapshot/restore state and some helpers are present for cross-platform parity
+// but not yet wired on Windows; allow until the snapshot path is ported.
+#![allow(dead_code)]
+
+use std::fmt::{Display, Formatter};
+use std::result;
+use std::sync::Arc;
+use std::thread;
+
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use log::warn;
+use whp::{VcpuExitReason, WhpEmulator, WhpVcpu, WhpVm};
+
+use crate::vmm_config::machine_config::CpuFeaturesTemplate;
+use utils::eventfd::EventFd;
+use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+
+/// Errors associated with the WHP-backed VMM state.
+#[derive(Debug)]
+pub enum Error {
+    /// Failed to create or configure the WHP partition.
+    VmSetup(whp::Error),
+    /// Failed to map a guest memory region into the partition.
+    SetUserMemoryRegion(whp::Error),
+    /// Failed to create a WHP virtual processor.
+    VcpuSetup(whp::Error),
+    /// Failed to read/write vCPU registers via WHP.
+    VcpuRegisters(whp::Error),
+    /// Failed to program the boot register/segment state.
+    ConfigureRegisters(arch::x86_64::regs::Error),
+    /// Failed to program the boot MSRs.
+    ConfigureMsrs(arch::x86_64::msr::Error),
+    /// Error while running the vCPU (`WHvRunVirtualProcessor`).
+    VcpuRun(whp::Error),
+    /// Failed to spawn the vCPU thread.
+    VcpuSpawn(std::io::Error),
+    /// Could not initialize the vCPU's thread-local pointer.
+    VcpuTlsInit,
+    /// The vCPU was not associated with the current thread's TLS.
+    VcpuTlsNotPresent,
+    /// Failed to deliver an event to the vCPU thread.
+    VcpuEvent,
+    /// The WHP partition reported an unrecoverable exit.
+    VcpuUnhandledExit(VcpuExitReason),
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        use Error::*;
+        match self {
+            VmSetup(e) => write!(f, "Cannot create the WHP partition: {e}"),
+            SetUserMemoryRegion(e) => write!(f, "Cannot map guest memory into WHP: {e}"),
+            VcpuSetup(e) => write!(f, "Cannot create a WHP virtual processor: {e}"),
+            VcpuRegisters(e) => write!(f, "Cannot access vCPU registers: {e}"),
+            ConfigureRegisters(e) => write!(f, "Cannot program boot register state: {e:?}"),
+            ConfigureMsrs(e) => write!(f, "Cannot program boot MSRs: {e:?}"),
+            VcpuRun(e) => write!(f, "Failure during vCPU run: {e}"),
+            VcpuSpawn(e) => write!(f, "Cannot spawn the vCPU thread: {e}"),
+            VcpuTlsInit => write!(f, "Cannot initialize the vCPU TLS"),
+            VcpuTlsNotPresent => write!(f, "The vCPU is not present in TLS"),
+            VcpuEvent => write!(f, "Cannot deliver an event to the vCPU thread"),
+            VcpuUnhandledExit(r) => write!(f, "Unhandled WHP vCPU exit: {r:?}"),
+        }
+    }
+}
+
+pub type Result<T> = result::Result<T, Error>;
+
+/// A WHP partition wrapper, analogous to the KVM/HVF `Vm`.
+pub struct Vm {
+    whp_vm: Arc<WhpVm>,
+    /// Every guest-memory region as registered at boot: (guest_addr, host_addr,
+    /// len). A DAX mapping replaces the backing of a sub-range; removing it
+    /// restores the range to these original pages, which the hypervisor has no
+    /// memory of once they were replaced.
+    regions: Vec<(u64, u64, u64)>,
+}
+
+impl Vm {
+    /// Creates a new WHP partition sized for `vcpu_count` virtual processors.
+    pub fn new(vcpu_count: u32) -> Result<Self> {
+        let whp_vm = WhpVm::new(vcpu_count).map_err(Error::VmSetup)?;
+        Ok(Vm {
+            whp_vm: Arc::new(whp_vm),
+            regions: Vec::new(),
+        })
+    }
+
+    pub fn whp_vm(&self) -> &Arc<WhpVm> {
+        &self.whp_vm
+    }
+
+    pub fn adjust_clock_after_pause(&self, _paused_ns: u64) -> Result<()> {
+        // WHP exposes no host-visible guest clock control analogous to
+        // KVM_KVMCLOCK_CTRL; guest timekeeping rides the reference TSC.
+        Ok(())
+    }
+
+    /// Capture the partition reference time used by the guest's Hyper-V clock.
+    pub fn save_state(&self) -> Result<VmState> {
+        Ok(VmState {
+            reference_time: self.whp_vm.reference_time().map_err(Error::VmSetup)?,
+            pit_state: [0; 8],
+        })
+    }
+
+    /// Restore reference time before resuming any vCPU.
+    pub fn restore_state(&self, state: &VmState) -> Result<()> {
+        self.whp_vm
+            .set_reference_time(state.reference_time)
+            .map_err(Error::VmSetup)
+    }
+
+    /// Maps every guest-memory region into the WHP partition's guest physical
+    /// address space.
+    pub fn memory_init(&mut self, guest_mem: &GuestMemoryMmap) -> Result<()> {
+        for region in guest_mem.iter() {
+            // Safe to unwrap: the region start address is a valid guest address.
+            let host_addr = guest_mem.get_host_address(region.start_addr()).unwrap();
+            debug!(
+                "WHP map: host_addr={:x?} guest_addr={:x?} len={:x?}",
+                host_addr,
+                region.start_addr().raw_value(),
+                region.len()
+            );
+            // SAFETY: `host_addr` points into the live guest-memory mmap which
+            // outlives the partition, and the region length is page-aligned.
+            unsafe {
+                self.whp_vm
+                    .map_memory(
+                        host_addr as *mut std::ffi::c_void,
+                        region.start_addr().raw_value(),
+                        region.len(),
+                    )
+                    .map_err(Error::SetUserMemoryRegion)?;
+            }
+            self.regions.push((
+                region.start_addr().raw_value(),
+                host_addr as u64,
+                region.len(),
+            ));
+        }
+        // A guest's first touch of each 4 KiB page costs ~20 us on WHP (a
+        // nested-paging fault the hypervisor resolves one page at a time), so
+        // a fresh VM spent ~5 s per GiB of newly used RAM. Populating anonymous
+        // RAM in bulk at boot makes those first touches ~4x cheaper for the
+        // life of the VM, even after the guest reports free memory and the
+        // host discards it (which it does over the next ~30 s: resident
+        // memory briefly reaches the VM's size, then settles near WSL2's idle
+        // footprint). `SMOLVM_WHP_PREFILL=off` keeps RAM lazy. File-backed RAM
+        // (restored and branched machines) is never prefilled, so it keeps
+        // sharing pages with its checkpoint.
+        let anonymous = guest_mem.iter().all(|r| r.file_offset().is_none());
+        let mode = match std::env::var("SMOLVM_WHP_PREFILL") {
+            _ if !anonymous => String::new(),
+            Ok(m) => m,
+            Err(_) => "advise-read".into(),
+        };
+        if !mode.is_empty() && mode != "off" {
+            self.prefill(&mode);
+        }
+        Ok(())
+    }
+
+    /// Experimental: back guest RAM ahead of the guest touching it.
+    fn prefill(&self, mode: &str) {
+        if mode.is_empty() {
+            return;
+        }
+        let regions = self.regions.clone();
+        let vm = self.whp_vm.clone();
+        let mode = mode.to_string();
+        let _ = std::thread::Builder::new()
+            .name("whp-prefill".into())
+            .spawn(move || {
+                let t = std::time::Instant::now();
+                const CHUNK: u64 = 64 << 20;
+                for (gpa, host, len) in regions {
+                    let mut off = 0;
+                    while off < len {
+                        let n = CHUNK.min(len - off);
+                        if mode == "advise" || mode == "advise-read" {
+                            if let Err(e) = vm.populate(gpa + off, n, mode == "advise") {
+                                warn!("prefill advise failed: {e:?}");
+                                return;
+                            }
+                        } else {
+                            // A locked add of zero commits the host page without
+                            // changing its contents, even if the guest is
+                            // writing it concurrently.
+                            let mut p = host + off;
+                            while p < host + off + n {
+                                // SAFETY: p lies inside the live guest mapping.
+                                unsafe {
+                                    (*(p as *const std::sync::atomic::AtomicU8))
+                                        .fetch_add(0, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                p += 4096;
+                            }
+                        }
+                        off += n;
+                    }
+                }
+                log::debug!("whp prefill ({mode}) done in {:?}", t.elapsed());
+                if let Some(dir) = std::env::var_os("SMOLVM_WHP_STATS") {
+                    let dir = std::path::PathBuf::from(dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(
+                        dir.join(format!("prefill-{}.txt", std::process::id())),
+                        format!("{mode} {:?}\n", t.elapsed()),
+                    );
+                }
+            });
+    }
+
+    /// Point a guest-physical range at new host memory. WHP binds a GPA range
+    /// to the host pages it was given and does not follow later changes to the
+    /// host address space, so a file view mapped for virtiofs DAX is invisible
+    /// to the guest until the range is re-registered. `WHvMapGpaRange` replaces
+    /// any previous mapping of the pages, so no unmap is needed first.
+    pub fn add_mapping(
+        &self,
+        reply_sender: Sender<bool>,
+        host_addr: u64,
+        guest_addr: u64,
+        len: u64,
+    ) {
+        debug!("add_mapping: host_addr={host_addr:x}, guest_addr={guest_addr:x}, len={len}");
+        // SAFETY: the caller keeps `host_addr..+len` mapped until the matching
+        // remove_mapping, and both addresses are page-aligned by the caller.
+        let result = unsafe {
+            self.whp_vm
+                .map_memory(host_addr as *mut std::ffi::c_void, guest_addr, len)
+        };
+        if let Err(e) = result {
+            error!("Error adding memory map: {e:?}");
+            reply_sender.send(false).unwrap();
+        } else {
+            reply_sender.send(true).unwrap();
+        }
+    }
+
+    /// Restore a guest-physical range to the pages it had at boot. Unlike HVF,
+    /// simply unmapping would leave the guest with no backing for the range and
+    /// the next DAX use of it would fault; re-pointing at the original window
+    /// pages is what "remove" means here.
+    pub fn remove_mapping(&self, reply_sender: Sender<bool>, guest_addr: u64, len: u64) {
+        debug!("remove_mapping: guest_addr={guest_addr:x}, len={len}");
+        let original = self.regions.iter().find(|(g, _, l)| {
+            guest_addr >= *g && guest_addr.saturating_add(len) <= g.saturating_add(*l)
+        });
+        let Some((region_guest, region_host, _)) = original else {
+            error!("remove_mapping: guest_addr={guest_addr:x} is not inside any registered region");
+            reply_sender.send(false).unwrap();
+            return;
+        };
+        let host_addr = region_host + (guest_addr - region_guest);
+        // SAFETY: the original region mapping outlives the partition.
+        let result = unsafe {
+            self.whp_vm
+                .map_memory(host_addr as *mut std::ffi::c_void, guest_addr, len)
+        };
+        if let Err(e) = result {
+            error!("Error restoring memory map: {e:?}");
+            reply_sender.send(false).unwrap();
+        } else {
+            reply_sender.send(true).unwrap();
+        }
+    }
+}
+
+/// Encapsulates configuration parameters for the guest vCPUs.
+#[derive(Debug, Eq, PartialEq)]
+pub struct VcpuConfig {
+    /// Number of guest VCPUs.
+    pub vcpu_count: u8,
+    /// Enable hyperthreading in the CPUID configuration.
+    pub ht_enabled: bool,
+    /// CPUID template to use.
+    pub cpu_template: Option<CpuFeaturesTemplate>,
+}
+
+/// A WHP virtual-processor wrapper, analogous to the KVM/HVF `Vcpu`.
+/// Opt-in VM-exit accounting (`SMOLVM_WHP_STATS=<dir>`), written per vCPU when
+/// it stops. Used to see which exits dominate a workload.
+#[derive(Default)]
+struct ExitStats {
+    dir: std::path::PathBuf,
+    reasons: std::collections::BTreeMap<String, u64>,
+    keys: std::collections::BTreeMap<String, u64>,
+    total: u64,
+}
+
+impl ExitStats {
+    fn dump(&self, id: u8) {
+        let _ = std::fs::create_dir_all(&self.dir);
+        let mut out = format!("vcpu {id} total {}\n", self.total);
+        for (k, v) in self.reasons.iter().chain(self.keys.iter()) {
+            out.push_str(&format!("{v:>12} {k}\n"));
+        }
+        let path = self
+            .dir
+            .join(format!("whp-{}-vcpu{id}.txt", std::process::id()));
+        let _ = std::fs::write(path, out);
+    }
+}
+
+pub struct Vcpu {
+    id: u8,
+    whp_vcpu: WhpVcpu,
+    /// Instruction emulator used to service MMIO exits (WHP does not decode the
+    /// faulting instruction for us).
+    emulator: WhpEmulator,
+    /// Guest physical entry point the vCPU should begin executing at.
+    boot_entry_addr: u64,
+    /// PIO bus (x86 `in`/`out`), e.g. the serial console and legacy devices.
+    io_bus: devices::Bus,
+    /// MMIO bus (virtio-over-MMIO and friends).
+    mmio_bus: Option<devices::Bus>,
+    /// When set, the vCPU thread holds in its paused event loop before running
+    /// any guest code, so a restore-into-a-clone can load register state onto it
+    /// (and resume it) before the guest executes. Used by the fork clone path.
+    start_paused: bool,
+    #[allow(dead_code)]
+    exit_evt: EventFd,
+
+    // Receiving end of the events channel owned by the vCPU side.
+    event_receiver: Receiver<VcpuEvent>,
+    // Transmitting end of the events channel, handed to the `VcpuHandle`.
+    event_sender: Option<Sender<VcpuEvent>>,
+    // Receiving end of the responses channel, handed to the `VcpuHandle`.
+    response_receiver: Option<Receiver<VcpuResponse>>,
+    // Transmitting end of the responses channel owned by the vCPU side.
+    response_sender: Sender<VcpuResponse>,
+}
+
+impl Vcpu {
+    /// Constructs a new WHP-backed vCPU `id` for partition `vm`.
+    pub fn new_x86_64(id: u8, vm: &Vm, exit_evt: EventFd) -> Result<Self> {
+        let whp_vcpu = WhpVcpu::new(vm.whp_vm.clone(), u32::from(id)).map_err(Error::VcpuSetup)?;
+        let emulator = WhpEmulator::with_mmio_callbacks().map_err(Error::VcpuSetup)?;
+        let (event_sender, event_receiver) = unbounded();
+        let (response_sender, response_receiver) = unbounded();
+        Ok(Vcpu {
+            id,
+            whp_vcpu,
+            emulator,
+            boot_entry_addr: 0,
+            io_bus: devices::Bus::new(),
+            mmio_bus: None,
+            start_paused: false,
+            exit_evt,
+            event_receiver,
+            event_sender: Some(event_sender),
+            response_receiver: Some(response_receiver),
+            response_sender,
+        })
+    }
+
+    pub fn cpu_index(&self) -> u8 {
+        self.id
+    }
+
+    /// Mark this vCPU to start in its paused event loop (see the `start_paused`
+    /// field). Call before [`Self::start_threaded`]. Used by the fork clone path
+    /// so register state can be restored before the guest runs.
+    pub fn set_start_paused(&mut self, v: bool) {
+        self.start_paused = v;
+    }
+
+    /// On KVM this installs a signal handler used to kick the vCPU out of
+    /// `KVM_RUN`. WHP uses `WhpVm::cancel_vcpu` instead (see
+    /// `VcpuHandle::send_event`), so this is a no-op kept for interface parity.
+    pub fn register_kick_signal_handler() {}
+
+    pub fn set_mmio_bus(&mut self, mmio_bus: devices::Bus) {
+        self.mmio_bus = Some(mmio_bus);
+    }
+
+    pub fn set_io_bus(&mut self, io_bus: devices::Bus) {
+        self.io_bus = io_bus;
+    }
+
+    /// Configures the initial vCPU register/segment state for the Linux boot
+    /// protocol and records the kernel entry point.
+    ///
+    /// Programs MSRs, then control/segment registers (CR0/CR3/CR4, EFER, GDT,
+    /// CS/DS/SS, page tables), then the general registers + RIP, via the WHP arch
+    /// backend (`arch::x86_64::windows`), mirroring the KVM/HVF `configure_x86_64`
+    /// ordering. TODO(whp-host): validate the programmed state actually boots a
+    /// guest on real WHP hardware.
+    pub fn configure_x86_64(&mut self, guest_mem: &GuestMemoryMmap, entry_addr: u64) -> Result<()> {
+        self.boot_entry_addr = entry_addr;
+        arch::x86_64::windows::msr::setup_msrs(&self.whp_vcpu).map_err(Error::ConfigureMsrs)?;
+        arch::x86_64::windows::regs::setup_sregs(guest_mem, &self.whp_vcpu)
+            .map_err(Error::ConfigureRegisters)?;
+        arch::x86_64::windows::regs::setup_regs(&self.whp_vcpu, entry_addr)
+            .map_err(Error::ConfigureRegisters)?;
+        Ok(())
+    }
+
+    /// Moves the vCPU onto its own thread and returns a handle to drive it.
+    pub fn start_threaded(mut self) -> Result<VcpuHandle> {
+        let event_sender = self.event_sender.take().unwrap();
+        let response_receiver = self.response_receiver.take().unwrap();
+        // Captured before the vCPU moves onto its thread, so the handle can cancel
+        // the running virtual processor to deliver events promptly.
+        let whp_vm = self.whp_vcpu.vm().clone();
+        let vp_index = self.whp_vcpu.index();
+        let vcpu_thread = thread::Builder::new()
+            .name(format!("fc_vcpu {}", self.cpu_index()))
+            .spawn(move || {
+                whp::disable_thread_power_throttling();
+                self.run();
+            })
+            .map_err(Error::VcpuSpawn)?;
+
+        Ok(VcpuHandle::new(
+            event_sender,
+            response_receiver,
+            vcpu_thread,
+            whp_vm,
+            vp_index,
+        ))
+    }
+
+    /// Handles a single WHP exit, dispatching device accesses to the buses.
+    ///
+    /// Returns `Ok(true)` to keep running, `Ok(false)` to stop the vCPU.
+    fn handle_exit(&mut self, reason: VcpuExitReason) -> Result<bool> {
+        match reason {
+            VcpuExitReason::IoPortAccess => {
+                // Mirror KVM's IoIn/IoOut: move `size` bytes between RAX and the
+                // PIO bus according to the access direction.
+                let info = self.whp_vcpu.io_port_exit_info();
+                let port = u64::from(info.port);
+                let size = (info.size as usize).clamp(1, 8);
+                let mut bytes = info.rax.to_le_bytes();
+                if info.is_write {
+                    self.io_bus.write(0, port, &bytes[..size]);
+                    self.whp_vcpu.advance_rip().map_err(Error::VcpuRegisters)?;
+                } else {
+                    self.io_bus.read(0, port, &mut bytes[..size]);
+                    let rax = u64::from_le_bytes(bytes);
+                    self.whp_vcpu
+                        .complete_io_in(rax)
+                        .map_err(Error::VcpuRegisters)?;
+                }
+                Ok(true)
+            }
+            VcpuExitReason::MemoryAccess => {
+                // A touch of reserved guest memory: commit it and retry the
+                // instruction, which WHP re-executes on resume.
+                if self
+                    .whp_vcpu
+                    .mapped_memory_access_gpa()
+                    .is_some_and(super::lazy_mem::commit_gpa)
+                {
+                    return Ok(true);
+                }
+                // WHP does not decode the faulting instruction, so run it through
+                // the WHP instruction emulator, routing the device-side access to
+                // the MMIO bus. The emulator advances RIP / updates registers via
+                // its register callbacks (so no explicit `advance_rip` here).
+                if let Some(mmio_bus) = self.mmio_bus.clone() {
+                    let mut handler = |gpa: u64, data: &mut [u8], is_write: bool| {
+                        if is_write {
+                            mmio_bus.write(0, gpa, data);
+                        } else {
+                            mmio_bus.read(0, gpa, data);
+                        }
+                    };
+                    // SAFETY: called immediately after a MemoryAccess exit, with an
+                    // emulator built via `with_mmio_callbacks`.
+                    unsafe { self.emulator.emulate_mmio(&self.whp_vcpu, &mut handler) }
+                        .map_err(Error::VcpuRegisters)?;
+                } else {
+                    self.whp_vcpu.advance_rip().map_err(Error::VcpuRegisters)?;
+                }
+                Ok(true)
+            }
+            VcpuExitReason::CpuidAccess => {
+                // Pass the hypervisor's default CPUID result straight through.
+                // TODO(whp-host): apply libkrun's CPUID masking/templating here,
+                // the WHP analogue of `krun-cpuid`.
+                let info = self.whp_vcpu.cpuid_exit_info();
+                self.whp_vcpu
+                    .complete_cpuid(
+                        info.default_eax,
+                        info.default_ebx,
+                        info.default_ecx,
+                        info.default_edx,
+                    )
+                    .map_err(Error::VcpuRegisters)?;
+                Ok(true)
+            }
+            VcpuExitReason::MsrAccess => {
+                // Unhandled MSRs (e.g. Hyper-V synthetic MSRs in the 0x4000_00xx
+                // range, since WHP presents a Hyper-V interface). Reads return 0;
+                // writes are ignored. Both MUST advance RIP past the RD/WRMSR, or
+                // the instruction re-executes forever.
+                let info = self.whp_vcpu.msr_exit_info();
+                if info.is_write {
+                    self.whp_vcpu.advance_rip().map_err(Error::VcpuRegisters)?;
+                } else {
+                    self.whp_vcpu
+                        .complete_msr_read(0, 0)
+                        .map_err(Error::VcpuRegisters)?;
+                }
+                Ok(true)
+            }
+            VcpuExitReason::Halt => {
+                // The guest executed HLT. Older WHP (e.g. Windows 10 1909)
+                // surfaces idle HLTs as exits rather than handling them inside
+                // WHvRunVirtualProcessor; treating every HLT as terminal kills
+                // the vCPU the first time the guest idles, long before userspace.
+                // If interrupts are enabled this is an idle wait — re-enter the
+                // run loop so WHP blocks until a wake interrupt (timer or a
+                // device IRQ injected from a watcher thread) resumes the vCPU.
+                // Only a HLT with interrupts masked is a real, unrecoverable
+                // shutdown halt that should stop the vCPU.
+                match self.whp_vcpu.interrupts_enabled() {
+                    Ok(true) => Ok(true),
+                    Ok(false) => {
+                        info!(
+                            "WHP vCPU {} halted with interrupts masked; stopping",
+                            self.id
+                        );
+                        Ok(false)
+                    }
+                    Err(e) => {
+                        error!(
+                            "WHP vCPU {} HLT: cannot read RFLAGS: {e}; stopping",
+                            self.id
+                        );
+                        Ok(false)
+                    }
+                }
+            }
+            VcpuExitReason::Canceled => {
+                // Woken to service a pending event (pause/resume/exit).
+                Ok(true)
+            }
+            VcpuExitReason::UnrecoverableException
+            | VcpuExitReason::InvalidVpRegisterValue
+            | VcpuExitReason::UnsupportedFeature => {
+                error!(
+                    "WHP vCPU {} fatal exit {:?}: {}",
+                    self.id,
+                    reason,
+                    self.whp_vcpu.debug_state()
+                );
+                Err(Error::VcpuUnhandledExit(reason))
+            }
+            other => {
+                error!("WHP vCPU {} unhandled exit: {other:?}", self.id);
+                Err(Error::VcpuUnhandledExit(other))
+            }
+        }
+    }
+
+    /// Drains any pending control events. Returns `false` when the vCPU should
+    /// terminate.
+    fn service_events(&self) -> bool {
+        while let Ok(event) = self.event_receiver.try_recv() {
+            match event {
+                VcpuEvent::Pause => {
+                    let _ = self.response_sender.send(VcpuResponse::Paused);
+                    if !self.run_paused_loop() {
+                        return false;
+                    }
+                }
+                VcpuEvent::Resume { .. } => {
+                    let _ = self.response_sender.send(VcpuResponse::Resumed);
+                }
+                // Save/restore are only valid while paused; the orchestrator
+                // always pauses first, so receiving one here is a protocol error.
+                VcpuEvent::SaveState | VcpuEvent::RestoreState(_) => {
+                    error!("ignoring vcpu SaveState/RestoreState received while running");
+                }
+            }
+        }
+        true
+    }
+
+    /// Block in the paused event loop: service Pause/SaveState/RestoreState and
+    /// return `true` on Resume (caller proceeds to run the guest) or `false` on
+    /// error / channel close (caller exits). The vCPU is quiescent here, which is
+    /// the safe boundary to capture/restore its WHP register + LAPIC + XSAVE
+    /// state for checkpoint/fork.
+    fn run_paused_loop(&self) -> bool {
+        loop {
+            match self.event_receiver.recv() {
+                Ok(VcpuEvent::Resume { .. }) => {
+                    let _ = self.response_sender.send(VcpuResponse::Resumed);
+                    return true;
+                }
+                Ok(VcpuEvent::Pause) => {
+                    let _ = self.response_sender.send(VcpuResponse::Paused);
+                }
+                Ok(VcpuEvent::SaveState) => match self.whp_vcpu.save_state() {
+                    Ok(state) => {
+                        let _ = self
+                            .response_sender
+                            .send(VcpuResponse::SavedState(Box::new(VcpuState(state))));
+                    }
+                    Err(e) => {
+                        error!("failed to capture WHP vcpu state: {e}");
+                        return false;
+                    }
+                },
+                Ok(VcpuEvent::RestoreState(state)) => {
+                    if let Err(e) = self.whp_vcpu.restore_state(&state.0) {
+                        let message = e.to_string();
+                        error!("failed to restore WHP vcpu state: {message}");
+                        let _ = self
+                            .response_sender
+                            .send(VcpuResponse::RestoreFailed(message));
+                        return false;
+                    }
+                    let _ = self.response_sender.send(VcpuResponse::RestoredState);
+                }
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// Main loop of the vCPU thread: run the WHP vCPU and handle its exits.
+    pub fn run(&mut self) {
+        // Fork clone restore: hold in the paused loop until the orchestrator has
+        // restored register state and sent Resume, so the guest never executes
+        // with cold (boot) registers.
+        if self.start_paused && !self.run_paused_loop() {
+            // run_paused_loop returns false on a restore error or a channel close
+            // (VM teardown). Report a non-zero code so a failed clone restore is
+            // not mistaken for a clean exit (the orchestrator also observes the
+            // missing RestoredState ack).
+            let _ = self.response_sender.send(VcpuResponse::Exited(1));
+            return;
+        }
+        let mut exit_code = 0;
+        let mut stats = std::env::var_os("SMOLVM_WHP_STATS").map(|d| ExitStats {
+            dir: d.into(),
+            ..Default::default()
+        });
+        loop {
+            if !self.service_events() {
+                break;
+            }
+            let result = self.whp_vcpu.run();
+            if let Some(st) = stats.as_mut() {
+                if let Ok(r) = &result {
+                    let name = format!("{r:?}");
+                    *st.reasons.entry(name).or_default() += 1;
+                    let key = match r {
+                        VcpuExitReason::IoPortAccess => {
+                            Some(format!("io {:#x}", self.whp_vcpu.io_port_exit_info().port))
+                        }
+                        VcpuExitReason::MsrAccess => {
+                            let m = self.whp_vcpu.msr_exit_info();
+                            Some(format!("msr {:#x} w={}", m.msr_number, m.is_write))
+                        }
+                        VcpuExitReason::MemoryAccess => {
+                            let gpa = unsafe { (*self.whp_vcpu.memory_access_context()).Gpa };
+                            Some(format!("mmio {:#x}", gpa & !0xfff))
+                        }
+                        _ => None,
+                    };
+                    if let Some(k) = key {
+                        *st.keys.entry(k).or_default() += 1;
+                    }
+                    st.total += 1;
+                    // The VM process can be torn down without this loop
+                    // returning, so persist the counters as we go.
+                    if st.total % 500 == 0 {
+                        st.dump(self.id);
+                    }
+                }
+            }
+            match result {
+                Ok(reason) => match self.handle_exit(reason) {
+                    Ok(true) => continue,
+                    Ok(false) => break,
+                    Err(e) => {
+                        error!("WHP vCPU {} run error: {e}", self.id);
+                        exit_code = 1;
+                        break;
+                    }
+                },
+                Err(e) => {
+                    error!("WHP vCPU {} WHvRunVirtualProcessor failed: {e}", self.id);
+                    exit_code = 1;
+                    break;
+                }
+            }
+        }
+        if let Some(st) = stats.as_ref() {
+            st.dump(self.id);
+        }
+        let _ = self.response_sender.send(VcpuResponse::Exited(exit_code));
+    }
+}
+
+/// Per-vCPU architectural state for checkpoint/restore, wrapping the WHP
+/// register + LAPIC + XSAVE capture from the `whp` crate.
+#[derive(Clone, Debug, Default)]
+pub struct VcpuState(whp::WhpVcpuState);
+
+impl VcpuState {
+    pub fn serialize(&self) -> Vec<u8> {
+        self.0.to_bytes()
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> result::Result<VcpuState, String> {
+        Ok(VcpuState(whp::WhpVcpuState::from_bytes(bytes)?))
+    }
+}
+
+/// VM-level checkpoint state for the guest-visible Hyper-V reference clock.
+#[derive(Clone, Debug, Default)]
+pub struct VmState {
+    reference_time: u64,
+    pit_state: [u8; 8],
+}
+
+impl VmState {
+    pub fn set_pit_state(&mut self, state: [u8; 8]) {
+        self.pit_state = state;
+    }
+
+    pub fn pit_state(&self) -> [u8; 8] {
+        self.pit_state
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut bytes = self.reference_time.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&self.pit_state);
+        bytes
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> result::Result<VmState, String> {
+        if bytes.len() != 16 {
+            return Err("Windows checkpoint is missing reference time or PIT timer state".into());
+        }
+        Ok(VmState {
+            reference_time: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            pit_state: bytes[8..16].try_into().unwrap(),
+        })
+    }
+}
+
+#[derive(Debug)]
+/// Events the vCPU thread can receive.
+pub enum VcpuEvent {
+    /// Pause the vCPU.
+    Pause,
+    /// Resume the vCPU.
+    Resume { paused_ns: u64 },
+    /// Capture the vCPU's architectural state (only valid while paused).
+    SaveState,
+    /// Restore previously-captured vCPU state (only valid while paused).
+    RestoreState(Box<VcpuState>),
+}
+
+#[derive(Debug)]
+/// Responses the vCPU thread reports back.
+pub enum VcpuResponse {
+    /// vCPU is paused.
+    Paused,
+    /// vCPU is resumed.
+    Resumed,
+    /// vCPU stopped with the given exit code.
+    Exited(u8),
+    /// Captured vCPU state, in reply to [`VcpuEvent::SaveState`].
+    SavedState(Box<VcpuState>),
+    /// Acknowledges a [`VcpuEvent::RestoreState`].
+    RestoredState,
+    /// The vCPU rejected checkpoint state and cannot safely resume.
+    RestoreFailed(String),
+}
+
+/// Wrapper over the vCPU thread that hides the channel interactions, and (on
+/// WHP) cancels the running virtual processor to deliver events promptly.
+pub struct VcpuHandle {
+    event_sender: Sender<VcpuEvent>,
+    response_receiver: Receiver<VcpuResponse>,
+    whp_vm: Arc<WhpVm>,
+    vp_index: u32,
+    #[allow(dead_code)]
+    vcpu_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl VcpuHandle {
+    pub fn new(
+        event_sender: Sender<VcpuEvent>,
+        response_receiver: Receiver<VcpuResponse>,
+        vcpu_thread: thread::JoinHandle<()>,
+        whp_vm: Arc<WhpVm>,
+        vp_index: u32,
+    ) -> Self {
+        Self {
+            event_sender,
+            response_receiver,
+            whp_vm,
+            vp_index,
+            vcpu_thread: Some(vcpu_thread),
+        }
+    }
+
+    pub fn send_event(&self, event: VcpuEvent) -> Result<()> {
+        self.event_sender
+            .send(event)
+            .map_err(|_| Error::VcpuEvent)?;
+        // Cancel the running virtual processor so it exits `WHvRunVirtualProcessor`
+        // promptly and services the event (the WHP analogue of KVM's immediate
+        // exit / HVF's vcpu_request_exit).
+        self.whp_vm.cancel_vcpu(self.vp_index);
+        Ok(())
+    }
+
+    pub fn response_receiver(&self) -> &Receiver<VcpuResponse> {
+        &self.response_receiver
+    }
+}

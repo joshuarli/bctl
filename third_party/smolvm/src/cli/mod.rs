@@ -1,0 +1,257 @@
+//! CLI command implementations.
+
+pub mod broken_pipe;
+pub mod cleanup_ephemeral;
+pub mod completion;
+pub mod config;
+pub mod cp_tree;
+pub mod host_network;
+pub mod machine;
+pub mod openapi;
+pub mod pack;
+pub mod pack_run;
+pub mod parsers;
+pub mod port_listen;
+pub mod proxy_opts;
+pub mod serve;
+pub mod serve_tls;
+pub mod smolfile;
+pub mod vm_common;
+
+use std::io::Write;
+
+// ============================================================================
+// Display Helpers
+// ============================================================================
+
+/// Format an optional PID as a suffix string.
+///
+/// Returns " (PID: N)" if pid is Some, or empty string if None.
+pub fn format_pid_suffix(pid: Option<i32>) -> String {
+    pid.map(|p| format!(" (PID: {})", p)).unwrap_or_default()
+}
+
+/// Flush stdout and stderr, ignoring errors.
+///
+/// Used to ensure output is visible before blocking operations.
+pub fn flush_output() {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+}
+
+/// Format bytes as human-readable string (e.g., "1.5 GB", "42.0 MB").
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Throttled byte-transfer progress bar for streaming operations.
+///
+/// Used by `machine cp` (upload + download). The producer calls
+/// [`ProgressBar::update`] on every chunk; output is emitted at most
+/// every `THROTTLE_MS` to avoid drowning the terminal on fast
+/// transfers. [`ProgressBar::finish`] prints the final summary line
+/// (with rate) and a newline.
+///
+/// Output goes to **stderr** so a `cp ... > somefile` redirect
+/// doesn't capture progress noise.
+pub struct ProgressBar {
+    label: String,
+    /// Known total in bytes. `None` for streams of unknown length
+    /// (we still report bytes-so-far + rate).
+    total: Option<u64>,
+    started_at: std::time::Instant,
+    last_print: std::time::Instant,
+    /// Set to true when at least one progress line has been printed,
+    /// so `finish` knows to emit a leading `\r` to overwrite it.
+    printed: bool,
+    /// `(done, total)` files for a directory copy, shown before the bytes.
+    files: Option<(usize, usize)>,
+}
+
+impl ProgressBar {
+    const THROTTLE_MS: u128 = 250;
+
+    /// `label` is shown at the start of every line ("Uploading",
+    /// "Downloading", etc.). `total` is `Some(bytes)` for known-size
+    /// transfers (uploads where we read the file first), `None` for
+    /// streaming-source cases.
+    pub fn new(label: impl Into<String>, total: Option<u64>) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            label: label.into(),
+            total,
+            started_at: now,
+            // Initialize so the first update() prints immediately —
+            // gives the user feedback that something started.
+            last_print: now - std::time::Duration::from_millis(THROTTLE_INITIAL_MS),
+            printed: false,
+            files: None,
+        }
+    }
+
+    /// Show a file count ("3/17 files") on every line, for a transfer made
+    /// of many files. `done` is how many have landed so far.
+    pub fn set_files(&mut self, done: usize, total: usize) {
+        self.files = Some((done, total));
+    }
+
+    /// Report the running total of bytes transferred. Throttled —
+    /// callers can invoke this on every chunk without flooding
+    /// stderr.
+    pub fn update(&mut self, bytes_so_far: u64) {
+        // Defer the terminal (100%) line to finish() so it is printed exactly
+        // once. Otherwise a small/single-chunk transfer prints "100%" here and
+        // again on completion — visible as two lines on non-TTY output where
+        // the overwriting `\r` has no effect.
+        if let Some(total) = self.total {
+            if total > 0 && bytes_so_far >= total {
+                return;
+            }
+        }
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_print).as_millis() < Self::THROTTLE_MS {
+            return;
+        }
+        self.last_print = now;
+        self.printed = true;
+        let line = self.format_line(bytes_so_far);
+        eprint!("\r{}", line);
+        let _ = std::io::stderr().flush();
+    }
+
+    /// Print the final summary and a newline. Consumes self.
+    pub fn finish(self, bytes_total: u64) {
+        let line = self.format_line(bytes_total);
+        if self.printed {
+            // Overwrite the last throttled line.
+            eprintln!("\r{}", line);
+        } else {
+            eprintln!("{}", line);
+        }
+    }
+
+    fn format_line(&self, bytes_so_far: u64) -> String {
+        let elapsed = self.started_at.elapsed().as_secs_f64().max(0.001);
+        let rate = bytes_so_far as f64 / elapsed;
+        let rate_str = format!("{}/s", format_bytes(rate as u64));
+        let files = match self.files {
+            Some((done, total)) => format!("{done}/{total} files, "),
+            None => String::new(),
+        };
+        match self.total {
+            Some(total) if total > 0 => {
+                let pct = (bytes_so_far as f64 * 100.0 / total as f64).min(100.0);
+                format!(
+                    "{}: {}{} / {} ({:.1}%, {})",
+                    self.label,
+                    files,
+                    format_bytes(bytes_so_far),
+                    format_bytes(total),
+                    pct,
+                    rate_str
+                )
+            }
+            _ => format!(
+                "{}: {}{} ({})",
+                self.label,
+                files,
+                format_bytes(bytes_so_far),
+                rate_str
+            ),
+        }
+    }
+}
+
+/// Initial throttle offset — ensures the first `update()` call
+/// always prints, so the user sees activity immediately.
+const THROTTLE_INITIAL_MS: u64 = 1000;
+
+/// Pull an image with a CLI progress bar.
+pub fn pull_with_progress(
+    client: &mut smolvm::agent::AgentClient,
+    image: &str,
+    oci_platform: Option<&str>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+) -> smolvm::Result<smolvm_protocol::ImageInfo> {
+    pull_with_progress_as(client, image, oci_platform, proxy, no_proxy, None)
+}
+
+/// [`pull_with_progress`] with explicit registry credentials, which win over the
+/// registry config the same way they do for an API start.
+pub fn pull_with_progress_as(
+    client: &mut smolvm::agent::AgentClient,
+    image: &str,
+    oci_platform: Option<&str>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+    auth: Option<smolvm::registry::RegistryAuth>,
+) -> smolvm::Result<smolvm_protocol::ImageInfo> {
+    eprint!("Pulling image {}...", image);
+    let _ = std::io::stderr().flush();
+
+    let mut last_percent = 0u8;
+    let mut syncing = false;
+    let mut opts = smolvm::agent::PullOptions::new()
+        .use_registry_config(true)
+        .progress(|percent: usize, _total: usize, layer: &str| {
+            if layer == "syncing" {
+                if !syncing {
+                    eprint!(
+                        "\rPulling image {}... [====================] 100% — syncing...",
+                        image
+                    );
+                    let _ = std::io::stderr().flush();
+                    syncing = true;
+                }
+                return;
+            }
+            let percent = percent as u8;
+            if percent != last_percent && percent <= 100 {
+                eprint!("\rPulling image {}... [", image);
+                let filled = (percent as usize) / 5;
+                for i in 0..20 {
+                    if i < filled {
+                        eprint!("=");
+                    } else if i == filled {
+                        eprint!(">");
+                    } else {
+                        eprint!(" ");
+                    }
+                }
+                eprint!("] {}%", percent);
+                let _ = std::io::stderr().flush();
+                last_percent = percent;
+            }
+        });
+    if let Some(p) = oci_platform {
+        opts = opts.oci_platform(p);
+    }
+    if let Some(p) = proxy {
+        opts = opts.proxy(p);
+    }
+    if let Some(np) = no_proxy {
+        opts = opts.no_proxy(np);
+    }
+    if let Some(auth) = auth {
+        opts = opts.auth(auth);
+    }
+    let result = client.pull(image, opts);
+    eprintln!(
+        "\rPulling image {}... done.                              ",
+        image
+    );
+    result
+}

@@ -1,0 +1,52 @@
+[package]
+name = "smolvm-agent"
+version = "1.34.0"
+edition = "2021"
+description = "Guest agent for smolvm VMs (handles OCI operations and command execution)"
+license = "Apache-2.0"
+repository = "https://github.com/smol-machines/smolvm"
+
+[[bin]]
+name = "smolvm-agent"
+path = "src/main.rs"
+
+[dependencies]
+smolvm-protocol = { path = "../smolvm-protocol", version = "1.6.1" }
+# Shared, pure-Rust OCI layer extraction (decompress + untar + whiteout→overlay
+# translation). The single implementation this guest and the host image cache
+# both call. Dependency-light + no C-linked crate so it links under musl.
+smolvm-s3fs = { path = "../smolvm-s3fs", version = "1.10.0" }
+smolvm-oci-layer = { path = "../smolvm-oci-layer", version = "1.7.2" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+tracing = { workspace = true }
+lazy_static = "1.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+libc = "0.2"
+parking_lot = "0.12"
+tempfile = "3"
+# Read OCI layer tars in-process so extraction can apply overlayfs whiteouts,
+# and decompress them in-process too: layers may be gzip- OR zstd-compressed
+# (`skopeo`/`smolvm pack` default to zstd), and the guest rootfs ships no zstd
+# tool — so the old external `gunzip`-only path silently broke every zstd layer.
+tar = "0.4"
+# gzip via `flate2` (defaults to the pure-Rust `miniz_oxide` backend) and zstd
+# via the pure-Rust `ruzstd` decoder. The C-backed `zstd` crate can't link
+# against musl (its zstd-sys references glibc's `__memcpy_chk`) and the agent is
+# a static-musl binary, so runtime decompression must be pure Rust.
+flate2 = "1"
+ruzstd = "0.9.1"
+
+# `zstd` (C-backed) is used ONLY to encode fixtures in unit tests; dev-deps are
+# excluded from the musl release binary, so it never hits the link issue above.
+[dev-dependencies]
+zstd = "0.14.3"
+
+# Linux-specific dependencies for vsock
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.27", features = ["socket", "fs", "ioctl"] }
+# The new mount API (fsopen/fsconfig/fsmount/move_mount) for overlay mounts — lets
+# us append each lower layer via `lowerdir+` instead of shelling out to `mount(8)`,
+# whose `-o lowerdir=` value is capped at ~255 bytes. Already in the workspace lock.
+rustix = { version = "1", features = ["mount", "fs"] }

@@ -1,0 +1,442 @@
+/// Default agent VM virtual CPU count.
+/// vCPU threads sleep in the hypervisor when idle, so over-provisioning
+/// is low-cost — the host OS time-slices them like any other threads.
+pub const DEFAULT_MICROVM_CPU_COUNT: u8 = 4;
+/// Largest default agent VM memory in MiB; see [`default_microvm_memory_mib`]
+/// for the default a new machine gets on this host.
+/// Virtio balloon with free page reporting means this is a ceiling, not a
+/// reservation — the host only consumes what the guest actually uses.
+pub const DEFAULT_MICROVM_MEMORY_MIB: u32 = 8192;
+
+/// Smallest default agent VM memory in MiB, for hosts with very little RAM.
+const MIN_DEFAULT_MICROVM_MEMORY_MIB: u32 = 1024;
+
+/// Memory in MiB a new machine gets when none is asked for: half the host's
+/// RAM, at most [`DEFAULT_MICROVM_MEMORY_MIB`].
+///
+/// The cap is a ceiling, but a busy guest fills it with page cache, so a cap
+/// equal to the host's RAM lets one machine push the rest of the host into
+/// swap. Only new machines take this default: a machine's memory is recorded
+/// when it is created.
+pub fn default_microvm_memory_mib() -> u32 {
+    default_memory_for_host(host_physical_memory_mib())
+}
+
+fn default_memory_for_host(host_mib: Option<u64>) -> u32 {
+    match host_mib {
+        Some(mib) => (mib / 2).clamp(
+            u64::from(MIN_DEFAULT_MICROVM_MEMORY_MIB),
+            u64::from(DEFAULT_MICROVM_MEMORY_MIB),
+        ) as u32,
+        None => DEFAULT_MICROVM_MEMORY_MIB,
+    }
+}
+
+/// The host's physical RAM in MiB, or `None` if it cannot be read.
+fn host_physical_memory_mib() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut bytes = 0u64;
+        let mut len = std::mem::size_of::<u64>();
+        // SAFETY: hw.memsize is a u64 and `len` holds its size.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                (&mut bytes as *mut u64).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (rc == 0 && len == std::mem::size_of::<u64>() && bytes > 0).then_some(bytes >> 20)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // SAFETY: sysconf has no preconditions.
+        let (pages, page_size) = unsafe {
+            (
+                libc::sysconf(libc::_SC_PHYS_PAGES),
+                libc::sysconf(libc::_SC_PAGESIZE),
+            )
+        };
+        (pages > 0 && page_size > 0).then(|| (pages as u64).saturating_mul(page_size as u64) >> 20)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY: a zeroed MEMORYSTATUSEX with its length set is the documented input.
+        let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+        status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        // SAFETY: `status` is a valid, correctly sized out-struct.
+        let ok = unsafe { GlobalMemoryStatusEx(&mut status) } != 0;
+        (ok && status.ullTotalPhys > 0).then_some(status.ullTotalPhys >> 20)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+/// Default VRAM (host shared memory region) exposed to the guest
+/// virtio-gpu device, in MiB.
+///
+/// This sizes the shared buffer libkrun reserves for GPU transfers
+/// (textures, staging, Venus/Vulkan descriptor pools). 4 GiB is large
+/// enough for typical Vulkan workloads including headless browsers and
+/// modest compute, without being so big that low-memory hosts commit
+/// most of their RAM when GPU is enabled. Override with
+/// `--gpu-vram <MiB>` or Smolfile `gpu_vram = <MiB>`.
+pub const DEFAULT_GPU_VRAM_MIB: u32 = 4096;
+
+use crate::network::NetworkBackend;
+
+/// Host engine used to service guest block-device requests.
+///
+/// Synchronous I/O is the compatibility default and has no asynchronous
+/// setup cost. The asynchronous engine is an explicit Linux optimization that
+/// overlaps queued raw-disk reads through a restricted io_uring; buffered
+/// writes stay inline.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::ValueEnum,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum BlockIoEngine {
+    /// Service one request at a time on the virtio block worker.
+    #[default]
+    Sync,
+    /// Submit queued raw-disk reads through a restricted Linux io_uring.
+    Async,
+}
+
+/// When a guest's disk writes must reach the host's physical disk.
+///
+/// `Full`: an `fsync` in the guest returns only once the host has flushed the
+/// write to its physical disk, so a commit survives a host crash. `Deferred`:
+/// a guest `fsync` still writes everything out to the machine's disk files, so
+/// the machine, a restart, a checkpoint and a branch all see it, but it does
+/// not wait for the physical disk; the host kernel writes it back on its own
+/// schedule, and a host crash can lose recent writes. For machines whose state
+/// is disposable (tests, rollouts), that turns fsync-bound work such as
+/// database commits from a disk round trip into a memory copy. The guest sees
+/// the same disk either way, so a checkpoint restores under either setting.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::ValueEnum,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum DiskDurability {
+    /// A guest flush waits for the host's disk.
+    #[default]
+    Full,
+    /// Guest writes reach the host's disk on the host's schedule.
+    Deferred,
+}
+
+/// Resources available to a micro vm.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VmResources {
+    /// Number of vCPUs.
+    pub cpus: u8,
+    /// Memory in MiB.
+    pub memory_mib: u32,
+    /// Enable outbound network access (TSI).
+    pub network: bool,
+    /// Preferred network backend override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_backend: Option<NetworkBackend>,
+    /// Enable GPU acceleration (virtio-gpu with Venus/Vulkan).
+    #[serde(default)]
+    pub gpu: bool,
+    /// GPU shared-memory region size in MiB (ignored if `gpu` is false).
+    /// `None` → use `DEFAULT_GPU_VRAM_MIB`.
+    #[serde(default)]
+    pub gpu_vram_mib: Option<u32>,
+    /// Remote the guest's CUDA Driver-API calls to the host NVIDIA GPU over vsock
+    /// (distinct from `gpu`, which is Vulkan/virtio-gpu). When set, the launcher
+    /// starts a per-VM CUDA host server and bridges it to the guest's CUDA shims,
+    /// so unmodified CUDA/PyTorch code in the guest runs on the host GPU.
+    #[serde(default)]
+    pub cuda: bool,
+    /// Expose the host's virtualization extensions so the guest can run KVM --
+    /// i.e. run smolvm (or any hypervisor) inside the machine. Off by default:
+    /// nesting costs a vmexit on work the guest would otherwise do natively,
+    /// and most workloads never need it.
+    #[serde(default)]
+    pub nested_virt: bool,
+    /// Enable Rosetta 2 for x86_64 binary translation on Apple Silicon.
+    #[serde(default)]
+    pub rosetta: bool,
+    /// Storage disk size in GiB (None = default 20 GiB).
+    pub storage_gib: Option<u64>,
+    /// Overlay disk size in GiB (None = default 10 GiB).
+    pub overlay_gib: Option<u64>,
+    /// Host block I/O engine. Defaults to the historical synchronous path.
+    #[serde(default)]
+    pub block_io: BlockIoEngine,
+    /// When guest disk writes must reach the host's disk. Defaults to full.
+    #[serde(default)]
+    pub disk_durability: DiskDurability,
+    /// Host disks attached beyond the managed storage and overlay disks, in
+    /// order, surfacing as `/dev/vdc`, `/dev/vdd`, ... Empty for most machines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<crate::data::disk::AttachedDisk>,
+    /// Shared cache disk: a read-only base under the machine's own
+    /// copy-on-write layer, attached after the managed disks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_disk: Option<crate::data::disk::CacheDisk>,
+    /// Guest paths backed by the machine's storage disk (`-v /var/lib/docker`),
+    /// normalized. See `smolvm_protocol::disk_volume`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disk_volumes: Vec<String>,
+    /// `Some(exceptions)` blocks private, internal and link-local destinations
+    /// (`--block-private`) while the public internet stays open; each exception
+    /// CIDR (`--allow-private`) re-opens its range. Cloud metadata stays closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_private: Option<Vec<String>>,
+    /// Allowed egress CIDR ranges. None = unrestricted, Some([]) = deny all.
+    #[serde(default)]
+    pub allowed_cidrs: Option<Vec<String>>,
+    /// Ordered L4 flow rules, evaluated before the legacy CIDR/hostname policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_rules: Vec<smolvm_protocol::EgressRule>,
+    /// Custom DNS resolver for the guest. None = backend default.
+    ///
+    /// Under TSI this becomes the guest's `/etc/resolv.conf` nameserver (the
+    /// guest's datagrams are proxied to it directly). Under virtio-net it
+    /// becomes the gateway's upstream resolver. Lets a VM on a network that
+    /// blocks the default resolver (e.g. 8.8.8.8) still resolve names.
+    #[serde(default)]
+    pub dns: Option<std::net::Ipv4Addr>,
+    /// Resolver options for the guest resolv.conf (`--dns-option`), in order.
+    /// Empty = none. Validated with `smolvm_protocol::resolv::validate_option`.
+    #[serde(default)]
+    pub dns_options: Vec<String>,
+    /// `/dev/shm` size for the workload container (`--shm-size`): a tmpfs
+    /// size such as `512m` or `25%` of guest RAM. `None` = half the RAM.
+    #[serde(default)]
+    pub shm_size: Option<String>,
+    /// Named inter-VM network to join (virtio-net only). Members lease
+    /// distinct guest addresses and route IP packets to each other through
+    /// the host-side fabric; VMs on different networks (or none) stay fully
+    /// isolated from each other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_name: Option<String>,
+    /// IPv4 subnet the guest link is drawn from (virtio-net only), e.g.
+    /// `10.200.0.0/30`: gateway and resolver take the first host address, the
+    /// guest the second. None = the default `100.96.0.0/30`, which collides
+    /// with Tailscale or carrier NAT running inside the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_subnet: Option<String>,
+}
+
+/// Minimum memory required for the VM to boot (kernel + agent).
+const MIN_MEMORY_MIB: u32 = 64;
+
+/// Maximum vCPUs supported by the hypervisor (Hypervisor.framework on macOS).
+/// Requests above this are silently capped by libkrun.
+const MAX_EFFECTIVE_CPUS: u8 = 16;
+
+impl VmResources {
+    /// Validate resource values before starting a VM. Returns an error with
+    /// a clear message for values that would cause an opaque hypervisor failure.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        #[cfg(not(target_os = "linux"))]
+        if self.block_io == BlockIoEngine::Async {
+            return Err(crate::Error::config(
+                "validate resources",
+                "async block I/O is currently supported on Linux hosts only; use --block-io sync",
+            ));
+        }
+        if self.cpus == 0 {
+            return Err(crate::Error::config(
+                "validate resources",
+                "CPU count must be at least 1",
+            ));
+        }
+        if self.cpus > MAX_EFFECTIVE_CPUS {
+            eprintln!(
+                "warning: requested {} vCPUs but the hypervisor supports at most {}; \
+                 the VM will run with {} vCPUs",
+                self.cpus, MAX_EFFECTIVE_CPUS, MAX_EFFECTIVE_CPUS
+            );
+        }
+        if self.memory_mib < MIN_MEMORY_MIB {
+            return Err(crate::Error::config(
+                "validate resources",
+                format!(
+                    "memory must be at least {} MiB (got {} MiB)",
+                    MIN_MEMORY_MIB, self.memory_mib
+                ),
+            ));
+        }
+        // `None` means "use the default size"; only an explicit 0 is invalid.
+        // Caught here so `machine create` rejects it up front instead of
+        // persisting a machine that can never start.
+        if self.storage_gib == Some(0) {
+            return Err(crate::Error::config(
+                "validate resources",
+                "storage disk size must be greater than 0 GiB",
+            ));
+        }
+        if self.overlay_gib == Some(0) {
+            return Err(crate::Error::config(
+                "validate resources",
+                "overlay disk size must be greater than 0 GiB",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for VmResources {
+    fn default() -> Self {
+        Self {
+            cpus: DEFAULT_MICROVM_CPU_COUNT,
+            memory_mib: default_microvm_memory_mib(),
+            network: false,
+            network_backend: None,
+            gpu: false,
+            gpu_vram_mib: None,
+            cuda: false,
+            nested_virt: false,
+            rosetta: false,
+            storage_gib: None,
+            overlay_gib: None,
+            block_io: BlockIoEngine::Sync,
+            disk_durability: DiskDurability::Full,
+            disks: Vec::new(),
+            cache_disk: None,
+            disk_volumes: Vec::new(),
+            block_private: None,
+            allowed_cidrs: None,
+            egress_rules: Vec::new(),
+            dns: None,
+            dns_options: Vec::new(),
+            shm_size: None,
+            network_name: None,
+            guest_subnet: None,
+        }
+    }
+}
+
+impl VmResources {
+    /// Effective GPU VRAM in MiB, applying the default when unset.
+    ///
+    /// Invariant: the returned value is always `>= 1`. `gpu_vram_mib`
+    /// is validated at ingress (`validate_gpu_vram_mib`) so it cannot
+    /// contain `Some(0)`; the default is 4 GiB. A `None` here means
+    /// "caller didn't specify," and we fill it with the default.
+    pub fn effective_gpu_vram_mib(&self) -> u32 {
+        self.gpu_vram_mib.unwrap_or(DEFAULT_GPU_VRAM_MIB)
+    }
+}
+
+/// Validate a user-supplied GPU VRAM value. `Some(0)` is nonsensical
+/// — virtio-gpu's shared memory region can't be zero-sized without
+/// the guest driver crashing on first use. We reject at ingress
+/// (CLI, Smolfile, and direct DB writes) rather than passing 0 down
+/// to libkrun and hoping for a clean failure.
+///
+/// `None` is fine (means "use default"). Positive values are
+/// accepted without an upper bound; libkrun errors at allocation
+/// time if the host can't back the region.
+///
+/// Returns the value unchanged on success so callers can chain:
+/// `params.gpu_vram_mib = validate_gpu_vram_mib(user_input)?;`
+pub fn validate_gpu_vram_mib(v: Option<u32>) -> Result<Option<u32>, &'static str> {
+    match v {
+        Some(0) => Err("--gpu-vram must be a positive number of MiB; \
+             use a value >= 1 or omit the flag to get the default"),
+        other => Ok(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_gpu_vram_defaults_when_unset() {
+        let r = VmResources::default();
+        assert_eq!(r.effective_gpu_vram_mib(), DEFAULT_GPU_VRAM_MIB);
+    }
+
+    #[test]
+    fn effective_gpu_vram_honors_override() {
+        let r = VmResources {
+            gpu_vram_mib: Some(8192),
+            ..Default::default()
+        };
+        assert_eq!(r.effective_gpu_vram_mib(), 8192);
+    }
+
+    #[test]
+    fn vm_resources_serde_roundtrip_preserves_vram() {
+        let r = VmResources {
+            gpu: true,
+            gpu_vram_mib: Some(2048),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: VmResources = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.gpu_vram_mib, Some(2048));
+    }
+
+    #[test]
+    fn validate_gpu_vram_mib_rejects_zero() {
+        assert!(validate_gpu_vram_mib(Some(0)).is_err());
+    }
+
+    #[test]
+    fn validate_gpu_vram_mib_accepts_positive() {
+        assert_eq!(validate_gpu_vram_mib(Some(1)).unwrap(), Some(1));
+        assert_eq!(validate_gpu_vram_mib(Some(4096)).unwrap(), Some(4096));
+        // No upper bound — libkrun errors at allocation time if the
+        // host can't back the region.
+        assert_eq!(
+            validate_gpu_vram_mib(Some(u32::MAX)).unwrap(),
+            Some(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn validate_gpu_vram_mib_accepts_none() {
+        assert_eq!(validate_gpu_vram_mib(None).unwrap(), None);
+    }
+
+    #[test]
+    fn the_default_memory_is_half_the_host_up_to_eight_gib() {
+        let gib = |n: u64| n * 1024;
+        // The 8 GB Mac that held 8.5 GB after a heavy job now caps at 4 GiB.
+        assert_eq!(default_memory_for_host(Some(gib(8))), 4096);
+        assert_eq!(default_memory_for_host(Some(gib(16))), 8192);
+        assert_eq!(default_memory_for_host(Some(gib(64))), 8192);
+        assert_eq!(default_memory_for_host(Some(gib(12))), 6144);
+        assert_eq!(default_memory_for_host(Some(1536)), 1024);
+        assert_eq!(default_memory_for_host(None), DEFAULT_MICROVM_MEMORY_MIB);
+    }
+
+    #[test]
+    fn this_host_gets_a_default_in_range() {
+        let mib = default_microvm_memory_mib();
+        assert!((MIN_DEFAULT_MICROVM_MEMORY_MIB..=DEFAULT_MICROVM_MEMORY_MIB).contains(&mib));
+        assert_eq!(VmResources::default().memory_mib, mib);
+    }
+}

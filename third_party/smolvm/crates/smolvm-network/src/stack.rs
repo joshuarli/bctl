@@ -1,0 +1,1735 @@
+//! Host-side smoltcp runtime for the virtio-net backend.
+//!
+//! Context
+//! =======
+//!
+//! This file is the in-process "gateway" that sits behind the guest's virtio
+//! NIC. It does not configure the guest interface; that already happened inside
+//! `smolvm-agent`. Instead, this module:
+//! - receives raw Ethernet frames coming out of libkrun
+//! - feeds them into smoltcp as if smolvm were the guest's next-hop gateway
+//! - forwards guest DNS queries to a host UDP socket
+//! - relays guest TCP streams to host `TcpStream`s
+//!
+//! Conceptually, it plays the role of a tiny virtual router/NAT-side gateway:
+//!
+//! ```text
+//! guest eth0
+//!   -> Ethernet frame
+//!   -> Frame queues
+//!   -> smoltcp Interface (gateway MAC/IP)
+//!   -> protocol-specific handling:
+//!        - TCP  -> host relay threads
+//!        - DNS  -> host UDP socket
+//!        - UDP  -> per-flow host socket relay (udp_relay)
+//!   -> outbound network
+//! ```
+//!
+//! Poll-loop-centric view:
+//!
+//! ```text
+//! guest_to_host queue
+//!   -> VirtioNetworkDevice::stage_next_frame()
+//!   -> classify_guest_frame()
+//!   -> smoltcp ingress
+//!   -> protocol-specific side effects
+//!        - TCP SYN  -> create relay/socket state
+//!        - DNS UDP  -> gateway UDP socket
+//!        - other UDP-> destination-keyed relay socket
+//!   -> smoltcp egress
+//!   -> host_to_guest queue
+//!   -> FrameStream writer
+//! ```
+//!
+//! Runtime control flow:
+//!
+//! ```text
+//! new guest frame         -> guest_wake  -> poll loop
+//! host relay has data     -> relay_wake  -> poll loop
+//! published host connect  -> relay_wake  -> poll loop
+//! smoltcp emitted frames  -> host_wake   -> frame writer
+//! ```
+
+use crate::device::VirtioNetworkDevice;
+use crate::dns;
+use crate::dns_relay::{self, DnsQuery, DnsResponse, DnsTransport};
+use crate::egress::EgressPolicy;
+use crate::icmp_relay;
+use crate::queues::NetworkFrameQueues;
+use crate::tcp_listeners::AcceptedTcpConnection;
+use crate::tcp_relay::TcpRelayTable;
+use crate::udp_relay;
+use crate::virtio_net_log;
+use smoltcp::iface::{
+    Config, Interface, PollIngressSingleResult, PollResult, SocketHandle, SocketSet,
+};
+use smoltcp::socket::raw::{
+    PacketBuffer as RawPacketBuffer, PacketMetadata as RawPacketMetadata, Socket as RawSocket,
+};
+use smoltcp::socket::tcp;
+use smoltcp::socket::udp::{PacketBuffer, PacketMetadata, Socket as UdpSocket, UdpMetadata};
+use smoltcp::time::Instant;
+use smoltcp::wire::{
+    EthernetAddress, EthernetFrame, EthernetProtocol, HardwareAddress, IpAddress, IpCidr,
+    IpListenEndpoint, IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet, TcpPacket, UdpPacket,
+};
+use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant as StdInstant};
+
+const DNS_SOCKET_PORT: u16 = 53;
+const TCP_RELAY_STATS_INTERVAL: Duration = Duration::from_secs(5);
+// Room for a burst: 128 concurrent lookups are 256 queries (A and AAAA). The
+// queue held 8 queries and 2 KiB of answers, so a burst lost the rest silently
+// and each loser waited out the guest resolver's 5 s retry.
+const DNS_PACKET_SLOTS: usize = 512;
+const DNS_RX_BYTES: usize = 64 * 1024;
+const DNS_TX_BYTES: usize = 256 * 1024;
+/// Answers held back while the guest-facing DNS socket is full, at most.
+const DNS_BACKLOG_MAX: usize = 1024;
+/// Poll again this soon while answers are held back.
+const DNS_BACKLOG_RETRY: Duration = Duration::from_millis(2);
+// DNS-over-TCP to the gateway. Real resolvers (and resolv.conf clients) fall
+// back to TCP for truncated answers and EDNS, so the gateway filter must serve
+// TCP/53 in addition to UDP/53. A small pool of listening sockets handles
+// concurrent queries; DNS/TCP is rare and short-lived (one query per
+// connection), so a few suffice.
+const DNS_TCP_LISTENERS: usize = 4;
+const DNS_TCP_RX_BYTES: usize = 4096;
+const DNS_TCP_TX_BYTES: usize = 8192;
+// A length-prefixed DNS message is bounded by a 16-bit length, but the gateway
+// only needs to handle ordinary queries/responses; cap to keep buffers small
+// and reject a guest that sends a bogus oversized prefix.
+const DNS_TCP_MAX_MSG: usize = 4096;
+const DEFAULT_IDLE_TIMEOUT_MS: i32 = 100;
+/// How often the poll loop refreshes the open-flow summary. Shorter than the
+/// launcher's 15 s file flush so a flushed summary is at most this stale.
+const FLOW_SUMMARY_INTERVAL: Duration = Duration::from_secs(5);
+/// Packet slots per ICMP raw socket buffer (per direction).
+const ICMP_PACKET_SLOTS: usize = 16;
+/// Payload bytes per ICMP raw socket buffer (per direction).
+const ICMP_BUFFER_BYTES: usize = 32 * 1024;
+
+/// Resolved network parameters for one guest NIC.
+///
+/// These are the host-side parameters for the virtual link. Note that the
+/// smoltcp interface is configured with the *gateway* MAC/IP, because the host
+/// runtime is acting as the guest-visible gateway endpoint.
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioPollConfig {
+    /// Host-side gateway MAC visible to the guest.
+    pub gateway_mac: [u8; 6],
+    /// Guest MAC address.
+    pub guest_mac: [u8; 6],
+    /// Gateway IPv4 address.
+    pub gateway_ipv4: Ipv4Addr,
+    /// Guest IPv4 address.
+    pub guest_ipv4: Ipv4Addr,
+    /// Gateway IPv6 (ULA) address.
+    pub gateway_ipv6: Ipv6Addr,
+    /// Guest IPv6 (ULA) address.
+    pub guest_ipv6: Ipv6Addr,
+    /// IPv6 prefix length for the virtual link.
+    pub prefix_len6: u8,
+    /// Upstream resolver the gateway forwards guest DNS queries to.
+    pub upstream_dns: Ipv4Addr,
+    /// Every upstream resolver, in the order to try them (see
+    /// [`crate::GuestNetworkConfig::upstream_resolvers`]).
+    pub upstream_resolvers: [Option<IpAddr>; crate::MAX_UPSTREAM_RESOLVERS],
+    /// Dedicated loopback service reachable only at the guest-visible gateway.
+    pub host_service: Option<crate::GatewayHostService>,
+    /// Host interceptor and the outbound streams routed through it.
+    pub intercept: Option<crate::StreamInterception>,
+    /// IP-level MTU.
+    pub mtu: usize,
+}
+
+fn parse_tcp_relay_capacity(value: &str) -> Option<usize> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|capacity| (1..=MAX_TCP_RELAY_CAPACITY).contains(capacity))
+}
+
+/// Upper bound on `SMOLVM_TCP_RELAY_CAPACITY`: each flow holds a host socket
+/// and guest-facing buffers, so even an operator override stays bounded.
+const MAX_TCP_RELAY_CAPACITY: usize = 1 << 20;
+
+/// Concurrent guest TCP flows one machine may hold when the operator sets
+/// `SMOLVM_TCP_RELAY_CAPACITY`; the default is the relay table's own.
+fn tcp_relay_capacity_from_env() -> Option<usize> {
+    let value = match std::env::var("SMOLVM_TCP_RELAY_CAPACITY") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return None,
+        Err(error) => {
+            tracing::warn!(%error, "ignoring invalid SMOLVM_TCP_RELAY_CAPACITY");
+            return None;
+        }
+    };
+    match parse_tcp_relay_capacity(&value) {
+        Some(capacity) => Some(capacity),
+        _ => {
+            tracing::warn!(%value, max = MAX_TCP_RELAY_CAPACITY, "SMOLVM_TCP_RELAY_CAPACITY must be between 1 and the max; using default");
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameAction {
+    TcpSyn {
+        source: SocketAddr,
+        destination: SocketAddr,
+    },
+    /// Any other guest TCP segment: delivered to its flow's own socket set
+    /// when it has one, otherwise to the shared set (DNS over TCP, or a
+    /// segment for no flow, which smoltcp answers with a reset).
+    Tcp {
+        source: SocketAddr,
+        destination: SocketAddr,
+    },
+    DnsQuery,
+    /// ARP or IPv6 neighbor discovery: TCP flows waiting on the guest's link
+    /// address are polled again once it is known.
+    Neighbor,
+    /// Non-DNS guest UDP, relayed to a host socket (see `udp_relay`).
+    UdpFlow {
+        destination: SocketAddr,
+    },
+    /// Destined to another VM on this network's fabric: the raw IP packet is
+    /// forwarded to the peer stack and never enters smoltcp (see `fabric`).
+    Fabric {
+        index: u8,
+    },
+    Passthrough,
+}
+
+/// Start the dedicated smoltcp poll thread for the virtio-net backend.
+///
+/// This creates one long-lived poll loop thread per guest NIC. That thread owns
+/// the smoltcp `Interface`, its socket set, and the TCP relay table.
+///
+/// Ownership boundary:
+/// - this thread owns all smoltcp state
+/// - relay threads never touch smoltcp sockets directly
+/// - frame bridge threads never parse protocols beyond raw Ethernet framing
+pub fn start_network_stack(
+    queues: Arc<NetworkFrameQueues>,
+    config: VirtioPollConfig,
+    tcp_receiver: Option<Receiver<AcceptedTcpConnection>>,
+    udp_publish: Option<crate::udp_publish::UdpPublishChannels>,
+    egress: EgressPolicy,
+    fabric: Option<crate::fabric::FabricHandle>,
+) -> std::io::Result<JoinHandle<()>> {
+    // A restored guest retains TCP state, but this host-side stack is new.
+    // Replaying both the port and ISN sequence collides with saved connections
+    // and forces a reset followed by the one-second SYN retransmit timer.
+    // Obtain entropy here, after a branch/restore, not in saved VM config.
+    let mut entropy = [0u8; 10];
+    getrandom::fill(&mut entropy)
+        .map_err(|error| std::io::Error::other(format!("seed network connections: {error}")))?;
+    let sequence_seed = u64::from_ne_bytes(entropy[..8].try_into().unwrap());
+    let port_seed = u16::from_ne_bytes(entropy[8..].try_into().unwrap());
+    virtio_net_log!(
+        "virtio-net: spawning poll thread guest_ip={} gateway_ip={} mtu={}",
+        config.guest_ipv4,
+        config.gateway_ipv4,
+        config.mtu
+    );
+    thread::Builder::new()
+        .name("smolvm-net-poll".into())
+        .spawn(move || {
+            run_network_stack(
+                queues,
+                config,
+                tcp_receiver,
+                udp_publish,
+                egress,
+                fabric,
+                sequence_seed,
+                port_seed,
+            )
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_network_stack(
+    queues: Arc<NetworkFrameQueues>,
+    config: VirtioPollConfig,
+    mut tcp_receiver: Option<Receiver<AcceptedTcpConnection>>,
+    udp_publish: Option<crate::udp_publish::UdpPublishChannels>,
+    egress: EgressPolicy,
+    fabric: Option<crate::fabric::FabricHandle>,
+    sequence_seed: u64,
+    port_seed: u16,
+) {
+    // Poll loop overview:
+    //
+    // 1. Drain staged guest Ethernet frames from the guest_to_host queue.
+    // 2. Pre-classify them so we can create relay/socket state before smoltcp
+    //    consumes the frame.
+    // 3. Poll smoltcp ingress/egress.
+    // 4. Forward DNS and relay TCP payloads.
+    // 5. Sleep in poll(2) on wake pipes until guest frames, relay activity, or
+    //    timers require more work.
+    //
+    // A useful mental model is:
+    //
+    //   queue input -> classify -> smoltcp -> protocol handling -> queue output
+    virtio_net_log!(
+        "virtio-net: poll loop started guest_ip={} gateway_ip={}",
+        config.guest_ipv4,
+        config.gateway_ipv4
+    );
+    let clock = StdInstant::now();
+    let mut device = VirtioNetworkDevice::new(queues.clone(), config.mtu);
+    let mut interface = create_interface(&mut device, &config, sequence_seed);
+    let mut sockets = SocketSet::new(vec![]);
+    let dns_routing = DnsRouting {
+        upstream: config.upstream_dns,
+        gateway: config.gateway_ipv4,
+    };
+    let dns_socket_handle = add_dns_socket(&mut sockets);
+    let dns_tcp_handles = add_dns_tcp_sockets(&mut sockets);
+    let mut dns_tcp_conns: Vec<DnsTcpConn> = (0..dns_tcp_handles.len())
+        .map(|_| DnsTcpConn::default())
+        .collect();
+    let (icmp4_handle, icmp6_handle) = add_icmp_raw_sockets(&mut sockets);
+    // Gateway addresses answer their own pings locally; everything else is
+    // relayed out to real host ICMP sockets.
+    let gateway_addrs = [
+        IpAddr::V4(config.gateway_ipv4),
+        IpAddr::V6(config.gateway_ipv6),
+        IpAddr::V6(link_local_from_mac(config.gateway_mac)),
+    ];
+    let relay_wake = Arc::new(queues.relay_wake.clone());
+    // One host thread pumps every TCP flow; a flow costs only its host socket.
+    let reactor = {
+        let shutdown_queues = queues.clone();
+        crate::tcp_reactor::RelayReactor::start(
+            relay_wake.clone(),
+            Arc::new(move || shutdown_queues.is_shutting_down()),
+        )
+    };
+    let mut relays = TcpRelayTable::new(
+        tcp_relay_capacity_from_env(),
+        egress.clone(),
+        gateway_addrs.to_vec(),
+        config.host_service,
+    )
+    .with_published_port_seed(port_seed)
+    .with_intercept(config.intercept);
+    match reactor {
+        Ok(reactor) => relays = relays.with_reactor(reactor),
+        Err(error) => virtio_net_log!(
+            "virtio-net: could not start the shared TCP relay ({}); each connection gets its own thread",
+            error
+        ),
+    }
+    let datagram_egress = if config.intercept.is_some_and(|mode| mode.all_tcp()) {
+        egress.deny_all_datagrams()
+    } else {
+        egress.clone()
+    };
+    let mut relay_spawn_attempts = 0_u64;
+    let mut relay_spawn_successes = 0_u64;
+    let mut relay_spawn_failures = 0_u64;
+    let mut reported_relay_spawn_failures = 0_u64;
+    let mut last_relay_stats = StdInstant::now();
+    let mut last_flow_summary: Option<StdInstant> = None;
+    let mut udp_sockets = udp_relay::UdpSocketTable::new();
+    // Published UDP ports: one gateway-side session per remote client.
+    let mut published_udp = crate::udp_publish::PublishedUdpTable::new(
+        config.gateway_ipv4,
+        config.guest_ipv4,
+        port_seed,
+    );
+    let udp_channels = {
+        let shutdown_queues = queues.clone();
+        udp_relay::start_udp_relay(
+            relay_wake.clone(),
+            Arc::new(move || shutdown_queues.is_shutting_down()),
+        )
+    };
+    let icmp_channels = {
+        let shutdown_queues = queues.clone();
+        icmp_relay::start_icmp_relay(
+            relay_wake.clone(),
+            Arc::new(move || shutdown_queues.is_shutting_down()),
+        )
+    };
+    // DNS resolution is offloaded to its own thread so the blocking upstream
+    // exchange never stalls this poll loop (which owns every one of the VM's
+    // sockets). Egress policy stays here; only the raw forward is offloaded.
+    let dns_channels = {
+        let shutdown_queues = queues.clone();
+        dns_relay::start_dns_relay(
+            relay_wake.clone(),
+            Arc::new(move || shutdown_queues.is_shutting_down()),
+            crate::upstream_list(config.upstream_dns, &config.upstream_resolvers),
+        )
+    };
+    let mut dns_gateway = DnsGateway::new();
+
+    // The smoltcp loop is driven by poller wakeups rather than busy spinning.
+    // guest_wake  -> new guest frame or shutdown
+    // relay_wake  -> host TCP relay thread produced data or shutdown
+    //
+    // Both wakes share a single underlying poller (see `NetworkFrameQueues`), so
+    // the loop blocks on that one poller and either side unblocks it. The loop
+    // re-runs its whole pipeline on every wakeup, so it does not need to know
+    // which wake fired.
+    let poller = queues.guest_wake.poller().clone();
+    let mut events = polling::Events::new();
+
+    loop {
+        if queues.is_shutting_down() {
+            return;
+        }
+        let now = smoltcp_now(clock);
+
+        while let Some(frame) = device.stage_next_frame() {
+            // We inspect the frame before giving it to smoltcp because certain
+            // flows need side effects first:
+            // - TCP SYN: pre-create a matching smoltcp socket + relay entry
+            // - DNS UDP: allow through for gateway-side forwarding
+            // - other UDP: pre-create the destination-keyed relay socket
+            let action =
+                classify_guest_frame(frame, &gateway_addrs, fabric.as_ref().map(|f| f.own_index));
+            // Copy the IP packet (everything after the 14-byte Ethernet
+            // header) out while the staged frame is still borrowed; the
+            // fabric arm below needs it after the device is touched again.
+            let fabric_payload = match action {
+                FrameAction::Fabric { .. } if frame.len() > 14 => Some(frame[14..].to_vec()),
+                _ => None,
+            };
+            match action {
+                FrameAction::Fabric { index } => {
+                    if let (Some(handle), Some(packet)) = (fabric.as_ref(), fabric_payload) {
+                        // The peer stack re-frames the packet for its own
+                        // guest; smoltcp never sees this frame.
+                        handle.forward(index, packet);
+                    }
+                    device.drop_staged_frame();
+                }
+                FrameAction::TcpSyn {
+                    source,
+                    destination,
+                } => {
+                    tracing::debug!(
+                        "virtio-net: guest TCP SYN source={} destination={}",
+                        source,
+                        destination
+                    );
+                    if !relays.has_socket_for(&source, &destination) {
+                        relays.create_tcp_socket(source, destination);
+                    }
+                    // No flow (refused or denied): the shared set has no socket
+                    // for it either, so smoltcp answers the SYN with a reset.
+                    let result = match relays.flow_for(source, destination) {
+                        Some(flow) => relays.ingress(flow, &mut interface, &mut device, now),
+                        None => interface.poll_ingress_single(now, &mut device, &mut sockets),
+                    };
+                    if matches!(result, PollIngressSingleResult::None) {
+                        device.drop_staged_frame();
+                    }
+                }
+                FrameAction::Tcp {
+                    source,
+                    destination,
+                } => {
+                    let result = match relays.flow_for(source, destination) {
+                        Some(flow) => relays.ingress(flow, &mut interface, &mut device, now),
+                        None => interface.poll_ingress_single(now, &mut device, &mut sockets),
+                    };
+                    if matches!(result, PollIngressSingleResult::None) {
+                        device.drop_staged_frame();
+                    }
+                }
+                FrameAction::Neighbor => {
+                    if matches!(
+                        interface.poll_ingress_single(now, &mut device, &mut sockets),
+                        PollIngressSingleResult::None
+                    ) {
+                        device.drop_staged_frame();
+                    }
+                    relays.touch_all();
+                }
+                FrameAction::DnsQuery | FrameAction::Passthrough => {
+                    if matches!(
+                        interface.poll_ingress_single(now, &mut device, &mut sockets),
+                        PollIngressSingleResult::None
+                    ) {
+                        device.drop_staged_frame();
+                    }
+                }
+                FrameAction::UdpFlow { destination }
+                    if published_udp.is_session_endpoint(destination) =>
+                {
+                    // The guest answering a published-port client: deliver it to
+                    // that client's session socket. Not egress, so no policy.
+                    if matches!(
+                        interface.poll_ingress_single(now, &mut device, &mut sockets),
+                        PollIngressSingleResult::None
+                    ) {
+                        device.drop_staged_frame();
+                    }
+                }
+                FrameAction::UdpFlow { destination } => {
+                    // Same egress policy as TCP; a denied destination's datagram
+                    // is silently dropped (a guest sees a normal UDP black hole),
+                    // but the denial is recorded in the boot log — these lines are
+                    // the machine's egress audit trail (`read_egress_denials`).
+                    let mut relay_allowed =
+                        udp_relay::should_relay_udp(destination, &datagram_egress);
+                    if !relay_allowed && destination.port() != 53 {
+                        egress.record_denial("sendto", &destination);
+                    }
+                    // A `block` entry drops the datagram like a denial, recorded
+                    // only as the watchlist match.
+                    if relay_allowed
+                        && egress.watching()
+                        && !udp_sockets.has_socket(destination)
+                        && egress.observe_destination(destination)
+                    {
+                        relay_allowed = false;
+                    }
+                    // Audit only what is actually relayed, after the watchlist had
+                    // its say; an audit that cannot be written fails closed.
+                    if relay_allowed {
+                        relay_allowed = datagram_egress
+                            .record_decision("udp", "allow", &destination, "local_policy")
+                            .is_ok();
+                    }
+                    if relay_allowed && udp_sockets.ensure_socket(destination, &mut sockets) {
+                        if matches!(
+                            interface.poll_ingress_single(now, &mut device, &mut sockets),
+                            PollIngressSingleResult::None
+                        ) {
+                            device.drop_staged_frame();
+                        }
+                    } else {
+                        device.drop_staged_frame();
+                    }
+                }
+            }
+        }
+
+        if let Some(channels) = &udp_publish {
+            published_udp.deliver_inbound(&mut sockets, &channels.from_host);
+        }
+
+        relay_accepted_tcp_connection(
+            &mut tcp_receiver,
+            &mut relays,
+            &mut interface,
+            config.gateway_ipv4,
+            config.guest_ipv4,
+        );
+
+        // First egress pass: let smoltcp emit any packets caused by the most
+        // recent ingress work before we service higher-level relays.
+        flush_interface_egress(&mut interface, &mut device, &mut sockets, now);
+        interface.poll_maintenance(now);
+        wake_guest_if_needed(&queues, &device);
+
+        // Service the TCP flows with work: payloads to and from their host
+        // relays, their output to the guest, and their timers.
+        let new_connections = relays.service(&mut interface, &mut device, now);
+        wake_guest_if_needed(&queues, &device);
+        // Enqueue guest DNS queries to the offload thread (or answer blocked
+        // ones locally), then deliver any answers it has produced back to the
+        // guest. Neither step blocks on the upstream resolver.
+        let mut woke_dns = false;
+        woke_dns |= dispatch_dns_udp(
+            dns_socket_handle,
+            &mut sockets,
+            &egress,
+            dns_routing,
+            &mut dns_gateway,
+            &dns_channels.to_relay,
+        );
+        woke_dns |= process_dns_tcp(
+            &dns_tcp_handles,
+            &mut dns_tcp_conns,
+            &mut sockets,
+            &egress,
+            dns_routing,
+            &mut dns_gateway,
+            &dns_channels.to_relay,
+        );
+        if woke_dns {
+            dns_channels.relay_thread_wake.wake();
+        }
+        deliver_dns_responses(
+            dns_socket_handle,
+            &dns_tcp_handles,
+            &mut dns_tcp_conns,
+            &mut sockets,
+            &egress,
+            &mut dns_gateway,
+            &dns_channels.from_relay,
+        );
+
+        // General UDP: forward staged guest datagrams to the relay thread,
+        // deliver any replies it produced, and expire idle destination sockets.
+        if udp_sockets.drain_to_relay(&mut sockets, &udp_channels.to_relay) {
+            udp_channels.relay_thread_wake.wake();
+        }
+        udp_sockets.deliver_replies(&mut sockets, &udp_channels.from_relay);
+        udp_sockets.expire_idle(&mut sockets);
+        if let Some(channels) = &udp_publish {
+            if published_udp.drain_to_host(&mut sockets, &channels.to_host) {
+                channels.host_wake.wake();
+            }
+            published_udp.expire_idle(&mut sockets);
+        }
+
+        // ICMP echo: the raw sockets captured any guest echo requests during
+        // ingress above. Forward external pings to the relay (answering gateway
+        // pings locally), then send back any replies it produced.
+        let mut woke_icmp = false;
+        woke_icmp |= drain_icmp_echo(
+            &mut sockets,
+            icmp4_handle,
+            false,
+            &datagram_egress,
+            &gateway_addrs,
+            &icmp_channels.to_relay,
+        );
+        woke_icmp |= drain_icmp_echo(
+            &mut sockets,
+            icmp6_handle,
+            true,
+            &datagram_egress,
+            &gateway_addrs,
+            &icmp_channels.to_relay,
+        );
+        if woke_icmp {
+            icmp_channels.relay_thread_wake.wake();
+        }
+        deliver_icmp_replies(
+            &mut sockets,
+            icmp4_handle,
+            icmp6_handle,
+            &icmp_channels.from_relay,
+        );
+
+        // Once the guest-side TCP handshake is established inside smoltcp, we
+        // can spawn the corresponding host relay thread.
+        for connection in new_connections {
+            relay_spawn_attempts = relay_spawn_attempts.saturating_add(1);
+            if relays.start_relay(connection, relay_wake.clone()).is_ok() {
+                relay_spawn_successes = relay_spawn_successes.saturating_add(1);
+            } else {
+                relay_spawn_failures = relay_spawn_failures.saturating_add(1);
+            }
+        }
+
+        // Open-flow telemetry for the machine list, taken from the relay
+        // table on a slow cadence so the per-packet path stays untouched.
+        if last_flow_summary.is_none_or(|at| at.elapsed() >= FLOW_SUMMARY_INTERVAL) {
+            let taken = StdInstant::now();
+            queues.publish_flow_summary(relays.flow_summary(taken));
+            last_flow_summary = Some(taken);
+        }
+
+        let relay_table_under_pressure =
+            relays.active_connections() >= relays.capacity().saturating_mul(3) / 4;
+        let has_new_spawn_failure = relay_spawn_failures != reported_relay_spawn_failures;
+        if (relay_table_under_pressure || has_new_spawn_failure)
+            && last_relay_stats.elapsed() >= TCP_RELAY_STATS_INTERVAL
+        {
+            virtio_net_log!(
+                "virtio-net: TCP relay stats active={} capacity={} spawn_attempts={} spawn_successes={} spawn_failures={}",
+                relays.active_connections(),
+                relays.capacity(),
+                relay_spawn_attempts,
+                relay_spawn_successes,
+                relay_spawn_failures
+            );
+            reported_relay_spawn_failures = relay_spawn_failures;
+            last_relay_stats = StdInstant::now();
+        }
+
+        // Second egress pass: DNS responses or relay data may have queued more
+        // packets for the guest.
+        flush_interface_egress(&mut interface, &mut device, &mut sockets, now);
+        wake_guest_if_needed(&queues, &device);
+
+        let shared_delay = interface
+            .poll_delay(now, &sockets)
+            .map(|d| d.total_millis());
+        let flow_delay = relays
+            .next_timer()
+            .map(|at| at.saturating_sub(now.total_millis()).max(0) as u64);
+        let timeout = match (shared_delay, flow_delay) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+        .map(|millis| Duration::from_millis(millis.min(u32::MAX as u64)));
+        let timeout = match timeout {
+            Some(timeout) => Some(timeout),
+            None => Some(Duration::from_millis(DEFAULT_IDLE_TIMEOUT_MS as u64)),
+        };
+        // Held-back DNS answers go out as soon as the socket drains.
+        let timeout = if dns_gateway.backlog.is_empty() {
+            timeout
+        } else {
+            timeout.map(|t| t.min(DNS_BACKLOG_RETRY))
+        };
+
+        // Block until either wake notifies the shared poller or the timeout
+        // elapses. The wakes are notify-only, so no events are reported; the
+        // loop re-runs unconditionally on the next iteration.
+        events.clear();
+        let _ = poller.wait(&mut events, timeout);
+    }
+}
+
+fn create_interface(
+    device: &mut VirtioNetworkDevice,
+    config: &VirtioPollConfig,
+    sequence_seed: u64,
+) -> Interface {
+    // This interface models the host-side gateway endpoint, not the guest NIC.
+    //
+    // Equivalent conceptual state:
+    //   MAC: config.gateway_mac
+    //   IP : config.gateway_ipv4/30
+    //        config.gateway_ipv6/64 (ULA) + fe80 link-local
+    //
+    // The guest IP exists as a peer on the same virtual link; it is not an
+    // address owned by this interface.
+    let mut interface_config = Config::new(HardwareAddress::Ethernet(EthernetAddress(
+        config.gateway_mac,
+    )));
+    interface_config.random_seed = sequence_seed;
+    let mut interface = Interface::new(interface_config, device, Instant::ZERO);
+    interface.update_ip_addrs(|addresses| {
+        addresses
+            .push(IpCidr::new(IpAddress::Ipv4(config.gateway_ipv4), 30))
+            .expect("failed to add gateway IPv4 address");
+        addresses
+            .push(IpCidr::new(
+                IpAddress::Ipv6(config.gateway_ipv6),
+                config.prefix_len6,
+            ))
+            .expect("failed to add gateway IPv6 address");
+        // RFC-clean NDP wants a link-local peer on the segment; derive the
+        // standard EUI-64 link-local from the gateway MAC so the guest kernel
+        // can talk NDP to fe80::… as well as to the ULA.
+        addresses
+            .push(IpCidr::new(
+                IpAddress::Ipv6(link_local_from_mac(config.gateway_mac)),
+                64,
+            ))
+            .expect("failed to add gateway IPv6 link-local address");
+    });
+    // The interface acts as the gateway and may need to answer packets for
+    // destinations other than its directly assigned IP, so the route table and
+    // "any IP" mode are opened up accordingly.
+    interface
+        .routes_mut()
+        .add_default_ipv4_route(config.gateway_ipv4)
+        .expect("failed to add default IPv4 route");
+    interface
+        .routes_mut()
+        .add_default_ipv6_route(config.gateway_ipv6)
+        .expect("failed to add default IPv6 route");
+    interface.set_any_ip(true);
+    interface
+}
+
+/// Derive the EUI-64 IPv6 link-local address for a MAC (RFC 4291 appendix A):
+/// flip the universal/local bit, insert `ff:fe` in the middle.
+fn link_local_from_mac(mac: [u8; 6]) -> Ipv6Addr {
+    Ipv6Addr::new(
+        0xfe80,
+        0,
+        0,
+        0,
+        u16::from_be_bytes([mac[0] ^ 0x02, mac[1]]),
+        u16::from_be_bytes([mac[2], 0xff]),
+        u16::from_be_bytes([0xfe, mac[3]]),
+        u16::from_be_bytes([mac[4], mac[5]]),
+    )
+}
+
+/// add_dns_socket is adding an UDP socket inside smoltcp, so that the guest DNS packet will
+/// hit this socket first. It is then proxied to the resolver. Note that this will not cause
+/// a host side :53 collesion, because the smoltcp Interface, SocketSet is per VM, and the
+/// gateway:53 is for that set of Interface and SocketSet, it is not bind to a host-kernel UDP socket.
+///
+/// The bind is wildcard (port-only) on purpose: combined with `set_any_ip`, every
+/// guest UDP datagram to port 53 — whatever its destination address or family
+/// (the v4 gateway, the v6 gateway, or an external resolver IP) — lands on this
+/// socket and is answered from that same destination address. That transparently
+/// intercepts hardcoded external resolvers too, matching TSI's DNS handling.
+fn add_dns_socket(sockets: &mut SocketSet<'_>) -> SocketHandle {
+    let rx_meta = vec![PacketMetadata::EMPTY; DNS_PACKET_SLOTS];
+    let tx_meta = vec![PacketMetadata::EMPTY; DNS_PACKET_SLOTS];
+    let rx_buffer = PacketBuffer::new(rx_meta, vec![0u8; DNS_RX_BYTES]);
+    let tx_buffer = PacketBuffer::new(tx_meta, vec![0u8; DNS_TX_BYTES]);
+    let mut socket = UdpSocket::new(rx_buffer, tx_buffer);
+    socket
+        .bind(smoltcp::wire::IpListenEndpoint {
+            addr: None,
+            port: DNS_SOCKET_PORT,
+        })
+        .expect("failed to bind gateway DNS socket");
+    sockets.add(socket)
+}
+
+/// Add the two raw IP sockets that capture guest ICMP echo traffic.
+///
+/// A `raw::Socket` receives a copy of every matching IP packet *before* the
+/// interface's "is this addressed to me?" check, so these capture the guest's
+/// echo requests even though their destination is some external host. The same
+/// sockets carry the relayed echo *replies* back out, fully addressed (source =
+/// the pinged host), letting smoltcp own the Ethernet framing and ARP/NDP.
+fn add_icmp_raw_sockets(sockets: &mut SocketSet<'_>) -> (SocketHandle, SocketHandle) {
+    fn raw_socket(version: IpVersion, protocol: IpProtocol) -> RawSocket<'static> {
+        let rx = RawPacketBuffer::new(
+            vec![RawPacketMetadata::EMPTY; ICMP_PACKET_SLOTS],
+            vec![0u8; ICMP_BUFFER_BYTES],
+        );
+        let tx = RawPacketBuffer::new(
+            vec![RawPacketMetadata::EMPTY; ICMP_PACKET_SLOTS],
+            vec![0u8; ICMP_BUFFER_BYTES],
+        );
+        RawSocket::new(Some(version), Some(protocol), rx, tx)
+    }
+
+    let v4 = sockets.add(raw_socket(IpVersion::Ipv4, IpProtocol::Icmp));
+    let v6 = sockets.add(raw_socket(IpVersion::Ipv6, IpProtocol::Icmpv6));
+    (v4, v6)
+}
+
+/// Drain guest echo requests captured on one ICMP raw socket. Gateway-destined
+/// pings are answered locally (the gateway *is* the source), external ones are
+/// forwarded to the relay thread subject to egress policy, and denied
+/// destinations are dropped. Returns true if anything was sent to the relay.
+fn drain_icmp_echo(
+    sockets: &mut SocketSet<'_>,
+    handle: SocketHandle,
+    is_ipv6: bool,
+    egress: &EgressPolicy,
+    gateway_addrs: &[IpAddr],
+    to_relay: &SyncSender<icmp_relay::IcmpEcho>,
+) -> bool {
+    // Phase 1: drain received requests into owned values so the socket can be
+    // re-borrowed below to emit local gateway replies.
+    let mut echoes = Vec::new();
+    {
+        let socket = sockets.get_mut::<RawSocket>(handle);
+        while socket.can_recv() {
+            let Ok(packet) = socket.recv() else {
+                break;
+            };
+            let parsed = if is_ipv6 {
+                icmp_relay::parse_guest_echo_v6(packet)
+            } else {
+                icmp_relay::parse_guest_echo_v4(packet)
+            };
+            if let Some(echo) = parsed {
+                echoes.push(echo);
+            }
+        }
+    }
+
+    // Phase 2: route each echo.
+    let mut woke = false;
+    let mut local_replies = Vec::new();
+    for echo in echoes {
+        if gateway_addrs.contains(&echo.destination) {
+            if egress
+                .record_decision("icmp", "allow", &echo.destination, "internal_gateway")
+                .is_ok()
+            {
+                local_replies.push(echo);
+            }
+        } else if icmp_relay::should_relay_icmp(echo.destination, egress)
+            && egress
+                .record_decision("icmp", "allow", &echo.destination, "local_policy")
+                .is_ok()
+        {
+            match to_relay.try_send(echo) {
+                Ok(()) => woke = true,
+                Err(TrySendError::Full(_)) => {
+                    virtio_net_log!("virtio-net: dropping guest ICMP echo (relay queue full)");
+                }
+                Err(TrySendError::Disconnected(_)) => return woke,
+            }
+        } else {
+            egress.record_denial("icmp", &echo.destination);
+        }
+    }
+
+    // Phase 3: answer gateway pings straight back out the raw socket.
+    if !local_replies.is_empty() {
+        let socket = sockets.get_mut::<RawSocket>(handle);
+        for reply in local_replies {
+            let frame = if is_ipv6 {
+                icmp_relay::build_echo_reply_v6(&reply)
+            } else {
+                icmp_relay::build_echo_reply_v4(&reply)
+            };
+            if let Some(frame) = frame {
+                let _ = socket.send_slice(&frame);
+            }
+        }
+    }
+    woke
+}
+
+/// Deliver echo replies produced by the relay thread, sending each as a
+/// fully-addressed IP packet (source = the pinged host) out the matching raw
+/// socket so smoltcp frames it back to the guest.
+fn deliver_icmp_replies(
+    sockets: &mut SocketSet<'_>,
+    icmp4_handle: SocketHandle,
+    icmp6_handle: SocketHandle,
+    from_relay: &Receiver<icmp_relay::IcmpEcho>,
+) {
+    while let Ok(reply) = from_relay.try_recv() {
+        let (handle, frame) = match reply.guest {
+            IpAddr::V4(_) => (icmp4_handle, icmp_relay::build_echo_reply_v4(&reply)),
+            IpAddr::V6(_) => (icmp6_handle, icmp_relay::build_echo_reply_v6(&reply)),
+        };
+        let Some(frame) = frame else {
+            continue;
+        };
+        let socket = sockets.get_mut::<RawSocket>(handle);
+        if socket.send_slice(&frame).is_err() {
+            virtio_net_log!(
+                "virtio-net: dropping ICMP reply to {} (raw socket buffer full)",
+                reply.guest
+            );
+        }
+    }
+}
+
+/// Receive the accepted TCP connection from the tcp_channel, and then relay it to
+/// the TcpRelayTable where the TCP network packets will be relayed to the guest.
+fn relay_accepted_tcp_connection(
+    tcp_receiver: &mut Option<Receiver<AcceptedTcpConnection>>,
+    relays: &mut TcpRelayTable,
+    interface: &mut Interface,
+    gateway_ipv4: Ipv4Addr,
+    guest_ipv4: Ipv4Addr,
+) {
+    // Published-port model:
+    //
+    // host client -> accepted host TcpStream
+    //             -> create guest-facing smoltcp socket from gateway_ip:ephemeral
+    //             -> guest sees a normal inbound TCP connection to guest_port
+    //             -> once Established, the relay thread bridges payloads
+    //
+    // The guest does not see the original host peer address here. This path is
+    // effectively a small userspace TCP proxy/NAT at the gateway boundary.
+    let mut disconnected = false;
+
+    if let Some(receiver) = tcp_receiver.as_mut() {
+        loop {
+            match receiver.try_recv() {
+                Ok(connection) => {
+                    let guest_destination =
+                        SocketAddr::new(std::net::IpAddr::V4(guest_ipv4), connection.guest_port);
+                    tracing::debug!(
+                        "virtio-net: accepted published TCP connection peer={} host_port={} guest_destination={}",
+                        connection.peer_addr,
+                        connection.host_port,
+                        guest_destination
+                    );
+                    if !relays.create_published_socket(
+                        interface,
+                        gateway_ipv4,
+                        guest_destination,
+                        connection.stream,
+                    ) {
+                        tracing::warn!(
+                            host_port = connection.host_port,
+                            guest_port = connection.guest_port,
+                            peer_addr = %connection.peer_addr,
+                            "dropping published TCP connection because the guest relay path could not be created"
+                        );
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if disconnected {
+        *tcp_receiver = None;
+    }
+}
+
+/// Bound on outstanding forwarded DNS queries (UDP context) awaiting an answer
+/// from the offload thread. Every enqueued query eventually yields a response
+/// (answer or timeout) that clears its entry, so this is only a safety ceiling
+/// against a wedged relay; DNS volume is far below it in practice.
+const MAX_PENDING_DNS: usize = 512;
+
+/// Poll-loop-side DNS state: the id generator and the reply context for each
+/// in-flight *UDP* query. TCP context lives on the owning [`DnsTcpConn`]
+/// (`awaiting`), since a DNS/TCP query is pinned to one listener socket.
+struct DnsGateway {
+    next_id: u64,
+    pending_udp: HashMap<u64, PendingDnsUdp>,
+    /// UDP answers the guest-facing socket had no room for yet, oldest first.
+    /// Dropping one would cost the guest a full resolver timeout.
+    backlog: VecDeque<(Vec<u8>, UdpMetadata)>,
+}
+
+/// The guest-reply context we must remember while a UDP query is off-thread.
+struct PendingDnsUdp {
+    endpoint: smoltcp::wire::IpEndpoint,
+    local_address: Option<IpAddress>,
+    /// Whether to learn A/AAAA answer records into the egress allow-list.
+    learn: bool,
+}
+
+impl DnsGateway {
+    fn new() -> Self {
+        Self {
+            next_id: 0,
+            pending_udp: HashMap::new(),
+            backlog: VecDeque::new(),
+        }
+    }
+
+    /// Queue `answer` for the guest: straight into the socket when nothing is
+    /// held back and it fits, otherwise behind the held-back answers.
+    fn send_udp(&mut self, socket: &mut UdpSocket<'_>, answer: Vec<u8>, meta: UdpMetadata) {
+        self.flush_backlog(socket);
+        if self.backlog.is_empty() && socket.send_slice(&answer, meta).is_ok() {
+            return;
+        }
+        if self.backlog.len() >= DNS_BACKLOG_MAX {
+            virtio_net_log!("virtio-net: dropping DNS answer (guest socket backlog full)");
+            return;
+        }
+        self.backlog.push_back((answer, meta));
+    }
+
+    /// Move held-back answers into the socket while it has room.
+    fn flush_backlog(&mut self, socket: &mut UdpSocket<'_>) {
+        while let Some((answer, meta)) = self.backlog.front() {
+            if socket.send_slice(answer, *meta).is_err() {
+                return;
+            }
+            self.backlog.pop_front();
+        }
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        id
+    }
+}
+
+/// Where guest DNS answers come from: the upstream resolver queries are
+/// forwarded to, and the gateway address answered for the gateway's own name.
+#[derive(Clone, Copy)]
+struct DnsRouting {
+    upstream: Ipv4Addr,
+    gateway: Ipv4Addr,
+}
+
+/// The decision for a single guest DNS query, made on the poll thread using the
+/// egress allow-host policy (no host I/O). Mirrors the previous inline filter.
+enum DnsDecision {
+    /// Answer the guest immediately with these raw DNS message bytes
+    /// (blocked -> NXDOMAIN, unparseable -> SERVFAIL).
+    Immediate(Vec<u8>),
+    /// Forward the query upstream via the offload thread; `learn` records the
+    /// answer's A/AAAA IPs into the egress allow-list when it returns.
+    Forward { learn: bool },
+}
+
+/// Classify a query under the allow-host policy. When the DNS filter is
+/// inactive everything is forwarded (no learning); otherwise only allow-listed
+/// names are forwarded and learned, others get NXDOMAIN and unparseable ones
+/// SERVFAIL. Identical policy to the old `filtered_dns_response`.
+///
+/// The gateway's own name is answered before the filter runs: it names
+/// gateway-internal plumbing, not egress, so it must resolve even under a
+/// strict allow-host policy.
+fn classify_dns_query(query: &[u8], egress: &EgressPolicy, gateway_ipv4: Ipv4Addr) -> DnsDecision {
+    // A watchlist match is recorded; a `block` entry also answers the name as
+    // nonexistent, so the guest sees an ordinary failed lookup. Otherwise the
+    // policy below decides exactly as it would without a watchlist.
+    if egress.watching() {
+        if let Some(name) = dns::question_name(query) {
+            if egress.observe_dns(&name) {
+                return DnsDecision::Immediate(dns::error_response(query, dns::DNS_RCODE_NXDOMAIN));
+            }
+        }
+    }
+    if dns::question_name(query)
+        .and_then(|n| dns::normalize_hostname(&n))
+        .is_some_and(|n| n == dns::GATEWAY_HOSTNAME)
+    {
+        if egress
+            .record_decision("dns", "allow", &dns::GATEWAY_HOSTNAME, "internal_gateway")
+            .is_err()
+        {
+            return DnsDecision::Immediate(dns::error_response(query, dns::DNS_RCODE_SERVFAIL));
+        }
+        return DnsDecision::Immediate(dns::gateway_response(query, gateway_ipv4));
+    }
+    if !egress.dns_filter_active() {
+        let name = dns::question_name(query).unwrap_or_default();
+        if egress
+            .record_decision("dns", "allow", &name, "local_policy")
+            .is_err()
+        {
+            return DnsDecision::Immediate(dns::error_response(query, dns::DNS_RCODE_SERVFAIL));
+        }
+        return DnsDecision::Forward { learn: false };
+    }
+    match dns::question_name(query) {
+        Some(name) if egress.hostname_allowed(&name) => DnsDecision::Forward { learn: true },
+        Some(name) => {
+            virtio_net_log!(
+                "virtio-net: blocking DNS query by allow-host policy name={}",
+                name
+            );
+            // Standardized marker for the egress audit trail (`read_egress_denials`).
+            egress.record_denial("resolve", &name);
+            DnsDecision::Immediate(dns::error_response(query, dns::DNS_RCODE_NXDOMAIN))
+        }
+        None => DnsDecision::Immediate(dns::error_response(query, dns::DNS_RCODE_SERVFAIL)),
+    }
+}
+
+/// Drain guest UDP/53 queries out of the gateway socket. Blocked queries are
+/// answered inline (no host I/O); allowed queries are handed to the DNS offload
+/// thread and their reply context remembered. Returns true if anything was
+/// enqueued (the caller then wakes the relay thread). Never blocks upstream.
+fn dispatch_dns_udp(
+    dns_socket_handle: SocketHandle,
+    sockets: &mut SocketSet<'_>,
+    egress: &EgressPolicy,
+    routing: DnsRouting,
+    gateway: &mut DnsGateway,
+    to_relay: &SyncSender<DnsQuery>,
+) -> bool {
+    let mut queued = false;
+    let socket = sockets.get_mut::<UdpSocket>(dns_socket_handle);
+    while socket.can_recv() {
+        // Copy out the query and the Copy reply-context fields, releasing the
+        // recv borrow before we may re-borrow the socket to answer inline.
+        let (query, endpoint, local_address) = match socket.recv() {
+            Ok((q, m)) => (q.to_vec(), m.endpoint, m.local_address),
+            Err(_) => break,
+        };
+        match classify_dns_query(&query, egress, routing.gateway) {
+            DnsDecision::Immediate(response) => {
+                let response_meta = UdpMetadata {
+                    endpoint,
+                    local_address,
+                    meta: Default::default(),
+                };
+                gateway.send_udp(socket, response, response_meta);
+            }
+            DnsDecision::Forward { learn } => {
+                if gateway.pending_udp.len() >= MAX_PENDING_DNS {
+                    virtio_net_log!("virtio-net: dropping guest DNS query (pending table full)");
+                    continue;
+                }
+                let id = gateway.next_id();
+                gateway.pending_udp.insert(
+                    id,
+                    PendingDnsUdp {
+                        endpoint,
+                        local_address,
+                        learn,
+                    },
+                );
+                match to_relay.try_send(DnsQuery {
+                    id,
+                    transport: DnsTransport::Udp,
+                    upstream: routing.upstream,
+                    query,
+                }) {
+                    Ok(()) => queued = true,
+                    Err(TrySendError::Full(_)) => {
+                        gateway.pending_udp.remove(&id);
+                        virtio_net_log!("virtio-net: dropping guest DNS query (relay queue full)");
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        gateway.pending_udp.remove(&id);
+                        return queued;
+                    }
+                }
+            }
+        }
+    }
+    queued
+}
+
+/// Deliver answers produced by the DNS offload thread back into the guest-facing
+/// smoltcp sockets. UDP answers are matched by id to their remembered reply
+/// context; TCP answers are matched to the listener whose connection is awaiting
+/// that id. A `None` answer (upstream error/timeout) is dropped for UDP (the
+/// guest sees a normal DNS timeout) and closes the TCP connection empty-handed.
+fn deliver_dns_responses(
+    dns_socket_handle: SocketHandle,
+    dns_tcp_handles: &[SocketHandle],
+    dns_tcp_conns: &mut [DnsTcpConn],
+    sockets: &mut SocketSet<'_>,
+    egress: &EgressPolicy,
+    gateway: &mut DnsGateway,
+    from_relay: &Receiver<DnsResponse>,
+) {
+    gateway.flush_backlog(sockets.get_mut::<UdpSocket>(dns_socket_handle));
+    while let Ok(response) = from_relay.try_recv() {
+        if let Some(pending) = gateway.pending_udp.remove(&response.id) {
+            if let Some(answer) = response.answer {
+                if pending.learn {
+                    egress.learn_dns_answer(&answer);
+                }
+                let socket = sockets.get_mut::<UdpSocket>(dns_socket_handle);
+                let response_meta = UdpMetadata {
+                    endpoint: pending.endpoint,
+                    local_address: pending.local_address,
+                    meta: Default::default(),
+                };
+                gateway.send_udp(socket, answer, response_meta);
+            }
+            continue;
+        }
+
+        // Otherwise it is a DNS/TCP answer: find the awaiting listener.
+        for (handle, conn) in dns_tcp_handles.iter().zip(dns_tcp_conns.iter_mut()) {
+            match conn.awaiting {
+                Some(pending) if pending.id == response.id => {
+                    conn.awaiting = None;
+                    if let Some(answer) = response.answer {
+                        if pending.learn {
+                            egress.learn_dns_answer(&answer);
+                        }
+                        frame_dns_tcp_response(conn, &answer);
+                    }
+                    conn.done = true;
+                    let socket = sockets.get_mut::<tcp::Socket>(*handle);
+                    drain_dns_tcp_tx(socket, conn);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Append a framed (2-byte length prefix + message) DNS response to a
+/// connection's pending TX buffer.
+fn frame_dns_tcp_response(conn: &mut DnsTcpConn, response: &[u8]) {
+    if let Ok(resp_len) = u16::try_from(response.len()) {
+        conn.tx.extend_from_slice(&resp_len.to_be_bytes());
+        conn.tx.extend_from_slice(response);
+    }
+}
+
+/// Create the pool of smoltcp TCP listening sockets bound to the gateway's
+/// port 53. Each accepts one DNS-over-TCP connection at a time and is re-armed
+/// by [`process_dns_tcp`] after the connection closes.
+fn add_dns_tcp_sockets(sockets: &mut SocketSet<'_>) -> Vec<SocketHandle> {
+    (0..DNS_TCP_LISTENERS)
+        .map(|_| {
+            let rx_buffer = tcp::SocketBuffer::new(vec![0u8; DNS_TCP_RX_BYTES]);
+            let tx_buffer = tcp::SocketBuffer::new(vec![0u8; DNS_TCP_TX_BYTES]);
+            let mut socket = tcp::Socket::new(rx_buffer, tx_buffer);
+            socket
+                .listen(IpListenEndpoint {
+                    addr: None,
+                    port: DNS_SOCKET_PORT,
+                })
+                .expect("failed to listen on gateway DNS TCP socket");
+            sockets.add(socket)
+        })
+        .collect()
+}
+
+/// Per-listener state for an in-flight DNS-over-TCP connection: the
+/// accumulating length-prefixed query, and the framed response we still owe the
+/// guest.
+#[derive(Default)]
+struct DnsTcpConn {
+    /// Guest -> gateway bytes received so far (2-byte length prefix + query).
+    rx: Vec<u8>,
+    /// Framed response (2-byte length prefix + message) to send to the guest.
+    tx: Vec<u8>,
+    /// Bytes of `tx` already written to the socket.
+    tx_sent: usize,
+    /// The query has been answered (or rejected); drain `tx` then close.
+    done: bool,
+    /// Set once the query has been handed to the DNS offload thread and we are
+    /// waiting for its answer (carries the correlation id + learn flag). While
+    /// set, the connection is parked — `deliver_dns_responses` completes it.
+    awaiting: Option<DnsTcpPending>,
+}
+
+/// Correlation state for a DNS/TCP query parked on the offload thread.
+#[derive(Clone, Copy)]
+struct DnsTcpPending {
+    id: u64,
+    learn: bool,
+}
+
+/// Service the DNS-over-TCP listening sockets: accept a connection, read the
+/// length-prefixed query, apply the allow-host filter, forward allowed queries
+/// upstream over TCP, write the length-prefixed response, and close. Closed
+/// sockets are re-armed to listen again.
+fn process_dns_tcp(
+    handles: &[SocketHandle],
+    conns: &mut [DnsTcpConn],
+    sockets: &mut SocketSet<'_>,
+    egress: &EgressPolicy,
+    routing: DnsRouting,
+    gateway: &mut DnsGateway,
+    to_relay: &SyncSender<DnsQuery>,
+) -> bool {
+    let mut queued = false;
+    for (handle, conn) in handles.iter().zip(conns.iter_mut()) {
+        let socket = sockets.get_mut::<tcp::Socket>(*handle);
+
+        // A closed/finished socket: reset state and re-arm to accept the next
+        // connection. `listen` only succeeds from the CLOSED state; if the
+        // socket is still draining (e.g. TIME-WAIT) the error is ignored and the
+        // next poll retries.
+        if !socket.is_open() {
+            if !conn.rx.is_empty() || !conn.tx.is_empty() || conn.done || conn.awaiting.is_some() {
+                *conn = DnsTcpConn::default();
+            }
+            let _ = socket.listen(IpListenEndpoint {
+                addr: None,
+                port: DNS_SOCKET_PORT,
+            });
+            continue;
+        }
+
+        // Parked awaiting the offload thread's answer: nothing to do here until
+        // `deliver_dns_responses` fills `tx` / sets `done`.
+        if conn.awaiting.is_some() {
+            continue;
+        }
+
+        // Already answered: flush whatever response remains, then close.
+        if conn.done {
+            drain_dns_tcp_tx(socket, conn);
+            continue;
+        }
+
+        // Accumulate the length-prefixed query.
+        while socket.can_recv() {
+            let appended = socket.recv(|data| (data.len(), data.to_vec()));
+            match appended {
+                Ok(bytes) if !bytes.is_empty() => conn.rx.extend_from_slice(&bytes),
+                _ => break,
+            }
+        }
+
+        // Reject a guest that floods without ever completing a message.
+        if conn.rx.len() > DNS_TCP_MAX_MSG + 2 {
+            conn.done = true;
+            socket.close();
+            continue;
+        }
+
+        if conn.rx.len() >= 2 {
+            let msg_len = u16::from_be_bytes([conn.rx[0], conn.rx[1]]) as usize;
+            if msg_len == 0 || msg_len > DNS_TCP_MAX_MSG {
+                conn.done = true;
+                socket.close();
+                continue;
+            }
+            if conn.rx.len() >= 2 + msg_len {
+                let query = conn.rx[2..2 + msg_len].to_vec();
+                virtio_net_log!(
+                    "virtio-net: DNS/TCP query query_len={} upstream_dns={}",
+                    query.len(),
+                    routing.upstream
+                );
+                match classify_dns_query(&query, egress, routing.gateway) {
+                    DnsDecision::Immediate(response) => {
+                        frame_dns_tcp_response(conn, &response);
+                        conn.done = true;
+                        drain_dns_tcp_tx(socket, conn);
+                    }
+                    DnsDecision::Forward { learn } => {
+                        // Hand the query to the offload thread and park the
+                        // connection; the poll loop stays free.
+                        let id = gateway.next_id();
+                        match to_relay.try_send(DnsQuery {
+                            id,
+                            transport: DnsTransport::Tcp,
+                            upstream: routing.upstream,
+                            query,
+                        }) {
+                            Ok(()) => {
+                                conn.awaiting = Some(DnsTcpPending { id, learn });
+                                queued = true;
+                            }
+                            Err(_) => {
+                                // Relay unavailable/full: close empty-handed
+                                // (guest sees EOF, then retries — DNS semantics).
+                                conn.done = true;
+                                socket.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    queued
+}
+
+/// Write as much of the pending framed response as the socket will accept; once
+/// fully sent, close the connection (the guest reads the answer then sees EOF).
+fn drain_dns_tcp_tx(socket: &mut tcp::Socket<'_>, conn: &mut DnsTcpConn) {
+    while conn.tx_sent < conn.tx.len() && socket.can_send() {
+        match socket.send_slice(&conn.tx[conn.tx_sent..]) {
+            Ok(n) if n > 0 => conn.tx_sent += n,
+            _ => break,
+        }
+    }
+    if conn.tx_sent >= conn.tx.len() {
+        socket.close();
+    }
+}
+
+fn flush_interface_egress(
+    interface: &mut Interface,
+    device: &mut VirtioNetworkDevice,
+    sockets: &mut SocketSet<'_>,
+    now: Instant,
+) {
+    // smoltcp may have multiple pending egress packets after a single ingress
+    // event or timeout. Keep polling until the interface reports there is no
+    // more immediate work.
+    loop {
+        let result = interface.poll_egress(now, device, sockets);
+        if matches!(result, PollResult::None) {
+            break;
+        }
+    }
+}
+
+fn wake_guest_if_needed(queues: &NetworkFrameQueues, device: &VirtioNetworkDevice) {
+    // The device records only that "some frame was emitted". We convert that
+    // sticky bit into one wake for the writer thread and let the writer drain
+    // the entire host_to_guest queue.
+    if device.frames_emitted.swap(false, Ordering::Relaxed) {
+        queues.host_wake.wake();
+    }
+}
+
+fn smoltcp_now(clock: StdInstant) -> Instant {
+    let elapsed = clock.elapsed();
+    Instant::from_millis(elapsed.as_millis() as i64)
+}
+
+fn classify_guest_frame(
+    frame: &[u8],
+    gateway_addrs: &[IpAddr],
+    fabric_own_index: Option<u8>,
+) -> FrameAction {
+    let ethernet = match EthernetFrame::new_checked(frame) {
+        Ok(frame) => frame,
+        Err(_) => return FrameAction::Passthrough,
+    };
+
+    // Fabric member: any IPv4 destination inside the fabric pool but outside
+    // this VM's own /30 is another member's address — forward the whole IP
+    // packet regardless of transport protocol (this is routing, so ICMP and
+    // encapsulations like VXLAN work the same as TCP/UDP).
+    if let Some(own_index) = fabric_own_index {
+        if ethernet.ethertype() == EthernetProtocol::Ipv4 {
+            if let Ok(ipv4) = Ipv4Packet::new_checked(ethernet.payload()) {
+                if let Some(index) = crate::fabric::fabric_index(ipv4.dst_addr()) {
+                    if index != own_index && index != 0 {
+                        return FrameAction::Fabric { index };
+                    }
+                }
+            }
+        }
+    }
+
+    // Extract (src, dst, transport protocol, transport payload) from either IP
+    // family. Anything that isn't plain IPv4/IPv6 — ARP, and IPv6 packets with
+    // extension headers (which guest TCP/UDP traffic doesn't use) — passes
+    // through to smoltcp untouched; that also covers ICMPv6/NDP.
+    let (src_ip, dst_ip, protocol, transport): (IpAddr, IpAddr, _, _) = match ethernet.ethertype() {
+        EthernetProtocol::Ipv4 => {
+            let ipv4 = match Ipv4Packet::new_checked(ethernet.payload()) {
+                Ok(packet) => packet,
+                Err(_) => return FrameAction::Passthrough,
+            };
+            (
+                IpAddr::V4(ipv4.src_addr()),
+                IpAddr::V4(ipv4.dst_addr()),
+                ipv4.next_header(),
+                ipv4.payload(),
+            )
+        }
+        EthernetProtocol::Ipv6 => {
+            let ipv6 = match Ipv6Packet::new_checked(ethernet.payload()) {
+                Ok(packet) => packet,
+                Err(_) => return FrameAction::Passthrough,
+            };
+            (
+                IpAddr::V6(ipv6.src_addr()),
+                IpAddr::V6(ipv6.dst_addr()),
+                ipv6.next_header(),
+                ipv6.payload(),
+            )
+        }
+        EthernetProtocol::Arp => return FrameAction::Neighbor,
+        _ => return FrameAction::Passthrough,
+    };
+
+    match protocol {
+        // Router/neighbor solicitation and advertisement, and redirect.
+        smoltcp::wire::IpProtocol::Icmpv6
+            if transport
+                .first()
+                .is_some_and(|kind| (133..=137).contains(kind)) =>
+        {
+            FrameAction::Neighbor
+        }
+        smoltcp::wire::IpProtocol::Tcp => {
+            let tcp = match TcpPacket::new_checked(transport) {
+                Ok(packet) => packet,
+                Err(_) => return FrameAction::Passthrough,
+            };
+
+            if tcp.syn() && !tcp.ack() {
+                // DNS-over-TCP to the gateway itself is intercepted by the local
+                // listening sockets (process_dns_tcp), not relayed. TCP/53 to an
+                // external resolver (an allow-listed IP) is left to the egress
+                // relay so the policy still applies.
+                if tcp.dst_port() == DNS_SOCKET_PORT && gateway_addrs.contains(&dst_ip) {
+                    FrameAction::Passthrough
+                } else {
+                    FrameAction::TcpSyn {
+                        source: SocketAddr::new(src_ip, tcp.src_port()),
+                        destination: SocketAddr::new(dst_ip, tcp.dst_port()),
+                    }
+                }
+            } else {
+                FrameAction::Tcp {
+                    source: SocketAddr::new(src_ip, tcp.src_port()),
+                    destination: SocketAddr::new(dst_ip, tcp.dst_port()),
+                }
+            }
+        }
+        smoltcp::wire::IpProtocol::Udp => {
+            let udp = match UdpPacket::new_checked(transport) {
+                Ok(packet) => packet,
+                Err(_) => return FrameAction::Passthrough,
+            };
+
+            if udp.dst_port() == DNS_SOCKET_PORT {
+                FrameAction::DnsQuery
+            } else {
+                FrameAction::UdpFlow {
+                    destination: SocketAddr::new(dst_ip, udp.dst_port()),
+                }
+            }
+        }
+        _ => FrameAction::Passthrough,
+    }
+}
+
+/// Fuzz-only entrypoint for `classify_guest_frame`.
+///
+/// A malicious guest sends arbitrary ethernet frames over virtio-net, and the
+/// host parses every one here — so this MUST NOT panic on any input. Gated
+/// behind the `fuzzing` feature so it never ships in a normal build.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_classify_guest_frame(frame: &[u8]) {
+    let _ = classify_guest_frame(frame, &[], Some(1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initial_tcp_sequence(seed: u64) -> i32 {
+        let config = VirtioPollConfig {
+            gateway_mac: [2, 0, 0, 0, 0, 1],
+            guest_mac: [2, 0, 0, 0, 0, 2],
+            gateway_ipv4: Ipv4Addr::new(100, 96, 0, 1),
+            guest_ipv4: Ipv4Addr::new(100, 96, 0, 2),
+            gateway_ipv6: "fd00::1".parse().unwrap(),
+            guest_ipv6: "fd00::2".parse().unwrap(),
+            prefix_len6: 64,
+            upstream_dns: Ipv4Addr::new(1, 1, 1, 1),
+            upstream_resolvers: [None; crate::MAX_UPSTREAM_RESOLVERS],
+            host_service: None,
+            intercept: None,
+            mtu: 1500,
+        };
+        let queues = NetworkFrameQueues::shared(32);
+        let mut device = VirtioNetworkDevice::new(queues.clone(), config.mtu);
+        let mut interface = create_interface(&mut device, &config, seed);
+        let mut sockets = SocketSet::new(vec![]);
+
+        // Learn the guest's MAC through an ordinary ARP request, so egress can
+        // emit the SYN immediately rather than pausing for neighbor discovery.
+        let mut arp = Vec::new();
+        arp.extend_from_slice(&config.gateway_mac);
+        arp.extend_from_slice(&config.guest_mac);
+        arp.extend_from_slice(&[8, 6, 0, 1, 8, 0, 6, 4, 0, 1]);
+        arp.extend_from_slice(&config.guest_mac);
+        arp.extend_from_slice(&config.guest_ipv4.octets());
+        arp.extend_from_slice(&[0; 6]);
+        arp.extend_from_slice(&config.gateway_ipv4.octets());
+        queues.guest_to_host.push(arp).unwrap();
+        device.stage_next_frame().unwrap();
+        interface.poll_ingress_single(Instant::ZERO, &mut device, &mut sockets);
+        while queues.host_to_guest.pop().is_some() {}
+
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        );
+        socket
+            .connect(
+                interface.context(),
+                (config.guest_ipv4, 8080),
+                (config.gateway_ipv4, 49152),
+            )
+            .unwrap();
+        sockets.add(socket);
+        interface.poll_egress(Instant::from_millis(1), &mut device, &mut sockets);
+        while let Some(frame) = queues.host_to_guest.pop() {
+            let ethernet = EthernetFrame::new_checked(&frame).unwrap();
+            if ethernet.ethertype() != EthernetProtocol::Ipv4 {
+                continue;
+            }
+            let ip = Ipv4Packet::new_checked(ethernet.payload()).unwrap();
+            if ip.next_header() != IpProtocol::Tcp {
+                continue;
+            }
+            let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+            assert!(tcp.syn());
+            return tcp.seq_number().0;
+        }
+        panic!("interface did not emit its initial SYN");
+    }
+
+    #[test]
+    fn fresh_interface_seed_changes_the_wire_sequence_number() {
+        // Same seed reproduces the old restart behavior for an identical tuple.
+        assert_eq!(initial_tcp_sequence(0), initial_tcp_sequence(0));
+        assert_ne!(initial_tcp_sequence(123), initial_tcp_sequence(456));
+    }
+
+    /// Minimal Ethernet(IPv4(TCP SYN)) frame with no payload. `new_checked`
+    /// validates lengths/header fields (not checksums), so dummy checksums are
+    /// fine for exercising `classify_guest_frame`.
+    fn tcp_syn_frame(dst_ip: [u8; 4], dst_port: u16) -> Vec<u8> {
+        let mut f = Vec::new();
+        // Ethernet: dst MAC, src MAC, ethertype IPv4.
+        f.extend_from_slice(&[0xff; 6]);
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+        f.extend_from_slice(&[0x08, 0x00]);
+        // IPv4: v4/IHL5, DSCP, total_len=40, id, flags/frag, ttl, proto=TCP, csum, src, dst.
+        f.extend_from_slice(&[0x45, 0x00, 0x00, 0x28, 0, 0, 0, 0, 0x40, 0x06, 0, 0]);
+        f.extend_from_slice(&[10, 0, 0, 2]); // src ip
+        f.extend_from_slice(&dst_ip);
+        // TCP: src/dst port, seq, ack, data-offset(5)/flags(SYN), window, csum, urg.
+        f.extend_from_slice(&54321u16.to_be_bytes());
+        f.extend_from_slice(&dst_port.to_be_bytes());
+        f.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // seq + ack
+        f.extend_from_slice(&[0x50, 0x02, 0xff, 0xff, 0, 0, 0, 0]); // offset/SYN/window/csum/urg
+        f
+    }
+
+    #[test]
+    fn fabric_member_forwards_other_subnets_but_not_its_own() {
+        let gw = IpAddr::V4(Ipv4Addr::new(100, 96, 3, 1));
+        // Another member's guest: forwarded to its subnet regardless of port.
+        assert_eq!(
+            classify_guest_frame(&tcp_syn_frame([100, 96, 5, 2], 443), &[gw], Some(3)),
+            FrameAction::Fabric { index: 5 }
+        );
+        // Own subnet stays local (the gateway relay path).
+        assert!(matches!(
+            classify_guest_frame(&tcp_syn_frame([100, 96, 3, 1], 443), &[gw], Some(3)),
+            FrameAction::TcpSyn { .. }
+        ));
+        // Subnet 0 is the default non-fabric link, never a peer.
+        assert!(matches!(
+            classify_guest_frame(&tcp_syn_frame([100, 96, 0, 2], 443), &[gw], Some(3)),
+            FrameAction::TcpSyn { .. }
+        ));
+        // Without a fabric, the same frame relays normally.
+        assert!(matches!(
+            classify_guest_frame(&tcp_syn_frame([100, 96, 5, 2], 443), &[gw], None),
+            FrameAction::TcpSyn { .. }
+        ));
+    }
+
+    #[test]
+    fn dns_tcp_to_gateway_is_intercepted_not_relayed() {
+        let gw = IpAddr::V4(Ipv4Addr::new(100, 96, 0, 1));
+        // TCP/53 to the gateway -> handled by the local DNS listeners (Passthrough).
+        assert_eq!(
+            classify_guest_frame(&tcp_syn_frame([100, 96, 0, 1], 53), &[gw], None),
+            FrameAction::Passthrough
+        );
+    }
+
+    #[test]
+    fn dns_tcp_to_external_resolver_still_relayed() {
+        let gw = IpAddr::V4(Ipv4Addr::new(100, 96, 0, 1));
+        // TCP/53 to an external (allow-listed) resolver must go through the egress
+        // relay, NOT be swallowed by the gateway DNS listeners.
+        assert!(matches!(
+            classify_guest_frame(&tcp_syn_frame([1, 1, 1, 1], 53), &[gw], None),
+            FrameAction::TcpSyn { .. }
+        ));
+    }
+
+    #[test]
+    fn non_dns_tcp_to_gateway_still_relayed() {
+        let gw = IpAddr::V4(Ipv4Addr::new(100, 96, 0, 1));
+        // Only port 53 is intercepted; other gateway ports relay as usual.
+        assert!(matches!(
+            classify_guest_frame(&tcp_syn_frame([100, 96, 0, 1], 443), &[gw], None),
+            FrameAction::TcpSyn { .. }
+        ));
+    }
+}
+
+#[cfg(test)]
+mod relay_capacity_tests {
+    use super::parse_tcp_relay_capacity;
+
+    #[test]
+    fn relay_capacity_rejects_unbounded_or_invalid_values() {
+        assert_eq!(parse_tcp_relay_capacity("320"), Some(320));
+        assert_eq!(parse_tcp_relay_capacity("4096"), Some(4096));
+        assert_eq!(parse_tcp_relay_capacity("200000"), Some(200_000));
+        assert_eq!(parse_tcp_relay_capacity("1048576"), Some(1_048_576));
+        for value in ["0", "1048577", "-1", "100000000000000000000", "bad"] {
+            assert_eq!(parse_tcp_relay_capacity(value), None);
+        }
+    }
+}

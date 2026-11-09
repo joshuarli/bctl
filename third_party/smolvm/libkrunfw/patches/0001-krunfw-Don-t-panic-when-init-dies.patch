@@ -1,0 +1,57 @@
+From 10ae66b1024db238899ccce1f790620ab5c92aa9 Mon Sep 17 00:00:00 2001
+From: Sergio Lopez <slp@redhat.com>
+Date: Thu, 2 Mar 2023 07:34:49 +0100
+Subject: [PATCH 01/30] krunfw: Don't panic when init dies
+
+In libkrun, the isolated process runs as PID 1. When it exits,
+trigger an orderly reboot instead of panic'ing.
+
+Also, silence reboot messages for the moment. Eventually we should
+play with the printk levels instead.
+
+Signed-off-by: Sergio Lopez <slp@redhat.com>
+---
+diff --git a/kernel/exit.c b/kernel/exit.c
+index e38b2bb85..eea19980a 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -69,6 +69,7 @@
+ #include <linux/sysfs.h>
+ #include <linux/user_events.h>
+ #include <linux/unwind_deferred.h>
++#include <linux/reboot.h>
+ #include <linux/uaccess.h>
+ #include <linux/pidfs.h>
+ 
+@@ -938,8 +939,12 @@ void __noreturn do_exit(long code)
+ 		 * immediately to get a useable coredump.
+ 		 */
+ 		if (unlikely(is_global_init(tsk)))
++#ifdef VERBOSE_LIBKRUN
+ 			panic("Attempted to kill init! exitcode=0x%08x\n",
+ 				tsk->signal->group_exit_code ?: (int)code);
++#else
++            orderly_reboot();
++#endif
+ 
+ #ifdef CONFIG_POSIX_TIMERS
+ 		hrtimer_cancel(&tsk->signal->real_timer);
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index 61924a056..823722234 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -291,10 +291,12 @@ void kernel_restart(char *cmd)
+ 	do_kernel_restart_prepare();
+ 	migrate_to_reboot_cpu();
+ 	syscore_shutdown();
++#ifdef VERBOSE_LIBKRUN
+ 	if (!cmd)
+ 		pr_emerg("Restarting system\n");
+ 	else
+ 		pr_emerg("Restarting system with command '%s'\n", cmd);
++#endif
+ 	kmsg_dump(KMSG_DUMP_SHUTDOWN);
+ 	machine_restart(cmd);
+ }
+-- 
+2.43.0

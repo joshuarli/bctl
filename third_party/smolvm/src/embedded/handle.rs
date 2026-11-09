@@ -1,0 +1,123 @@
+//! Runtime VM handle for embedded SDK backends.
+
+use crate::agent::{AgentClient, AgentManager, RunConfig};
+use crate::config::VmRecord;
+use crate::Result;
+use smolvm_protocol::ImageInfo;
+
+/// Handle to a running VM process.
+pub struct VmHandle {
+    manager: AgentManager,
+    client: Option<AgentClient>,
+}
+
+// SAFETY: The embedded runtime stores `VmHandle` behind a mutex and only moves
+// it into blocking worker threads. `AgentManager` guards its mutable state
+// internally, and `AgentClient` owns a Unix stream that is safe to move between
+// threads when access is serialized by the handle mutex.
+unsafe impl Send for VmHandle {}
+
+impl VmHandle {
+    /// Construct a handle from an already-created process manager.
+    pub fn new(manager: AgentManager, client: Option<AgentClient>) -> Self {
+        Self { manager, client }
+    }
+
+    /// Get the child PID if known.
+    pub fn child_pid(&self) -> Option<i32> {
+        self.manager.child_pid()
+    }
+
+    /// Check whether the VM process is alive.
+    pub fn is_process_alive(&self) -> bool {
+        self.manager.is_process_alive()
+    }
+
+    /// Return the agent manager state as a string.
+    pub fn state(&self) -> String {
+        self.manager.state().to_string()
+    }
+
+    /// Where the VM's agent listens, for opening a dedicated connection.
+    pub fn agent_socket(&self) -> std::path::PathBuf {
+        self.manager.vsock_socket().to_path_buf()
+    }
+
+    fn client_mut(&mut self) -> Result<&mut AgentClient> {
+        if self.client.is_none() {
+            self.client = Some(self.manager.connect()?);
+        }
+        Ok(self.client.as_mut().expect("client initialized"))
+    }
+
+    /// Run a prebuilt [`RunConfig`] over the cached connection, for callers
+    /// that have already decided the image and overlay.
+    pub fn run_config(&mut self, config: RunConfig) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        self.client_mut()?.run_non_interactive(config)
+    }
+
+    /// Point this connection's file operations at `target`; see
+    /// [`AgentClient::use_target`].
+    pub fn use_target(&mut self, target: crate::agent::WorkloadTarget) -> Result<()> {
+        self.client_mut()?.use_target(target)
+    }
+
+    /// Pull an OCI image into the VM storage.
+    pub fn pull_image(&mut self, image: &str) -> Result<ImageInfo> {
+        self.client_mut()?.pull_with_registry_config(image)
+    }
+
+    /// List cached OCI images in the VM storage.
+    pub fn list_images(&mut self) -> Result<Vec<ImageInfo>> {
+        self.client_mut()?.list_images()
+    }
+
+    /// Pull and launch an image machine's persistent workload before the SDK
+    /// reports create/start complete.
+    pub fn launch_image_workload(&mut self, name: &str, record: &VmRecord) -> Result<()> {
+        let Some(image) = record.image.as_deref() else {
+            return Ok(());
+        };
+        let client = self.client_mut()?;
+        client.pull_with_registry_config(image)?;
+        let mut env = record.env.clone();
+        env.extend(crate::embedded::control::credential_env(record));
+        crate::workload::launch_image_workload(client, name, record, env)?;
+        Ok(())
+    }
+
+    /// Write a file into the VM.
+    pub fn write_file(&mut self, path: &str, data: &[u8], mode: Option<u32>) -> Result<()> {
+        self.client_mut()?.write_file(path, data, mode)
+    }
+
+    /// Read a file from the VM.
+    pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        self.client_mut()?.read_file(path)
+    }
+
+    /// Copy every guest-local staged mount back to its host source.
+    pub fn sync_staged_mounts(&mut self, record: &crate::config::VmRecord) -> Result<()> {
+        crate::staged_mount::sync_staged_mounts(record, self.client_mut()?)
+    }
+
+    /// Stop the VM and drop the cached agent client.
+    pub fn stop(&mut self) -> Result<()> {
+        self.stop_with_timeout(None)
+    }
+
+    /// [`stop`](Self::stop), giving the workload `stop_timeout` to exit after
+    /// its stop signal instead of the timeout it was launched with.
+    pub fn stop_with_timeout(&mut self, stop_timeout: Option<std::time::Duration>) -> Result<()> {
+        self.client = None;
+        match stop_timeout {
+            Some(stop_timeout) => self.manager.stop_with_timeout(stop_timeout),
+            None => self.manager.stop(),
+        }
+    }
+
+    /// Let a CLI-started VM outlive the process that launched it.
+    pub fn detach(self) {
+        self.manager.detach();
+    }
+}

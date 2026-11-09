@@ -1,0 +1,2815 @@
+//! API server state management.
+
+use crate::agent::{AgentManager, HostMount, PortMapping, VmResources};
+use crate::api::error::ApiError;
+use crate::api::types::{MachineInfo, MountSpec, PortSpec, ResourceSpec, RestartSpec};
+use crate::config::{RecordState, RestartConfig, RestartPolicy, VmRecord};
+use crate::data::resources::{default_microvm_memory_mib, DEFAULT_MICROVM_CPU_COUNT};
+use crate::db::SmolvmDb;
+use parking_lot::RwLock;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
+use std::sync::Arc;
+
+/// Per-PID sample for computing CPU rate across heartbeat intervals.
+#[derive(Debug, Clone, Copy)]
+struct CpuSample {
+    /// When the sample was taken.
+    at: std::time::Instant,
+    /// Cumulative CPU time at that moment (nanoseconds).
+    cpu_time_ns: u64,
+}
+
+/// Aggregate live host utilization for SmolVM processes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeUtilization {
+    /// Fractional CPUs consumed across running VMMs.
+    pub used_cpus: f64,
+    /// Summed resident memory in MiB.
+    pub rss_mb: u64,
+    /// Summed proportional resident memory in MiB.
+    pub pss_mb: Option<u64>,
+    /// Summed private resident memory in MiB.
+    pub private_memory_mb: Option<u64>,
+    /// Summed shared mappings in MiB (not unique physical memory).
+    pub shared_memory_mapped_mb: Option<u64>,
+    /// Physical disk blocks consumed by machine disks in GiB.
+    pub disk_gb: u64,
+}
+
+/// Records whose disk state must survive startup reconciliation. Every
+/// persistent machine survives, as does every stopped or live one, and each of
+/// them keeps every ancestor in its qcow2 lineage alive even when an ancestor
+/// VMM process died; deleting that ancestor's data directory would silently
+/// break the child's backing chain. Only a dead ephemeral machine that nothing
+/// depends on is left out.
+fn retained_fork_lineage(vms: &[(String, VmRecord)]) -> HashSet<String> {
+    let mut retained = vms
+        .iter()
+        .filter(|(_, record)| {
+            !record.ephemeral || record.pid.is_none() || record.is_process_alive()
+        })
+        .map(|(name, _)| name.clone())
+        .collect::<HashSet<_>>();
+
+    loop {
+        let mut changed = false;
+        for (name, record) in vms {
+            if retained.contains(name) {
+                if let Some(parent) = &record.golden {
+                    changed |= retained.insert(parent.clone());
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    retained
+}
+
+/// Shared API server state.
+pub struct ApiState {
+    /// Registry of machine managers by name.
+    machines: RwLock<BTreeMap<String, Arc<parking_lot::Mutex<MachineEntry>>>>,
+    /// Reserved machine names (creation in progress).
+    /// This prevents race conditions during machine creation.
+    reserved_names: RwLock<HashSet<String>>,
+    /// Per-machine lifecycle locks serializing start/stop/delete/restart/fork.
+    ///
+    /// On macOS, stop/delete `hdiutil`-detach a machine's case-sensitive
+    /// packed-layers volume while a concurrent start acquires+mounts+launches
+    /// against it. Without exclusion a detach can pull the volume out from under
+    /// a freshly-launched VM serving it over virtiofs, or a guest launched in the
+    /// detach window hits the launcher's missing-dir error (review finding #3).
+    /// Each lifecycle handler `.lock().await`s this per-name async mutex as its
+    /// outermost lock — before any DB read or `MachineEntry` mutex — and holds it
+    /// for the whole operation, so mount and detach can never interleave for one
+    /// machine. Lock order is lifecycle (tokio, async) → entry (parking_lot,
+    /// inside `spawn_blocking`); no entry-holding path ever takes lifecycle, so
+    /// there is no inversion. Forks that need two lifecycle locks take the
+    /// golden before the clone, matching the pool controller. On Linux the
+    /// guarded detach/mount are compile-time no-ops, making this harmless
+    /// serialization. Scope: the API server only — the embedded (`control.rs`)
+    /// and CLI (`vm_common.rs`) paths are separate processes with no shared
+    /// in-process lock.
+    ///
+    /// Entries are created on first use and never removed: the map is bounded by
+    /// the number of distinct machine names, so a retained `Arc<Mutex<()>>` per
+    /// deleted name is negligible, and never removing avoids handing two callers
+    /// different mutexes for the same name (which would defeat the exclusion).
+    lifecycle_locks: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Branch requests waiting for their source, by source name. Whoever next
+    /// holds a source serves every compatible request queued by then in one
+    /// transaction, so their children boot together (see `branch_machine`).
+    branch_queues: parking_lot::Mutex<HashMap<String, Vec<QueuedBranch>>>,
+    /// Commands this node owns, which outlive the request that started them.
+    exec_sessions: crate::api::exec_sessions::ExecSessions,
+    /// Database for persistent state.
+    db: SmolvmDb,
+    /// Previous CPU samples per VM PID, used to compute the fractional-CPU
+    /// rate as a delta over wall time. Pruned on each sample to drop dead PIDs.
+    cpu_samples: parking_lot::Mutex<HashMap<i32, CpuSample>>,
+    /// Monotonic base for the runtime-liveness heartbeat. All heartbeat values
+    /// are millis elapsed since this instant, so they're a single lock-free
+    /// `AtomicU64` instead of a mutex-guarded `Instant`.
+    started_at: std::time::Instant,
+    /// Milliseconds (since `started_at`) of the supervisor's last tick. The
+    /// supervisor bumps this every `CHECK_INTERVAL` from the main runtime, so a
+    /// stale value means the main runtime's timer wheel stopped being driven
+    /// (a reactor stall) or the supervisor task itself wedged. The loopback
+    /// `/capacity` listener — which runs on its OWN runtime and so keeps
+    /// answering even when the main runtime is stuck — reads this to report the
+    /// node as unschedulable (HTTP 503) the moment the main runtime stops
+    /// making progress, turning a silent wedge into a fast, honest drain signal.
+    runtime_heartbeat_ms: std::sync::atomic::AtomicU64,
+    /// Whether this server lets machines run with nested virtualization. Off
+    /// unless `smolvm serve --allow-nested-virt`: nesting hands the guest the host
+    /// kernel's nested-KVM code, so a server opts in for its whole fleet, and
+    /// turning it back off also stops existing nested machines from starting.
+    allow_nested_virt: std::sync::atomic::AtomicBool,
+    /// Directory the API's cache disk bases live in (`smolvm serve
+    /// --cache-disk-dir`). `None` refuses cache disks on the API: a remote
+    /// caller names a base by file name, so the server must choose where.
+    cache_disk_dir: RwLock<Option<std::path::PathBuf>>,
+    /// Most bytes the cache disk bases may hold (`smolvm serve
+    /// --cache-disk-max-gb`). `None`: half the filesystem holding them.
+    cache_disk_max_bytes: RwLock<Option<u64>>,
+    /// Directory API callers may name local image archives and rootfs
+    /// directories under (`smolvm serve --local-image-dir`). `None` refuses
+    /// local images on the API: a path names the server's own files.
+    local_image_dir: RwLock<Option<std::path::PathBuf>>,
+    /// Runtime-only CUDA pool admission state. Durable pool configuration lives
+    /// in SQLite; learned telemetry is intentionally rebuilt after a restart.
+    admission: crate::api::admission::AdmissionRegistry,
+    /// Latest node-wide CUDA inventory and telemetry from the controller's
+    /// existing NVML sampler. The timestamp prevents `/capacity` from
+    /// advertising stale GPUs if the sampling loop stops making progress.
+    cuda_devices: parking_lot::Mutex<
+        Option<(
+            std::time::Instant,
+            Vec<crate::api::admission::GpuDeviceSample>,
+        )>,
+    >,
+    /// Advisory wake-up for the automatic fork-pool reconciler. Durable SQLite
+    /// state remains authoritative; this only removes the polling delay after a
+    /// pool mutation while the periodic pass remains the recovery fallback.
+    pool_reconcile: Arc<tokio::sync::Notify>,
+    /// Runtime registry for framework-aware fused rollout executors.
+    rollout: crate::api::rollout::RolloutRegistry,
+}
+
+/// Internal machine entry with manager and configuration.
+pub struct MachineEntry {
+    /// Resolved workload image, matching the persisted machine record.
+    pub image: Option<String>,
+    /// Credential policy launch description, when the machine has one.
+    pub credentials: Option<crate::credentials::CredentialLaunch>,
+    /// API-provided interceptor binding retained only in this server process
+    /// so automatic and implicit restarts can rebind without persisting a token.
+    pub external_interceptor: Option<smolvm_protocol::InterceptEndpoint>,
+    /// The agent manager for this machine.
+    pub manager: AgentManager,
+    /// Host mounts configured for this machine.
+    pub mounts: Vec<MountSpec>,
+    /// Port mappings configured for this machine.
+    pub ports: Vec<PortSpec>,
+    /// VM resources configured for this machine.
+    pub resources: ResourceSpec,
+    /// Restart configuration for this machine.
+    pub restart: RestartConfig,
+    /// Whether outbound network access is enabled.
+    pub network: bool,
+    /// Secret refs persisted on the VM record, cached in memory so
+    /// exec handlers don't need a second DB read per request. Exec
+    /// handlers resolve these under `RecordReplay` scope.
+    pub secret_refs: std::collections::BTreeMap<String, smolvm_protocol::SecretRef>,
+    /// Path to the `.smolmachine` sidecar this machine was created from, if any.
+    /// When set, the start paths mount the bundle's pre-extracted OCI layers via
+    /// virtiofs instead of having the guest pull from a registry. `None` for
+    /// image/registry-sourced machines and packs already seeded onto storage.
+    pub source_smolmachine: Option<String>,
+    /// The packed image was prepared on the machine's storage disk, so its
+    /// `local:` image reference names no archive to mount.
+    pub packed_image_on_storage: bool,
+    /// Whether ordinary starts should launch this machine as a fork base.
+    pub forkable: bool,
+    /// Planned CUDA clone count used to restore the same virtual-VRAM policy
+    /// on implicit starts.
+    pub cuda_fork_pool_size: Option<u32>,
+    /// Explicit logical CUDA memory limit restored on implicit starts.
+    pub cuda_vram_limit_mib: Option<u64>,
+    /// Whether a fork clone is still parked as a clean assignable slot.
+    pub forkpoint_held: bool,
+    /// The machine's shared cache disk, resolved to its base on this host.
+    /// Kept apart from `resources`, which is the API view and names a base
+    /// only by its file name.
+    pub cache_disk: Option<crate::data::disk::CacheDisk>,
+}
+
+/// Parameters for registering a new machine.
+pub struct MachineRegistration {
+    /// The agent manager for this machine.
+    pub manager: AgentManager,
+    /// Every setting of the machine, resolved by the rules every creation
+    /// path uses.
+    pub resolved: crate::machine_spec::ResolvedSpec,
+    /// The registry image the host fetched for a restored checkpoint, served
+    /// the way the captured guest read it.
+    pub host_image: Option<crate::portable_checkpoint::RestoredHostImage>,
+    /// Path to .smolmachine sidecar this machine mounts its layers from.
+    pub source_smolmachine: Option<String>,
+    /// Registry reference that sidecar was pulled from, if any.
+    pub source_registry_ref: Option<String>,
+    /// Size in GiB of the storage disk the packed image was prepared on, when
+    /// it was.
+    pub packed_storage_gib: Option<u64>,
+}
+
+/// RAII guard for machine name reservation.
+///
+/// Automatically releases reservation on drop unless consumed by `complete()`.
+/// This ensures reservations are always cleaned up, even on panic.
+///
+/// # Example
+///
+/// ```ignore
+/// let guard = ReservationGuard::new(&state, "my-machine".to_string())?;
+///
+/// // Create the machine manager...
+/// let manager = AgentManager::for_vm(guard.name())?;
+///
+/// // Complete registration, consuming the guard
+/// guard.complete(MachineRegistration { manager, mounts, ports, resources, restart, network })?;
+/// ```
+pub struct ReservationGuard<'a> {
+    state: &'a ApiState,
+    name: String,
+    token: String,
+    completed: bool,
+}
+
+impl<'a> ReservationGuard<'a> {
+    /// Reserve a machine name. Returns a guard that auto-releases on drop.
+    pub fn new(state: &'a ApiState, name: String) -> Result<Self, ApiError> {
+        let token = SmolvmDb::create_reservation_token();
+        state.reserve_machine_name(&name, &token)?;
+        Ok(Self {
+            state,
+            name,
+            token,
+            completed: false,
+        })
+    }
+
+    /// Get the reserved name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Complete registration, consuming the guard without releasing.
+    ///
+    /// This transfers ownership of the name to the machine registry.
+    pub fn complete(mut self, registration: MachineRegistration) -> Result<(), ApiError> {
+        self.state
+            .complete_machine_registration(self.name.clone(), &self.token, registration)?;
+        self.completed = true;
+        Ok(())
+    }
+}
+
+impl Drop for ReservationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.state
+                .release_machine_reservation(&self.name, &self.token);
+            tracing::debug!(machine = %self.name, "reservation guard released on drop");
+            // With the name released no machine owns its data directory, so
+            // whatever this create left there (an extracted pack, disks) would
+            // stay on disk with nothing to delete it. Remove it now.
+            let dir = crate::agent::vm_data_dir(&self.name);
+            smolvm_pack::extract::force_detach_layers_volume(&dir.join("pack"));
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    tracing::info!(machine = %self.name, "removed the data of a create that did not finish");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    tracing::warn!(machine = %self.name, %error, "could not remove the data of a create that did not finish");
+                }
+            }
+        }
+    }
+}
+
+/// Whether `s` is a VM data-dir name — i.e. the output shape of `vm_dir_hash`:
+/// exactly 16 lowercase hex chars. Used to confine the dangling-dir sweep to VM
+/// dirs, never the shared pack store (`_shared`) or other cache entries.
+fn is_vm_dir_hash(s: &str) -> bool {
+    s.len() == 16
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Pure reaping decision for the dangling-dir sweep: a cache entry is dangling
+/// iff it has the VM-dir-hash shape AND no live machine record maps to it.
+fn is_dangling_vm_dir(dir_name: &str, valid_hashes: &std::collections::HashSet<String>) -> bool {
+    is_vm_dir_hash(dir_name) && !valid_hashes.contains(dir_name)
+}
+
+impl ApiState {
+    /// Create a new API state, opening the database.
+    ///
+    /// Returns an error if the database cannot be opened.
+    pub fn new() -> Result<Self, ApiError> {
+        let db = SmolvmDb::open()
+            .map_err(|e| ApiError::internal(format!("failed to open database: {}", e)))?;
+        // Ensure tables exist at server startup (CLI paths handle this lazily).
+        db.init_tables().map_err(|e| {
+            ApiError::internal(format!("failed to initialize database tables: {}", e))
+        })?;
+        Ok(Self {
+            machines: RwLock::new(BTreeMap::new()),
+            reserved_names: RwLock::new(HashSet::new()),
+            lifecycle_locks: RwLock::new(HashMap::new()),
+            branch_queues: parking_lot::Mutex::new(HashMap::new()),
+            exec_sessions: Default::default(),
+            db,
+            cpu_samples: parking_lot::Mutex::new(HashMap::new()),
+            started_at: std::time::Instant::now(),
+            runtime_heartbeat_ms: std::sync::atomic::AtomicU64::new(0),
+            allow_nested_virt: std::sync::atomic::AtomicBool::new(false),
+            cache_disk_dir: RwLock::new(None),
+            cache_disk_max_bytes: RwLock::new(None),
+            local_image_dir: RwLock::new(None),
+            admission: crate::api::admission::AdmissionRegistry::default(),
+            cuda_devices: parking_lot::Mutex::new(None),
+            pool_reconcile: Arc::new(tokio::sync::Notify::new()),
+            rollout: crate::api::rollout::RolloutRegistry::default(),
+        })
+    }
+
+    /// Create a new API state with a specific database.
+    ///
+    /// Useful for testing with temporary databases.
+    pub fn with_db(db: SmolvmDb) -> Self {
+        Self {
+            machines: RwLock::new(BTreeMap::new()),
+            reserved_names: RwLock::new(HashSet::new()),
+            lifecycle_locks: RwLock::new(HashMap::new()),
+            branch_queues: parking_lot::Mutex::new(HashMap::new()),
+            exec_sessions: Default::default(),
+            db,
+            cpu_samples: parking_lot::Mutex::new(HashMap::new()),
+            started_at: std::time::Instant::now(),
+            runtime_heartbeat_ms: std::sync::atomic::AtomicU64::new(0),
+            allow_nested_virt: std::sync::atomic::AtomicBool::new(false),
+            cache_disk_dir: RwLock::new(None),
+            cache_disk_max_bytes: RwLock::new(None),
+            local_image_dir: RwLock::new(None),
+            admission: crate::api::admission::AdmissionRegistry::default(),
+            cuda_devices: parking_lot::Mutex::new(None),
+            pool_reconcile: Arc::new(tokio::sync::Notify::new()),
+            rollout: crate::api::rollout::RolloutRegistry::default(),
+        }
+    }
+
+    /// Let (or stop letting) machines on this server run with nested
+    /// virtualization. Set once from `smolvm serve --allow-nested-virt`.
+    pub fn set_allow_nested_virt(&self, allow: bool) {
+        self.allow_nested_virt
+            .store(allow, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Serve cache disk bases from `dir`. Set once from `smolvm serve
+    /// --cache-disk-dir`.
+    pub fn set_cache_disk_dir(&self, dir: Option<std::path::PathBuf>) {
+        *self.cache_disk_dir.write() = dir;
+    }
+
+    /// Cap what the cache disk bases may hold. Set once from `smolvm serve
+    /// --cache-disk-max-gb`; `None` keeps the default share of the disk.
+    pub fn set_cache_disk_max_bytes(&self, max_bytes: Option<u64>) {
+        *self.cache_disk_max_bytes.write() = max_bytes;
+    }
+
+    /// What the cache disk bases may hold, when capped by the operator.
+    pub fn cache_disk_max_bytes(&self) -> Option<u64> {
+        *self.cache_disk_max_bytes.read()
+    }
+
+    /// Accept local images under `dir` (canonical). Set once from `smolvm serve
+    /// --local-image-dir`.
+    pub fn set_local_image_dir(&self, dir: Option<std::path::PathBuf>) {
+        *self.local_image_dir.write() = dir;
+    }
+
+    /// The directory local images must live in, or a 400 naming the flag.
+    pub fn local_image_dir(&self) -> Result<std::path::PathBuf, ApiError> {
+        self.local_image_dir
+            .read()
+            .clone()
+            .ok_or_else(|| ApiError::BadRequest(LOCAL_IMAGES_DISABLED.to_string()))
+    }
+
+    /// The directory cache disk bases live in, or a 400 naming the flag.
+    pub fn cache_disk_dir(&self) -> Result<std::path::PathBuf, ApiError> {
+        self.cache_disk_dir
+            .read()
+            .clone()
+            .ok_or_else(|| ApiError::BadRequest(CACHE_DISKS_DISABLED.to_string()))
+    }
+
+    /// Resolve a requested cache disk against this server's cache disk
+    /// directory.
+    pub fn resolve_cache_disk(
+        &self,
+        spec: &crate::api::types::CacheDiskSpec,
+    ) -> Result<crate::data::disk::CacheDisk, ApiError> {
+        let dir = self.cache_disk_dir()?;
+        let mut cache = crate::data::disk::CacheDisk::in_dir(&dir, &spec.base, &spec.mount_path)
+            .map_err(ApiError::BadRequest)?;
+        // The machine resolving it is about to attach it: keep it from eviction.
+        crate::api::cache_base_budget::mark_used(&cache.base);
+        cache.slot = spec.slot;
+        Ok(cache)
+    }
+
+    /// Whether this server lets machines run with nested virtualization.
+    pub fn nested_virt_allowed(&self) -> bool {
+        self.allow_nested_virt
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Refuse a machine that would run with nested virtualization on a server
+    /// that has not opted in. Every path that creates, starts, restarts, forks or
+    /// branches a machine asks this first, so the flag closes the surface for
+    /// machines created before it was turned off, not just new ones.
+    pub fn ensure_nested_virt_allowed(&self, nested_virt: bool) -> Result<(), ApiError> {
+        if nested_virt && !self.nested_virt_allowed() {
+            return Err(ApiError::Forbidden(NESTED_VIRT_DISABLED.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Shared lease-aware admission registry used by the pool controller and
+    /// the atomic lease claim path.
+    pub fn admission(&self) -> &crate::api::admission::AdmissionRegistry {
+        &self.admission
+    }
+
+    /// Publish the latest node-wide CUDA sample. `None` clears previously
+    /// advertised devices after an NVML failure instead of leaving schedulers
+    /// with stale capacity.
+    pub(crate) fn record_cuda_devices(
+        &self,
+        devices: Option<Vec<crate::api::admission::GpuDeviceSample>>,
+    ) {
+        *self.cuda_devices.lock() = devices.map(|devices| (std::time::Instant::now(), devices));
+    }
+
+    /// Return fresh CUDA telemetry for the node capacity endpoint. The pool
+    /// controller samples every second; five seconds leaves ample scheduling
+    /// jitter while failing closed if that controller stalls or exits.
+    pub(crate) fn cuda_devices(&self) -> Option<Vec<crate::api::admission::GpuDeviceSample>> {
+        const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(5);
+        self.cuda_devices
+            .lock()
+            .as_ref()
+            .filter(|(sampled_at, _)| sampled_at.elapsed() <= MAX_AGE)
+            .map(|(_, devices)| devices.clone())
+    }
+
+    /// Wake the automatic pool controller after durable pool state changes.
+    /// Notifications coalesce intentionally because every pass reconciles all
+    /// pools from SQLite and reservation transactions prevent overfill.
+    pub fn notify_pool_reconcile(&self) {
+        self.pool_reconcile.notify_one();
+    }
+
+    /// Shared notification consumed by the automatic pool controller.
+    pub(crate) fn pool_reconcile_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.pool_reconcile.clone()
+    }
+
+    /// Framework-aware fused rollout executors registered on this node.
+    pub fn rollout(&self) -> &crate::api::rollout::RolloutRegistry {
+        &self.rollout
+    }
+
+    /// How long the main runtime may go without a supervisor heartbeat before
+    /// the loopback `/capacity` door reports the node as stalled. Defaults to
+    /// 4× the supervisor's 5s tick (`SMOLVM_RUNTIME_STALE_SECS` overrides), so
+    /// a few slow ticks never flap the node but a genuine reactor wedge drains
+    /// it within ~20s + the node-agent's own cordon grace.
+    fn runtime_stale_after_ms() -> u64 {
+        std::env::var("SMOLVM_RUNTIME_STALE_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&s| s > 0)
+            .map(|s| s * 1000)
+            .unwrap_or(20_000)
+    }
+
+    /// Record that the main runtime is making progress. Called from the
+    /// supervisor's tick — a value only advances if the runtime's timer wheel
+    /// fired the tick, so it is a true liveness signal for the main reactor.
+    pub fn beat_runtime_heartbeat(&self) {
+        let elapsed = self.started_at.elapsed().as_millis() as u64;
+        self.runtime_heartbeat_ms
+            .store(elapsed, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the main runtime has gone too long without a heartbeat — i.e. the
+    /// supervisor tick stopped firing, which on a multi-thread runtime means the
+    /// IO/timer driver is no longer being driven. Read from the loopback door's
+    /// dedicated runtime so it stays accurate even when the main runtime is
+    /// wedged. The window before the first heartbeat is treated as healthy
+    /// (startup), since `elapsed - 0 = elapsed` only crosses the threshold once
+    /// the runtime has actually been up longer than the stall window without a
+    /// single supervisor tick — which is itself a real stall.
+    pub fn runtime_stalled(&self) -> bool {
+        let now = self.started_at.elapsed().as_millis() as u64;
+        let last = self
+            .runtime_heartbeat_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        now.saturating_sub(last) > Self::runtime_stale_after_ms()
+    }
+
+    /// Load existing machines from persistent database.
+    /// Call this on server startup to reconnect to running VMs.
+    pub fn load_persisted_machines(&self) -> Vec<String> {
+        let vms = match self.db.list_vms() {
+            Ok(vms) => vms,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load VMs from database");
+                return Vec::new();
+            }
+        };
+
+        let retained_lineage = retained_fork_lineage(&vms);
+        let mut loaded = Vec::new();
+
+        for (name, mut record) in vms {
+            // A machine that was started but whose process is gone (a host
+            // reboot, a crash, a kill -9) is kept as stopped with its disks, so
+            // a start boots it again. Only a dead ephemeral machine that no
+            // retained clone depends on is removed. Machines in "created" state
+            // (pid=None) have never been started and are preserved as they are.
+            if record.paused_checkpoint.is_none()
+                && record.pid.is_some()
+                && !record.is_process_alive()
+            {
+                if retained_lineage.contains(&name) {
+                    if record.ephemeral {
+                        tracing::warn!(
+                            machine = %name,
+                            "machine process died but a retained fork descendant still depends on its disks; preserving it as stopped"
+                        );
+                    } else {
+                        tracing::warn!(
+                            machine = %name,
+                            "machine process died while the server was down; keeping it as stopped"
+                        );
+                    }
+                    record.pid = None;
+                    record.pid_start_time = None;
+                    record.state = RecordState::Stopped;
+                    match self.db.update_vm(&name, |stored| {
+                        stored.pid = None;
+                        stored.pid_start_time = None;
+                        stored.state = RecordState::Stopped;
+                    }) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            tracing::warn!(machine = %name, "dead machine disappeared during startup reconciliation");
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(machine = %name, error = %e, "failed to mark dead machine stopped; leaving its data untouched");
+                            continue;
+                        }
+                    }
+                } else {
+                    tracing::info!(machine = %name, "cleaning up dead ephemeral machine from database");
+                    if let Err(e) = self.db.remove_vm(&name) {
+                        tracing::warn!(machine = %name, error = %e, "failed to remove dead machine from database");
+                    }
+                    // Reclaim the data dir too. Removing only the DB record leaks the
+                    // machine's storage + overlay images (multi-GB sparse files) — and
+                    // since the record is gone, nothing will ever clean them up later.
+                    // On a long-lived node that churns/crashes machines this is a slow
+                    // disk-fill across server restarts. Only ephemeral machines reach
+                    // here: a persistent machine's disks are its data and are kept.
+                    let dir = crate::agent::vm_data_dir(&name);
+                    if dir.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&dir) {
+                            tracing::warn!(machine = %name, error = %e, "failed to remove dead machine data dir");
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Convert VmRecord to MachineEntry
+            let mounts: Vec<MountSpec> = record.host_mounts().iter().map(MountSpec::from).collect();
+
+            let ports: Vec<PortSpec> = record.port_mappings().iter().map(PortSpec::from).collect();
+
+            let resources = ResourceSpec {
+                cpus: Some(record.cpus),
+                memory_mb: Some(record.mem),
+                network: Some(record.network),
+                gpu: record.gpu,
+                cuda: Some(record.cuda),
+                nested_virt: record.nested_virt,
+                storage_gb: record.storage_gb,
+                overlay_gb: record.overlay_gb,
+                block_io: Some(record.block_io),
+                disk_durability: Some(record.disk_durability),
+                cache_disk: record.cache_disk.as_ref().map(cache_disk_spec),
+                allowed_cidrs: record.allowed_cidrs.clone(),
+                egress_rules: record.egress_rules.clone(),
+                allowed_hosts: record.dns_filter_hosts.clone(),
+                credentials: record.credential_policy.clone(),
+                network_backend: record.network_backend,
+                guest_subnet: record.guest_subnet.clone(),
+                disk_volumes: record.disk_volumes.clone(),
+            };
+
+            // Create AgentManager and try to reconnect
+            match AgentManager::for_vm_with_sizes(&name, record.storage_gb, record.overlay_gb) {
+                Ok(manager) => {
+                    // Try to reconnect to existing running VM
+                    let reconnected = manager
+                        .try_connect_existing_with_pid_and_start_time(
+                            record.pid,
+                            record.pid_start_time,
+                        )
+                        .is_some();
+
+                    if reconnected {
+                        tracing::info!(machine = %name, pid = ?record.pid, "reconnected to machine");
+                    } else {
+                        // Process is alive but agent isn't reachable yet (transient
+                        // boot/socket timing). Register the machine anyway so it's
+                        // visible via APIs and the supervisor can manage it. Keep
+                        // the DB record for future reconnect attempts.
+                        tracing::info!(machine = %name, pid = ?record.pid, "machine alive but not yet reachable, registering for later reconnect");
+                    }
+
+                    let mut machines = self.machines.write();
+                    machines.insert(
+                        name.clone(),
+                        Arc::new(parking_lot::Mutex::new(MachineEntry {
+                            cache_disk: record.cache_disk.clone(),
+                            image: record.image.clone(),
+                            credentials: crate::credentials::CredentialLaunch::for_record(
+                                &record.name,
+                                &record,
+                            ),
+                            external_interceptor: None,
+                            manager,
+                            mounts,
+                            ports,
+                            resources,
+                            restart: record.restart.clone(),
+                            network: record.network,
+                            secret_refs: record.secret_refs.clone(),
+                            source_smolmachine: record.packed_layer_source().map(str::to_owned),
+                            packed_image_on_storage: record.packed_image_on_storage,
+                            forkable: record.forkable_on_start(),
+                            cuda_fork_pool_size: record.cuda_fork_pool_size,
+                            cuda_vram_limit_mib: record.cuda_vram_limit_mib,
+                            forkpoint_held: record.forkpoint_held,
+                        })),
+                    );
+                    loaded.push(name.clone());
+                }
+                Err(e) => {
+                    // Process is alive but manager creation failed (transient
+                    // filesystem/env issue). Preserve the DB record so the VM
+                    // isn't orphaned — next server restart can retry.
+                    tracing::warn!(machine = %name, error = %e, "failed to create manager for alive machine, preserving DB record");
+                }
+            }
+        }
+
+        loaded
+    }
+
+    /// Remove VM data dirs under the cache root that no current machine record
+    /// references — a filesystem-level GC for the dirs the per-record path can't
+    /// see (a dir whose record was already gone: a legacy leak, or a CLI ephemeral
+    /// orphan that resolved to the wrong hash).
+    ///
+    /// Deliberately NOT called from `load_persisted_machines`: this is a global
+    /// sweep keyed off the *current* DB, so it must only run in the real `smolvm
+    /// serve` process (which owns this node's cache), never from a unit test or an
+    /// embedded library user whose DB does not describe the host's dirs — there it
+    /// would wipe live machines. The caller invokes it at server startup, before
+    /// requests are served, so it cannot race VM creation. Returns the count
+    /// removed.
+    ///
+    /// Safe by construction: only entries whose name is a VM data-dir hash (16
+    /// lowercase hex chars, the `vm_dir_hash` shape) are candidates, so the shared
+    /// pack store (`_shared`) and marker files are never touched, and every hash
+    /// backing a live DB record is skipped.
+    pub fn reclaim_dangling_vm_dirs(&self) -> usize {
+        let valid: std::collections::HashSet<String> = match self.db.list_vms() {
+            Ok(vms) => vms
+                .iter()
+                .map(|(name, _)| crate::agent::vm_dir_hash(name))
+                .collect(),
+            Err(_) => return 0,
+        };
+        let root = crate::agent::vm_cache_root();
+        let entries = match std::fs::read_dir(&root) {
+            Ok(e) => e,
+            Err(_) => return 0,
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name().to_string_lossy().into_owned();
+            if !is_dangling_vm_dir(&dir_name, &valid) {
+                continue;
+            }
+            if entry.path().is_dir() {
+                tracing::info!(dir = %dir_name, "removing dangling VM data dir (no machine record)");
+                match std::fs::remove_dir_all(entry.path()) {
+                    Ok(()) => removed += 1,
+                    Err(e) => {
+                        tracing::warn!(dir = %dir_name, error = %e, "failed to remove dangling VM data dir")
+                    }
+                }
+            }
+        }
+        removed
+    }
+
+    /// The exec sessions this node owns.
+    pub fn exec_sessions(&self) -> &crate::api::exec_sessions::ExecSessions {
+        &self.exec_sessions
+    }
+
+    /// Get a machine entry by name.
+    pub fn get_machine(
+        &self,
+        name: &str,
+    ) -> Result<Arc<parking_lot::Mutex<MachineEntry>>, ApiError> {
+        let machines = self.machines.read();
+        machines
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("machine '{}' not found", name)))
+    }
+
+    /// Queue a branch request for `source`, to be answered through its reply.
+    pub(crate) fn queue_branch(&self, source: &str, branch: QueuedBranch) {
+        self.branch_queues
+            .lock()
+            .entry(source.to_string())
+            .or_default()
+            .push(branch);
+    }
+
+    /// Take the queued branch requests for `source` that can share one
+    /// transaction with the oldest one: those that wait for the same forkpoint
+    /// and leave the source the same way.
+    /// Returns an empty batch when nothing is queued.
+    pub(crate) fn take_branch_batch(&self, source: &str) -> Vec<QueuedBranch> {
+        let mut queues = self.branch_queues.lock();
+        let Some(queue) = queues.get_mut(source) else {
+            return Vec::new();
+        };
+        let Some(first) = queue.first() else {
+            queues.remove(source);
+            return Vec::new();
+        };
+        let key = |req: &crate::api::types::ForkRequest| {
+            (req.wait_ready, req.ready_timeout_secs, req.freeze_source)
+        };
+        let first_key = key(&first.req);
+        let (batch, rest): (Vec<_>, Vec<_>) = std::mem::take(queue)
+            .into_iter()
+            .partition(|queued| key(&queued.req) == first_key);
+        if rest.is_empty() {
+            queues.remove(source);
+        } else {
+            *queue = rest;
+        }
+        batch
+    }
+
+    /// Get the per-machine lifecycle lock for `name`, creating it on first use.
+    ///
+    /// Callers `.lock().await` the returned mutex at the top of
+    /// start/stop/delete/restart/fork and hold the guard for the whole operation so
+    /// the macOS layers-volume mount (start) and detach (stop/delete) can never
+    /// interleave for one machine. See the `lifecycle_locks` field docs for the
+    /// lock-ordering and scope contract.
+    pub fn lifecycle_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        // Fast path: the lock already exists (the common case after first use).
+        if let Some(lock) = self.lifecycle_locks.read().get(name) {
+            return lock.clone();
+        }
+        // Slow path: create it under the write lock. `or_insert_with` collapses
+        // the race where two callers reach here for the same name concurrently —
+        // both end up with the same `Arc`, preserving mutual exclusion.
+        self.lifecycle_locks
+            .write()
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// Remove a machine from the registry (also removes from database).
+    ///
+    /// Must NOT hold the registry write lock across the DB delete: `db.remove_vm`
+    /// is synchronous disk I/O (SQLite, which under churn waits on `busy_timeout`),
+    /// and spanning it with the write lock blocks every reader — including the
+    /// `/health` probe (`machine_counts` takes `machines.read()`). Under delete
+    /// churn on a small (2-core) worker that wedges the whole node: the reactor's
+    /// threads park on the registry lock and can no longer `accept()`. The real
+    /// per-machine mutual exclusion is the caller's `lifecycle_lock` (held across
+    /// the entire start/stop/delete), so releasing the registry lock between the
+    /// existence check, the DB delete, and the in-memory remove is safe.
+    pub fn remove_machine(
+        &self,
+        name: &str,
+    ) -> Result<Arc<parking_lot::Mutex<MachineEntry>>, ApiError> {
+        // Existence check under a brief read lock (released immediately).
+        if !self.machines.read().contains_key(name) {
+            return Err(ApiError::NotFound(format!("machine '{}' not found", name)));
+        }
+
+        // Remove from the database first, WITHOUT the registry lock held — if this
+        // fails, in-memory state stays consistent (the entry is still in the map).
+        match self.db.remove_vm(name) {
+            Ok(Some(_)) => {} // expected: row existed and was deleted
+            Ok(None) => {
+                // Row was already gone from DB (concurrent delete or manual cleanup).
+                // Log and continue — we still need to clean up in-memory state.
+                tracing::warn!(
+                    machine = name,
+                    "machine not found in database during remove (already deleted?)"
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, machine = name, "failed to remove machine from database");
+                return Err(ApiError::Internal(format!("database error: {}", e)));
+            }
+        }
+
+        // Brief write lock: swap the entry out of the registry (O(1)). If a
+        // concurrent path already removed it, degrade to NotFound rather than
+        // panicking — correctness for the same name is guaranteed by the caller's
+        // lifecycle lock, so this only fires on misuse.
+        self.machines
+            .write()
+            .remove(name)
+            .ok_or_else(|| ApiError::NotFound(format!("machine '{}' not found", name)))
+    }
+
+    /// Forget an externally deleted machine without deleting data or stopping
+    /// a process. Caller must hold the machine's lifecycle lock.
+    pub(crate) fn forget_deleted_machine(&self, name: &str) -> crate::Result<bool> {
+        if self.db.get_vm(name)?.is_some() {
+            return Ok(false);
+        }
+        let mut machines = self.machines.write();
+        let entry = machines.get(name).cloned();
+        if let Some(entry) = entry {
+            let Some(entry_guard) = entry.try_lock() else {
+                return Ok(false);
+            };
+            // A detached manager must not stop a surviving or replacement VM
+            // when its final reference is dropped.
+            entry_guard.manager.detach();
+            machines.remove(name);
+            tracing::info!(machine = name, "forgot externally deleted machine");
+        }
+        Ok(true)
+    }
+
+    /// Update machine state in database (call after start/stop).
+    ///
+    /// Returns an error if the database write fails. Callers in API handlers
+    /// should propagate this error; the supervisor can log and continue.
+    pub fn update_machine_state(
+        &self,
+        name: &str,
+        state: RecordState,
+        pid: Option<i32>,
+    ) -> std::result::Result<(), crate::Error> {
+        let pid_start_time = pid.and_then(crate::process::process_start_time);
+        let result = self.db.update_vm(name, |record| {
+            record.engine_build =
+                (state == RecordState::Running).then(|| crate::ENGINE_BUILD.to_string());
+            record.state = state;
+            record.pid = pid;
+            record.pid_start_time = pid_start_time;
+        })?;
+        match result {
+            Some(_) => Ok(()),
+            None => Err(crate::Error::database(
+                "update machine state",
+                format!("machine '{}' not found in database", name),
+            )),
+        }
+    }
+
+    /// List all machines, in name order.
+    pub fn list_machines(&self) -> Vec<MachineInfo> {
+        let machines = self.machines.read();
+        machines
+            .iter()
+            .map(|(name, entry)| {
+                let entry = entry.lock();
+                machine_entry_to_info(name.clone(), &entry)
+            })
+            .collect()
+    }
+
+    /// Check if a machine exists.
+    pub fn machine_exists(&self, name: &str) -> bool {
+        self.machines.read().contains_key(name)
+    }
+
+    /// Return (total, running) machine counts for health endpoint.
+    /// Uses try_lock to avoid blocking on contended machine entries.
+    pub fn machine_counts(&self) -> (usize, usize) {
+        let machines = self.machines.read();
+        let total = machines.len();
+        let running = machines
+            .values()
+            .filter(|e| {
+                e.try_lock()
+                    .map(|entry| entry.manager.is_process_alive())
+                    .unwrap_or(true) // assume running if locked (active operation)
+            })
+            .count();
+        (total, running)
+    }
+
+    /// Disarm every machine manager's `Drop` so a non-draining `serve` shutdown
+    /// (e.g. a binary-upgrade restart) leaves running VMs alive for the next
+    /// process to reconnect to, instead of `AgentManager::drop` tearing each one
+    /// down via `stop()`. Mirrors the CLI's detach-before-exit (`SigintGuard`
+    /// disarm + `manager.detach()`). The drain path does the opposite — it stops
+    /// VMs cleanly — so this is invoked ONLY on the survive-and-reconnect path.
+    /// Uses a blocking lock per entry: missing one would let its VM be killed.
+    pub fn detach_all(&self) {
+        let machines = self.machines.read();
+        let mut detached = 0usize;
+        for entry in machines.values() {
+            entry.lock().manager.detach();
+            detached += 1;
+        }
+        if detached > 0 {
+            tracing::info!(
+                count = detached,
+                "detached machine managers on shutdown; VMs left running for reconnect"
+            );
+        }
+    }
+
+    /// Compute total allocated resources across all running machines.
+    /// Returns (allocated_cpus, allocated_memory_mb).
+    pub fn allocated_resources(&self) -> (u32, u64) {
+        let machines = self.machines.read();
+        let mut cpus: u32 = 0;
+        let mut memory_mb: u64 = 0;
+        for entry in machines.values() {
+            if let Some(e) = entry.try_lock() {
+                if e.manager.is_process_alive() {
+                    cpus += e.resources.cpus.unwrap_or(1) as u32;
+                    memory_mb += e.resources.memory_mb.unwrap_or(256) as u64;
+                }
+            }
+        }
+        (cpus, memory_mb)
+    }
+
+    /// Sample real CPU + memory + disk utilization across all running VM processes.
+    ///
+    /// Returns CPU, RSS/PSS/private/shared memory, and used disk:
+    /// - CPU is fractional CPUs (e.g., 2.5 = 2.5 CPUs of load), computed as
+    ///   `Δcpu_time / Δwall_time` since the previous sample per PID. First sample
+    ///   for a new PID returns 0 CPU; subsequent samples return the real rate.
+    /// - Memory is the sum of resident set sizes across VM processes.
+    /// - Disk is the sum of VM storage + overlay disk file sizes on disk.
+    pub fn real_utilization(&self) -> NodeUtilization {
+        let now = std::time::Instant::now();
+        let mut total_cpus: f64 = 0.0;
+        let mut total_rss_bytes: u64 = 0;
+        let mut total_pss_bytes: u64 = 0;
+        let mut total_private_bytes: u64 = 0;
+        let mut total_shared_mapped_bytes: u64 = 0;
+        let mut complete_pss = true;
+        let mut complete_private = true;
+        let mut complete_shared = true;
+        let mut total_disk_bytes: u64 = 0;
+
+        let pid_and_paths: Vec<(Option<i32>, std::path::PathBuf, std::path::PathBuf)> = {
+            let machines = self.machines.read();
+            machines
+                .values()
+                .filter_map(|entry| {
+                    entry.try_lock().and_then(|e| {
+                        if !e.manager.is_process_alive() {
+                            return None;
+                        }
+                        Some((
+                            e.manager.child_pid(),
+                            e.manager.storage_path().to_path_buf(),
+                            e.manager.overlay_path().to_path_buf(),
+                        ))
+                    })
+                })
+                .collect()
+        };
+
+        let mut samples = self.cpu_samples.lock();
+        let mut still_alive: HashSet<i32> = HashSet::with_capacity(pid_and_paths.len());
+
+        for (pid_opt, storage, overlay) in pid_and_paths {
+            // Disk: stat the storage + overlay files. Cheap (one stat() each).
+            if let Ok(meta) = std::fs::metadata(&storage) {
+                total_disk_bytes = total_disk_bytes.saturating_add(meta.len());
+            }
+            if let Ok(meta) = std::fs::metadata(&overlay) {
+                total_disk_bytes = total_disk_bytes.saturating_add(meta.len());
+            }
+
+            // CPU + memory: only if we have a PID
+            let Some(pid) = pid_opt else { continue };
+            still_alive.insert(pid);
+            let Some(stats) = crate::process::process_stats(pid) else {
+                continue;
+            };
+            total_rss_bytes = total_rss_bytes.saturating_add(stats.rss_bytes);
+            // Counters, not `smaps_rollup`: summed over a hundred-odd VMMs the
+            // rollup took seconds and ran `/capacity` past the node-agent's
+            // poll timeout, self-cordoning the node (10-20). Node PSS is
+            // therefore not reported; per-machine endpoints still read it.
+            match crate::process::process_memory_counters(pid) {
+                Some(memory) => {
+                    if let Some(value) = memory.pss_bytes {
+                        total_pss_bytes = total_pss_bytes.saturating_add(value);
+                    } else {
+                        complete_pss = false;
+                    }
+                    if let Some(value) = memory.private_bytes {
+                        total_private_bytes = total_private_bytes.saturating_add(value);
+                    } else {
+                        complete_private = false;
+                    }
+                    if let Some(value) = memory.shared_mapped_bytes {
+                        total_shared_mapped_bytes = total_shared_mapped_bytes.saturating_add(value);
+                    } else {
+                        complete_shared = false;
+                    }
+                }
+                None => {
+                    complete_pss = false;
+                    complete_private = false;
+                    complete_shared = false;
+                }
+            }
+
+            if let Some(prev) = samples.get(&pid).copied() {
+                let dt_ns = now.duration_since(prev.at).as_nanos() as u64;
+                if dt_ns > 0 {
+                    let dcpu_ns = stats.cpu_time_ns.saturating_sub(prev.cpu_time_ns);
+                    total_cpus += dcpu_ns as f64 / dt_ns as f64;
+                }
+            }
+            samples.insert(
+                pid,
+                CpuSample {
+                    at: now,
+                    cpu_time_ns: stats.cpu_time_ns,
+                },
+            );
+        }
+
+        // Drop samples for PIDs that no longer exist (avoids leaking memory
+        // as VMs come and go over the lifetime of the smolvm serve process).
+        samples.retain(|pid, _| still_alive.contains(pid));
+
+        NodeUtilization {
+            used_cpus: total_cpus,
+            rss_mb: total_rss_bytes / (1024 * 1024),
+            pss_mb: complete_pss.then_some(total_pss_bytes / (1024 * 1024)),
+            private_memory_mb: complete_private.then_some(total_private_bytes / (1024 * 1024)),
+            shared_memory_mapped_mb: complete_shared
+                .then_some(total_shared_mapped_bytes / (1024 * 1024)),
+            disk_gb: total_disk_bytes / (1024 * 1024 * 1024),
+        }
+    }
+
+    // ========================================================================
+    // Atomic Machine Creation (Reservation Pattern)
+    // ========================================================================
+
+    /// Reserve a machine name atomically.
+    ///
+    /// This prevents race conditions where two concurrent requests try to create
+    /// a machine with the same name. The name is reserved until either:
+    /// - `complete_machine_registration()` is called (success)
+    /// - `release_machine_reservation()` is called (failure/cleanup)
+    ///
+    /// Returns `Err(Conflict)` if the name is already taken or reserved.
+    pub fn reserve_machine_name(&self, name: &str, token: &str) -> Result<(), ApiError> {
+        // First check: machine existence (early exit for common case).
+        // Use separate scope to release read lock before acquiring write lock.
+        // This prevents lock-order inversion with complete_machine_registration.
+        {
+            let machines = self.machines.read();
+            if machines.contains_key(name) {
+                return Err(ApiError::Conflict(format!(
+                    "machine '{}' already exists",
+                    name
+                )));
+            }
+        }
+
+        // Acquire reservation lock
+        let mut reserved = self.reserved_names.write();
+
+        // Double-check machine existence (could have been added while we
+        // didn't hold the machines lock). This is necessary for correctness.
+        if self.machines.read().contains_key(name) {
+            return Err(ApiError::Conflict(format!(
+                "machine '{}' already exists",
+                name
+            )));
+        }
+
+        // Check if name is already reserved (creation in progress)
+        if reserved.contains(name) {
+            return Err(ApiError::Conflict(format!(
+                "machine '{}' is being created by another request",
+                name
+            )));
+        }
+
+        reserved.insert(name.to_string());
+
+        match self.db.reserve_vm_create(name, token) {
+            Ok(true) => {}
+            Ok(false) => {
+                reserved.remove(name);
+                return Err(ApiError::Conflict(format!(
+                    "machine '{}' already exists or is being created",
+                    name
+                )));
+            }
+            Err(e) => {
+                reserved.remove(name);
+                return Err(ApiError::database(e));
+            }
+        }
+
+        tracing::debug!(machine = %name, "reserved machine name");
+        Ok(())
+    }
+
+    /// Release a machine name reservation.
+    ///
+    /// Call this if machine creation fails after `reserve_machine_name()`.
+    pub fn release_machine_reservation(&self, name: &str, token: &str) {
+        let mut reserved = self.reserved_names.write();
+        if reserved.remove(name) {
+            tracing::debug!(machine = %name, "released machine name reservation");
+        }
+        if let Err(e) = self.db.release_vm_create_reservation(name, token) {
+            tracing::warn!(machine = %name, error = %e, "failed to release DB create reservation");
+        }
+    }
+
+    /// Complete machine registration after successful creation.
+    ///
+    /// This converts a reserved name into a fully registered machine.
+    /// The reservation is released and the machine entry is added.
+    pub fn complete_machine_registration(
+        &self,
+        name: String,
+        token: &str,
+        reg: MachineRegistration,
+    ) -> Result<(), ApiError> {
+        // Persist to database (with conflict detection)
+        let mut record = reg
+            .resolved
+            .to_record(&name)
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+        record.source_smolmachine = reg.source_smolmachine;
+        record.source_registry_ref = reg.source_registry_ref;
+        if let Some(size) = reg.packed_storage_gib {
+            record.packed_image_on_storage = true;
+            record.storage_gb = Some(size);
+        }
+        if let Some(image) = reg.host_image {
+            image.apply(&mut record);
+        }
+
+        // Complete the cross-process create reservation and insert the VM row
+        // atomically. Only after that succeeds do we publish the in-memory entry.
+        match self.db.commit_reserved_vm(&name, token, &record) {
+            Ok(true) => {
+                {
+                    let mut reserved = self.reserved_names.write();
+                    if !reserved.remove(&name) {
+                        // Name wasn't reserved - this is a programming error
+                        tracing::warn!(machine = %name, "completing registration for non-reserved name");
+                    }
+                }
+                // Successfully inserted, now add to in-memory registry
+                let mut machines = self.machines.write();
+                machines.insert(
+                    name,
+                    Arc::new(parking_lot::Mutex::new(
+                        crate::api::handlers::machines::machine_entry_from_record(
+                            &record,
+                            reg.manager,
+                        ),
+                    )),
+                );
+                Ok(())
+            }
+            Ok(false) => {
+                // Name already exists or the DB reservation was lost.
+                Err(ApiError::Conflict(format!(
+                    "machine '{}' already exists or is no longer reserved",
+                    name
+                )))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, machine = %name, "database error during registration");
+                Err(ApiError::database(e))
+            }
+        }
+    }
+
+    /// Get the underlying database handle.
+    ///
+    /// Prefer the async helpers below (`lookup_vm`/`list_vm_records`/`update_vm`)
+    /// from async request handlers: `SmolvmDb`'s methods are synchronous SQLite
+    /// I/O, and calling them directly on the tokio reactor lets a stalled write
+    /// (under create/delete churn) park the worker pool and wedge the liveness
+    /// probes. The helpers run the I/O on the blocking pool. `db()` itself is for
+    /// synchronous contexts (CLI, embedded runtime, inside an existing
+    /// `spawn_blocking`). See `tests/reactor_wedge.rs`.
+    pub fn db(&self) -> &SmolvmDb {
+        &self.db
+    }
+
+    /// Off-reactor VM lookup. Runs the blocking SQLite read on the blocking pool.
+    pub async fn lookup_vm(&self, name: &str) -> Result<Option<VmRecord>, ApiError> {
+        let db = self.db.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || db.get_vm(&name))
+            .await
+            .map_err(|e| ApiError::internal(format!("db lookup_vm task join: {e}")))?
+            .map_err(ApiError::database)
+    }
+
+    /// Off-reactor full VM listing. Runs the blocking SQLite scan on the blocking
+    /// pool (reads use the connection-pool, so this never serializes behind a write).
+    pub async fn list_vm_records(&self) -> Result<Vec<(String, VmRecord)>, ApiError> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || db.list_vms())
+            .await
+            .map_err(|e| ApiError::internal(format!("db list_vm_records task join: {e}")))?
+            .map_err(ApiError::database)
+    }
+
+    /// Off-reactor read-modify-write of a VM record. Runs the synchronous
+    /// transaction on the blocking pool so the write — which holds the single
+    /// writer connection and may wait out `busy_timeout` under contention — never
+    /// parks a reactor worker thread.
+    pub async fn update_vm<F>(&self, name: &str, f: F) -> Result<Option<VmRecord>, ApiError>
+    where
+        F: FnOnce(&mut VmRecord) + Send + 'static,
+    {
+        let db = self.db.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || db.update_vm(&name, f))
+            .await
+            .map_err(|e| ApiError::internal(format!("db update_vm task join: {e}")))?
+            .map_err(ApiError::database)
+    }
+
+    /// Insert a machine entry directly into the in-memory registry.
+    ///
+    /// Used by start_machine to register a booted VM so that exec/run/container
+    /// endpoints can find it without server restart.
+    ///
+    /// An existing entry is replaced in place rather than swapped for a new
+    /// one. A request that looked the machine up before a start finished (an
+    /// exec queued behind the start's lifecycle lock) still holds the old
+    /// entry; with a separate entry it would reconnect a stale manager to the
+    /// new VM, adopt its process, and stop that VM when the request dropped
+    /// the last reference to it. In place, every holder sees the new manager,
+    /// and the replaced one is detached because the VM it may have reconnected
+    /// to now belongs to the new manager.
+    pub fn insert_machine(&self, name: &str, entry: MachineEntry) {
+        let existing = self.machines.read().get(name).cloned();
+        if let Some(slot) = existing {
+            let replaced = std::mem::replace(&mut *slot.lock(), entry);
+            replaced.manager.detach();
+            self.machines.write().insert(name.to_string(), slot);
+            return;
+        }
+        let mut machines = self.machines.write();
+        machines.insert(name.to_string(), Arc::new(parking_lot::Mutex::new(entry)));
+    }
+
+    // ========================================================================
+    // Restart Management Methods
+    // ========================================================================
+
+    /// List all machine names.
+    pub fn list_machine_names(&self) -> Vec<String> {
+        self.machines.read().keys().cloned().collect()
+    }
+
+    /// Get restart config for a machine from the in-memory registry.
+    pub fn get_restart_config(&self, name: &str) -> Option<RestartConfig> {
+        let machines = self.machines.read();
+        machines.get(name).map(|entry| {
+            let entry = entry.lock();
+            entry.restart.clone()
+        })
+    }
+
+    /// Best-effort update to the VM database record. Logs warnings on
+    /// `Ok(None)` (row not found) and `Err` without propagating.
+    fn update_vm_best_effort(&self, name: &str, op_label: &str, f: impl FnOnce(&mut VmRecord)) {
+        match self.db.update_vm(name, f) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                tracing::warn!(machine = %name, op = op_label, "machine not found in database");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, machine = %name, op = op_label, "failed to persist update");
+            }
+        }
+    }
+
+    /// Increment restart count for a machine.
+    pub fn increment_restart_count(&self, name: &str) {
+        if let Some(entry) = self.machines.read().get(name) {
+            entry.lock().restart.restart_count += 1;
+        }
+        self.update_vm_best_effort(name, "increment_restart_count", |r| {
+            r.restart.restart_count += 1;
+        });
+    }
+
+    /// Mark machine as user-stopped.
+    pub fn mark_user_stopped(&self, name: &str, stopped: bool) {
+        if let Some(entry) = self.machines.read().get(name) {
+            entry.lock().restart.user_stopped = stopped;
+        }
+        self.update_vm_best_effort(name, "mark_user_stopped", |r| {
+            r.restart.user_stopped = stopped;
+        });
+    }
+
+    /// Reset restart count (on successful start).
+    pub fn reset_restart_count(&self, name: &str) {
+        if let Some(entry) = self.machines.read().get(name) {
+            entry.lock().restart.restart_count = 0;
+        }
+        self.update_vm_best_effort(name, "reset_restart_count", |r| {
+            r.restart.restart_count = 0;
+        });
+    }
+
+    /// Update last exit code for a machine.
+    pub fn set_last_exit_code(&self, name: &str, exit_code: Option<i32>) {
+        self.update_vm_best_effort(name, "set_last_exit_code", |r| {
+            r.last_exit_code = exit_code;
+        });
+    }
+
+    /// Get last exit code for a machine.
+    pub fn get_last_exit_code(&self, name: &str) -> Option<i32> {
+        self.db
+            .get_vm(name)
+            .ok()
+            .flatten()
+            .and_then(|r| r.last_exit_code)
+    }
+
+    /// Check if a machine process is alive.
+    ///
+    /// Delegates to `AgentManager::is_process_alive()` which checks the
+    /// in-memory child handle (with stored start time) and falls back to the
+    /// PID file. This is start-time-aware to avoid false positives from PID
+    /// reuse, and covers orphan processes not tracked in-memory.
+    pub fn is_machine_alive(&self, name: &str) -> bool {
+        if let Some(entry) = self.machines.read().get(name) {
+            // This runs on the supervisor's heartbeat path, so it must never
+            // block. A `MachineEntry` whose lock is currently held is, by
+            // definition, actively in use (mid agent I/O) — i.e. alive — so we
+            // treat lock contention as "alive" rather than parking the
+            // supervisor on it. Blocking here behind a single busy/stuck
+            // machine would stall the runtime heartbeat and mark the entire
+            // node unschedulable.
+            match entry.try_lock() {
+                Some(entry) => entry.manager.is_process_alive(),
+                None => true,
+            }
+        } else {
+            false
+        }
+    }
+}
+
+/// Run a blocking operation against a machine's agent client.
+///
+/// Handles the common pattern: clone entry → spawn_blocking → lock → connect → op → map errors.
+/// Propagates an optional trace ID to the agent for request correlation.
+pub async fn with_machine_client_traced<T, F>(
+    entry: &Arc<parking_lot::Mutex<MachineEntry>>,
+    trace_id: Option<String>,
+    op: F,
+) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut crate::agent::AgentClient) -> crate::Result<T> + Send + 'static,
+{
+    let entry_clone = entry.clone();
+    tokio::task::spawn_blocking(move || {
+        // Acquire a connected client under the per-machine lock, then RELEASE
+        // the lock before running the (potentially long, unbounded-blocking)
+        // agent operation. `connect()` returns an owned `AgentClient` over its
+        // own socket, so `op` needs no lock once connected. Holding the
+        // `MachineEntry` lock across blocking agent I/O lets a hung guest agent
+        // pin the lock indefinitely, which blocks the supervisor's liveness
+        // probe (`is_machine_alive`) and stalls the whole runtime heartbeat —
+        // marking the node unschedulable behind a single stuck exec.
+        let mut client = {
+            let entry = entry_clone.lock();
+            let mut client = entry.manager.connect()?;
+            if let Some(tid) = trace_id {
+                client.set_trace_id(tid);
+            }
+            client
+        };
+        op(&mut client)
+    })
+    .await?
+    .map_err(ApiError::from)
+}
+
+// ============================================================================
+// Shared Machine Helpers
+// ============================================================================
+
+/// Build `LaunchFeatures` for an API-driven machine start.
+///
+/// Thin wrapper over [`crate::agent::LaunchFeatures::with_packed_layers`]
+/// — the single source of truth shared with the CLI and embedded start paths.
+/// When the machine was created from a `.smolmachine` artifact
+/// (`source_smolmachine` is set), its pre-extracted OCI layers — extracted into
+/// the machine's own data dir at create time, keyed by `machine_name` — are
+/// mounted via virtiofs so the guest uses them instead of pulling from a
+/// registry; otherwise default features are returned. Without it the three API
+/// start entrypoints (`start_machine`, `ensure_machine_running`, supervisor
+/// restart) would pass `packed_layers_dir = None` and the guest would fall back
+/// to a network pull. Performs blocking filesystem work — call from within a
+/// `spawn_blocking` context.
+pub fn build_launch_features(
+    machine_name: Option<&str>,
+    source_smolmachine: Option<&str>,
+    image_on_storage: bool,
+    image: Option<&str>,
+    dns_filter_hosts: Option<Vec<String>>,
+    credentials: Option<crate::credentials::CredentialLaunch>,
+) -> crate::Result<crate::agent::LaunchFeatures> {
+    let features = crate::agent::LaunchFeatures::default();
+    let mut features = match machine_name {
+        Some(name) => features.with_packed_layers_with_mode(
+            &crate::agent::machine_layers_cache_dir(name),
+            source_smolmachine,
+            image.is_none(),
+        )?,
+        None => features,
+    };
+    // A `local:` image (a registry image the host fetched for a machine with
+    // no network) is mounted the same way, so the guest boots it offline,
+    // unless the image was prepared on the machine's storage disk.
+    if features.packed_layers_dir.is_none() && !image_on_storage {
+        features.packed_layers_dir =
+            image.and_then(crate::data::image_source::packed_layers_dir_for_ref);
+    }
+    // Carry the egress hostname allow-list into the boot config; `internal_boot`
+    // starts the DNS filter for these names and learns their answers into the
+    // egress allow-list (parity with the CLI `--allow-host` path).
+    features.dns_filter_hosts = dns_filter_hosts;
+    features.credentials = credentials;
+    Ok(features)
+}
+
+/// A branch request waiting for its source, and where to send its answer.
+pub(crate) struct QueuedBranch {
+    pub(crate) req: crate::api::types::ForkRequest,
+    pub(crate) reply: tokio::sync::oneshot::Sender<Result<MachineInfo, ApiError>>,
+}
+
+/// Ensure a machine is running, starting it if needed.
+///
+/// This is the shared preflight check used by exec, container, and image handlers.
+/// It converts the machine's mount/port/resource config and calls
+/// `ensure_running_with_full_config` in a blocking task.
+///
+/// On the not-already-up path this mounts the machine's macOS layers volume, so
+/// callers MUST hold the per-machine lifecycle lock (see `ensure_running_and_persist`,
+/// the only caller) for the duration, or the mount can race a concurrent
+/// stop/delete detach (review finding #3).
+/// Returns `true` when this call actually booted the VM — it was not already
+/// reachable — so callers know a freshly-booted image machine still needs its
+/// workload launched.
+pub async fn ensure_machine_running(
+    entry: &Arc<parking_lot::Mutex<MachineEntry>>,
+) -> crate::Result<bool> {
+    let entry_clone = entry.clone();
+    tokio::task::spawn_blocking(move || {
+        let entry = entry_clone.lock();
+        let mounts: Vec<_> = entry
+            .mounts
+            .iter()
+            .map(HostMount::try_from)
+            .collect::<crate::Result<Vec<_>>>()?;
+        let ports: Vec<_> = entry.ports.iter().map(PortMapping::from).collect();
+        let mut resources = resource_spec_to_vm_resources(&entry.resources, entry.network);
+        resources.cache_disk = entry.cache_disk.clone();
+
+        // An implicit start (exec/run/files/images) never restarts a machine
+        // that is up. `update` refuses running machines, so its recorded
+        // settings should match what it runs with; if they do not, restarting
+        // would throw away its execution (for a machine restored from a
+        // checkpoint, the restored state) to fix nothing the caller asked for.
+        // Returning here also keeps the packed-layers lease off this hot path.
+        if entry.manager.try_connect_existing().is_some() {
+            if let Some(differences) = entry
+                .manager
+                .running_config_differences(&mounts, &ports, &resources)
+            {
+                tracing::warn!(
+                    machine = %entry.manager.name().unwrap_or_default(),
+                    differs = %differences.join(", "),
+                    "running machine's recorded settings differ from its launch; leaving it running"
+                );
+            }
+            return Ok(false);
+        }
+        // Up but not answering (busy, or still restoring): fail this request
+        // rather than stop the VM and boot it fresh.
+        if entry.manager.is_process_alive() {
+            return Err(crate::Error::agent_conflict(
+                "start machine",
+                "machine is running but its agent is not answering yet; retry",
+            ));
+        }
+        // Use subprocess launch to avoid macOS fork-in-multithreaded-process issue.
+        let mut features = build_launch_features(
+            entry.manager.name(),
+            entry.source_smolmachine.as_deref(),
+            entry.packed_image_on_storage,
+            entry.image.as_deref(),
+            entry.resources.allowed_hosts.clone(),
+            entry.credentials.clone(),
+        )?;
+        features.cuda_fork_pool_size = entry.cuda_fork_pool_size;
+        features.cuda_vram_limit_mib = entry.cuda_vram_limit_mib;
+        features.forkable = entry.forkable;
+        features.external_interceptor = entry.external_interceptor;
+        entry
+            .manager
+            .ensure_running_via_subprocess(mounts, ports, resources, features)
+    })
+    .await
+    .map_err(|e| crate::Error::agent("ensure running", e.to_string()))?
+}
+
+/// A paused machine must be resumed, never booted fresh: an implicit start
+/// (exec, files, images) would discard its saved execution and leave it unable
+/// to resume or pause again. Explicit start refuses the same way.
+fn refuse_implicit_start_of_paused(record: &crate::config::VmRecord) -> crate::Result<()> {
+    if record.paused_checkpoint.is_some() {
+        return Err(crate::Error::agent_conflict(
+            "start machine",
+            "machine has saved execution; use resume",
+        ));
+    }
+    Ok(())
+}
+
+/// Ensure a machine is running and persist the Running state to the database.
+///
+/// Used by handlers that implicitly start VMs (containers, exec, images).
+/// State persistence is best-effort — a DB write failure is logged but does
+/// not fail the request, matching the supervisor's error-handling pattern.
+pub async fn ensure_running_and_persist(
+    state: &ApiState,
+    name: &str,
+    entry: &Arc<parking_lot::Mutex<MachineEntry>>,
+) -> crate::Result<()> {
+    // Hold the per-machine lifecycle lock across the implicit-start preflight.
+    // ensure_machine_running mounts the macOS layers volume (via with_packed_layers)
+    // when the VM is not already up — exactly like the explicit start_machine — so
+    // it must exclude against a concurrent stop/delete detach the same way (review
+    // finding #3 covers "start/ensure"). Acquired before ensure_machine_running's
+    // spawn_blocking takes the entry mutex, preserving the lifecycle → entry order;
+    // released before the caller's actual exec/file/image op, which neither mounts
+    // nor detaches. On Linux the guarded mount is a no-op, so this is harmless.
+    let lifecycle = state.lifecycle_lock(name);
+    let _guard = lifecycle.lock().await;
+
+    // A nested machine waking on a server that has since turned nesting off
+    // stays down, the same as an explicit start.
+    let nested = entry.lock().resources.nested_virt.unwrap_or(false);
+    if nested && !state.nested_virt_allowed() {
+        return Err(crate::Error::agent_forbidden(
+            "start machine",
+            NESTED_VIRT_DISABLED,
+        ));
+    }
+
+    // Refresh the entry's launch config from the persisted record before an
+    // implicit start. The record is the source of truth and can change while
+    // the machine is stopped (`machine update` from the CLI edits the DB but
+    // not this server's in-memory entry), so booting from the cached entry
+    // launches with pre-update mounts/ports/resources. `update` refuses
+    // running machines, so a running machine's entry can't be stale — and for
+    // one, ensure_machine_running early-returns before the config matters.
+    let record = state.lookup_vm(name).await.ok().flatten();
+    if let Some(record) = &record {
+        refuse_implicit_start_of_paused(record)?;
+        let mut e = entry.lock();
+        e.mounts = record.host_mounts().iter().map(MountSpec::from).collect();
+        e.ports = record.port_mappings().iter().map(PortSpec::from).collect();
+        e.resources.cpus = Some(record.cpus);
+        e.resources.memory_mb = Some(record.mem);
+        e.network = record.network;
+        e.forkable = record.forkable_on_start();
+        e.cuda_fork_pool_size = record.cuda_fork_pool_size;
+        e.cuda_vram_limit_mib = record.cuda_vram_limit_mib;
+        if !record.external_interceptor_required {
+            e.external_interceptor = None;
+        }
+    }
+
+    // A restored machine boots from its checkpoint with the workload already
+    // running in the restored RAM. Remember that before the boot, finalize the
+    // restore after it exactly like the explicit start handler, and never launch
+    // the workload a second time.
+    let restoring_checkpoint =
+        crate::portable_checkpoint::pending_dir(&crate::agent::vm_data_dir(name)).is_some();
+
+    let freshly_booted = ensure_machine_running(entry).await?;
+
+    if freshly_booted && restoring_checkpoint {
+        if let Some(record) = record.clone() {
+            let machine = name.to_string();
+            let finalized = tokio::task::spawn_blocking(move || {
+                crate::portable_checkpoint::finalize_live_restore(&machine, &record).and_then(
+                    |()| crate::portable_checkpoint::consume(&crate::agent::vm_data_dir(&machine)),
+                )
+            })
+            .await
+            .map_err(|e| crate::Error::agent("finalize checkpoint restore", e.to_string()))?;
+            if let Err(error) = finalized {
+                let _ = entry.lock().manager.stop();
+                return Err(crate::Error::agent(
+                    "finalize checkpoint restore",
+                    error.to_string(),
+                ));
+            }
+        }
+    }
+
+    let pid = {
+        let entry = entry.lock();
+        entry.manager.child_pid()
+    };
+    if let Err(e) = state.update_machine_state(name, RecordState::Running, pid) {
+        tracing::warn!(machine = %name, error = %e, "failed to persist Running state after implicit start");
+    }
+    // An implicit start (exec/file/image waking a stopped machine) re-enables
+    // supervision like the explicit start handler: clear the user-stopped flag so
+    // the restart supervisor will keep this machine up again. (Retry-budget reset
+    // stays on the explicit `start` path.) Idempotent for an already-running machine.
+    state.mark_user_stopped(name, false);
+
+    // An implicit start of an image machine (exec/files/images waking a stopped
+    // machine) must relaunch the image workload just like the explicit start
+    // handler does — otherwise the wake boots a bare agent VM and a published
+    // port forwards to a guest socket nothing listens on (the exact drift
+    // `workload.rs`'s module doc warns front-ends about). Gated on
+    // `freshly_booted` so an already-running machine's workload is never
+    // double-launched. Best-effort like the handler's launch step: the caller's
+    // exec must not fail because the workload didn't come up.
+    if freshly_booted && !restoring_checkpoint {
+        if let Err(e) = relaunch_image_workload(state, name, entry).await {
+            tracing::warn!(
+                machine = %name,
+                error = ?e,
+                "failed to relaunch image workload after implicit start; VM is up but its server is not running"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Launch an image machine's workload container after an implicit start,
+/// mirroring the explicit start handler (`handlers/machines.rs`): same
+/// env/secret resolution, mount bindings, and golden-aliased persistent
+/// overlay. No-op for machines without an image. The image is pulled only on a
+/// cache miss — on the wake path the machine has run before, so this is
+/// normally a no-op.
+async fn relaunch_image_workload(
+    state: &ApiState,
+    name: &str,
+    entry: &Arc<parking_lot::Mutex<MachineEntry>>,
+) -> crate::Result<()> {
+    let Some(record) = state
+        .lookup_vm(name)
+        .await
+        .map_err(|e| crate::Error::agent("load record for workload", format!("{e:?}")))?
+    else {
+        return Ok(());
+    };
+    let Some(image) = record.image.clone() else {
+        return Ok(());
+    };
+
+    let mut command = record.entrypoint.clone();
+    command.extend(record.cmd.clone());
+    let mut env = record.env.clone();
+    env.extend(
+        crate::api::handlers::record_secret_refs_env(entry)
+            .map_err(|e| crate::Error::agent("resolve workload secrets", format!("{e:?}")))?,
+    );
+    // Remote volumes mount inside the workload container; build the mount script
+    // here and let the agent run it ahead of the image-resolved command, so a
+    // service image's own entrypoint is preserved rather than clobbered.
+    let s3_volumes = crate::remote_volume::to_s3_volumes(&record.remote_volumes, &env);
+    let workdir = record.workdir.clone();
+    let user = record.user.clone();
+    let mounts_config = {
+        let e = entry.lock();
+        e.mounts
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (HostMount::mount_tag(i), m.target.clone(), m.readonly))
+            .collect::<Vec<_>>()
+    };
+    let overlay_id = crate::workload::persistent_overlay_owner_with_lineage(
+        name,
+        record.golden.as_deref(),
+        record.fork_overlay_owner.as_deref(),
+    );
+
+    let image_pull = image.clone();
+    with_machine_client_traced(entry, None, move |c| {
+        if c.query(&image_pull)?.is_none() {
+            c.pull_with_registry_config(&image_pull)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| crate::Error::agent("pull image for workload", format!("{e:?}")))?;
+
+    let stop_on_exit = record.stop_on_exit;
+    let (stop_signal, stop_timeout) = (record.stop_signal.clone(), record.stop_timeout_secs);
+    with_machine_client_traced(entry, None, move |c| {
+        let config = crate::agent::RunConfig::new(image, command)
+            .with_env(env)
+            .with_workdir(workdir)
+            .with_user(user)
+            .with_mounts(mounts_config)
+            .with_persistent_overlay(Some(overlay_id))
+            .with_s3_volumes(s3_volumes)
+            .with_stop_vm_on_exit(stop_on_exit)
+            .with_stop(stop_signal, stop_timeout);
+        c.run_container_detached(config).map(|_| ())
+    })
+    .await
+    .map_err(|e| crate::Error::agent("launch workload", format!("{e:?}")))
+}
+
+// ============================================================================
+// Type Conversions
+// ============================================================================
+
+impl TryFrom<&MountSpec> for HostMount {
+    type Error = crate::Error;
+
+    /// Validate and canonicalize a MountSpec into a HostMount.
+    ///
+    /// API mount specs require absolute source paths even though CLI parsing
+    /// allows relative host paths that are canonicalized against the current
+    /// working directory.
+    fn try_from(spec: &MountSpec) -> Result<Self, Self::Error> {
+        if spec.readonly && spec.staged {
+            return Err(crate::Error::mount(
+                "validate mount mode",
+                "a mount cannot be both readonly and staged",
+            ));
+        }
+        let source = Path::new(&spec.source);
+        if !source.is_absolute() {
+            return Err(crate::Error::mount(
+                "validate source",
+                format!("path must be absolute: {}", source.display()),
+            ));
+        }
+
+        let mut mount = HostMount::new(&spec.source, &spec.target, spec.readonly)?;
+        mount.staged = spec.staged;
+        Ok(mount)
+    }
+}
+
+impl From<&HostMount> for MountSpec {
+    fn from(mount: &HostMount) -> Self {
+        MountSpec {
+            source: mount.source.to_string_lossy().to_string(),
+            target: mount.target.to_string_lossy().to_string(),
+            readonly: mount.read_only,
+            staged: mount.staged,
+        }
+    }
+}
+
+impl From<&PortSpec> for PortMapping {
+    fn from(spec: &PortSpec) -> Self {
+        PortMapping::with_protocol(spec.host, spec.guest, spec.protocol)
+    }
+}
+
+impl From<&PortMapping> for PortSpec {
+    fn from(mapping: &PortMapping) -> Self {
+        PortSpec {
+            host: mapping.host,
+            guest: mapping.guest,
+            protocol: mapping.protocol,
+        }
+    }
+}
+
+/// Convert multiple MountSpecs to HostMount values.
+///
+/// Returns an error if any mount fails validation.
+pub fn mounts_to_host_mounts(specs: &[MountSpec]) -> Result<Vec<HostMount>, ApiError> {
+    specs
+        .iter()
+        .map(|s| HostMount::try_from(s).map_err(|e| ApiError::BadRequest(e.to_string())))
+        .collect()
+}
+
+/// The refusal for a machine created from a local image path on a server
+/// without a local image directory.
+pub const LOCAL_IMAGES_DISABLED: &str = "local images are disabled on this server; \
+start `smolvm serve` with --local-image-dir to accept archives and rootfs directories under it";
+
+/// The refusal for a machine that asks for a cache disk on a server without
+/// a cache disk directory.
+pub const CACHE_DISKS_DISABLED: &str = "cache disks are disabled on this server; \
+start `smolvm serve` with --cache-disk-dir to enable them";
+
+/// The refusal for a machine that asks for nested virtualization on a server
+/// that has not opted in.
+pub const NESTED_VIRT_DISABLED: &str = "nested virtualization is disabled on this server; \
+start `smolvm serve` with --allow-nested-virt to enable it";
+
+/// Convert ResourceSpec to VmResources.
+pub fn resource_spec_to_vm_resources(spec: &ResourceSpec, network: bool) -> VmResources {
+    VmResources {
+        cpus: spec.cpus.unwrap_or(DEFAULT_MICROVM_CPU_COUNT),
+        memory_mib: spec.memory_mb.unwrap_or_else(default_microvm_memory_mib),
+        network,
+        network_backend: spec.network_backend,
+        gpu: spec.gpu.unwrap_or(false),
+        // gpu_vram_mib not currently on ResourceSpec — API callers
+        // inherit the default. Add to ResourceSpec if the API ever
+        // needs to expose it.
+        gpu_vram_mib: None,
+        cuda: spec.cuda.unwrap_or(false),
+        nested_virt: spec.nested_virt.unwrap_or(false),
+        rosetta: false,
+        storage_gib: spec.storage_gb,
+        overlay_gib: spec.overlay_gb,
+        block_io: spec.block_io.unwrap_or_default(),
+        disk_durability: spec.disk_durability.unwrap_or_default(),
+        disks: Vec::new(),
+        cache_disk: None,
+        disk_volumes: spec.disk_volumes.clone(),
+        block_private: None,
+        allowed_cidrs: spec.allowed_cidrs.clone(),
+        egress_rules: spec.egress_rules.clone(),
+        // Custom DNS is a local-CLI feature for now; the cloud ResourceSpec
+        // does not expose it, so API-launched VMs inherit the backend default.
+        dns: None,
+        dns_options: Vec::new(),
+        shm_size: None,
+        network_name: None,
+        guest_subnet: spec.guest_subnet.clone(),
+    }
+}
+
+/// A resolved cache disk as the API shows it: the base by file name.
+pub fn cache_disk_spec(cache: &crate::data::disk::CacheDisk) -> crate::api::types::CacheDiskSpec {
+    crate::api::types::CacheDiskSpec {
+        base: cache.base_name(),
+        mount_path: cache.mount_path.clone(),
+        source_url: None,
+        sha256: None,
+        slot: cache.slot,
+    }
+}
+
+/// Convert VmResources to ResourceSpec.
+pub fn vm_resources_to_spec(res: VmResources) -> ResourceSpec {
+    ResourceSpec {
+        cpus: Some(res.cpus),
+        memory_mb: Some(res.memory_mib),
+        network: Some(res.network),
+        gpu: Some(res.gpu),
+        cuda: Some(res.cuda),
+        nested_virt: res.nested_virt.then_some(true),
+        storage_gb: res.storage_gib,
+        overlay_gb: res.overlay_gib,
+        block_io: Some(res.block_io),
+        disk_durability: Some(res.disk_durability),
+        cache_disk: res.cache_disk.as_ref().map(cache_disk_spec),
+        allowed_cidrs: res.allowed_cidrs,
+        egress_rules: res.egress_rules,
+        // VmResources has no hostname allow-list; callers that need it graft it
+        // back from the source record (see the MachineEntry reload path).
+        allowed_hosts: None,
+        credentials: None,
+        network_backend: res.network_backend,
+        guest_subnet: res.guest_subnet,
+        disk_volumes: res.disk_volumes,
+    }
+}
+
+/// Convert RestartSpec to RestartConfig.
+pub fn restart_spec_to_config(spec: Option<&RestartSpec>) -> RestartConfig {
+    match spec {
+        Some(spec) => {
+            let policy = spec
+                .policy
+                .as_ref()
+                .and_then(|p| p.parse::<RestartPolicy>().ok())
+                .unwrap_or_default();
+            RestartConfig {
+                policy,
+                max_retries: spec.max_retries.unwrap_or(0),
+                ..Default::default()
+            }
+        }
+        None => RestartConfig::default(),
+    }
+}
+
+/// Convert a MachineEntry (in-memory state) to MachineInfo (API response).
+pub fn machine_entry_to_info(name: String, entry: &MachineEntry) -> MachineInfo {
+    let state = if entry.manager.try_connect_existing().is_some() {
+        "running"
+    } else {
+        "stopped"
+    };
+    let egress_bytes = crate::agent::read_egress_telemetry(&name);
+    let egress_signals = crate::agent::read_egress_signals(&name);
+    let cpu_limit_millicpus =
+        crate::agent::cpu_limit::read_active_cpu_limit(&name, entry.manager.child_pid());
+    let egress_flows = crate::agent::read_egress_flows(&name, state == "running");
+    let pressure = crate::agent::read_guest_pressure(&name, state == "running");
+    let mediation_machine_id = (state == "running")
+        .then(|| crate::agent::read_mediation_machine_id(&name))
+        .flatten();
+    // Live consumed CPU-seconds for the VMM child (host-sampled, resets on
+    // restart); the control plane accumulates the durable total. None when there
+    // is no live process to sample.
+    let stats = entry
+        .manager
+        .child_pid()
+        .and_then(crate::process::process_stats);
+    let cpu_seconds = stats.map(|s| s.cpu_time_ns / 1_000_000_000);
+    let cpu_millis = stats.map(|s| s.cpu_time_ns / 1_000_000);
+    let rss_mb = stats.map(|s| s.rss_bytes / (1024 * 1024));
+    let memory_stats = entry.manager.child_pid().and_then(|pid| {
+        crate::process::process_memory_stats_cached(pid, stats.map(|s| s.rss_bytes))
+    });
+    // Actual used disk (sparse-image blocks) — a gauge the control integrates for
+    // active-disk billing. Independent of whether there's a live VMM process.
+    let disk_used_mb = crate::agent::disk_used_mb(&name);
+
+    MachineInfo {
+        disk_chain_depth: None,
+        runtime: entry
+            .manager
+            .child_pid()
+            .and_then(crate::agent::live_resize::RuntimeIdentity::observe),
+        name,
+        image: entry.image.clone(),
+        state: state.to_string(),
+        state_reason: None,
+        cpus: entry.resources.cpus.unwrap_or(1),
+        mem: entry.resources.memory_mb.unwrap_or(512),
+        pid: entry.manager.child_pid(),
+        mounts: entry
+            .mounts
+            .iter()
+            .enumerate()
+            .map(|(i, m)| crate::api::types::MountInfo {
+                tag: crate::data::storage::HostMount::mount_tag(i),
+                source: m.source.clone(),
+                target: m.target.clone(),
+                readonly: m.readonly,
+                staged: m.staged,
+            })
+            .collect(),
+        ports: entry.ports.clone(),
+        network: entry.network,
+        gpu: entry.resources.gpu.unwrap_or(false),
+        cuda: entry.resources.cuda.unwrap_or(false),
+        network_backend: entry.resources.network_backend,
+        allowed_cidrs: entry.resources.allowed_cidrs.clone(),
+        egress_rules: entry.resources.egress_rules.clone(),
+        allowed_hosts: entry.resources.allowed_hosts.clone(),
+        storage_gb: entry.resources.storage_gb,
+        overlay_gb: entry.resources.overlay_gb,
+        disk_volumes: entry.resources.disk_volumes.clone(),
+        block_io: entry.resources.block_io.unwrap_or_default(),
+        disk_durability: entry.resources.disk_durability.unwrap_or_default(),
+        cache_disk: entry.cache_disk.as_ref().map(cache_disk_spec),
+        branchable: entry.forkable,
+        forkable: entry.forkable,
+        // MachineEntry is an in-memory runtime view and does not retain the
+        // persisted parent relationship; database-backed responses include it.
+        parent_machine: None,
+        cuda_branch_pool_size: entry.cuda_fork_pool_size,
+        cuda_fork_pool_size: entry.cuda_fork_pool_size,
+        cuda_vram_limit_mib: entry.cuda_vram_limit_mib,
+        branchpoint_held: entry.forkpoint_held,
+        forkpoint_held: entry.forkpoint_held,
+        egress_bytes,
+        egress_signals,
+        cpu_limit_millicpus,
+        egress_flows,
+        pressure,
+        mediation_machine_id,
+        cpu_seconds,
+        cpu_millis,
+        rss_mb,
+        pss_mb: memory_stats
+            .and_then(|s| s.pss_bytes)
+            .map(|v| v / (1024 * 1024)),
+        private_memory_mb: memory_stats
+            .and_then(|s| s.private_bytes)
+            .map(|v| v / (1024 * 1024)),
+        shared_memory_mapped_mb: memory_stats
+            .and_then(|s| s.shared_mapped_bytes)
+            .map(|v| v / (1024 * 1024)),
+        disk_used_mb,
+        created_at: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn implicit_start_refuses_a_machine_with_saved_execution() {
+        let mut record =
+            crate::config::VmRecord::new("paused".into(), 1, 512, vec![], vec![], false);
+        assert!(refuse_implicit_start_of_paused(&record).is_ok());
+        record.paused_checkpoint = Some("/saved/execution".into());
+        let error = refuse_implicit_start_of_paused(&record).unwrap_err();
+        assert!(matches!(
+            crate::api::ApiError::from(error),
+            crate::api::ApiError::Conflict(_)
+        ));
+    }
+    use futures_util::FutureExt as _;
+    use tempfile::TempDir;
+
+    /// Create an ApiState with a temporary database for testing.
+    fn temp_api_state() -> (TempDir, ApiState) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.db");
+        let db = SmolvmDb::open_at(&path).unwrap();
+        (dir, ApiState::with_db(db))
+    }
+
+    /// A create dropped before it registers its machine leaves nothing on disk:
+    /// the data it wrote under the reserved name goes with the reservation.
+    #[test]
+    fn an_unfinished_create_removes_the_data_it_wrote() {
+        let (_dir, state) = temp_api_state();
+        let name = format!("unfinished-{}", SmolvmDb::create_reservation_token());
+        let data = crate::agent::vm_data_dir(&name);
+        {
+            let _guard = ReservationGuard::new(&state, name.clone()).unwrap();
+            std::fs::create_dir_all(data.join("pack")).unwrap();
+            std::fs::write(data.join("pack").join("layer.tar"), b"partial").unwrap();
+        }
+        assert!(!data.exists(), "{} was left behind", data.display());
+        // The name is free again.
+        drop(ReservationGuard::new(&state, name).unwrap());
+    }
+
+    /// Queued branches of one source are served in batches of those that wait
+    /// for the same forkpoint and leave the source the same way, oldest first;
+    /// other sources are untouched.
+    #[test]
+    fn queued_branches_batch_by_forkpoint_wait_and_source_policy() {
+        let (_dir, state) = temp_api_state();
+        let mut replies = Vec::new();
+        let mut queue = |source: &str, name: &str, wait_ready: bool, freeze_source: bool| {
+            let req: crate::api::types::ForkRequest = serde_json::from_value(serde_json::json!({
+                "name": name,
+                "freezeSource": freeze_source,
+                "waitReady": wait_ready,
+            }))
+            .unwrap();
+            let (reply, receiver) = tokio::sync::oneshot::channel();
+            replies.push(receiver);
+            state.queue_branch(source, QueuedBranch { req, reply });
+        };
+        queue("src", "a", false, true);
+        queue("src", "b", true, true);
+        queue("src", "c", false, true);
+        queue("src", "e", false, false);
+        queue("src", "f", false, false);
+        queue("other", "d", false, true);
+        let names = |batch: Vec<QueuedBranch>| -> Vec<String> {
+            batch.into_iter().map(|queued| queued.req.name).collect()
+        };
+        assert_eq!(names(state.take_branch_batch("src")), ["a", "c"]);
+        assert_eq!(names(state.take_branch_batch("src")), ["b"]);
+        assert_eq!(names(state.take_branch_batch("src")), ["e", "f"]);
+        assert!(state.take_branch_batch("src").is_empty());
+        assert!(!state.branch_queues.lock().contains_key("src"));
+        assert_eq!(names(state.take_branch_batch("other")), ["d"]);
+    }
+
+    #[test]
+    fn pool_reconcile_notifications_are_retained_and_coalesced() {
+        let (_dir, state) = temp_api_state();
+        let notify = state.pool_reconcile_notify();
+
+        state.notify_pool_reconcile();
+        state.notify_pool_reconcile();
+
+        assert!(notify.notified().now_or_never().is_some());
+        assert!(notify.notified().now_or_never().is_none());
+    }
+
+    #[test]
+    fn stale_cuda_inventory_fails_closed() {
+        let (_dir, state) = temp_api_state();
+        state.record_cuda_devices(Some(vec![crate::api::admission::GpuDeviceSample {
+            device_ordinal: 0,
+            uuid: "GPU-test".into(),
+            name: "test".into(),
+            utilization_percent: 0.0,
+            used_memory_mib: 0,
+            free_memory_mib: 80_000,
+            total_memory_mib: 80_000,
+        }]));
+        assert_eq!(state.cuda_devices().unwrap().len(), 1);
+
+        state.cuda_devices.lock().as_mut().unwrap().0 =
+            std::time::Instant::now() - std::time::Duration::from_secs(6);
+        assert!(state.cuda_devices().is_none());
+    }
+
+    #[test]
+    fn test_type_conversions() {
+        // MountSpec -> HostMount preserves readonly flag (use /tmp which exists)
+        let spec = MountSpec {
+            source: "/tmp".into(),
+            target: "/guest".into(),
+            readonly: true,
+            staged: false,
+        };
+        assert!(HostMount::try_from(&spec).unwrap().read_only);
+
+        let spec = MountSpec {
+            source: "/tmp".into(),
+            target: "/guest".into(),
+            readonly: false,
+            staged: false,
+        };
+        assert!(!HostMount::try_from(&spec).unwrap().read_only);
+
+        // The trusted system-mount escape hatch is local-CLI-only. An HTTP
+        // caller cannot turn a read-only flag into access to the server host.
+        let system_spec = MountSpec {
+            source: "/etc".into(),
+            target: "/host/etc".into(),
+            readonly: true,
+            staged: false,
+        };
+        assert!(HostMount::try_from(&system_spec).is_err());
+
+        // ResourceSpec with None uses defaults
+        let spec = ResourceSpec {
+            cpus: None,
+            memory_mb: None,
+            network: None,
+            gpu: None,
+            cuda: None,
+            nested_virt: None,
+            storage_gb: None,
+            overlay_gb: None,
+            block_io: None,
+            disk_durability: None,
+            cache_disk: None,
+            allowed_cidrs: None,
+            egress_rules: Vec::new(),
+            allowed_hosts: None,
+            credentials: None,
+            network_backend: None,
+            guest_subnet: None,
+            disk_volumes: Vec::new(),
+        };
+        let res = resource_spec_to_vm_resources(&spec, false);
+        assert_eq!(res.cpus, DEFAULT_MICROVM_CPU_COUNT);
+        assert_eq!(res.memory_mib, default_microvm_memory_mib());
+        assert!(!res.network);
+
+        // Test with network enabled
+        let res = resource_spec_to_vm_resources(&spec, true);
+        assert!(res.network);
+        assert!(res.disk_volumes.is_empty());
+
+        // Disk volumes reach the launch, and come back from a launched config,
+        // so an implicit start (exec, files) boots with them too.
+        let spec = ResourceSpec {
+            disk_volumes: vec!["/var/lib/docker".into()],
+            ..spec
+        };
+        let res = resource_spec_to_vm_resources(&spec, true);
+        assert_eq!(res.disk_volumes, ["/var/lib/docker"]);
+        assert_eq!(vm_resources_to_spec(res).disk_volumes, ["/var/lib/docker"]);
+    }
+
+    #[test]
+    fn build_launch_features_mounts_a_local_image() {
+        let features =
+            build_launch_features(None, None, false, Some("local:abc"), None, None).unwrap();
+        assert_eq!(
+            features.packed_layers_dir,
+            crate::data::image_source::packed_layers_dir_for_ref("local:abc")
+        );
+        // A registry image is pulled by the guest; nothing to mount.
+        let features =
+            build_launch_features(None, None, false, Some("alpine"), None, None).unwrap();
+        assert!(features.packed_layers_dir.is_none());
+        // Prepared on the machine's storage disk, it mounts no archive.
+        let features =
+            build_launch_features(None, None, true, Some("local:abc"), None, None).unwrap();
+        assert_eq!(features.packed_layers_dir, None);
+    }
+
+    #[test]
+    fn build_launch_features_carries_allowed_hosts() {
+        // The serve-API launch path must forward the egress hostname allow-list
+        // into the boot config, so `internal_boot` starts the DNS filter for it.
+        let hosts = vec!["api.anthropic.com".to_string(), "pypi.org".to_string()];
+        let features =
+            build_launch_features(None, None, false, None, Some(hosts.clone()), None).unwrap();
+        assert_eq!(features.dns_filter_hosts, Some(hosts));
+
+        // No hostname policy stays None (unrestricted egress, unchanged behavior).
+        let features = build_launch_features(None, None, false, None, None, None).unwrap();
+        assert_eq!(features.dns_filter_hosts, None);
+    }
+
+    #[test]
+    fn test_machine_not_found() {
+        let (_dir, state) = temp_api_state();
+        assert!(matches!(
+            state.get_machine("nope"),
+            Err(ApiError::NotFound(_))
+        ));
+        assert!(matches!(
+            state.remove_machine("nope"),
+            Err(ApiError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn externally_deleted_machine_is_forgotten_without_deleting_replacements() {
+        let (_dir, state) = temp_api_state();
+        let name = "external-delete-qa";
+        let record = VmRecord::new(name.into(), 1, 512, vec![], vec![], false);
+        state.db.insert_vm(name, &record).unwrap();
+        state.insert_machine(
+            name,
+            MachineEntry {
+                credentials: None,
+                external_interceptor: None,
+                manager: AgentManager::for_vm(name).unwrap(),
+                image: None,
+                mounts: vec![],
+                ports: vec![],
+                resources: ResourceSpec {
+                    cpus: None,
+                    memory_mb: None,
+                    network: None,
+                    gpu: None,
+                    cuda: None,
+                    nested_virt: None,
+                    storage_gb: None,
+                    overlay_gb: None,
+                    block_io: None,
+                    disk_durability: None,
+                    cache_disk: None,
+                    allowed_cidrs: None,
+                    egress_rules: Vec::new(),
+                    allowed_hosts: None,
+                    credentials: None,
+                    network_backend: None,
+                    guest_subnet: None,
+                    disk_volumes: Vec::new(),
+                },
+                restart: RestartConfig::default(),
+                network: false,
+                secret_refs: Default::default(),
+                source_smolmachine: None,
+                packed_image_on_storage: false,
+                forkable: false,
+                cuda_fork_pool_size: None,
+                cuda_vram_limit_mib: None,
+                forkpoint_held: false,
+                cache_disk: None,
+            },
+        );
+        assert!(!state.forget_deleted_machine(name).unwrap());
+        state.db.remove_vm(name).unwrap();
+        let entry = state.get_machine(name).unwrap();
+        let busy = entry.lock();
+        assert!(!state.forget_deleted_machine(name).unwrap());
+        drop(busy);
+        // A same-name replacement in the DB must survive reconciliation.
+        state.db.insert_vm(name, &record).unwrap();
+        assert!(!state.forget_deleted_machine(name).unwrap());
+        assert!(state.db.get_vm(name).unwrap().is_some());
+        state.db.remove_vm(name).unwrap();
+        assert!(state.forget_deleted_machine(name).unwrap());
+        assert!(state.get_machine(name).is_err());
+        assert!(entry.lock().manager.is_detached());
+        assert!(state.forget_deleted_machine(name).unwrap());
+    }
+
+    /// A request that looked a machine up before a start replaced its entry
+    /// must see the started VM's manager, not keep a stale one whose drop
+    /// would stop that VM.
+    #[test]
+    fn replacing_an_entry_updates_requests_already_holding_it() {
+        let (_dir, state) = temp_api_state();
+        let name = "replace-entry-qa";
+        let entry = |image: &str| MachineEntry {
+            credentials: None,
+            external_interceptor: None,
+            manager: AgentManager::for_vm(name).unwrap(),
+            image: Some(image.to_string()),
+            mounts: vec![],
+            ports: vec![],
+            resources: ResourceSpec {
+                cpus: None,
+                memory_mb: None,
+                network: None,
+                gpu: None,
+                cuda: None,
+                nested_virt: None,
+                storage_gb: None,
+                overlay_gb: None,
+                block_io: None,
+                disk_durability: None,
+                cache_disk: None,
+                allowed_cidrs: None,
+                egress_rules: Vec::new(),
+                allowed_hosts: None,
+                credentials: None,
+                network_backend: None,
+                guest_subnet: None,
+                disk_volumes: Vec::new(),
+            },
+            restart: RestartConfig::default(),
+            network: false,
+            secret_refs: Default::default(),
+            source_smolmachine: None,
+            packed_image_on_storage: false,
+            forkable: false,
+            cuda_fork_pool_size: None,
+            cuda_vram_limit_mib: None,
+            forkpoint_held: false,
+            cache_disk: None,
+        };
+        state.insert_machine(name, entry("before-start"));
+        let queued = state.get_machine(name).unwrap();
+
+        state.insert_machine(name, entry("started"));
+
+        let current = state.get_machine(name).unwrap();
+        assert!(Arc::ptr_eq(&queued, &current));
+        let seen = queued.lock();
+        assert_eq!(seen.image.as_deref(), Some("started"));
+        assert!(!seen.manager.is_detached());
+        drop(seen);
+        state.forget_deleted_machine(name).unwrap();
+        std::fs::remove_dir_all(crate::agent::vm_data_dir(name)).ok();
+    }
+
+    // remove_machine must clear BOTH the DB row and the in-memory registry entry
+    // even though it no longer holds the registry write lock across the DB delete
+    // (the reorder that keeps `/health` from wedging under delete churn).
+    #[test]
+    fn test_remove_machine_clears_db_and_registry() {
+        let (_dir, state) = temp_api_state();
+
+        // Put a machine in BOTH the DB and the in-memory registry.
+        let record = VmRecord::new("remove-test-m1".into(), 1, 512, vec![], vec![], false);
+        state.db.insert_vm("remove-test-m1", &record).unwrap();
+        let manager = AgentManager::for_vm("remove-test-m1").unwrap();
+        state.insert_machine(
+            "remove-test-m1",
+            MachineEntry {
+                credentials: None,
+                external_interceptor: None,
+                manager,
+                image: None,
+                mounts: vec![],
+                ports: vec![],
+                resources: ResourceSpec {
+                    cpus: None,
+                    memory_mb: None,
+                    network: None,
+                    gpu: None,
+                    cuda: None,
+                    nested_virt: None,
+                    storage_gb: None,
+                    overlay_gb: None,
+                    block_io: None,
+                    disk_durability: None,
+                    cache_disk: None,
+                    allowed_cidrs: None,
+                    egress_rules: Vec::new(),
+                    allowed_hosts: None,
+                    credentials: None,
+                    network_backend: None,
+                    guest_subnet: None,
+                    disk_volumes: Vec::new(),
+                },
+                restart: RestartConfig::default(),
+                network: false,
+                secret_refs: Default::default(),
+                source_smolmachine: None,
+                packed_image_on_storage: false,
+                forkable: false,
+                cuda_fork_pool_size: None,
+                cuda_vram_limit_mib: None,
+                forkpoint_held: false,
+                cache_disk: None,
+            },
+        );
+
+        // Remove succeeds and returns the entry.
+        assert!(state.remove_machine("remove-test-m1").is_ok());
+
+        // Gone from BOTH stores.
+        assert!(
+            state.db.get_vm("remove-test-m1").unwrap().is_none(),
+            "DB row should be deleted"
+        );
+        assert!(
+            matches!(
+                state.get_machine("remove-test-m1"),
+                Err(ApiError::NotFound(_))
+            ),
+            "registry entry should be removed"
+        );
+
+        // Second remove → NotFound, not a panic.
+        assert!(matches!(
+            state.remove_machine("remove-test-m1"),
+            Err(ApiError::NotFound(_))
+        ));
+    }
+
+    // REGRESSION (runtime-wedge): the supervisor's liveness probe must NEVER
+    // block on the per-machine `MachineEntry` lock. A machine that is mid
+    // agent-I/O (e.g. a stuck exec) holds that lock; if `is_machine_alive`
+    // blocked on it, one wedged machine would stall the supervisor heartbeat
+    // and mark the whole node unschedulable (the 503/black-hole wedge observed
+    // under concurrent boots). With the entry lock held, `is_machine_alive`
+    // must return promptly, reporting the in-use machine as alive.
+    #[test]
+    fn is_machine_alive_does_not_block_when_entry_locked() {
+        use std::time::Duration;
+
+        let (_dir, state) = temp_api_state();
+        let record = VmRecord::new("busy-m1".into(), 1, 512, vec![], vec![], false);
+        state.db.insert_vm("busy-m1", &record).unwrap();
+        let manager = AgentManager::for_vm("busy-m1").unwrap();
+        state.insert_machine(
+            "busy-m1",
+            MachineEntry {
+                credentials: None,
+                external_interceptor: None,
+                manager,
+                image: None,
+                mounts: vec![],
+                ports: vec![],
+                resources: ResourceSpec {
+                    cpus: None,
+                    memory_mb: None,
+                    network: None,
+                    gpu: None,
+                    cuda: None,
+                    nested_virt: None,
+                    storage_gb: None,
+                    overlay_gb: None,
+                    block_io: None,
+                    disk_durability: None,
+                    cache_disk: None,
+                    allowed_cidrs: None,
+                    egress_rules: Vec::new(),
+                    allowed_hosts: None,
+                    credentials: None,
+                    network_backend: None,
+                    guest_subnet: None,
+                    disk_volumes: Vec::new(),
+                },
+                restart: RestartConfig::default(),
+                network: false,
+                secret_refs: Default::default(),
+                source_smolmachine: None,
+                packed_image_on_storage: false,
+                forkable: false,
+                cuda_fork_pool_size: None,
+                cuda_vram_limit_mib: None,
+                forkpoint_held: false,
+                cache_disk: None,
+            },
+        );
+
+        // Hold the entry lock to simulate an in-flight agent op pinning it.
+        let entry = state.get_machine("busy-m1").unwrap();
+        let held = entry.lock();
+
+        // The probe must finish without waiting on the held lock. If it blocked,
+        // the scoped thread would still be running after the grace period.
+        std::thread::scope(|s| {
+            let h = s.spawn(|| state.is_machine_alive("busy-m1"));
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(
+                h.is_finished(),
+                "is_machine_alive blocked on a held MachineEntry lock — would stall the supervisor"
+            );
+            assert!(
+                h.join().unwrap(),
+                "a locked (actively in-use) machine must read as alive"
+            );
+        });
+        drop(held);
+    }
+
+    // ========================================================================
+    // Startup reconciliation tests
+    // ========================================================================
+
+    #[test]
+    fn saved_execution_survives_reconciliation_with_a_stale_pid() {
+        let (_dir, state) = temp_api_state();
+        let name = "durable-paused-reconciliation";
+        let mut record = VmRecord::new(name.into(), 1, 512, vec![], vec![], false);
+        record.pid = Some(i32::MAX);
+        record.state = RecordState::Paused;
+        record.paused_checkpoint = Some("saved.smolcheckpoint".into());
+        state.db.insert_vm(name, &record).unwrap();
+        assert!(state.load_persisted_machines().contains(&name.to_string()));
+        let retained = state.db.get_vm(name).unwrap().unwrap();
+        assert_eq!(retained.state, RecordState::Paused);
+        assert_eq!(retained.paused_checkpoint, record.paused_checkpoint);
+    }
+
+    #[test]
+    fn test_load_persisted_machines_removes_dead_ephemeral_records() {
+        let (_dir, state) = temp_api_state();
+
+        // Insert a record with a PID that doesn't exist (dead process)
+        let mut record = VmRecord::new("dead-machine".into(), 1, 512, vec![], vec![], false);
+        record.pid = Some(i32::MAX); // PID that certainly doesn't exist
+        record.state = RecordState::Running;
+        record.ephemeral = true;
+        state.db.insert_vm("dead-machine", &record).unwrap();
+
+        // Give it a data dir with a marker file — reconciliation must reclaim it,
+        // not just the DB record (otherwise the disks leak across restarts).
+        let data_dir = crate::agent::vm_data_dir("dead-machine");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("storage.raw"), b"x").unwrap();
+
+        // Verify record exists before load
+        assert!(state.db.get_vm("dead-machine").unwrap().is_some());
+
+        // Load should detect dead process and clean up DB record
+        let loaded = state.load_persisted_machines();
+        assert!(loaded.is_empty(), "dead machine should not be loaded");
+
+        // DB record should be cleaned up
+        assert!(
+            state.db.get_vm("dead-machine").unwrap().is_none(),
+            "dead machine DB record should be removed"
+        );
+
+        // Data dir should be reclaimed too (no disk leak).
+        assert!(
+            !data_dir.exists(),
+            "dead machine data dir should be removed, not leaked"
+        );
+
+        // Name should be available for reuse
+        let token = SmolvmDb::create_reservation_token();
+        assert!(state.reserve_machine_name("dead-machine", &token).is_ok());
+    }
+
+    #[test]
+    fn test_load_keeps_a_dead_persistent_machine_as_stopped_with_its_disks() {
+        let (_dir, state) = temp_api_state();
+
+        let mut record = VmRecord::new("dead-persistent".into(), 1, 512, vec![], vec![], false);
+        record.pid = Some(i32::MAX);
+        record.pid_start_time = Some(1);
+        record.state = RecordState::Running;
+        state.db.insert_vm("dead-persistent", &record).unwrap();
+        let data_dir = crate::agent::vm_data_dir("dead-persistent");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("storage.raw"), b"data").unwrap();
+
+        let loaded = state.load_persisted_machines();
+
+        assert!(loaded.contains(&"dead-persistent".to_string()));
+        let kept = state.db.get_vm("dead-persistent").unwrap().unwrap();
+        assert_eq!(kept.state, RecordState::Stopped);
+        assert_eq!(kept.pid, None);
+        assert_eq!(kept.pid_start_time, None);
+        assert_eq!(
+            std::fs::read(data_dir.join("storage.raw")).unwrap(),
+            b"data"
+        );
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn test_load_keeps_a_dead_ephemeral_ancestor_of_a_dead_persistent_clone() {
+        let (_dir, state) = temp_api_state();
+
+        let mut base = VmRecord::new("dead-eph-base".into(), 1, 512, vec![], vec![], false);
+        base.pid = Some(i32::MAX);
+        base.state = RecordState::Running;
+        base.ephemeral = true;
+        state.db.insert_vm("dead-eph-base", &base).unwrap();
+        let mut child = VmRecord::new("dead-kept-child".into(), 1, 512, vec![], vec![], false);
+        child.pid = Some(i32::MAX - 1);
+        child.state = RecordState::Running;
+        child.golden = Some("dead-eph-base".to_string());
+        state.db.insert_vm("dead-kept-child", &child).unwrap();
+
+        let loaded = state.load_persisted_machines();
+
+        assert!(loaded.contains(&"dead-eph-base".to_string()));
+        assert!(loaded.contains(&"dead-kept-child".to_string()));
+        assert_eq!(
+            state.db.get_vm("dead-eph-base").unwrap().unwrap().state,
+            RecordState::Stopped
+        );
+    }
+
+    #[test]
+    fn test_load_preserves_dead_ancestor_of_retained_clone() {
+        let (_dir, state) = temp_api_state();
+
+        let mut base = VmRecord::new("dead-base".into(), 1, 512, vec![], vec![], false);
+        base.pid = Some(i32::MAX);
+        base.state = RecordState::Running;
+        state.db.insert_vm("dead-base", &base).unwrap();
+        let base_dir = crate::agent::vm_data_dir("dead-base");
+        std::fs::create_dir_all(&base_dir).unwrap();
+        std::fs::write(base_dir.join("storage.raw"), b"base").unwrap();
+
+        let mut child = VmRecord::new("retained-child".into(), 1, 512, vec![], vec![], false);
+        child.golden = Some("dead-base".to_string());
+        child.state = RecordState::Stopped;
+        state.db.insert_vm("retained-child", &child).unwrap();
+
+        let loaded = state.load_persisted_machines();
+        let preserved = state.db.get_vm("dead-base").unwrap().unwrap();
+        assert_eq!(preserved.state, RecordState::Stopped);
+        assert_eq!(preserved.pid, None);
+        assert_eq!(preserved.pid_start_time, None);
+        assert!(base_dir.join("storage.raw").is_file());
+        assert!(loaded.contains(&"dead-base".to_string()));
+        assert!(loaded.contains(&"retained-child".to_string()));
+    }
+
+    #[test]
+    fn test_load_removes_fully_dead_fork_lineage() {
+        let (_dir, state) = temp_api_state();
+        let mut base = VmRecord::new("dead-tree-base".into(), 1, 512, vec![], vec![], false);
+        base.pid = Some(i32::MAX);
+        base.state = RecordState::Running;
+        base.ephemeral = true;
+        state.db.insert_vm("dead-tree-base", &base).unwrap();
+        let mut child = VmRecord::new("dead-tree-child".into(), 1, 512, vec![], vec![], false);
+        child.pid = Some(i32::MAX - 1);
+        child.state = RecordState::Running;
+        child.ephemeral = true;
+        child.golden = Some("dead-tree-base".to_string());
+        state.db.insert_vm("dead-tree-child", &child).unwrap();
+
+        state.load_persisted_machines();
+
+        assert!(state.db.get_vm("dead-tree-base").unwrap().is_none());
+        assert!(state.db.get_vm("dead-tree-child").unwrap().is_none());
+    }
+
+    #[test]
+    fn dangling_vm_dir_reaping_policy() {
+        use std::collections::HashSet;
+        // VM-dir-hash shape = exactly 16 lowercase hex chars.
+        assert!(is_vm_dir_hash("0213f25389658451"));
+        assert!(!is_vm_dir_hash("_shared")); // shared pack store — never a candidate
+        assert!(!is_vm_dir_hash("uids"));
+        assert!(!is_vm_dir_hash("0213F25389658451")); // uppercase isn't our shape
+        assert!(!is_vm_dir_hash("0213f253896584")); // too short
+        assert!(!is_vm_dir_hash("0213f25389658451aa")); // too long
+        assert!(!is_vm_dir_hash("0213f2538965845z")); // non-hex
+
+        // A hash backing a live record is kept; an unbacked hash is dangling;
+        // non-VM entries are never dangling regardless of the valid set.
+        let valid: HashSet<String> = ["aaaaaaaaaaaaaaaa".to_string()].into_iter().collect();
+        assert!(is_dangling_vm_dir("bbbbbbbbbbbbbbbb", &valid)); // hash, no record → reap
+        assert!(!is_dangling_vm_dir("aaaaaaaaaaaaaaaa", &valid)); // hash, has record → keep
+        assert!(!is_dangling_vm_dir("_shared", &valid)); // not a hash → keep
+    }
+
+    #[test]
+    fn test_load_persisted_machines_preserves_created_no_pid() {
+        let (_dir, state) = temp_api_state();
+
+        // Insert a record with no PID (created but never started).
+        // These must be preserved — they are valid configs waiting for
+        // a start call.
+        let record = VmRecord::new("ghost".into(), 1, 512, vec![], vec![], false);
+        state.db.insert_vm("ghost", &record).unwrap();
+
+        // Load should NOT remove it — no PID means "never started", not "dead".
+        let _loaded = state.load_persisted_machines();
+        assert!(
+            state.db.get_vm("ghost").unwrap().is_some(),
+            "created (no-PID) machine must be preserved across server restart"
+        );
+    }
+
+    #[test]
+    fn test_load_persisted_machines_preserves_alive_unreachable_records() {
+        let (_dir, state) = temp_api_state();
+
+        // Use our own PID (always alive and owned by us, so kill(pid,0)==0).
+        // AgentManager::for_vm will create a VM directory but reconnect
+        // will fail (no socket/agent), so it hits the "alive but unreachable"
+        // path. The DB record should be preserved.
+        let our_pid = std::process::id() as i32;
+        let mut record = VmRecord::new("alive-vm".into(), 1, 512, vec![], vec![], false);
+        record.pid = Some(our_pid);
+        record.state = RecordState::Running;
+        state.db.insert_vm("alive-vm", &record).unwrap();
+
+        // Load — reconnect will fail (no agent socket), but record should
+        // be preserved in DB since process is alive
+        let _loaded = state.load_persisted_machines();
+
+        // DB record should still exist (not deleted)
+        assert!(
+            state.db.get_vm("alive-vm").unwrap().is_some(),
+            "alive machine DB record should be preserved when reconnect fails"
+        );
+    }
+}

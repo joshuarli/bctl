@@ -1,0 +1,296 @@
+//! Shared CLI argument parsers.
+//!
+//! This module consolidates parser functions used across multiple CLI commands
+//! to eliminate code duplication and ensure consistent validation.
+
+use smolvm::data::storage::HostMount;
+use std::time::Duration;
+
+/// Parse a duration string (e.g., "30s", "5m", "1h").
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
+    let d = humantime::parse_duration(s).map_err(|e| e.to_string())?;
+    if d.is_zero() {
+        return Err("timeout must be greater than 0 (e.g., 5sec, 30s)".to_string());
+    }
+    Ok(d)
+}
+
+/// Parse and validate `--gpu-vram <MiB>`. Rejects 0 at CLI parse time
+/// so the user gets a clear error instead of an opaque libkrun
+/// allocation failure later. See
+/// `smolvm::data::resources::validate_gpu_vram_mib`.
+pub fn parse_gpu_vram_mib(s: &str) -> Result<u32, String> {
+    let v: u32 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid MiB value", s))?;
+    smolvm::data::resources::validate_gpu_vram_mib(Some(v)).map_err(|e| e.to_string())?;
+    Ok(v)
+}
+
+// Byte-size parsing lives in the library so both the CLI (`--max-image-size`)
+// and the host runtime (`agent::client::file_transfer_max_total`) share one
+// implementation.
+pub use smolvm::util::parse_size_bytes;
+
+/// Parse and validate an image reference. Rejects empty/whitespace-only
+/// values at CLI parse time so `--image ""` errors immediately instead of
+/// creating an unusable machine that only fails once the VM starts.
+pub fn parse_image(s: &str) -> Result<String, String> {
+    if s.trim().is_empty() {
+        return Err("image reference must not be empty".to_string());
+    }
+    Ok(s.to_string())
+}
+
+// Env parsing delegated to the library.
+pub use smolvm::util::{parse_env_list, parse_env_spec};
+
+/// Assign positional virtiofs tags to a list of (guest_target, read_only)
+/// pairs and return the agent's `(tag, target, read_only)` binding form.
+///
+/// The tag format is `smolvm{index}` and matches the virtiofs device
+/// libkrun exposed at VM start in the same order. Order in equals order
+/// out — caller must preserve the original ordering of mounts between
+/// VM start and any subsequent agent request that references the tags.
+///
+/// Generic over any iterator of `(String, bool)` so both
+/// [`HostMount`]-shaped inputs and `VmRecord`-shaped tuples (host,
+/// target, ro) can adapt at the boundary without a parallel helper. Two
+/// thin wrappers below ([`mounts_to_virtiofs_bindings`] and
+/// [`record_mounts_to_runconfig_bindings`]) preserve the caller-side
+/// ergonomics.
+fn assign_virtiofs_tags<'a, I>(items: I) -> Vec<(String, String, bool)>
+where
+    I: IntoIterator<Item = &'a HostMount>,
+{
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, mount)| {
+            (
+                mount.runtime_mount_tag(i),
+                mount.target.to_string_lossy().into_owned(),
+                mount.read_only,
+            )
+        })
+        .collect()
+}
+
+/// Convert parsed [`HostMount`] list to virtiofs binding format for agent.
+///
+/// Used by `machine run` paths that already hold the validated, parsed
+/// mount type. See [`assign_virtiofs_tags`] for the tag rule.
+pub fn mounts_to_virtiofs_bindings(mounts: &[HostMount]) -> Vec<(String, String, bool)> {
+    assign_virtiofs_tags(mounts.iter())
+}
+
+/// Convert a `VmRecord`-style mount list to virtiofs binding format.
+///
+/// `VmRecord` stores mounts as `(host_source, guest_target, read_only)`
+/// already-validated triples (see `src/data/storage.rs::HostMount::to_storage_tuple`).
+/// The host source is dropped — the agent only needs the guest-facing
+/// target and the tag. See [`assign_virtiofs_tags`] for the tag rule.
+pub fn record_mounts_to_runconfig_bindings(
+    mounts: &[(String, String, bool)],
+) -> Vec<(String, String, bool)> {
+    let host_mounts = mounts
+        .iter()
+        .map(|(source, target, read_only)| {
+            HostMount::from_storage_tuple(source.clone(), target.clone(), *read_only)
+        })
+        .collect::<Vec<_>>();
+    assign_virtiofs_tags(host_mounts.iter())
+}
+
+// Network helpers delegated to the library.
+pub use smolvm::smolfile::{parse_cidr, resolve_host_to_cidrs};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_gpu_vram_mib_rejects_zero() {
+        let err = parse_gpu_vram_mib("0").unwrap_err();
+        assert!(
+            err.contains("positive") || err.contains("> 0") || err.contains("omit"),
+            "expected actionable message, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_gpu_vram_mib_rejects_nonnumeric() {
+        assert!(parse_gpu_vram_mib("abc").is_err());
+        assert!(parse_gpu_vram_mib("").is_err());
+        assert!(parse_gpu_vram_mib("-1").is_err());
+        assert!(parse_gpu_vram_mib("2.5").is_err());
+    }
+
+    #[test]
+    fn parse_gpu_vram_mib_accepts_positive() {
+        assert_eq!(parse_gpu_vram_mib("1").unwrap(), 1);
+        assert_eq!(parse_gpu_vram_mib("4096").unwrap(), 4096);
+    }
+
+    #[test]
+    fn resolve_host_bare_ip() {
+        let cidrs = resolve_host_to_cidrs("1.2.3.4").unwrap();
+        assert_eq!(cidrs, vec!["1.2.3.4/32"]);
+    }
+
+    #[test]
+    fn resolve_host_rejects_port_suffix() {
+        let err = resolve_host_to_cidrs("example.com:443").unwrap_err();
+        assert!(err.contains("port suffixes are not supported"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_host_rejects_ipv6_with_port() {
+        let err = resolve_host_to_cidrs("[::1]:80").unwrap_err();
+        assert!(err.contains("port suffixes are not supported"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_host_real_hostname() {
+        // Resolve a well-known hostname — should return at least one IP
+        let cidrs = resolve_host_to_cidrs("one.one.one.one").unwrap();
+        assert!(!cidrs.is_empty());
+        // IPv4 results should be /32 CIDRs; IPv6 results should be /128 CIDRs.
+        for cidr in &cidrs {
+            assert!(
+                cidr.ends_with("/32") || cidr.ends_with("/128"),
+                "expected host CIDR, got {}",
+                cidr
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_host_nonexistent_domain() {
+        let err =
+            resolve_host_to_cidrs("this-domain-does-not-exist-smolvm-test.invalid").unwrap_err();
+        assert!(err.contains("failed to resolve"), "{}", err);
+    }
+
+    #[test]
+    fn parse_cidr_valid() {
+        assert_eq!(parse_cidr("10.0.0.0/8").unwrap(), "10.0.0.0/8");
+        assert_eq!(parse_cidr("1.1.1.1").unwrap(), "1.1.1.1/32");
+    }
+
+    #[test]
+    fn parse_cidr_invalid() {
+        assert!(parse_cidr("not-a-cidr").is_err());
+    }
+
+    #[test]
+    fn record_mounts_to_runconfig_bindings_assigns_positional_tags() {
+        // Tags are positional so they line up with the virtiofs devices
+        // libkrun exposed at VM start. Two mounts → "smolvm0", "smolvm1",
+        // preserving the read-only flag and the guest target verbatim.
+        let mounts = vec![
+            ("/host/src".to_string(), "/app".to_string(), false),
+            ("/host/data".to_string(), "/data".to_string(), true),
+        ];
+        let bindings = record_mounts_to_runconfig_bindings(&mounts);
+        assert_eq!(
+            bindings,
+            vec![
+                ("smolvm0".to_string(), "/app".to_string(), false),
+                ("smolvm1".to_string(), "/data".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn record_mounts_to_runconfig_bindings_empty_input() {
+        // No mounts → no bindings. Init code calls this unconditionally;
+        // empty must round-trip cleanly without panicking on enumerate.
+        assert!(record_mounts_to_runconfig_bindings(&[]).is_empty());
+    }
+
+    #[test]
+    fn assign_virtiofs_tags_keeps_order_and_assigns_zero_based_index() {
+        // The shared core. The two public wrappers are thin adapters
+        // around this — pin the indexing rule here so neither wrapper
+        // can drift away from the canonical "smolvm{i}" naming or from
+        // preserving caller order.
+        let mounts = [
+            HostMount::from_storage_tuple("/tmp".into(), "/a".into(), false),
+            HostMount::from_storage_tuple("/tmp".into(), "/b".into(), true),
+            HostMount::from_storage_tuple("/tmp".into(), "/c".into(), false),
+        ];
+        let out = assign_virtiofs_tags(mounts.iter());
+        assert_eq!(
+            out,
+            vec![
+                ("smolvm0".to_string(), "/a".to_string(), false),
+                ("smolvm1".to_string(), "/b".to_string(), true),
+                ("smolvm2".to_string(), "/c".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn mounts_to_virtiofs_bindings_matches_record_form_for_same_inputs() {
+        // The two public wrappers must agree on identical inputs — they
+        // route to the same core. If a future refactor adds a wrapper
+        // that *doesn't* go through `assign_virtiofs_tags`, this test
+        // will catch the divergence.
+        use std::path::PathBuf;
+        let host_mount = HostMount {
+            source: PathBuf::from("/tmp"), // any existing dir; not validated by the converter
+            target: PathBuf::from("/app"),
+            read_only: true,
+            staged: false,
+        };
+        let from_parsed = mounts_to_virtiofs_bindings(&[host_mount]);
+        let from_record =
+            record_mounts_to_runconfig_bindings(&[("/tmp".to_string(), "/app".to_string(), true)]);
+        assert_eq!(from_parsed, from_record);
+    }
+
+    #[test]
+    fn staged_binding_keeps_device_index_and_marks_guest_local_mode() {
+        use std::path::PathBuf;
+        let mounts = vec![
+            HostMount {
+                source: PathBuf::from("/tmp"),
+                target: PathBuf::from("/live"),
+                read_only: false,
+                staged: false,
+            },
+            HostMount {
+                source: PathBuf::from("/tmp"),
+                target: PathBuf::from("/staged"),
+                read_only: false,
+                staged: true,
+            },
+        ];
+        assert_eq!(
+            mounts_to_virtiofs_bindings(&mounts),
+            vec![
+                ("smolvm0".into(), "/live".into(), false),
+                (mounts[1].runtime_mount_tag(1), "/staged".into(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_size_bytes_units_and_errors() {
+        assert_eq!(parse_size_bytes("1024"), Ok(1024));
+        assert_eq!(parse_size_bytes("16GiB"), Ok(16 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("16G"), Ok(16 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("512M"), Ok(512 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("2k"), Ok(2048));
+        assert_eq!(
+            parse_size_bytes("1.5G"),
+            Ok(1024 * 1024 * 1024 + 512 * 1024 * 1024)
+        );
+        assert!(parse_size_bytes("").is_err());
+        assert!(parse_size_bytes("0").is_err());
+        assert!(parse_size_bytes("abc").is_err());
+        assert!(parse_size_bytes("10X").is_err());
+    }
+}

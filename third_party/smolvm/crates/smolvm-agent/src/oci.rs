@@ -1,0 +1,2263 @@
+//! OCI Runtime Specification generation for crun integration.
+//!
+//! This module provides types and functions for generating OCI-compliant
+//! config.json files used by crun to execute containers.
+
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::ErrorKind;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// OCI Runtime Specification (subset for container execution).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciSpec {
+    #[serde(rename = "ociVersion")]
+    pub oci_version: String,
+    pub root: OciRoot,
+    pub process: OciProcess,
+    pub linux: OciLinux,
+    pub mounts: Vec<OciMount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+}
+
+/// Root filesystem configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciRoot {
+    /// Path to the root filesystem (relative to bundle or absolute).
+    pub path: String,
+    /// Whether the root filesystem should be read-only.
+    #[serde(default)]
+    pub readonly: bool,
+}
+
+/// Process configuration for the container.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciProcess {
+    /// Whether to allocate a pseudo-terminal.
+    #[serde(default)]
+    pub terminal: bool,
+    /// Initial size of the container's pseudo-terminal (when `terminal: true`).
+    #[serde(rename = "consoleSize", skip_serializing_if = "Option::is_none")]
+    pub console_size: Option<OciConsoleSize>,
+    /// User and group IDs.
+    pub user: OciUser,
+    /// Command and arguments to execute.
+    pub args: Vec<String>,
+    /// Environment variables in KEY=VALUE format.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// Working directory inside the container.
+    pub cwd: String,
+    /// Linux capabilities (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<OciCapabilities>,
+    /// Resource limits (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rlimits: Option<Vec<OciRlimit>>,
+    /// Do not create a new session for the process.
+    #[serde(rename = "noNewPrivileges", default)]
+    pub no_new_privileges: bool,
+}
+
+/// Initial size of a container's pseudo-terminal.
+///
+/// Serialises as OCI `consoleSize: { height, width }`. The host sends a
+/// `Resize` message with the real host terminal dimensions right after the
+/// container starts, so this is just the size seen by the very first
+/// frame the container draws.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct OciConsoleSize {
+    pub height: u32,
+    pub width: u32,
+}
+
+/// User configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OciUser {
+    pub uid: u32,
+    pub gid: u32,
+    #[serde(
+        rename = "additionalGids",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub additional_gids: Vec<u32>,
+}
+
+/// Resolved process identity for container execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub user: OciUser,
+    pub home: Option<String>,
+    /// The rootfs can load the `C.UTF-8` locale, so `LANG` may default to it.
+    pub c_utf8: bool,
+}
+
+impl ProcessIdentity {
+    pub fn root() -> Self {
+        Self {
+            user: OciUser {
+                uid: 0,
+                gid: 0,
+                additional_gids: vec![],
+            },
+            home: Some("/root".to_string()),
+            c_utf8: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PasswdEntry {
+    username: String,
+    uid: u32,
+    gid: u32,
+    home: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupEntry {
+    name: String,
+    gid: u32,
+    members: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedUser {
+    uid: u32,
+    username: Option<String>,
+    primary_gid: Option<u32>,
+    home: Option<String>,
+}
+
+pub fn resolve_process_identity(
+    rootfs: &Path,
+    user_spec: Option<&str>,
+) -> Result<ProcessIdentity, String> {
+    let mut identity = resolve_user_identity(rootfs, user_spec)?;
+    identity.c_utf8 = has_c_utf8_locale(rootfs);
+    Ok(identity)
+}
+
+/// Whether programs in `rootfs` can load `C.UTF-8`: glibc images that ship it
+/// (Debian, Ubuntu, Fedora, Amazon Linux) and musl, which needs no locale files.
+/// `LANG` stays unset elsewhere, since a locale that fails to load makes perl
+/// and others warn on every start.
+fn has_c_utf8_locale(rootfs: &Path) -> bool {
+    let locales = rootfs.join("usr/lib/locale");
+    if ["C.utf8", "C.UTF-8"]
+        .iter()
+        .any(|name| locales.join(name).is_dir())
+    {
+        return true;
+    }
+    ["lib", "usr/lib"].iter().any(|dir| {
+        std::fs::read_dir(rootfs.join(dir)).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("ld-musl-"))
+            })
+        })
+    })
+}
+
+fn resolve_user_identity(
+    rootfs: &Path,
+    user_spec: Option<&str>,
+) -> Result<ProcessIdentity, String> {
+    let normalized = user_spec.map(str::trim).filter(|s| !s.is_empty());
+    let passwd_entries = load_passwd_entries(rootfs)?;
+    let group_entries = load_group_entries(rootfs)?;
+
+    if normalized.is_none() {
+        return Ok(resolve_default_root_identity(
+            &passwd_entries,
+            &group_entries,
+        ));
+    }
+
+    let spec = normalized.expect("checked above");
+    let (user_token, group_token) = parse_user_spec(spec)?;
+
+    let resolved_user = resolve_user_token(user_token, &passwd_entries)?;
+    let primary_gid = match group_token {
+        Some(group) => resolve_group_token(group, &group_entries)?,
+        None => resolved_user.primary_gid.unwrap_or(0),
+    };
+
+    let additional_gids = supplemental_group_ids(
+        &group_entries,
+        resolved_user.username.as_deref(),
+        primary_gid,
+    );
+    let home = resolved_user.home.or_else(|| {
+        if resolved_user.uid == 0 {
+            Some("/root".to_string())
+        } else {
+            None
+        }
+    });
+
+    Ok(ProcessIdentity {
+        user: OciUser {
+            uid: resolved_user.uid,
+            gid: primary_gid,
+            additional_gids,
+        },
+        home,
+        c_utf8: false,
+    })
+}
+
+/// Resolve an OCI/CRI user spec — which may be a **username** (an image's
+/// `config.User`, e.g. `node`/`nobody`/`root`, or a CRI `RunAsUserName`) — to the
+/// numeric `"uid:gid"` form that `crun exec --user` requires. Unlike the OCI
+/// runtime spec's `process.user` (which `crun run` reads and resolves), crun's
+/// `--user` CLI flag only accepts numeric ids and rejects a name with
+/// `invalid USERSPEC specified` (issue #632).
+///
+/// The HOME a process gets for `identity`: its passwd home when it has one,
+/// otherwise `/`, which is what Docker gives a numeric uid that has no passwd
+/// entry. Leaving it unset breaks git, pip, npm and most tools that write
+/// under `$HOME`.
+pub fn home_for(identity: &ProcessIdentity) -> &str {
+    identity.home.as_deref().unwrap_or("/")
+}
+
+/// The one definition of the environment a workload process starts with.
+///
+/// Both the container spec (`crun run`) and an exec that joins the running
+/// container (`crun exec`, which builds a fresh environment rather than
+/// inheriting the container's) go through here, so the two can no longer
+/// drift: earlier they did, and first `SSH_AUTH_SOCK` and then `HOME` were
+/// present on one path and silently absent on the other. The caller's
+/// variables always win; `PATH`, `TERM`, `HOME` and `LANG` are only filled in
+/// when the caller left them out, and nothing is ever duplicated. `LANG` is
+/// `C.UTF-8` as on GitHub's runners, where the rootfs can load it.
+pub fn process_env_for(
+    identity: &ProcessIdentity,
+    env: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut out = env.to_vec();
+    for (key, value) in [
+        ("PATH", crate::crun::DEFAULT_CONTAINER_PATH),
+        ("TERM", "xterm-256color"),
+        ("HOME", home_for(identity)),
+        ("LANG", if identity.c_utf8 { "C.UTF-8" } else { "" }),
+    ] {
+        if !value.is_empty() && !out.iter().any(|(k, _)| k == key) {
+            out.push((key.to_string(), value.to_string()));
+        }
+    }
+    out
+}
+
+/// Apply [`process_env_for`] to an exec's environment, resolving the exec user
+/// against the container rootfs the way the `crun run` path does (the
+/// container default, root, when no user is given).
+pub fn apply_process_env(rootfs: &Path, user_spec: Option<&str>, env: &mut Vec<(String, String)>) {
+    if let Ok(identity) = resolve_process_identity(rootfs, user_spec) {
+        *env = process_env_for(&identity, env);
+    }
+}
+
+/// Returns `Ok(None)` for an empty/absent spec so the exec keeps the container
+/// default. Names are resolved against the rootfs `/etc/passwd` via
+/// [`resolve_process_identity`], so this stays consistent with the `crun run`
+/// path's resolution (same uid/gid, home, groups).
+pub fn resolve_exec_user_spec(
+    rootfs: &Path,
+    user_spec: Option<&str>,
+) -> Result<Option<String>, String> {
+    let normalized = user_spec.map(str::trim).filter(|s| !s.is_empty());
+    if normalized.is_none() {
+        return Ok(None);
+    }
+    let identity = resolve_process_identity(rootfs, user_spec)?;
+    Ok(Some(format!("{}:{}", identity.user.uid, identity.user.gid)))
+}
+
+fn parse_user_spec(spec: &str) -> Result<(&str, Option<&str>), String> {
+    match spec.split_once(':') {
+        Some((user, group)) => {
+            if user.is_empty() {
+                return Err("invalid empty user in OCI image config".to_string());
+            }
+            if group.is_empty() {
+                return Err("invalid empty group in OCI image config".to_string());
+            }
+            Ok((user, Some(group)))
+        }
+        None => Ok((spec, None)),
+    }
+}
+
+fn resolve_default_root_identity(
+    passwd_entries: &[PasswdEntry],
+    group_entries: &[GroupEntry],
+) -> ProcessIdentity {
+    if let Some(root) = passwd_entries.iter().find(|entry| entry.username == "root") {
+        return ProcessIdentity {
+            user: OciUser {
+                uid: root.uid,
+                gid: root.gid,
+                additional_gids: supplemental_group_ids(
+                    group_entries,
+                    Some(root.username.as_str()),
+                    root.gid,
+                ),
+            },
+            home: Some(root.home.clone()),
+            c_utf8: false,
+        };
+    }
+
+    ProcessIdentity::root()
+}
+
+fn resolve_user_token(user: &str, passwd_entries: &[PasswdEntry]) -> Result<ResolvedUser, String> {
+    if let Ok(uid) = user.parse::<u32>() {
+        if let Some(entry) = passwd_entries.iter().find(|entry| entry.uid == uid) {
+            return Ok(ResolvedUser {
+                uid,
+                username: Some(entry.username.clone()),
+                primary_gid: Some(entry.gid),
+                home: Some(entry.home.clone()),
+            });
+        }
+
+        return Ok(ResolvedUser {
+            uid,
+            username: None,
+            primary_gid: None,
+            home: None,
+        });
+    }
+
+    let entry = passwd_entries
+        .iter()
+        .find(|entry| entry.username == user)
+        .ok_or_else(|| format!("user '{}' not found in container rootfs", user))?;
+
+    Ok(ResolvedUser {
+        uid: entry.uid,
+        username: Some(entry.username.clone()),
+        primary_gid: Some(entry.gid),
+        home: Some(entry.home.clone()),
+    })
+}
+
+fn resolve_group_token(group: &str, group_entries: &[GroupEntry]) -> Result<u32, String> {
+    if let Ok(gid) = group.parse::<u32>() {
+        return Ok(gid);
+    }
+
+    group_entries
+        .iter()
+        .find(|entry| entry.name == group)
+        .map(|entry| entry.gid)
+        .ok_or_else(|| format!("group '{}' not found in container rootfs", group))
+}
+
+fn supplemental_group_ids(
+    group_entries: &[GroupEntry],
+    username: Option<&str>,
+    primary_gid: u32,
+) -> Vec<u32> {
+    let Some(username) = username else {
+        return Vec::new();
+    };
+
+    let mut gids = Vec::new();
+    for entry in group_entries {
+        if entry.gid != primary_gid
+            && entry.members.iter().any(|member| member == username)
+            && !gids.contains(&entry.gid)
+        {
+            gids.push(entry.gid);
+        }
+    }
+    gids
+}
+
+fn load_passwd_entries(rootfs: &Path) -> Result<Vec<PasswdEntry>, String> {
+    load_entries(rootfs.join("etc/passwd"), parse_passwd_entries)
+}
+
+fn load_group_entries(rootfs: &Path) -> Result<Vec<GroupEntry>, String> {
+    load_entries(rootfs.join("etc/group"), parse_group_entries)
+}
+
+fn load_entries<T>(
+    path: std::path::PathBuf,
+    parse: impl FnOnce(&str) -> Vec<T>,
+) -> Result<Vec<T>, String> {
+    match fs::read_to_string(&path) {
+        Ok(contents) => Ok(parse(&contents)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("failed to read {}: {}", path.display(), error)),
+    }
+}
+
+fn parse_passwd_entries(contents: &str) -> Vec<PasswdEntry> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+
+            let mut parts = line.splitn(7, ':');
+            let username = parts.next()?;
+            let _password = parts.next()?;
+            let uid = parts.next()?.parse().ok()?;
+            let gid = parts.next()?.parse().ok()?;
+            let _gecos = parts.next()?;
+            let home = parts.next()?;
+            let _shell = parts.next()?;
+
+            Some(PasswdEntry {
+                username: username.to_string(),
+                uid,
+                gid,
+                home: home.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_group_entries(contents: &str) -> Vec<GroupEntry> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+
+            let mut parts = line.splitn(4, ':');
+            let name = parts.next()?;
+            let _password = parts.next()?;
+            let gid = parts.next()?.parse().ok()?;
+            let members = parts
+                .next()
+                .map(|field| {
+                    field
+                        .split(',')
+                        .filter(|member| !member.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Some(GroupEntry {
+                name: name.to_string(),
+                gid,
+                members,
+            })
+        })
+        .collect()
+}
+
+/// Linux capabilities configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounding: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effective: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inheritable: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permitted: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ambient: Vec<String>,
+}
+
+/// Resource limit configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciRlimit {
+    #[serde(rename = "type")]
+    pub rlimit_type: String,
+    pub hard: u64,
+    pub soft: u64,
+}
+
+/// Linux-specific configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciLinux {
+    /// Namespaces to create.
+    pub namespaces: Vec<OciNamespace>,
+    /// Device nodes to create in the container.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<OciDevice>,
+    /// Masked paths (paths that should appear empty).
+    #[serde(rename = "maskedPaths", default, skip_serializing_if = "Vec::is_empty")]
+    pub masked_paths: Vec<String>,
+    /// Read-only paths.
+    #[serde(
+        rename = "readonlyPaths",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub readonly_paths: Vec<String>,
+}
+
+/// Device node configuration for OCI runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciDevice {
+    /// Device type: "c" (char), "b" (block), "p" (pipe)
+    #[serde(rename = "type")]
+    pub device_type: String,
+    /// Path inside the container
+    pub path: String,
+    /// Major device number
+    pub major: u32,
+    /// Minor device number
+    pub minor: u32,
+    /// File mode/permissions
+    #[serde(rename = "fileMode", skip_serializing_if = "Option::is_none")]
+    pub file_mode: Option<u32>,
+    /// Owner UID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    /// Owner GID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gid: Option<u32>,
+}
+
+/// Namespace configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciNamespace {
+    /// Type of namespace (pid, network, mount, ipc, uts, user, cgroup).
+    #[serde(rename = "type")]
+    pub ns_type: String,
+    /// Path to an existing namespace to join (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Mount configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciMount {
+    /// Destination path inside the container.
+    pub destination: String,
+    /// Filesystem type (proc, sysfs, tmpfs, bind, etc.).
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub mount_type: Option<String>,
+    /// Source path or device.
+    pub source: String,
+    /// Mount options.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+impl OciSpec {
+    /// Create a new OCI spec with sensible defaults for container execution.
+    ///
+    /// # Arguments
+    /// * `command` - Command and arguments to execute
+    /// * `env` - Environment variables as (key, value) pairs
+    /// * `workdir` - Working directory inside the container
+    /// * `tty` - Whether to allocate a pseudo-terminal
+    /// * `identity` - Resolved process uid/gid/home for the container
+    pub fn new(
+        command: &[String],
+        env: &[(String, String)],
+        workdir: &str,
+        tty: bool,
+        identity: &ProcessIdentity,
+        unprivileged: bool,
+    ) -> Self {
+        // The same environment an exec joining this container gets.
+        let env_strings: Vec<String> = process_env_for(identity, env)
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+
+        // Capabilities. Default is VM-grade (full set): the microVM is the security
+        // boundary, so the in-VM workload runs privileged — that's what lets init
+        // systems (systemd as PID 1) and tmpfs-mounting workloads boot (the "boot
+        // any image" promise). `unprivileged` opts into the restricted set for
+        // defense-in-depth with untrusted code.
+        let caps = if unprivileged {
+            default_capabilities()
+        } else {
+            full_capabilities()
+        };
+        let capabilities = OciCapabilities {
+            bounding: caps.clone(),
+            effective: caps.clone(),
+            inheritable: vec![],
+            permitted: caps,
+            ambient: vec![],
+        };
+
+        Self {
+            oci_version: "1.0.2".to_string(),
+            root: OciRoot {
+                path: "rootfs".to_string(),
+                readonly: false,
+            },
+            process: OciProcess {
+                terminal: tty,
+                console_size: None,
+                user: identity.user.clone(),
+                args: command.to_vec(),
+                env: env_strings,
+                cwd: workdir.to_string(),
+                capabilities: Some(capabilities),
+                rlimits: Some(vec![OciRlimit {
+                    rlimit_type: "RLIMIT_NOFILE".to_string(),
+                    hard: crate::DEFAULT_NOFILE_LIMIT,
+                    soft: crate::DEFAULT_NOFILE_LIMIT,
+                }]),
+                no_new_privileges: false,
+            },
+            linux: OciLinux {
+                namespaces: vec![
+                    OciNamespace {
+                        ns_type: "pid".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "mount".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "ipc".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "uts".to_string(),
+                        path: None,
+                    },
+                ],
+                devices: default_devices(),
+                // Mask/freeze the standard runc set of /proc and /sys paths only in
+                // unprivileged mode. In the default VM-grade mode the microVM is the
+                // security boundary (same rationale as the full capability set and the
+                // writable cgroup/tmpfs mounts above), so the workload gets a bare-VM
+                // /proc: an independent VM has all of /proc rw and unmasked, and
+                // freezing /proc/sys read-only here breaks in-VM init systems and
+                // docker-in-VM, which must write net.ipv4.ip_forward and friends.
+                masked_paths: if unprivileged {
+                    vec![
+                        "/proc/asound".to_string(),
+                        "/proc/acpi".to_string(),
+                        "/proc/kcore".to_string(),
+                        "/proc/keys".to_string(),
+                        "/proc/latency_stats".to_string(),
+                        "/proc/timer_list".to_string(),
+                        "/proc/timer_stats".to_string(),
+                        "/proc/sched_debug".to_string(),
+                        "/proc/scsi".to_string(),
+                        "/sys/firmware".to_string(),
+                    ]
+                } else {
+                    vec![]
+                },
+                readonly_paths: if unprivileged {
+                    vec![
+                        "/proc/bus".to_string(),
+                        "/proc/fs".to_string(),
+                        "/proc/irq".to_string(),
+                        "/proc/sys".to_string(),
+                        "/proc/sysrq-trigger".to_string(),
+                    ]
+                } else {
+                    vec![]
+                },
+            },
+            mounts: {
+                let mut mounts = default_mounts(unprivileged);
+                if !unprivileged {
+                    mounts.extend(tun_device_mount(Path::new("/dev/net/tun")));
+                }
+                mounts
+            },
+            hostname: Some(container_hostname()),
+        }
+    }
+
+    /// Add a bind mount to the spec.
+    ///
+    /// # Arguments
+    /// * `source` - Source path on the host
+    /// * `destination` - Destination path inside the container
+    /// * `read_only` - Whether the mount should be read-only
+    pub fn add_bind_mount(&mut self, source: &str, destination: &str, read_only: bool) {
+        let mut options = vec!["bind".to_string(), "rprivate".to_string()];
+        if read_only {
+            options.push("ro".to_string());
+        }
+        self.mounts.push(OciMount {
+            destination: destination.to_string(),
+            mount_type: Some("bind".to_string()),
+            source: source.to_string(),
+            options,
+        });
+    }
+
+    /// Set or replace an environment variable on the container's process.
+    ///
+    /// If an entry with the same key already exists (e.g., inherited from
+    /// the image config), it is replaced — otherwise appended. This avoids
+    /// the container seeing two entries for the same variable, which would
+    /// leave the value shell-dependent.
+    pub fn add_env(&mut self, name: &str, value: &str) {
+        let prefix = format!("{}=", name);
+        self.process.env.retain(|entry| !entry.starts_with(&prefix));
+        self.process.env.push(format!("{}{}", prefix, value));
+    }
+
+    /// Expose /dev/kvm to the container if the VM has it.
+    ///
+    /// crun lays a fresh tmpfs over /dev, so a node the agent created in the
+    /// VM's /dev is invisible inside the container -- which is where a nested
+    /// hypervisor actually runs. Bind-mounted for the same reason as /dev/dri
+    /// above: it is equivalent to `--device /dev/kvm`, and mknod into crun's
+    /// tmpfs is not a workable alternative.
+    pub fn add_kvm_device_if_available(&mut self) {
+        if self.mounts.iter().any(|m| m.destination == "/dev/kvm") {
+            return;
+        }
+        if !std::path::Path::new("/dev/kvm").exists() {
+            return; // not a --nested machine, or the kernel has no KVM
+        }
+        self.mounts.push(OciMount {
+            destination: "/dev/kvm".to_string(),
+            mount_type: Some("bind".to_string()),
+            source: "/dev/kvm".to_string(),
+            options: vec!["bind".to_string(), "rprivate".to_string()],
+        });
+    }
+
+    /// Expose the DMA-BUF heaps (/dev/dma_heap) to the container if the VM has them.
+    ///
+    /// Android allocates its graphics buffers from /dev/dma_heap/system, so the
+    /// Android emulator and Android containers fail without it. Like /dev/kvm,
+    /// the node lives in the VM's /dev, which crun's tmpfs hides, so it is
+    /// bind-mounted, the same as `--device /dev/dma_heap`.
+    pub fn add_dma_heap_devices_if_available(&mut self) {
+        if self.mounts.iter().any(|m| m.destination == "/dev/dma_heap") {
+            return;
+        }
+        if !std::path::Path::new("/dev/dma_heap").exists() {
+            return; // a guest kernel built without DMA-BUF heaps
+        }
+        self.mounts.push(OciMount {
+            destination: "/dev/dma_heap".to_string(),
+            mount_type: Some("bind".to_string()),
+            source: "/dev/dma_heap".to_string(),
+            options: vec!["bind".to_string(), "rprivate".to_string()],
+        });
+    }
+
+    /// Expose every device the VM offers its workloads: GPU render nodes,
+    /// /dev/kvm and the DMA-BUF heaps, each only when the VM has it. Every path
+    /// that builds a workload spec calls this, so `run`, `exec`, interactive
+    /// shells and pods all see the same devices.
+    pub fn add_vm_devices_if_available(&mut self) {
+        self.add_gpu_devices_if_available();
+        self.add_kvm_device_if_available();
+        self.add_dma_heap_devices_if_available();
+    }
+
+    /// Expose GPU render nodes to the container if /dev/dri exists in the VM.
+    ///
+    /// Detects virtio-gpu devices at runtime and adds a bind mount to the OCI
+    /// spec. This allows containers to use Vulkan (via Mesa Venus) without any
+    /// special configuration — if the VM was started with `--gpu`, the devices
+    /// appear automatically inside every container.
+    pub fn add_gpu_devices_if_available(&mut self) {
+        if self.mounts.iter().any(|m| m.destination == "/dev/dri") {
+            return;
+        }
+
+        let dri_path = std::path::Path::new("/dev/dri");
+        if !dri_path.exists() {
+            return;
+        }
+
+        // Bind-mount /dev/dri from the VM's devtmpfs into the container.
+        //
+        // A bind mount is used rather than linux.devices entries because crun
+        // sets up a fresh tmpfs at /dev; the /dev/dri sub-directory does not
+        // exist in that tmpfs, so mknod silently fails for any device node
+        // whose parent directory is missing.  A bind mount is equivalent to
+        // `--device /dev/dri` in Docker/Podman, and crun creates the
+        // destination directory automatically when it does not yet exist.
+        self.mounts.push(OciMount {
+            destination: "/dev/dri".to_string(),
+            mount_type: Some("bind".to_string()),
+            source: "/dev/dri".to_string(),
+            options: vec!["bind".to_string(), "rprivate".to_string()],
+        });
+    }
+
+    /// Leave the workload's /tmp to its root filesystem: drop the default tmpfs
+    /// mount there. A separate /tmp mount, tmpfs or bind, made rename(2) from
+    /// /tmp into the rest of the filesystem fail with EXDEV, and a tmpfs sized
+    /// from boot RAM ran out of space with the disk mostly empty; GitHub's
+    /// runners and most VMs keep /tmp on the root filesystem. The overlay's
+    /// upper layer gets a fresh, opaque /tmp at each boot
+    /// (`storage::reset_workload_tmp`), and exports leave its contents out.
+    /// Only the default tmpfs goes: a caller's own /tmp mount is kept, and a
+    /// read-only root keeps the tmpfs, as it has no writable /tmp of its own.
+    fn tmp_on_root(&mut self) {
+        if self.root.readonly {
+            return;
+        }
+        self.mounts.retain(|mount| {
+            !(mount.destination == "/tmp"
+                && mount.mount_type.as_deref() == Some("tmpfs")
+                && mount.source == "tmpfs")
+        });
+    }
+
+    /// Write the OCI spec to a config.json file in the bundle directory.
+    ///
+    /// When the bundle sits in an overlay (an [`OVERLAY_UPPER_DIR`] beside it)
+    /// whose boot prepared the upper layer's /tmp (no [`TMP_KEEP_TMPFS_MARKER`]
+    /// beside it), the written spec leaves /tmp to the root filesystem (see
+    /// [`Self::tmp_on_root`]); otherwise the tmpfs stays.
+    pub fn write_to(&self, bundle_dir: &Path) -> std::io::Result<()> {
+        let config_path = bundle_dir.join("config.json");
+        let tmp_on_root = bundle_dir.parent().is_some_and(|overlay| {
+            overlay.join(OVERLAY_UPPER_DIR).is_dir()
+                && !overlay.join(TMP_KEEP_TMPFS_MARKER).exists()
+        });
+        let mut spec = std::borrow::Cow::Borrowed(self);
+        if tmp_on_root {
+            spec.to_mut().tmp_on_root();
+        }
+        let json = serde_json::to_string_pretty(&*spec)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(config_path, json)
+    }
+}
+
+/// Maximum allowed length for an image reference.
+const MAX_IMAGE_REF_LENGTH: usize = 512;
+
+/// Validate an OCI image reference format.
+///
+/// This validates that the image reference follows the expected format:
+/// `[registry/][repository/]name[:tag][@digest]`
+///
+/// # Arguments
+/// * `image` - The image reference to validate
+///
+/// # Returns
+/// * `Ok(())` if valid
+/// * `Err(message)` if invalid
+///
+/// # Example valid references:
+/// * `alpine`
+/// * `alpine:latest`
+/// * `alpine:3.18`
+/// * `library/alpine`
+/// * `docker.io/library/alpine:latest`
+/// * `ghcr.io/owner/repo:tag`
+/// * `alpine@sha256:abc123...`
+pub fn validate_image_reference(image: &str) -> Result<(), String> {
+    // Check length
+    if image.is_empty() {
+        return Err("image reference cannot be empty".into());
+    }
+    if image.len() > MAX_IMAGE_REF_LENGTH {
+        return Err(format!(
+            "image reference too long: {} bytes (max: {})",
+            image.len(),
+            MAX_IMAGE_REF_LENGTH
+        ));
+    }
+
+    // Check for obviously dangerous characters that could enable injection
+    // These should never appear in valid OCI references
+    let forbidden_chars = ['$', '`', '|', ';', '&', '>', '<', '\n', '\r', '\0'];
+    for c in forbidden_chars {
+        if image.contains(c) {
+            return Err(format!(
+                "image reference contains forbidden character: {:?}",
+                c
+            ));
+        }
+    }
+
+    // Check for shell metacharacters in sequence
+    if image.contains("..") && image.contains('/') {
+        // Path traversal attempt
+        return Err("image reference contains suspicious path traversal".into());
+    }
+
+    // Basic format validation: must have at least one valid character
+    // Valid characters: alphanumeric, '.', '-', '_', '/', ':', '@'
+    let valid_chars = |c: char| {
+        c.is_ascii_alphanumeric()
+            || c == '.'
+            || c == '-'
+            || c == '_'
+            || c == '/'
+            || c == ':'
+            || c == '@'
+    };
+
+    if !image.chars().all(valid_chars) {
+        return Err("image reference contains invalid characters".into());
+    }
+
+    // Must not start or end with special characters
+    // Note: We already checked for empty above, but use defensive programming
+    let first = match image.chars().next() {
+        Some(c) => c,
+        None => return Err("image reference is empty".into()),
+    };
+    let last = match image.chars().last() {
+        Some(c) => c,
+        None => return Err("image reference is empty".into()),
+    };
+
+    if !first.is_ascii_alphanumeric() {
+        return Err("image reference must start with alphanumeric character".into());
+    }
+    if !last.is_ascii_alphanumeric() {
+        return Err("image reference must end with alphanumeric character".into());
+    }
+
+    Ok(())
+}
+
+/// Validate environment variables.
+///
+/// Environment variable keys must:
+/// - Not be empty
+/// - Start with a letter or underscore
+/// - Contain only alphanumeric characters and underscores
+/// - Not exceed 256 characters
+///
+/// Values can be any string but must not exceed 32KB.
+pub fn validate_env_vars(env: &[(String, String)]) -> Result<(), String> {
+    const MAX_KEY_LEN: usize = 256;
+    const MAX_VALUE_LEN: usize = 32 * 1024; // 32KB
+
+    for (key, value) in env {
+        // Key validation
+        if key.is_empty() {
+            return Err("environment variable key cannot be empty".into());
+        }
+
+        if key.len() > MAX_KEY_LEN {
+            return Err(format!(
+                "environment variable key '{}...' exceeds {} character limit",
+                &key[..32.min(key.len())],
+                MAX_KEY_LEN
+            ));
+        }
+
+        // Key must start with letter or underscore
+        // SAFETY: empty keys are rejected above
+        let first_char = key.chars().next().expect("key is non-empty");
+        if !first_char.is_ascii_alphabetic() && first_char != '_' {
+            return Err(format!(
+                "environment variable key '{}' must start with a letter or underscore",
+                key
+            ));
+        }
+
+        // Key must contain only alphanumeric and underscore
+        if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!(
+                "environment variable key '{}' contains invalid characters (only alphanumeric and underscore allowed)",
+                key
+            ));
+        }
+
+        // Value length validation
+        if value.len() > MAX_VALUE_LEN {
+            return Err(format!(
+                "environment variable '{}' value exceeds {} byte limit",
+                key, MAX_VALUE_LEN
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate a unique container ID.
+///
+/// Uses a combination of timestamp and random bytes to ensure uniqueness
+/// even when containers are created in rapid succession.
+pub fn generate_container_id() -> String {
+    use std::fs::File;
+    use std::io::Read;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    // Get 4 bytes of randomness from /dev/urandom
+    let random_bytes: u32 = File::open("/dev/urandom")
+        .and_then(|mut f| {
+            let mut buf = [0u8; 4];
+            f.read_exact(&mut buf)?;
+            Ok(u32::from_ne_bytes(buf))
+        })
+        .unwrap_or_else(|_| {
+            // Fallback: use process ID and more timestamp bits if /dev/urandom fails
+            std::process::id() ^ ((timestamp >> 32) as u32)
+        });
+
+    // Combine lower 32 bits of timestamp with 32 bits of randomness
+    format!(
+        "smolvm-{:08x}{:08x}",
+        (timestamp & 0xFFFF_FFFF) as u32,
+        random_bytes
+    )
+}
+
+/// Default Linux capabilities for root containers.
+// Retained as the fallback for a future opt-in unprivileged mode (`--unprivileged`).
+#[allow(dead_code)]
+fn default_capabilities() -> Vec<String> {
+    vec![
+        "CAP_CHOWN".to_string(),
+        "CAP_DAC_OVERRIDE".to_string(),
+        "CAP_FSETID".to_string(),
+        "CAP_FOWNER".to_string(),
+        "CAP_MKNOD".to_string(),
+        "CAP_NET_RAW".to_string(),
+        "CAP_SETGID".to_string(),
+        "CAP_SETUID".to_string(),
+        "CAP_SETFCAP".to_string(),
+        "CAP_SETPCAP".to_string(),
+        "CAP_NET_BIND_SERVICE".to_string(),
+        "CAP_SYS_CHROOT".to_string(),
+        "CAP_KILL".to_string(),
+        "CAP_AUDIT_WRITE".to_string(),
+    ]
+}
+
+/// Full capability set for a "VM-grade" workload. smolvm runs one workload per
+/// microVM, so the KVM boundary — not the in-VM container — is the security
+/// boundary; dropping capabilities here protects nothing (an escape lands in the
+/// VM's own single-tenant kernel) while breaking legitimate images that expect a
+/// real machine (systemd/OpenRC as PID 1, or anything that mounts a tmpfs). So the
+/// default container is effectively privileged. An opt-in unprivileged mode can
+/// fall back to [`default_capabilities`] for defense-in-depth with untrusted code.
+fn full_capabilities() -> Vec<String> {
+    [
+        "CAP_AUDIT_CONTROL",
+        "CAP_AUDIT_READ",
+        "CAP_AUDIT_WRITE",
+        "CAP_BLOCK_SUSPEND",
+        "CAP_BPF",
+        "CAP_CHECKPOINT_RESTORE",
+        "CAP_CHOWN",
+        "CAP_DAC_OVERRIDE",
+        "CAP_DAC_READ_SEARCH",
+        "CAP_FOWNER",
+        "CAP_FSETID",
+        "CAP_IPC_LOCK",
+        "CAP_IPC_OWNER",
+        "CAP_KILL",
+        "CAP_LEASE",
+        "CAP_LINUX_IMMUTABLE",
+        "CAP_MAC_ADMIN",
+        "CAP_MAC_OVERRIDE",
+        "CAP_MKNOD",
+        "CAP_NET_ADMIN",
+        "CAP_NET_BIND_SERVICE",
+        "CAP_NET_BROADCAST",
+        "CAP_NET_RAW",
+        "CAP_PERFMON",
+        "CAP_SETFCAP",
+        "CAP_SETGID",
+        "CAP_SETPCAP",
+        "CAP_SETUID",
+        "CAP_SYS_ADMIN",
+        "CAP_SYS_BOOT",
+        "CAP_SYS_CHROOT",
+        "CAP_SYS_MODULE",
+        "CAP_SYS_NICE",
+        "CAP_SYS_PACCT",
+        "CAP_SYS_PTRACE",
+        "CAP_SYS_RAWIO",
+        "CAP_SYS_RESOURCE",
+        "CAP_SYS_TIME",
+        "CAP_SYS_TTY_CONFIG",
+        "CAP_SYSLOG",
+        "CAP_WAKE_ALARM",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Default device nodes for container execution.
+/// These are standard Linux devices that should exist in /dev.
+fn default_devices() -> Vec<OciDevice> {
+    let mut devices = vec![
+        // /dev/null - discard all writes, reads return EOF
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/null".to_string(),
+            major: 1,
+            minor: 3,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/zero - reads return null bytes
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/zero".to_string(),
+            major: 1,
+            minor: 5,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/full - writes fail with ENOSPC
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/full".to_string(),
+            major: 1,
+            minor: 7,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/random - random number generator (blocking)
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/random".to_string(),
+            major: 1,
+            minor: 8,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/urandom - random number generator (non-blocking)
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/urandom".to_string(),
+            major: 1,
+            minor: 9,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/tty - controlling terminal
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/tty".to_string(),
+            major: 5,
+            minor: 0,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/kmsg - kernel log device. The kubelet (k3s/k3d, kind, most
+        // Kubernetes-in-Docker) hard-requires it and refuses to start without
+        // it ("failed to create kubelet: open /dev/kmsg: no such file or
+        // directory"). Bare VMs get it from devtmpfs, but the container /dev is
+        // built from this list, so add it here so nested Kubernetes works out
+        // of the box. Each machine is its own microVM, so exposing its kernel
+        // log to the container is not a cross-tenant concern.
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/kmsg".to_string(),
+            major: 1,
+            minor: 11,
+            file_mode: Some(0o644),
+            uid: Some(0),
+            gid: Some(0),
+        },
+        // /dev/fuse - userspace filesystems. The guest kernel has FUSE, but the
+        // container /dev is built from this list, so without an entry here any
+        // FUSE client in the image (JuiceFS, s3fs, SeaweedFS, sshfs) fails to
+        // mount until the user runs `mknod /dev/fuse c 10 229` by hand. The
+        // agent's own remote-volume mounts create the node themselves; this
+        // makes a client the user brings work the same way.
+        OciDevice {
+            device_type: "c".to_string(),
+            path: "/dev/fuse".to_string(),
+            major: 10,
+            minor: 229,
+            file_mode: Some(0o666),
+            uid: Some(0),
+            gid: Some(0),
+        },
+    ];
+    devices.extend(attached_disk_devices());
+    devices
+}
+
+/// Block-device nodes for disks attached with `--disk`.
+///
+/// The guest kernel's devtmpfs has them, but the container's `/dev` is a fresh
+/// tmpfs built from this list, so an attached disk is invisible inside the
+/// container until someone runs `mknod` by hand on every boot. Worse than
+/// invisible: `dd of=/dev/vdc` in a container without the node silently creates
+/// a regular file on that tmpfs and reports success, so a caller can appear to
+/// write a disk and lose everything.
+///
+/// `/dev/vda` (the machine's storage disk) and `/dev/vdb` (its overlay) are
+/// deliberately left out. They back the container's own filesystem, so handing
+/// the workload raw access would let it corrupt the ground it stands on.
+/// Everything past them was attached by the caller and is exactly what they
+/// asked to reach.
+fn attached_disk_devices() -> Vec<OciDevice> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/sys/block") else {
+        return out;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with("vd") && n > &"vdb".to_string())
+        .collect();
+    // Stable order so the container's /dev matches the attach order.
+    names.sort();
+    for name in names {
+        // `/sys/block/<dev>/dev` holds "major:minor".
+        let Ok(raw) = std::fs::read_to_string(format!("/sys/block/{name}/dev")) else {
+            continue;
+        };
+        let Some((major, minor)) = raw.trim().split_once(':') else {
+            continue;
+        };
+        let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
+            continue;
+        };
+        out.push(OciDevice {
+            device_type: "b".to_string(),
+            path: format!("/dev/{name}"),
+            major,
+            minor,
+            // Root-only: an attached disk is raw storage, not something every
+            // uid in the image should be able to overwrite.
+            file_mode: Some(0o600),
+            uid: Some(0),
+            gid: Some(0),
+        });
+    }
+    out
+}
+
+/// The guest's `/dev/net/tun`, bind-mounted into the container.
+///
+/// The guest kernel carries the TUN driver and its devtmpfs creates the node,
+/// but the container's `/dev` is a fresh tmpfs built from the spec, so nothing
+/// inside the image can open a tunnel (Tailscale, WireGuard, OpenVPN, any
+/// userspace network stack) until someone runs `mknod` by hand on every boot.
+/// This follows the `/dev/dri` shape rather than adding a `linux.devices`
+/// entry: crun's mknod fails silently when the node's parent directory does
+/// not exist in that tmpfs, and `/dev/net` never does, whereas crun creates
+/// the destination of a bind mount as needed. Nothing is added when the guest
+/// has no such node, so a kernel without TUN simply leaves it out; the caller
+/// keeps it out of unprivileged workloads, whose reduced device view stays.
+fn tun_device_mount(guest_node: &Path) -> Option<OciMount> {
+    guest_node.exists().then(|| OciMount {
+        destination: "/dev/net/tun".to_string(),
+        mount_type: Some("bind".to_string()),
+        source: guest_node.display().to_string(),
+        options: vec!["bind".to_string(), "rprivate".to_string()],
+    })
+}
+
+/// The upper layer beside an overlay's `bundle`: a bundle with one is an overlay workload's.
+pub const OVERLAY_UPPER_DIR: &str = "upper";
+
+/// A file beside the upper layer that a boot leaves when the upper layer's
+/// /tmp could not be prepared (cleared, created, made opaque): the bundle then
+/// keeps its tmpfs /tmp rather than show the image's /tmp or an earlier boot's
+/// files. See `storage::reset_workload_tmp`.
+pub const TMP_KEEP_TMPFS_MARKER: &str = "tmp-keep-tmpfs";
+
+/// The workload's /dev/shm size: the machine's `--shm-size`, else half the
+/// guest's RAM, as on a Linux VM or a hosted CI runner rather than Docker's
+/// 64 MiB (browsers and ML loaders size buffers from it). tmpfs takes memory
+/// only as files are written.
+fn shm_size() -> String {
+    std::env::var(smolvm_protocol::guest_env::SHM_SIZE)
+        .ok()
+        .and_then(|size| smolvm_protocol::guest_env::shm_size_option(&size).ok())
+        .unwrap_or_else(|| "50%".to_string())
+}
+
+/// Default mounts for container execution.
+fn default_mounts(unprivileged: bool) -> Vec<OciMount> {
+    let mut mounts = vec![
+        // /proc - process information
+        OciMount {
+            destination: "/proc".to_string(),
+            mount_type: Some("proc".to_string()),
+            source: "proc".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "nodev".to_string(),
+            ],
+        },
+        // /dev - device nodes
+        OciMount {
+            destination: "/dev".to_string(),
+            mount_type: Some("tmpfs".to_string()),
+            source: "tmpfs".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "strictatime".to_string(),
+                "mode=755".to_string(),
+                "size=65536k".to_string(),
+            ],
+        },
+        // /dev/pts - pseudo-terminal devices
+        OciMount {
+            destination: "/dev/pts".to_string(),
+            mount_type: Some("devpts".to_string()),
+            source: "devpts".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "newinstance".to_string(),
+                "ptmxmode=0666".to_string(),
+                "mode=0620".to_string(),
+            ],
+        },
+        // /dev/shm - shared memory
+        OciMount {
+            destination: "/dev/shm".to_string(),
+            mount_type: Some("tmpfs".to_string()),
+            source: "shm".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "nodev".to_string(),
+                "mode=1777".to_string(),
+                format!("size={}", shm_size()),
+            ],
+        },
+        // /dev/mqueue - POSIX message queues
+        OciMount {
+            destination: "/dev/mqueue".to_string(),
+            mount_type: Some("mqueue".to_string()),
+            source: "mqueue".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "nodev".to_string(),
+            ],
+        },
+        // /sys - sysfs (read-only for security)
+        OciMount {
+            destination: "/sys".to_string(),
+            mount_type: Some("sysfs".to_string()),
+            source: "sysfs".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "nodev".to_string(),
+                "ro".to_string(),
+            ],
+        },
+    ];
+    // /sys/fs/cgroup — cgroup2. Writable by default so an init system (systemd) can
+    // manage its own cgroup subtree; read-only in unprivileged mode.
+    mounts.push(OciMount {
+        destination: "/sys/fs/cgroup".to_string(),
+        mount_type: Some("cgroup2".to_string()),
+        source: "cgroup".to_string(),
+        options: vec![
+            "nosuid".to_string(),
+            "noexec".to_string(),
+            "nodev".to_string(),
+            if unprivileged { "ro" } else { "rw" }.to_string(),
+        ],
+    });
+    if !unprivileged {
+        // tmpfs that init systems and many services set up at boot. Pre-providing
+        // them means the workload doesn't have to mount them itself, and read-only
+        // rootfs images still get writable runtime dirs. Omitted when unprivileged
+        // (the workload can't mount, but also isn't expected to be an init system).
+        mounts.push(OciMount {
+            destination: "/run".to_string(),
+            mount_type: Some("tmpfs".to_string()),
+            source: "tmpfs".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "nodev".to_string(),
+                "mode=0755".to_string(),
+                "size=65536k".to_string(),
+            ],
+        });
+        mounts.push(OciMount {
+            destination: "/run/lock".to_string(),
+            mount_type: Some("tmpfs".to_string()),
+            source: "tmpfs".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "nodev".to_string(),
+                "noexec".to_string(),
+                "mode=1777".to_string(),
+                "size=5120k".to_string(),
+            ],
+        });
+        mounts.push(OciMount {
+            destination: "/tmp".to_string(),
+            mount_type: Some("tmpfs".to_string()),
+            source: "tmpfs".to_string(),
+            options: vec![
+                "nosuid".to_string(),
+                "nodev".to_string(),
+                "mode=1777".to_string(),
+            ],
+        });
+    }
+
+    // Drop mounts whose filesystem the guest kernel doesn't provide. The WHP
+    // guest kernel may lack CONFIG_POSIX_MQUEUE; crun fails the entire container
+    // with "mount mqueue: No such device" if /dev/mqueue can't be mounted, and
+    // almost no workload needs POSIX message queues. /proc/filesystems lists the
+    // kernel's known filesystems (e.g. "nodev\tmqueue").
+    if !proc_filesystems_has("mqueue") {
+        mounts.retain(|m| m.mount_type.as_deref() != Some("mqueue"));
+    }
+    mounts
+}
+
+/// Whether the guest kernel registers `fstype` (per /proc/filesystems). Assumes
+/// supported when the file can't be read, to avoid over-filtering.
+fn proc_filesystems_has(fstype: &str) -> bool {
+    std::fs::read_to_string("/proc/filesystems")
+        .map(|s| s.split_whitespace().any(|w| w == fstype))
+        .unwrap_or(true)
+}
+
+/// The container's hostname.
+///
+/// A normal boot uses the machine name supplied in the agent environment. A
+/// restored fork clone inherits that immutable process environment from its
+/// golden, but clone rejuvenation updates the VM's kernel hostname before it
+/// publishes `RESTORED_PATH`. Prefer that runtime hostname only after restore,
+/// so a recycled keep-alive container receives the clone's identity rather
+/// than recreating the golden's private UTS namespace.
+pub fn container_hostname() -> String {
+    let restored = Path::new(smolvm_protocol::forkpoint::RESTORED_PATH).is_file();
+    let runtime = restored
+        .then(|| fs::read_to_string("/proc/sys/kernel/hostname").ok())
+        .flatten();
+    let configured = std::env::var(smolvm_protocol::guest_env::MACHINE_NAME).ok();
+    resolve_container_hostname(restored, runtime.as_deref(), configured.as_deref())
+}
+
+fn resolve_container_hostname(
+    restored: bool,
+    runtime: Option<&str>,
+    configured: Option<&str>,
+) -> String {
+    restored
+        .then_some(runtime)
+        .flatten()
+        .into_iter()
+        .chain(configured)
+        .map(str::trim)
+        .find(|name| is_dns_label(name))
+        .unwrap_or("container")
+        .to_string()
+}
+
+/// Whether `s` is a lowercase DNS label usable verbatim as a hostname:
+/// non-empty, ≤63 bytes, `[a-z0-9-]`, no edge hyphens.
+fn is_dns_label(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dev_shm_takes_half_the_guest_ram_unless_the_machine_sets_a_size() {
+        let shm_size = |unprivileged| {
+            super::default_mounts(unprivileged)
+                .into_iter()
+                .find(|mount| mount.destination == "/dev/shm")
+                .expect("/dev/shm is mounted")
+                .options
+                .into_iter()
+                .find(|option| option.starts_with("size="))
+        };
+        let key = smolvm_protocol::guest_env::SHM_SIZE;
+        std::env::remove_var(key);
+        for unprivileged in [false, true] {
+            assert_eq!(shm_size(unprivileged).as_deref(), Some("size=50%"));
+        }
+        std::env::set_var(key, "2G");
+        assert_eq!(shm_size(false).as_deref(), Some("size=2g"));
+        // A value the validator refuses never reaches the mount.
+        std::env::set_var(key, "1g,mode=0777");
+        assert_eq!(shm_size(false).as_deref(), Some("size=50%"));
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn dns_label_check_accepts_valid_names_rejects_the_rest() {
+        use super::is_dns_label;
+        // Valid machine names (validate_vm_name guarantees this shape) pass verbatim.
+        assert!(is_dns_label("my-vm"));
+        assert!(is_dns_label("worker-1"));
+        assert!(is_dns_label("vm-1a2b3c4d"));
+        // Anything not already a label is rejected (falls back to "container"),
+        // never transformed — so distinct names never collide.
+        assert!(!is_dns_label(""));
+        assert!(!is_dns_label("My-VM")); // uppercase
+        assert!(!is_dns_label("my_vm")); // underscore
+        assert!(!is_dns_label("-edge"));
+        assert!(!is_dns_label("edge-"));
+        assert!(!is_dns_label(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn restored_container_prefers_rejuvenated_runtime_hostname() {
+        assert_eq!(
+            resolve_container_hostname(true, Some("clone-7\n"), Some("golden")),
+            "clone-7"
+        );
+        assert_eq!(
+            resolve_container_hostname(false, Some("clone-7"), Some("golden")),
+            "golden"
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_hostname_falls_back_to_configured_name() {
+        assert_eq!(
+            resolve_container_hostname(true, Some("NOT A LABEL"), Some("golden")),
+            "golden"
+        );
+        assert_eq!(resolve_container_hostname(true, None, None), "container");
+    }
+
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_validate_image_reference_valid() {
+        // Valid references should pass
+        assert!(validate_image_reference("alpine").is_ok());
+        assert!(validate_image_reference("alpine:latest").is_ok());
+        assert!(validate_image_reference("alpine:3.18").is_ok());
+        assert!(validate_image_reference("library/alpine").is_ok());
+        assert!(validate_image_reference("docker.io/library/alpine").is_ok());
+        assert!(validate_image_reference("ghcr.io/owner/repo:tag").is_ok());
+        assert!(validate_image_reference("my-registry.com/my-image:v1.0.0").is_ok());
+        assert!(validate_image_reference("alpine@sha256:abc123def456").is_ok());
+    }
+
+    #[test]
+    fn test_validate_image_reference_invalid() {
+        // Empty
+        assert!(validate_image_reference("").is_err());
+
+        // Forbidden characters (shell injection)
+        assert!(validate_image_reference("alpine; rm -rf /").is_err());
+        assert!(validate_image_reference("alpine | cat /etc/passwd").is_err());
+        assert!(validate_image_reference("alpine`whoami`").is_err());
+        assert!(validate_image_reference("alpine$PATH").is_err());
+        assert!(validate_image_reference("alpine > /tmp/x").is_err());
+        assert!(validate_image_reference("alpine\nmalicious").is_err());
+
+        // Invalid characters
+        assert!(validate_image_reference("alpine image").is_err()); // space
+        assert!(validate_image_reference("alpine!").is_err());
+
+        // Must start/end with alphanumeric
+        assert!(validate_image_reference("/alpine").is_err());
+        assert!(validate_image_reference("alpine:").is_err());
+        assert!(validate_image_reference("-alpine").is_err());
+    }
+
+    #[test]
+    fn test_validate_image_reference_length() {
+        // Very long reference should fail
+        let long_ref = "a".repeat(600);
+        assert!(validate_image_reference(&long_ref).is_err());
+
+        // Just under limit should pass
+        let ok_ref = "a".repeat(500);
+        assert!(validate_image_reference(&ok_ref).is_ok());
+    }
+
+    #[test]
+    fn test_generate_container_id() {
+        let id1 = generate_container_id();
+        let id2 = generate_container_id();
+
+        assert!(id1.starts_with("smolvm-"));
+        assert!(id2.starts_with("smolvm-"));
+        // ID format: smolvm-{8 hex}{8 hex} = "smolvm-" (7) + 16 hex chars = 23 total
+        assert_eq!(id1.len(), 23);
+        assert_eq!(id2.len(), 23);
+        // IDs should be unique (different timestamps + random bytes)
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_oci_spec_creation() {
+        let spec = OciSpec::new(
+            &["echo".to_string(), "hello".to_string()],
+            &[("FOO".to_string(), "bar".to_string())],
+            "/",
+            false,
+            &ProcessIdentity::root(),
+            false,
+        );
+
+        assert_eq!(spec.oci_version, "1.0.2");
+        assert_eq!(spec.process.args, vec!["echo", "hello"]);
+        assert!(spec.process.env.contains(&"FOO=bar".to_string()));
+        assert!(spec.process.env.contains(&"HOME=/root".to_string()));
+        assert!(!spec.process.terminal);
+        assert!(spec.process.console_size.is_none());
+
+        // /dev/kmsg (1:11) must be in the container's device set — the kubelet
+        // (k3s/k3d, kind) refuses to start without it, so nested Kubernetes
+        // works out of the box.
+        let kmsg = spec
+            .linux
+            .devices
+            .iter()
+            .find(|d| d.path == "/dev/kmsg")
+            .expect("/dev/kmsg device present");
+        assert_eq!(
+            (kmsg.device_type.as_str(), kmsg.major, kmsg.minor),
+            ("c", 1, 11)
+        );
+
+        // /dev/fuse (10:229) must be there too, or a FUSE client the user
+        // brings (JuiceFS, s3fs, sshfs) cannot mount without mknod'ing it.
+        let fuse = spec
+            .linux
+            .devices
+            .iter()
+            .find(|d| d.path == "/dev/fuse")
+            .expect("/dev/fuse device present");
+        assert_eq!(
+            (fuse.device_type.as_str(), fuse.major, fuse.minor),
+            ("c", 10, 229)
+        );
+    }
+
+    #[test]
+    fn test_oci_console_size_serialises_as_camel_case() {
+        let mut spec = OciSpec::new(
+            &["sh".to_string()],
+            &[],
+            "/",
+            true,
+            &ProcessIdentity::root(),
+            false,
+        );
+        spec.process.console_size = Some(OciConsoleSize {
+            height: 24,
+            width: 80,
+        });
+        let json = serde_json::to_value(&spec).unwrap();
+        let cs = json
+            .get("process")
+            .and_then(|p| p.get("consoleSize"))
+            .expect("consoleSize should serialise as camelCase under process");
+        assert_eq!(cs.get("height").and_then(|v| v.as_u64()), Some(24));
+        assert_eq!(cs.get("width").and_then(|v| v.as_u64()), Some(80));
+    }
+
+    #[test]
+    fn test_oci_console_size_omitted_when_none() {
+        let spec = OciSpec::new(
+            &["sh".to_string()],
+            &[],
+            "/",
+            true,
+            &ProcessIdentity::root(),
+            false,
+        );
+        let json = serde_json::to_value(&spec).unwrap();
+        assert!(
+            json.get("process")
+                .and_then(|p| p.get("consoleSize"))
+                .is_none(),
+            "consoleSize must be omitted when unset"
+        );
+    }
+
+    #[test]
+    fn default_nofile_limit_supports_dependency_heavy_workloads() {
+        let spec = OciSpec::new(
+            &["sh".to_string()],
+            &[],
+            "/",
+            false,
+            &ProcessIdentity::root(),
+            false,
+        );
+        let limits = spec.process.rlimits.expect("default process limits");
+        let nofile = limits
+            .iter()
+            .find(|limit| limit.rlimit_type == "RLIMIT_NOFILE")
+            .expect("RLIMIT_NOFILE");
+        assert_eq!(nofile.soft, 1_048_576);
+        assert_eq!(nofile.hard, 1_048_576);
+    }
+
+    #[test]
+    fn test_add_bind_mount() {
+        let mut spec = OciSpec::new(
+            &["sh".to_string()],
+            &[],
+            "/",
+            false,
+            &ProcessIdentity::root(),
+            false,
+        );
+        spec.add_bind_mount("/host/path", "/container/path", true);
+
+        let mount = spec.mounts.last().unwrap();
+        assert_eq!(mount.destination, "/container/path");
+        assert_eq!(mount.source, "/host/path");
+        assert!(mount.options.contains(&"ro".to_string()));
+    }
+
+    #[test]
+    fn test_validate_env_vars_valid() {
+        // Valid env vars should pass
+        assert!(validate_env_vars(&[]).is_ok());
+        assert!(validate_env_vars(&[("FOO".to_string(), "bar".to_string())]).is_ok());
+        assert!(validate_env_vars(&[("_FOO".to_string(), "bar".to_string())]).is_ok());
+        assert!(validate_env_vars(&[("FOO_BAR".to_string(), "baz".to_string())]).is_ok());
+        assert!(validate_env_vars(&[("FOO123".to_string(), "value".to_string())]).is_ok());
+        assert!(validate_env_vars(&[("PATH".to_string(), "/usr/bin:/bin".to_string())]).is_ok());
+        // Empty values are allowed
+        assert!(validate_env_vars(&[("EMPTY".to_string(), "".to_string())]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_env_vars_invalid_keys() {
+        // Empty key
+        assert!(validate_env_vars(&[("".to_string(), "value".to_string())]).is_err());
+
+        // Key starting with number
+        assert!(validate_env_vars(&[("1FOO".to_string(), "value".to_string())]).is_err());
+
+        // Key with invalid characters
+        assert!(validate_env_vars(&[("FOO-BAR".to_string(), "value".to_string())]).is_err());
+        assert!(validate_env_vars(&[("FOO.BAR".to_string(), "value".to_string())]).is_err());
+        assert!(validate_env_vars(&[("FOO BAR".to_string(), "value".to_string())]).is_err());
+        assert!(validate_env_vars(&[("FOO=BAR".to_string(), "value".to_string())]).is_err());
+    }
+
+    #[test]
+    fn test_resolve_process_identity_named_user_uses_passwd_and_groups() {
+        let rootfs = tempdir().unwrap();
+        let etc = rootfs.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::write(
+            etc.join("passwd"),
+            "root:x:0:0:root:/root:/bin/sh\nsteam:x:1000:1000::/home/steam:/bin/sh\n",
+        )
+        .unwrap();
+        std::fs::write(
+            etc.join("group"),
+            "root:x:0:\nsteam:x:1000:\naudio:x:29:steam\nvideo:x:44:steam\n",
+        )
+        .unwrap();
+
+        let identity = resolve_process_identity(rootfs.path(), Some("steam")).unwrap();
+
+        assert_eq!(identity.user.uid, 1000);
+        assert_eq!(identity.user.gid, 1000);
+        assert_eq!(identity.user.additional_gids, vec![29, 44]);
+        assert_eq!(identity.home.as_deref(), Some("/home/steam"));
+    }
+
+    #[test]
+    fn test_resolve_process_identity_numeric_uid_gid_without_passwd() {
+        let rootfs = tempdir().unwrap();
+        std::fs::create_dir_all(rootfs.path().join("etc")).unwrap();
+
+        let identity = resolve_process_identity(rootfs.path(), Some("1234:2345")).unwrap();
+
+        assert_eq!(identity.user.uid, 1234);
+        assert_eq!(identity.user.gid, 2345);
+        assert!(identity.user.additional_gids.is_empty());
+        assert!(identity.home.is_none());
+    }
+
+    #[test]
+    fn test_resolve_exec_user_spec_resolves_name_to_numeric() {
+        // crun exec --user needs numeric ids; a name (image config.User) must be
+        // resolved against the rootfs passwd — the crux of issue #632.
+        let rootfs = tempdir().unwrap();
+        let etc = rootfs.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::write(
+            etc.join("passwd"),
+            "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin\n",
+        )
+        .unwrap();
+        std::fs::write(etc.join("group"), "root:x:0:\nnobody:x:65534:\n").unwrap();
+
+        // A username resolves to its uid:gid.
+        assert_eq!(
+            resolve_exec_user_spec(rootfs.path(), Some("nobody")).unwrap(),
+            Some("65534:65534".to_string())
+        );
+        // `root` is also a name — it must resolve to 0:0, not be rejected.
+        assert_eq!(
+            resolve_exec_user_spec(rootfs.path(), Some("root")).unwrap(),
+            Some("0:0".to_string())
+        );
+        // Numeric specs pass through unchanged.
+        assert_eq!(
+            resolve_exec_user_spec(rootfs.path(), Some("65534")).unwrap(),
+            Some("65534:65534".to_string())
+        );
+        // No user / blank → None (exec keeps the container default).
+        assert_eq!(resolve_exec_user_spec(rootfs.path(), None).unwrap(), None);
+        assert_eq!(
+            resolve_exec_user_spec(rootfs.path(), Some("  ")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_user_spec_rejects_empty_user_or_group() {
+        assert_eq!(
+            parse_user_spec(":1000"),
+            Err("invalid empty user in OCI image config".to_string())
+        );
+        assert_eq!(
+            parse_user_spec("steam:"),
+            Err("invalid empty group in OCI image config".to_string())
+        );
+        assert_eq!(parse_user_spec("steam"), Ok(("steam", None)));
+        assert_eq!(parse_user_spec("steam:audio"), Ok(("steam", Some("audio"))));
+    }
+
+    #[test]
+    fn test_oci_spec_uses_identity_home_when_env_does_not_override_it() {
+        let spec = OciSpec::new(
+            &["id".to_string()],
+            &[("FOO".to_string(), "bar".to_string())],
+            "/home/steam",
+            false,
+            &ProcessIdentity {
+                user: OciUser {
+                    uid: 1000,
+                    gid: 1000,
+                    additional_gids: vec![29],
+                },
+                home: Some("/home/steam".to_string()),
+                c_utf8: false,
+            },
+            false,
+        );
+
+        assert!(spec.process.env.contains(&"HOME=/home/steam".to_string()));
+        assert_eq!(spec.process.user.uid, 1000);
+        assert_eq!(spec.process.user.gid, 1000);
+        assert_eq!(spec.process.user.additional_gids, vec![29]);
+    }
+
+    #[test]
+    fn test_validate_env_vars_length_limits() {
+        // Key too long (> 256 chars)
+        let long_key = "A".repeat(300);
+        assert!(validate_env_vars(&[(long_key, "value".to_string())]).is_err());
+
+        // Value too long (> 32KB)
+        let long_value = "x".repeat(33 * 1024);
+        assert!(validate_env_vars(&[("KEY".to_string(), long_value)]).is_err());
+
+        // Values just under limit should pass
+        let ok_value = "x".repeat(32 * 1024);
+        assert!(validate_env_vars(&[("KEY".to_string(), ok_value)]).is_ok());
+    }
+
+    #[test]
+    fn privileged_spec_leaves_proc_unrestricted_unprivileged_keeps_runc_hardening() {
+        let identity = ProcessIdentity::root();
+
+        // VM-grade (default, unprivileged=false): the microVM is the boundary, so
+        // /proc is a bare-VM /proc — nothing masked, nothing frozen read-only. This
+        // is what lets docker-in-VM write /proc/sys/net/ipv4/ip_forward.
+        let privileged = OciSpec::new(&["sh".to_string()], &[], "/", false, &identity, false);
+        assert!(
+            privileged.linux.masked_paths.is_empty(),
+            "privileged spec must not mask any /proc paths"
+        );
+        assert!(
+            privileged.linux.readonly_paths.is_empty(),
+            "privileged spec must not freeze /proc/sys read-only"
+        );
+
+        // Unprivileged opt-in (untrusted code): the standard runc masked/readonly
+        // set is preserved for defense-in-depth.
+        let unprivileged = OciSpec::new(&["sh".to_string()], &[], "/", false, &identity, true);
+        assert!(
+            unprivileged
+                .linux
+                .readonly_paths
+                .contains(&"/proc/sys".to_string()),
+            "unprivileged spec must keep /proc/sys read-only"
+        );
+        assert!(
+            unprivileged
+                .linux
+                .masked_paths
+                .contains(&"/proc/kcore".to_string()),
+            "unprivileged spec must keep /proc/kcore masked"
+        );
+    }
+
+    /// The guest's TUN node is handed to the container as a bind mount, which
+    /// is the only form that survives crun's fresh /dev tmpfs (a device entry
+    /// whose parent directory is missing is dropped silently).
+    #[test]
+    fn tun_node_is_bind_mounted_when_the_guest_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("tun");
+        std::fs::write(&node, b"").unwrap();
+
+        let mount = tun_device_mount(&node).expect("an existing node is mounted");
+        assert_eq!(mount.destination, "/dev/net/tun");
+        assert_eq!(mount.source, node.display().to_string());
+        assert_eq!(mount.mount_type.as_deref(), Some("bind"));
+        assert!(mount.options.contains(&"bind".to_string()));
+
+        // A guest kernel without the TUN driver has no node, and nothing is
+        // added rather than a bind mount that would fail at container start.
+        assert!(tun_device_mount(&dir.path().join("absent")).is_none());
+    }
+
+    /// Unprivileged workloads keep the reduced device view: no tunnel node,
+    /// whatever the guest has.
+    #[test]
+    fn unprivileged_workloads_never_get_the_tun_node() {
+        let identity = ProcessIdentity::root();
+        let spec = OciSpec::new(&["echo".to_string()], &[], "/", false, &identity, true);
+        assert!(!spec.mounts.iter().any(|m| m.destination == "/dev/net/tun"));
+    }
+
+    /// The default (VM-grade) spec carries the node whenever this host has it,
+    /// so every path that builds a spec gets it without separate wiring.
+    #[test]
+    fn vm_grade_spec_carries_the_tun_node_when_the_host_has_it() {
+        let identity = ProcessIdentity::root();
+        let spec = OciSpec::new(&["echo".to_string()], &[], "/", false, &identity, false);
+        let has = spec.mounts.iter().any(|m| m.destination == "/dev/net/tun");
+        assert_eq!(has, std::path::Path::new("/dev/net/tun").exists());
+    }
+
+    /// One environment definition for both `crun run` and `crun exec`: the
+    /// caller's values win, the defaults only fill gaps, nothing is duplicated,
+    /// and HOME follows the user's passwd entry (`/` without one).
+    #[test]
+    fn process_env_is_one_definition_with_caller_precedence() {
+        let rootfs = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(rootfs.path().join("etc")).unwrap();
+        std::fs::write(
+            rootfs.path().join("etc/passwd"),
+            "root:x:0:0:root:/root:/bin/sh\nsteam:x:1000:1000::/home/steam:/bin/sh\n",
+        )
+        .unwrap();
+        std::fs::write(
+            rootfs.path().join("etc/group"),
+            "root:x:0:\nsteam:x:1000:\n",
+        )
+        .unwrap();
+        let value = |env: &[(String, String)], key: &str| {
+            env.iter()
+                .filter(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // Defaults fill in for a named user, from its passwd entry.
+        let mut env = vec![];
+        apply_process_env(rootfs.path(), Some("steam"), &mut env);
+        assert_eq!(value(&env, "HOME"), vec!["/home/steam"]);
+        assert_eq!(
+            value(&env, "PATH"),
+            vec![crate::crun::DEFAULT_CONTAINER_PATH]
+        );
+        assert_eq!(value(&env, "TERM"), vec!["xterm-256color"]);
+
+        // A numeric uid without a passwd entry gets `/`; no user means root.
+        let mut env = vec![];
+        apply_process_env(rootfs.path(), Some("4242"), &mut env);
+        assert_eq!(value(&env, "HOME"), vec!["/"]);
+        let mut env = vec![];
+        apply_process_env(rootfs.path(), None, &mut env);
+        assert_eq!(value(&env, "HOME"), vec!["/root"]);
+
+        // The caller's values win and are never duplicated.
+        let mut env = vec![
+            ("HOME".to_string(), "/srv".to_string()),
+            ("PATH".to_string(), "/custom/bin".to_string()),
+            ("TERM".to_string(), "dumb".to_string()),
+        ];
+        apply_process_env(rootfs.path(), Some("steam"), &mut env);
+        assert_eq!(value(&env, "HOME"), vec!["/srv"]);
+        assert_eq!(value(&env, "PATH"), vec!["/custom/bin"]);
+        assert_eq!(value(&env, "TERM"), vec!["dumb"]);
+        assert_eq!(env.len(), 3);
+
+        // The container spec is built from the very same definition.
+        let identity = resolve_process_identity(rootfs.path(), Some("steam")).unwrap();
+        let spec = OciSpec::new(&["sh".to_string()], &[], "/", false, &identity, false);
+        let expected: Vec<String> = process_env_for(&identity, &[])
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        assert_eq!(spec.process.env, expected);
+    }
+
+    /// An overlay workload's /tmp is its root filesystem's (no /tmp mount, so a
+    /// rename from /tmp into the workspace stays on one filesystem) while later
+    /// mounts under /tmp still apply; a bundle outside an overlay and a
+    /// read-only root keep the tmpfs.
+    #[test]
+    fn an_overlay_workloads_tmp_is_on_its_root_filesystem() {
+        let written = |overlay: &Path, readonly: bool| {
+            let bundle = overlay.join("bundle");
+            std::fs::create_dir_all(&bundle).unwrap();
+            let mut spec = OciSpec::new(
+                &["sh".to_string()],
+                &[],
+                "/",
+                false,
+                &ProcessIdentity::root(),
+                false,
+            );
+            spec.root.readonly = readonly;
+            spec.add_bind_mount("/storage/cache", "/tmp/cache", false);
+            spec.write_to(&bundle).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(bundle.join("config.json")).unwrap())
+                    .unwrap();
+            json["mounts"].as_array().unwrap().clone()
+        };
+        let tmp_mount = |mounts: &[serde_json::Value]| {
+            mounts.iter().find(|m| m["destination"] == "/tmp").cloned()
+        };
+
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(
+            tmp_mount(&written(plain.path(), false)).unwrap()["type"],
+            "tmpfs"
+        );
+
+        let overlay = tempfile::tempdir().unwrap();
+        std::fs::create_dir(overlay.path().join(OVERLAY_UPPER_DIR)).unwrap();
+        let mounts = written(overlay.path(), false);
+        assert!(tmp_mount(&mounts).is_none(), "no /tmp mount: {mounts:?}");
+        assert!(mounts.iter().any(|m| m["destination"] == "/tmp/cache"));
+        assert_eq!(
+            tmp_mount(&written(overlay.path(), true)).unwrap()["type"],
+            "tmpfs"
+        );
+        // a boot that could not prepare the upper layer's /tmp keeps the tmpfs
+        std::fs::write(overlay.path().join(TMP_KEEP_TMPFS_MARKER), b"").unwrap();
+        assert_eq!(
+            tmp_mount(&written(overlay.path(), false)).unwrap()["type"],
+            "tmpfs"
+        );
+    }
+
+    /// LANG defaults to C.UTF-8 only for a rootfs that can load it, and never
+    /// overrides the image's or the caller's.
+    #[test]
+    fn lang_defaults_to_c_utf8_where_the_rootfs_has_it() {
+        let lang = |rootfs: &Path, env: &[(String, String)]| {
+            let identity = resolve_process_identity(rootfs, None).unwrap();
+            process_env_for(&identity, env)
+                .into_iter()
+                .filter(|(k, _)| k == "LANG")
+                .map(|(_, v)| v)
+                .collect::<Vec<_>>()
+        };
+        let bare = tempfile::tempdir().unwrap();
+        assert!(lang(bare.path(), &[]).is_empty());
+
+        let glibc = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(glibc.path().join("usr/lib/locale/C.utf8")).unwrap();
+        assert_eq!(lang(glibc.path(), &[]), ["C.UTF-8"]);
+        let own = [("LANG".to_string(), "en_US.UTF-8".to_string())];
+        assert_eq!(lang(glibc.path(), &own), ["en_US.UTF-8"]);
+
+        let musl = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(musl.path().join("lib")).unwrap();
+        std::fs::write(musl.path().join("lib/ld-musl-x86_64.so.1"), b"").unwrap();
+        assert_eq!(lang(musl.path(), &[]), ["C.UTF-8"]);
+    }
+
+    /// A numeric uid that has no passwd entry still gets a HOME, as Docker
+    /// gives it, so tools that write under $HOME do not fail on an empty path.
+    #[test]
+    fn a_user_without_a_passwd_entry_gets_home_root() {
+        let identity = ProcessIdentity {
+            user: OciUser {
+                uid: 4242,
+                gid: 0,
+                additional_gids: vec![],
+            },
+            home: None,
+            c_utf8: false,
+        };
+        let spec = OciSpec::new(&["sh".to_string()], &[], "/", false, &identity, false);
+        assert!(spec.process.env.contains(&"HOME=/".to_string()));
+
+        // An explicit HOME from the caller is never overridden.
+        let spec = OciSpec::new(
+            &["sh".to_string()],
+            &[("HOME".to_string(), "/srv".to_string())],
+            "/",
+            false,
+            &identity,
+            false,
+        );
+        assert!(spec.process.env.contains(&"HOME=/srv".to_string()));
+        assert!(!spec.process.env.contains(&"HOME=/".to_string()));
+    }
+
+    /// The machine's own storage and overlay disks must never be exposed to the
+    /// container: raw access to them lets a workload corrupt the filesystem it
+    /// is running on. Everything past `vdb` was attached by the caller.
+    #[test]
+    fn attached_disk_nodes_skip_the_machines_own_disks() {
+        let keep = |n: &str| n.starts_with("vd") && n > "vdb";
+        assert!(!keep("vda"), "storage disk stays out of the container");
+        assert!(!keep("vdb"), "overlay disk stays out of the container");
+        assert!(keep("vdc"), "the first attached disk is exposed");
+        assert!(keep("vdd"));
+        assert!(!keep("sda"), "only virtio disks are considered");
+    }
+
+    /// Whatever `/sys/block` reports, the node must be a block device owned by
+    /// root: an attached disk is raw storage, not something every uid in the
+    /// image should be able to overwrite.
+    #[test]
+    fn attached_disk_nodes_are_root_owned_block_devices() {
+        for d in attached_disk_devices() {
+            assert_eq!(d.device_type, "b", "{}", d.path);
+            assert_eq!(d.file_mode, Some(0o600), "{}", d.path);
+            assert_eq!(d.uid, Some(0));
+            assert_eq!(d.gid, Some(0));
+            assert!(d.path.starts_with("/dev/vd"), "{}", d.path);
+        }
+    }
+
+    #[test]
+    fn test_gpu_devices_added_when_dri_exists() {
+        // On a system with /dev/dri (GPU-enabled VM), a bind mount is added
+        let identity = ProcessIdentity::root();
+        let mut spec = OciSpec::new(&["echo".to_string()], &[], "/", false, &identity, false);
+        let mounts_before = spec.mounts.len();
+        spec.add_gpu_devices_if_available();
+        spec.add_kvm_device_if_available();
+
+        if std::path::Path::new("/dev/dri").exists() {
+            // GPU present — /dev/dri bind mount was added
+            assert!(spec.mounts.len() > mounts_before);
+            assert!(spec.mounts.iter().any(|m| m.destination == "/dev/dri"));
+            assert!(spec
+                .mounts
+                .iter()
+                .any(|m| m.destination == "/dev/dri" && m.options.contains(&"bind".to_string())));
+        } else {
+            // No GPU — no extra mounts added (no-op)
+            assert_eq!(spec.mounts.len(), mounts_before);
+        }
+    }
+
+    #[test]
+    fn test_gpu_devices_are_not_added_twice() {
+        let identity = ProcessIdentity::root();
+        let mut spec = OciSpec::new(&["echo".to_string()], &[], "/", false, &identity, false);
+        spec.mounts.push(super::OciMount {
+            destination: "/dev/dri".to_string(),
+            mount_type: Some("bind".to_string()),
+            source: "/dev/dri".to_string(),
+            options: vec!["bind".to_string(), "rprivate".to_string()],
+        });
+
+        spec.add_gpu_devices_if_available();
+        spec.add_kvm_device_if_available();
+
+        assert_eq!(
+            spec.mounts
+                .iter()
+                .filter(|m| m.destination == "/dev/dri")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn vm_devices_bind_the_dma_heaps_when_the_vm_has_them() {
+        let identity = ProcessIdentity::root();
+        let mut spec = OciSpec::new(&["echo".to_string()], &[], "/", false, &identity, false);
+        spec.add_vm_devices_if_available();
+        spec.add_vm_devices_if_available();
+
+        let heaps: Vec<_> = spec
+            .mounts
+            .iter()
+            .filter(|m| m.destination == "/dev/dma_heap")
+            .collect();
+        if std::path::Path::new("/dev/dma_heap").exists() {
+            assert_eq!(heaps.len(), 1, "added once however often it is called");
+            assert_eq!(heaps[0].source, "/dev/dma_heap");
+            assert!(heaps[0].options.contains(&"bind".to_string()));
+        } else {
+            assert!(heaps.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_gpu_devices_correct_properties() {
+        let identity = ProcessIdentity::root();
+        let mut spec = OciSpec::new(&["echo".to_string()], &[], "/", false, &identity, false);
+        // Manually push a GPU bind mount to verify expected properties
+        spec.mounts.push(super::OciMount {
+            destination: "/dev/dri".to_string(),
+            mount_type: Some("bind".to_string()),
+            source: "/dev/dri".to_string(),
+            options: vec!["bind".to_string(), "rprivate".to_string()],
+        });
+
+        let mount = spec
+            .mounts
+            .iter()
+            .find(|m| m.destination == "/dev/dri")
+            .unwrap();
+        assert_eq!(mount.mount_type, Some("bind".to_string()));
+        assert_eq!(mount.source, "/dev/dri");
+        // rprivate prevents the host from seeing any new mounts inside the
+        // container's /dev/dri subtree.
+        assert!(mount.options.contains(&"rprivate".to_string()));
+    }
+}

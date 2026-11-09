@@ -1,0 +1,40 @@
+From a0b79cf260e7bceddbb93d4dc91157d2ceb67605 Mon Sep 17 00:00:00 2001
+From: Sasha Finkelstein <fnkl.kernel@gmail.com>
+Date: Fri, 17 Jan 2025 12:34:28 +0100
+Subject: [PATCH 23/30] virtgpu: mixed page size
+
+This allows running different page sizes between host and guest on
+platforms that support mixed page sizes.
+
+Signed-off-by: Sasha Finkelstein <fnkl.kernel@gmail.com>
+---
+diff --git a/drivers/gpu/drm/virtio/virtgpu_vram.c b/drivers/gpu/drm/virtio/virtgpu_vram.c
+index f955779d5..dfac1b492 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_vram.c
++++ b/drivers/gpu/drm/virtio/virtgpu_vram.c
+@@ -141,6 +141,12 @@ bool virtio_gpu_is_vram(struct virtio_gpu_object *bo)
+ 	return bo->base.base.funcs == &virtio_gpu_vram_funcs;
+ }
+ 
++#if defined(__powerpc64__) || defined(__aarch64__) || defined(__mips__) || defined(__loongarch__)
++#define MAX_PAGE_SIZE 65536
++#else
++#define MAX_PAGE_SIZE PAGE_SIZE
++#endif
++
+ static int virtio_gpu_vram_map(struct virtio_gpu_object *bo)
+ {
+ 	int ret;
+@@ -153,8 +159,8 @@ static int virtio_gpu_vram_map(struct virtio_gpu_object *bo)
+ 		return -EINVAL;
+ 
+ 	spin_lock(&vgdev->host_visible_lock);
+-	ret = drm_mm_insert_node(&vgdev->host_visible_mm, &vram->vram_node,
+-				 bo->base.base.size);
++	ret = drm_mm_insert_node_generic(&vgdev->host_visible_mm, &vram->vram_node,
++					 bo->base.base.size, MAX_PAGE_SIZE, 0, 0);
+ 	spin_unlock(&vgdev->host_visible_lock);
+ 
+ 	if (ret)
+-- 
+2.43.0

@@ -1,0 +1,1221 @@
+//! `.smolmachine` binary format specification.
+//!
+//! # Overview
+//!
+//! A `.smolmachine` is a portable, self-contained microVM artifact. It bundles
+//! everything needed to run a workload: OCI image layers, the agent rootfs,
+//! runtime libraries (libkrun), and a manifest describing the configuration.
+//!
+//! # File Layout
+//!
+//! A `.smolmachine` file is a zstd-compressed tar archive with a JSON manifest
+//! appended as a footer. The manifest is also stored inside the OCI registry
+//! as the config blob when pushed.
+//!
+//! ```text
+//! +---------------------------+
+//! | Assets Blob (zstd tar)    |  30-150 MB
+//! |  - agent-rootfs.tar       |  Guest init system
+//! |  - layers/*.tar           |  OCI image layers
+//! |  - lib/libkrun.*          |  Runtime libraries (platform-specific)
+//! |  - storage.ext4 (opt)     |  Pre-formatted disk template
+//! |  - overlay.raw (opt)      |  VM snapshot (VM mode only)
+//! +---------------------------+
+//! | Manifest (JSON)           |  ~2 KB (PackManifest)
+//! +---------------------------+
+//! | Footer (64 bytes)         |
+//! |  - magic: "SMOLPACK"      |
+//! |  - version: 1             |
+//! |  - offsets + sizes         |
+//! |  - CRC32 checksum         |
+//! +---------------------------+
+//! ```
+//!
+//! # OCI Registry Representation
+//!
+//! When pushed to an OCI registry, a `.smolmachine` is stored as:
+//! - **Config blob**: `PackManifest` JSON (`application/vnd.smolmachines.machine.config.v1+json`)
+//! - **Layer blob**: The full `.smolmachine` file (`application/vnd.smolmachines.smolmachine.v1`)
+//! - **Manifest**: Standard OCI Image Manifest referencing both blobs
+//!
+//! # Execution Modes
+//!
+//! - **Container mode** (default): OCI image layers are unpacked and run via crun.
+//! - **VM mode**: An overlay disk snapshot is restored directly into the VM.
+
+use serde::{Deserialize, Serialize};
+
+use crate::{PackError, Result};
+
+/// Magic bytes identifying a packed smolvm binary.
+pub const MAGIC: &[u8; 8] = b"SMOLPACK";
+
+/// Magic bytes for embedded section header.
+pub const SECTION_MAGIC: &[u8; 8] = b"SMOLSECT";
+
+/// Magic bytes for libs footer appended to the stub binary.
+pub const LIBS_MAGIC: &[u8; 8] = b"SMOLLIBS";
+
+/// Current format version — the version stamped into newly written packs.
+pub const FORMAT_VERSION: u32 = 1;
+
+/// Format versions this build can READ. New packs are always WRITTEN at
+/// `FORMAT_VERSION`, but older `.smolmachine` artifacts stay readable: the
+/// on-disk layout (footer, manifest, assets blob) is identical across these
+/// versions — only the version number ever differed. It was reset 3→1 in a
+/// format refactor, which orphaned pre-reset packs behind a strict
+/// `version == FORMAT_VERSION` check. Accepting the older numbers keeps those
+/// artifacts runnable instead of failing with "unsupported version: 3".
+pub const SUPPORTED_READ_VERSIONS: &[u32] = &[1, 2, 3];
+
+/// Whether a pack stamped with `version` can be read by this build.
+pub fn is_supported_read_version(version: u32) -> bool {
+    SUPPORTED_READ_VERSIONS.contains(&version)
+}
+
+/// Extension for sidecar assets file.
+pub const SIDECAR_EXTENSION: &str = ".smolmachine";
+
+/// Footer size in bytes (fixed).
+pub const FOOTER_SIZE: usize = 64;
+
+/// Embedded section header size (fixed).
+pub const SECTION_HEADER_SIZE: usize = 32;
+
+/// Libs footer size in bytes (fixed).
+pub const LIBS_FOOTER_SIZE: usize = 32;
+
+/// Header for data embedded in the __SMOLVM,__smolvm Mach-O section.
+///
+/// This format is used for macOS single-file binaries where assets are
+/// stored inside the executable's Mach-O structure, allowing proper code signing.
+///
+/// Layout (32 bytes total):
+/// ```text
+/// Offset  Size  Field
+/// 0       8     magic ("SMOLSECT")
+/// 8       4     version (u32 LE)
+/// 12      4     manifest_size (u32 LE)
+/// 16      8     assets_size (u64 LE)
+/// 24      4     checksum (u32 LE)
+/// 28      4     reserved (zeroes)
+/// ```
+///
+/// Following the header:
+/// - Manifest JSON (manifest_size bytes)
+/// - Compressed assets (assets_size bytes)
+#[derive(Debug, Clone, Copy)]
+pub struct SectionHeader {
+    /// Size of manifest JSON in bytes.
+    pub manifest_size: u32,
+    /// Size of compressed assets in bytes.
+    pub assets_size: u64,
+    /// CRC32 checksum of manifest + assets.
+    pub checksum: u32,
+}
+
+impl SectionHeader {
+    /// Serialize header to bytes.
+    pub fn to_bytes(&self) -> [u8; SECTION_HEADER_SIZE] {
+        let mut buf = [0u8; SECTION_HEADER_SIZE];
+
+        // Magic
+        buf[0..8].copy_from_slice(SECTION_MAGIC);
+
+        // Version
+        buf[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+
+        // Manifest size
+        buf[12..16].copy_from_slice(&self.manifest_size.to_le_bytes());
+
+        // Assets size
+        buf[16..24].copy_from_slice(&self.assets_size.to_le_bytes());
+
+        // Checksum
+        buf[24..28].copy_from_slice(&self.checksum.to_le_bytes());
+
+        // Reserved (already zeroed)
+
+        buf
+    }
+
+    /// Deserialize header from bytes.
+    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+        if buf.len() < SECTION_HEADER_SIZE {
+            return Err(PackError::InvalidMagic);
+        }
+
+        // Validate magic
+        if &buf[0..8] != SECTION_MAGIC {
+            return Err(PackError::InvalidMagic);
+        }
+
+        // Check version
+        let version = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        if !is_supported_read_version(version) {
+            return Err(PackError::UnsupportedVersion(version));
+        }
+
+        Ok(Self {
+            manifest_size: u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]),
+            assets_size: u64::from_le_bytes([
+                buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+            ]),
+            checksum: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]),
+        })
+    }
+}
+
+/// Footer appended to the stub binary to locate embedded runtime libraries.
+///
+/// The stub reads its own last 32 bytes to find the compressed libs bundle,
+/// extracts them to a cache directory, and dlopen's libkrun from there.
+/// This keeps the .smolmachine sidecar cross-platform (no platform-specific libs).
+///
+/// Layout (32 bytes total):
+/// ```text
+/// Offset  Size  Field
+/// 0       8     magic ("SMOLLIBS")
+/// 8       4     version (u32 LE)
+/// 12      8     libs_offset (u64 LE) - offset to compressed libs blob
+/// 20      8     libs_size (u64 LE) - size of compressed libs blob
+/// 28      4     reserved (zeroes)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct LibsFooter {
+    /// Offset from start of file to the compressed libs blob.
+    pub libs_offset: u64,
+    /// Size of the compressed libs blob.
+    pub libs_size: u64,
+}
+
+impl LibsFooter {
+    /// Serialize footer to bytes.
+    pub fn to_bytes(&self) -> [u8; LIBS_FOOTER_SIZE] {
+        let mut buf = [0u8; LIBS_FOOTER_SIZE];
+        buf[0..8].copy_from_slice(LIBS_MAGIC);
+        buf[8..12].copy_from_slice(&1u32.to_le_bytes()); // version 1
+        buf[12..20].copy_from_slice(&self.libs_offset.to_le_bytes());
+        buf[20..28].copy_from_slice(&self.libs_size.to_le_bytes());
+        // 28..32 reserved (zeroed)
+        buf
+    }
+
+    /// Deserialize footer from bytes.
+    pub fn from_bytes(buf: &[u8; LIBS_FOOTER_SIZE]) -> Result<Self> {
+        if &buf[0..8] != LIBS_MAGIC {
+            return Err(PackError::InvalidMagic);
+        }
+        let version = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        if version != 1 {
+            return Err(PackError::UnsupportedVersion(version));
+        }
+        Ok(Self {
+            libs_offset: u64::from_le_bytes([
+                buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
+            ]),
+            libs_size: u64::from_le_bytes([
+                buf[20], buf[21], buf[22], buf[23], buf[24], buf[25], buf[26], buf[27],
+            ]),
+        })
+    }
+}
+
+/// Fixed-size footer at the end of a packed binary.
+///
+/// Layout (64 bytes total):
+/// ```text
+/// Offset  Size  Field
+/// 0       8     magic ("SMOLPACK")
+/// 8       4     version (u32 LE)
+/// 12      8     stub_size (u64 LE) - size of stub executable
+/// 20      8     assets_offset (u64 LE) - offset to compressed assets
+/// 28      8     assets_size (u64 LE) - size of compressed assets
+/// 36      8     manifest_offset (u64 LE) - offset to manifest JSON
+/// 44      8     manifest_size (u64 LE) - size of manifest JSON
+/// 52      4     checksum (u32 LE) - CRC32 of assets + manifest
+/// 56      8     reserved (zeroes)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct PackFooter {
+    /// Size of the stub executable.
+    pub stub_size: u64,
+    /// Offset to compressed assets blob.
+    pub assets_offset: u64,
+    /// Size of compressed assets blob.
+    pub assets_size: u64,
+    /// Offset to manifest JSON.
+    pub manifest_offset: u64,
+    /// Size of manifest JSON.
+    pub manifest_size: u64,
+    /// CRC32 checksum of assets + manifest.
+    pub checksum: u32,
+}
+
+impl PackFooter {
+    /// Serialize footer to bytes.
+    pub fn to_bytes(&self) -> [u8; FOOTER_SIZE] {
+        let mut buf = [0u8; FOOTER_SIZE];
+
+        // Magic
+        buf[0..8].copy_from_slice(MAGIC);
+
+        // Version
+        buf[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+
+        // Stub size
+        buf[12..20].copy_from_slice(&self.stub_size.to_le_bytes());
+
+        // Assets offset and size
+        buf[20..28].copy_from_slice(&self.assets_offset.to_le_bytes());
+        buf[28..36].copy_from_slice(&self.assets_size.to_le_bytes());
+
+        // Manifest offset and size
+        buf[36..44].copy_from_slice(&self.manifest_offset.to_le_bytes());
+        buf[44..52].copy_from_slice(&self.manifest_size.to_le_bytes());
+
+        // Checksum
+        buf[52..56].copy_from_slice(&self.checksum.to_le_bytes());
+
+        // Reserved (already zeroed)
+
+        buf
+    }
+
+    /// Deserialize footer from bytes.
+    pub fn from_bytes(buf: &[u8; FOOTER_SIZE]) -> Result<Self> {
+        // Validate magic
+        if &buf[0..8] != MAGIC {
+            return Err(PackError::InvalidMagic);
+        }
+
+        // Check version
+        let version = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        if !is_supported_read_version(version) {
+            return Err(PackError::UnsupportedVersion(version));
+        }
+
+        Ok(Self {
+            stub_size: u64::from_le_bytes([
+                buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
+            ]),
+            assets_offset: u64::from_le_bytes([
+                buf[20], buf[21], buf[22], buf[23], buf[24], buf[25], buf[26], buf[27],
+            ]),
+            assets_size: u64::from_le_bytes([
+                buf[28], buf[29], buf[30], buf[31], buf[32], buf[33], buf[34], buf[35],
+            ]),
+            manifest_offset: u64::from_le_bytes([
+                buf[36], buf[37], buf[38], buf[39], buf[40], buf[41], buf[42], buf[43],
+            ]),
+            manifest_size: u64::from_le_bytes([
+                buf[44], buf[45], buf[46], buf[47], buf[48], buf[49], buf[50], buf[51],
+            ]),
+            checksum: u32::from_le_bytes([buf[52], buf[53], buf[54], buf[55]]),
+        })
+    }
+}
+
+/// Execution mode for packed binaries.
+///
+/// Determines how commands are executed at runtime:
+/// - `Container`: commands run inside a crun container (OCI layers)
+/// - `Vm`: commands run directly in the VM rootfs (overlay disk)
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackMode {
+    /// Container mode: OCI image layers + crun container execution.
+    #[default]
+    Container,
+    /// VM mode: overlay disk + direct VM execution.
+    Vm,
+}
+
+/// Where a checkpoint sits in its machine's history.
+///
+/// Every capture is a node: `parent` is the checkpoint the source machine was
+/// last captured to or restored from, so repeated captures of one machine form
+/// a chain and a restore-then-capture forms a branch. Ids are random and
+/// unique per capture; they carry no content meaning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointLineage {
+    /// This checkpoint's id (32 lowercase hex characters).
+    pub id: String,
+    /// The checkpoint this one continues from, when the source had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Machine the state was captured from.
+    pub machine: String,
+    /// When the capture was published (RFC 3339).
+    pub created_at: String,
+}
+
+/// The parent a delta checkpoint file depends on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointBase {
+    /// Lineage id of the parent checkpoint.
+    pub id: String,
+    /// SHA-256 of the parent's stored index (`checkpoint.json`), which names
+    /// every object the parent holds.
+    pub index_sha256: String,
+}
+
+/// How a portable checkpoint file lays out its payload.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointLayout {
+    /// The classic single generation: the assets tarball holds the state,
+    /// memory image and disks directly.
+    #[default]
+    Assets,
+    /// A checkpoint store directory packed whole — content-addressed objects
+    /// plus one index per generation — so the file carries its history and
+    /// any generation in it can be restored.
+    Chunked,
+}
+
+/// One generation summarized in a checkpoint file's history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointGeneration {
+    /// Identity and parent of the generation.
+    #[serde(flatten)]
+    pub lineage: CheckpointLineage,
+    /// Bytes of actual data the generation describes.
+    pub data_bytes: u64,
+}
+
+/// One integrity-protected file belonging to a portable live checkpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointAsset {
+    /// Relative path within the artifact assets.
+    pub path: String,
+    /// Uncompressed byte length.
+    pub size: u64,
+    /// Lowercase SHA-256 digest of the file contents. Empty for sparse memory
+    /// or block files whose integrity is provided by the pack container.
+    pub sha256: String,
+}
+
+/// One file in a checkpoint's portable block-image chain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointDiskFile {
+    /// Integrity metadata and artifact-relative source path.
+    pub asset: CheckpointAsset,
+    /// Safe filename installed in the machine data directory.
+    pub target: String,
+    /// `raw` or `qcow2`.
+    pub format: String,
+}
+
+/// An exact block-image chain captured for one virtual disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointDisk {
+    /// Stable disk role: `storage`, `overlay` or, for a machine with a cache
+    /// disk, `cache`.
+    pub role: String,
+    /// Ordered top-to-base chain. The first file is the disk attached to the VM.
+    pub files: Vec<CheckpointDiskFile>,
+}
+
+/// Container workload identity needed after a live checkpoint is restored.
+///
+/// The running container itself is present in guest RAM. These fields are for
+/// host-side routing (`machine exec`) and for launching the same persistent
+/// workload exactly once after a later ordinary stop/start cycle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointWorkload {
+    /// OCI image identity used by the persistent workload.
+    pub image: String,
+    /// Container user resolved from the image or supplied by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Persistent overlay identifier containing the restored container state.
+    ///
+    /// A checkpoint may be restored under a different machine name, but the
+    /// live overlay mount and crun state retain the identifier used at capture.
+    pub overlay_owner: String,
+    /// Restart policy to apply after the live checkpoint has been consumed.
+    pub restart_policy: String,
+    /// Maximum automatic restart attempts (`0` means unlimited).
+    #[serde(default)]
+    pub restart_max_retries: u32,
+    /// Maximum restart backoff in seconds (`0` selects the runtime default).
+    #[serde(default)]
+    pub restart_max_backoff_secs: u64,
+}
+
+/// A host directory the captured machine had mounted. Recorded only when the
+/// capture opted in (`host_mounts`), because it binds the artifact to a host
+/// where the same paths exist; a restore re-attaches each one at its guest path
+/// so the saved VM finds the device topology it was captured with.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointHostMount {
+    /// Host directory, as given at `machine create`.
+    pub host_path: String,
+    /// Guest mount point.
+    pub guest_path: String,
+    /// Whether the guest sees it read-only.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+/// One host-to-guest TCP forward restored around a live VM.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointPort {
+    /// Host TCP port on the restoring node.
+    pub host: u16,
+    /// Guest TCP port reached by the host listener.
+    pub guest: u16,
+}
+
+/// Re-creatable host networking attached to a live checkpoint.
+///
+/// Open host sockets are deliberately not serialized. The target recreates
+/// the same virtual network device and fresh host listeners before resuming
+/// the captured guest; pre-existing external connections may be lost.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CheckpointNetwork {
+    /// Whether the captured VM had a network backend attached.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Host listeners to recreate around the restored VM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<CheckpointPort>,
+    /// UDP forwards to recreate around the restored VM. Absent on checkpoints
+    /// captured before they were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub udp_ports: Vec<CheckpointPort>,
+    /// Effective backend used at capture: `tsi` or `virtio-net`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// Custom IPv4 DNS resolver, when one was explicitly configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<String>,
+    /// Resolver options of the captured guest's resolv.conf, in order. The
+    /// restored guest keeps the file it wrote at boot, so the record must say
+    /// the same.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_options: Vec<String>,
+    /// Named local inter-VM network joined by the captured machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_name: Option<String>,
+    /// Subnet of the captured guest link, when not the default. The restored
+    /// guest keeps its address in memory, so the host side must match it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_subnet: Option<String>,
+    /// Captured outbound CIDR allow-list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_cidrs: Option<Vec<String>>,
+    /// Ordered L4 egress rules captured with the machine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_rules: Vec<smolvm_protocol::EgressRule>,
+    /// Restore must provide a new host mediator binding before execution.
+    #[serde(default)]
+    pub mediated_egress_required: bool,
+    /// Captured outbound DNS hostname allow-list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_filter_hosts: Option<Vec<String>>,
+    /// Captured private-range block (`--block-private`) and its exceptions.
+    /// Absent on checkpoints captured before it was recorded, and on machines
+    /// without the block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_private: Option<Vec<String>>,
+    /// Captured credential bindings (`[[network.credentials]]`): binding names,
+    /// env-var names and allowed hosts — never the values, which the restore
+    /// host resolves from its own environment at request time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_policy: Option<smolvm_protocol::CredentialPolicy>,
+    /// Placeholders minted for `credential_policy` on the source machine.
+    /// Carried so a process captured holding its placeholder still matches the
+    /// restored interceptor; placeholders are opaque tokens, not secrets.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub credential_placeholders: std::collections::BTreeMap<String, String>,
+}
+
+/// Versioned host CPU compatibility contract for a live checkpoint.
+///
+/// A recognized contract permits a restore on a different CPU model while the
+/// hypervisor remains the final authority for applying the captured
+/// architectural CPU state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CheckpointCpuContract {
+    /// libkrun's portable Intel/KVM CPU profile (`KRUN_CPU_TEMPLATE_PORTABLE`).
+    /// The source VM ran under it from its first instruction, so no feature
+    /// that adds XSAVE state beyond x87/SSE/AVX (AVX-512, AMX, PKU, MPX, ...)
+    /// can leak into a live checkpoint.
+    ///
+    /// The name stays `v1` although the profile has grown (it now includes
+    /// SHA, ADX, RDSEED, CLFLUSHOPT, CLWB and RDPID): the exact CPUID the guest
+    /// was given travels in the checkpoint's vCPU state, and libkrun refuses a
+    /// restore on a host whose KVM lacks an instruction set in it (or an XSAVE
+    /// component the guest enabled), naming what is missing. Speculation
+    /// controls and other kernel- or microcode-dependent bits are not
+    /// compared, so restores between identical CPUs on different host kernels
+    /// keep working. Checkpoints captured under the older, narrower mask keep
+    /// restoring, and nothing here has to enumerate the features.
+    LinuxKvmIntelPortableV1,
+    /// Platforms without a hypervisor-level compatibility check require the
+    /// exact source CPU feature fingerprint.
+    ExactV1 {
+        /// Hash of the host CPU virtualization feature contract.
+        fingerprint: String,
+    },
+    /// The architectural features the source guest was given, by name.
+    ///
+    /// aarch64 has no equivalent of the x86 `KVM_SET_CPUID2` check: the guest is
+    /// handed the host's own ID registers (libkrun only ORs in EL2/GICv3 and
+    /// masks out SME), and nothing compares them on restore. So a guest that
+    /// probed the source CPU at boot carries those conclusions in its restored
+    /// memory, and meeting an instruction the destination does not implement is
+    /// an undefined-instruction fault inside the guest rather than a clean
+    /// refusal.
+    ///
+    /// Recording the set by NAME replaces an opaque equality hash with a
+    /// question that can actually be answered: does this host provide
+    /// everything the guest was told it had? A destination that does is
+    /// accepted even if its model differs; one that does not is refused with
+    /// the missing features named.
+    Aarch64FeaturesV1 {
+        /// Sorted, de-duplicated `FEAT_*` names the source guest could use.
+        features: Vec<String>,
+    },
+}
+
+/// Compatibility and payload metadata for a portable live checkpoint.
+///
+/// The pack container itself is portable storage; live CPU/device state is
+/// deliberately accepted only by a runtime with the same checkpoint ABI,
+/// architecture, CPU contract, and device profile.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortableCheckpointManifest {
+    /// Version of this metadata contract.
+    pub version: u32,
+    /// Exact libkrun checkpoint-state ABI required by this artifact.
+    pub runtime_abi: String,
+    /// Host OS and architecture that captured the live state.
+    pub host_platform: String,
+    /// Versioned CPU migration contract.
+    pub cpu_contract: CheckpointCpuContract,
+    /// Number of virtual CPUs in the captured machine.
+    pub cpus: u8,
+    /// Configured guest memory in MiB.
+    pub memory_mib: u32,
+    /// Effective persistent storage size in GiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_gib: Option<u64>,
+    /// Effective writable overlay size in GiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_gib: Option<u64>,
+    /// Whether a guest flush waits for the host's disk (`full`) or guest writes
+    /// reach it on the host's schedule (`deferred`). Absent on checkpoints
+    /// captured before it was recorded, which restore as `full`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_durability: Option<String>,
+    /// Stable identifier for the captured virtual device topology.
+    pub device_profile: String,
+    /// Serialized VM, vCPU, and device state.
+    pub state: CheckpointAsset,
+    /// Eager guest-memory image.
+    pub memory: CheckpointAsset,
+    /// Guest physical-memory layout manifest.
+    pub layout: CheckpointAsset,
+    /// Exact block-image chains from the same paused boundary as RAM.
+    #[serde(default)]
+    pub disks: Vec<CheckpointDisk>,
+    /// Persistent container identity. Absent on version-one bare-VM
+    /// checkpoints and on checkpoints captured from an imageless machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload: Option<CheckpointWorkload>,
+    /// Host networking reconstructed around the restored VM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<CheckpointNetwork>,
+    /// Host directories mounted into the captured machine, re-attached on
+    /// restore. Empty unless the capture opted in to host-bound mounts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_mounts: Vec<CheckpointHostMount>,
+    /// The `.smolmachine` whose image layers the captured machine mounted from
+    /// the host. They are not in the artifact, so a restore must attach the same
+    /// pack again to reproduce the captured device topology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packed_layers: Option<CheckpointPackedLayers>,
+    /// The registry image the host fetched for a machine with no network and
+    /// served to it as a saved-image archive over the same virtio-fs device a
+    /// pack's layers use. The archive is not in the artifact, so a restore
+    /// fetches this image again to reproduce the captured device topology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_image: Option<CheckpointHostImage>,
+    /// Position in the source machine's checkpoint history. Absent on
+    /// checkpoints written before lineage was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<CheckpointLineage>,
+    /// Payload layout. `Chunked` files use a distinct format version so
+    /// runtimes that predate them refuse them clearly.
+    #[serde(default)]
+    pub payload: CheckpointLayout,
+    /// The generations a `Chunked` file carries, this one first. Empty for a
+    /// single-generation file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<CheckpointGeneration>,
+    /// The checkpoint this file's objects are relative to. A `Chunked` file
+    /// with a base carries only the objects its base lacks, so it restores
+    /// only where that exact base (same id and index digest) is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<CheckpointBase>,
+    /// The machine's credential CA (certificate and signing key). The captured
+    /// guest trusts this CA, so a restore keeps it instead of minting a new
+    /// one the guest would reject. Absent for machines without credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ca: Option<CheckpointAsset>,
+    /// The source host's guest clock source. Absent on checkpoints written
+    /// before it was recorded and on x86_64, where the TSC contract covers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<CheckpointClock>,
+    /// The CPU features the arm64 guest kernel reported (`/proc/cpuinfo`
+    /// names in `FEAT_` form). A restore on another OS checks these, since the
+    /// contract names the source host's features in that host's own terms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_cpu_features: Option<Vec<String>>,
+    /// The cache disk the machine ran with. Its own layers are captured as the
+    /// `cache` disk chain; the shared base they sit on is not, so a restore
+    /// attaches the same base, identified here, from the restoring host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_disk: Option<CheckpointCacheDisk>,
+    /// The captured guest was given the host's virtualization extensions. Its
+    /// vCPUs resume with them, so the restore must expose them again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested_virt: bool,
+    /// Host-side settings of the captured machine that its restore keeps
+    /// unless the restore sets them. Absent on checkpoints captured before
+    /// they were recorded.
+    #[serde(default, skip_serializing_if = "CheckpointSettings::is_empty")]
+    pub settings: CheckpointSettings,
+    /// Content digest (`sha256:…`) of the agent rootfs the captured guest
+    /// booted with. Its processes keep that userland mapped, so a restore boots
+    /// the same rootfs, from the host's store or the copy this artifact
+    /// carries, never whatever the host has installed since. Absent on
+    /// checkpoints written before it was recorded; a restore then takes the
+    /// digest of the carried copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_rootfs_digest: Option<String>,
+}
+
+/// Host-side settings a restored machine keeps from the captured one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CheckpointSettings {
+    /// Signal the workload is sent when the machine stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_signal: Option<String>,
+    /// Seconds the workload gets to exit after its stop signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_timeout_secs: Option<u64>,
+    /// Stop the machine once its workload exits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_on_exit: bool,
+    /// `/dev/shm` size the captured workload runs with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shm_size: Option<String>,
+    /// Health check command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_cmd: Option<Vec<String>>,
+    /// Seconds between health checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_interval_secs: Option<u64>,
+    /// Seconds a health check may take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_timeout_secs: Option<u64>,
+    /// Failed checks before the workload counts as unhealthy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_retries: Option<u32>,
+    /// Seconds after boot before health checks start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_startup_grace_secs: Option<u64>,
+}
+
+impl CheckpointSettings {
+    /// Whether nothing was recorded.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// The shared base under a checkpointed machine's cache disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointCacheDisk {
+    /// The base's file name on the capturing host.
+    pub base: String,
+    /// SHA-256 (hex) of the base. A restore attaches only a base with this
+    /// digest: the captured layers hold only the blocks the machine wrote.
+    pub sha256: String,
+    /// Absolute guest path the cache filesystem is mounted at.
+    pub mount_path: String,
+    /// The cache disk was a slot: attached but never mounted, so the guest
+    /// never wrote it and its captured layers are empty. A restore may put a
+    /// different base under it and mount that.
+    #[serde(default)]
+    pub slot: bool,
+    /// For a slot, the size in bytes of the device the guest saw. A base put
+    /// under it on restore may not be larger.
+    #[serde(default)]
+    pub slot_bytes: Option<u64>,
+}
+
+/// The arm64 system counter a checkpoint's guest was reading.
+///
+/// A guest kernel fixes the counter rate at boot, so resuming it on a host
+/// whose counter runs at another rate (24 MHz on Apple silicon, 1 GHz on
+/// Armv8.6+ servers) skews every clock unless the kernel notices the change.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointClock {
+    /// The source host's counter frequency (`CNTFRQ_EL0`) in Hz.
+    pub counter_hz: u64,
+    /// The guest kernel keeps time correctly when the counter rate changes.
+    #[serde(default)]
+    pub follows_counter_rate: bool,
+}
+
+/// Identity of the pack a checkpointed machine mounted its image layers from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointPackedLayers {
+    /// SHA-256 of the whole `.smolmachine` file (its registry blob digest),
+    /// lowercase hex without the `sha256:` prefix.
+    pub artifact_sha256: String,
+    /// The pack footer's checksum, which keys its extracted layers.
+    pub footer_checksum: u32,
+    /// Registry reference the machine was created from, for fetching the pack
+    /// on a host that does not already have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_ref: Option<String>,
+    /// DAX window (bytes) the captured guest booted its packed layers with. A
+    /// restore must map at least this much; absent on checkpoints taken before
+    /// it was recorded, which restore with the legacy 2 GiB window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dax_window_bytes: Option<u64>,
+}
+
+/// Identity of the registry image a checkpointed machine booted from a
+/// host-fetched archive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckpointHostImage {
+    /// Registry reference to fetch, pinned to the manifest digest the source
+    /// host fetched when it recorded one.
+    pub reference: String,
+    /// Digest of the image config the archive carries. A restore refuses an
+    /// archive with any other config, so a moved tag cannot swap the image.
+    pub config_digest: String,
+    /// Size in bytes of the archive the guest read.
+    pub archive_size: u64,
+    /// Modification time (seconds since the epoch) of the archive the guest
+    /// read. The guest keys its flattened copy of the image on size and
+    /// modification time, so a restore must serve an archive with both.
+    pub archive_mtime: u64,
+}
+
+/// Manifest describing the packed image and configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackManifest {
+    /// Execution mode (container or VM).
+    #[serde(default)]
+    pub mode: PackMode,
+
+    /// Original image reference (e.g., "alpine:latest").
+    pub image: String,
+
+    /// Image digest (sha256:...).
+    pub digest: String,
+
+    /// Target platform (e.g., "linux/arm64").
+    pub platform: String,
+
+    /// Entrypoint command (from image config or override).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entrypoint: Vec<String>,
+
+    /// Default command arguments (from image config or override).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cmd: Vec<String>,
+
+    /// Default environment variables.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+
+    /// Secret references carried with the pack. Each maps an env var name to a
+    /// reference (host store entry, host env var, or file) — never an inline
+    /// value. The plaintext is resolved on the run host at exec time, so a
+    /// `.smolmachine` never contains secret material at rest.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub secret_refs: std::collections::BTreeMap<String, smolvm_protocol::SecretRef>,
+
+    /// Working directory (from image config or override).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    /// User the workload runs as (name or `uid[:gid]`), when the machine was
+    /// given one; absent means the image's USER applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+
+    /// Default number of vCPUs.
+    pub cpus: u8,
+
+    /// Default memory in MiB.
+    pub mem: u32,
+
+    /// Total extracted (on-disk) image size in bytes.
+    /// Used to auto-size the storage disk at runtime.
+    #[serde(default)]
+    pub image_size: u64,
+
+    /// Whether outbound networking is enabled by default.
+    #[serde(default)]
+    pub network: bool,
+
+    /// Enable GPU acceleration (Vulkan via virtio-gpu).
+    #[serde(default)]
+    pub gpu: bool,
+
+    /// Enable CUDA-over-vsock: the runtime starts a host CUDA server and bridges
+    /// the guest's CUDA client to it. Preserved from the source VM's `cuda` flag
+    /// when packing `--from-vm`. `#[serde(default)]` keeps older sidecars (which
+    /// lack the field) loadable.
+    #[serde(default)]
+    pub cuda: bool,
+
+    /// Host platform this .smolmachine runs on (e.g., "darwin/arm64").
+    /// Distinct from `platform` which is the guest architecture (always linux).
+    /// Used for registry Image Index resolution. `#[serde(default)]` keeps
+    /// pre-reset packs (which predate this field) loadable — a local run selects
+    /// libs by the actual host, so an empty value is harmless.
+    #[serde(default)]
+    pub host_platform: String,
+
+    /// RFC 3339 timestamp when this machine was packed. Defaulted so older packs
+    /// that lack it still load.
+    #[serde(default)]
+    pub created: String,
+
+    /// smolvm version that built this machine (e.g., "0.1.15"). Defaulted so
+    /// older packs that lack it still load.
+    #[serde(default)]
+    pub smolvm_version: String,
+
+    /// Asset inventory - files included in the assets blob.
+    pub assets: AssetInventory,
+
+    /// Live execution state when this artifact is a checkpoint (`.checkpoint`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<PortableCheckpointManifest>,
+}
+
+/// Inventory of assets included in the packed binary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetInventory {
+    /// Runtime libraries (relative paths within assets).
+    pub libraries: Vec<AssetEntry>,
+
+    /// Agent rootfs tarball.
+    pub agent_rootfs: AssetEntry,
+
+    /// OCI layer tarballs.
+    pub layers: Vec<LayerEntry>,
+
+    /// Pre-formatted storage disk template (optional).
+    /// When present, copied to cache on first run instead of formatting at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_template: Option<AssetEntry>,
+
+    /// Original sparse size of a VM-mode storage disk, in bytes.
+    ///
+    /// Like the root overlay, a stopped VM's storage disk is packed without its
+    /// trailing hole and must be extended to this size before it is used as a
+    /// raw backing disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_logical_size: Option<u64>,
+
+    /// Overlay disk template (optional, VM mode only).
+    /// Contains the VM's persistent rootfs state from a `--from-vm` pack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_template: Option<AssetEntry>,
+
+    /// Original sparse size of the overlay disk, in bytes (optional, VM mode only).
+    ///
+    /// When set, the overlay.raw entry in the archive is a truncated copy with
+    /// the trailing sparse hole removed. On extraction the file is extended to
+    /// this size via `ftruncate`, restoring the sparse skeleton the VM expects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_logical_size: Option<u64>,
+    /// Contents of the machine's `/workspace` at pack time, as a tar the guest
+    /// unpacks onto a fresh storage disk on first boot. Absent from packs made
+    /// without `--include-workspace`, and from packs older than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_seed: Option<AssetEntry>,
+}
+
+/// An asset file entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetEntry {
+    /// Path within the assets archive.
+    pub path: String,
+
+    /// Uncompressed size in bytes.
+    pub size: u64,
+}
+
+/// An OCI layer entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerEntry {
+    /// Layer digest (sha256:...).
+    pub digest: String,
+
+    /// Path within the assets archive.
+    pub path: String,
+
+    /// Uncompressed size in bytes.
+    pub size: u64,
+}
+
+/// Generate an RFC 3339 timestamp for the current time in UTC.
+fn rfc3339_now() -> String {
+    let now = time::OffsetDateTime::now_utc();
+    now.format(&time::format_description::well_known::Rfc3339)
+        .expect("RFC 3339 formatting should never fail for a valid OffsetDateTime")
+}
+
+impl PackManifest {
+    /// Create a new manifest with default values.
+    pub fn new(image: String, digest: String, platform: String, host_platform: String) -> Self {
+        Self {
+            mode: PackMode::default(),
+            image,
+            digest,
+            platform,
+            entrypoint: Vec::new(),
+            cmd: Vec::new(),
+            env: Vec::new(),
+            secret_refs: std::collections::BTreeMap::new(),
+            workdir: None,
+            user: None,
+            cpus: 1,
+            mem: 256,
+            image_size: 0,
+            network: false,
+            gpu: false,
+            cuda: false,
+            host_platform,
+            created: rfc3339_now(),
+            smolvm_version: env!("CARGO_PKG_VERSION").to_string(),
+            assets: AssetInventory {
+                libraries: Vec::new(),
+                agent_rootfs: AssetEntry {
+                    path: "agent-rootfs.tar".to_string(),
+                    size: 0,
+                },
+                layers: Vec::new(),
+                storage_template: None,
+                storage_logical_size: None,
+                overlay_template: None,
+                overlay_logical_size: None,
+                workspace_seed: None,
+            },
+            checkpoint: None,
+        }
+    }
+
+    /// Serialize manifest to JSON.
+    pub fn to_json(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec_pretty(self)?)
+    }
+
+    /// Deserialize manifest from JSON.
+    pub fn from_json(data: &[u8]) -> Result<Self> {
+        Ok(serde_json::from_slice(data)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_intel_portable_contract_keeps_its_wire_name() {
+        // Checkpoints captured before the portable profile gained SHA carry
+        // this exact tag; it must keep parsing as the same contract.
+        let json = r#"{"kind":"linux-kvm-intel-portable-v1"}"#;
+        let contract: CheckpointCpuContract = serde_json::from_str(json).unwrap();
+        assert_eq!(contract, CheckpointCpuContract::LinuxKvmIntelPortableV1);
+        assert_eq!(serde_json::to_string(&contract).unwrap(), json);
+    }
+
+    #[test]
+    fn test_manifest_secret_refs_roundtrip() {
+        // Secret refs survive a JSON round-trip through the manifest, and are
+        // omitted entirely when empty (skip_serializing_if) so existing packs
+        // stay byte-compatible.
+        let empty = PackManifest::new(
+            "alpine".to_string(),
+            "sha256:abc".to_string(),
+            "linux/arm64".to_string(),
+            "linux/arm64".to_string(),
+        );
+        let json = String::from_utf8(empty.to_json().unwrap()).unwrap();
+        assert!(
+            !json.contains("secret_refs"),
+            "empty secret_refs must not be serialized"
+        );
+
+        let mut m = empty;
+        m.secret_refs.insert(
+            "DB_PASSWORD".to_string(),
+            smolvm_protocol::SecretRef {
+                from_env: Some("PGPASSWORD".to_string()),
+                from_file: None,
+                from_keychain: None,
+            },
+        );
+        let restored = PackManifest::from_json(&m.to_json().unwrap()).unwrap();
+        assert_eq!(restored.secret_refs.len(), 1);
+        assert_eq!(
+            restored.secret_refs["DB_PASSWORD"].from_env.as_deref(),
+            Some("PGPASSWORD")
+        );
+    }
+
+    #[test]
+    fn test_footer_roundtrip() {
+        let footer = PackFooter {
+            stub_size: 512 * 1024,
+            assets_offset: 512 * 1024,
+            assets_size: 50 * 1024 * 1024,
+            manifest_offset: 512 * 1024 + 50 * 1024 * 1024,
+            manifest_size: 2048,
+            checksum: 0xDEADBEEF,
+        };
+
+        let bytes = footer.to_bytes();
+        assert_eq!(bytes.len(), FOOTER_SIZE);
+
+        let restored = PackFooter::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.stub_size, footer.stub_size);
+        assert_eq!(restored.assets_offset, footer.assets_offset);
+        assert_eq!(restored.assets_size, footer.assets_size);
+        assert_eq!(restored.manifest_offset, footer.manifest_offset);
+        assert_eq!(restored.manifest_size, footer.manifest_size);
+        assert_eq!(restored.checksum, footer.checksum);
+    }
+
+    #[test]
+    fn test_footer_invalid_magic() {
+        let mut bytes = [0u8; FOOTER_SIZE];
+        bytes[0..8].copy_from_slice(b"BADMAGIC");
+
+        let result = PackFooter::from_bytes(&bytes);
+        assert!(matches!(result, Err(PackError::InvalidMagic)));
+    }
+
+    #[test]
+    fn test_footer_unsupported_version() {
+        let mut bytes = [0u8; FOOTER_SIZE];
+        bytes[0..8].copy_from_slice(MAGIC);
+        bytes[8..12].copy_from_slice(&99u32.to_le_bytes()); // Bad version
+
+        let result = PackFooter::from_bytes(&bytes);
+        assert!(matches!(result, Err(PackError::UnsupportedVersion(99))));
+    }
+
+    #[test]
+    fn test_footer_reads_legacy_v2_v3() {
+        // Packs written before FORMAT_VERSION was reset 3->1 stamp version 2 or 3
+        // but share the identical byte layout, so they must still read. Regression
+        // for "read footer: unsupported version: 3" on pre-reset .smolmachine files.
+        for legacy in [2u32, 3u32] {
+            let footer = PackFooter {
+                stub_size: 0,
+                assets_offset: 0,
+                assets_size: 10,
+                manifest_offset: 10,
+                manifest_size: 20,
+                checksum: 0,
+            };
+            let mut bytes = footer.to_bytes();
+            bytes[8..12].copy_from_slice(&legacy.to_le_bytes());
+            let restored = PackFooter::from_bytes(&bytes)
+                .unwrap_or_else(|_| panic!("legacy v{legacy} footer must read"));
+            assert_eq!(restored.assets_size, 10);
+            assert_eq!(restored.manifest_size, 20);
+        }
+    }
+
+    #[test]
+    fn test_manifest_roundtrip() {
+        let mut manifest = PackManifest::new(
+            "alpine:latest".to_string(),
+            "sha256:abc123".to_string(),
+            "linux/arm64".to_string(),
+            "darwin/arm64".to_string(),
+        );
+        manifest.cpus = 2;
+        manifest.mem = 1024;
+        manifest.entrypoint = vec!["/bin/sh".to_string()];
+        manifest.env = vec!["PATH=/usr/local/bin:/usr/bin:/bin".to_string()];
+        manifest.assets.libraries.push(AssetEntry {
+            path: "lib/libkrun.dylib".to_string(),
+            size: 4 * 1024 * 1024,
+        });
+
+        let json = manifest.to_json().unwrap();
+        let restored = PackManifest::from_json(&json).unwrap();
+
+        assert_eq!(restored.image, "alpine:latest");
+        assert_eq!(restored.digest, "sha256:abc123");
+        assert_eq!(restored.cpus, 2);
+        assert_eq!(restored.mem, 1024);
+        assert_eq!(restored.entrypoint, vec!["/bin/sh"]);
+        assert_eq!(restored.assets.libraries.len(), 1);
+    }
+
+    #[test]
+    fn test_manifest_json_format() {
+        let manifest = PackManifest::new(
+            "ubuntu:22.04".to_string(),
+            "sha256:def456".to_string(),
+            "linux/amd64".to_string(),
+            "linux/amd64".to_string(),
+        );
+
+        let json = String::from_utf8(manifest.to_json().unwrap()).unwrap();
+        assert!(json.contains("\"image\": \"ubuntu:22.04\""));
+        assert!(json.contains("\"platform\": \"linux/amd64\""));
+        // Phase 0 fields: verify key names serialize correctly
+        assert!(json.contains("\"host_platform\": \"linux/amd64\""));
+        assert!(json.contains("\"smolvm_version\""));
+        assert!(json.contains("\"created\""));
+    }
+
+    #[test]
+    fn test_pack_mode_default_is_container() {
+        assert_eq!(PackMode::default(), PackMode::Container);
+    }
+
+    #[test]
+    fn test_pack_mode_vm_roundtrip() {
+        let mut manifest = PackManifest::new(
+            "vm://myvm".to_string(),
+            "none".to_string(),
+            "linux/arm64".to_string(),
+            "darwin/arm64".to_string(),
+        );
+        manifest.mode = PackMode::Vm;
+        manifest.assets.overlay_template = Some(AssetEntry {
+            path: "overlay.raw".to_string(),
+            size: 2 * 1024 * 1024 * 1024,
+        });
+
+        let json = manifest.to_json().unwrap();
+        let restored = PackManifest::from_json(&json).unwrap();
+        assert_eq!(restored.mode, PackMode::Vm);
+        assert!(restored.assets.overlay_template.is_some());
+        assert_eq!(
+            restored.assets.overlay_template.unwrap().path,
+            "overlay.raw"
+        );
+    }
+}

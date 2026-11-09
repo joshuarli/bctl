@@ -1,0 +1,8719 @@
+//! Storage management for the helper daemon.
+//!
+//! This module handles:
+//! - Storage disk initialization and formatting
+//! - OCI image pulling via crane
+//! - Layer extraction and deduplication
+//! - Overlay filesystem management
+//! - Container execution via crun OCI runtime
+//! - Support for pre-packed OCI layers (smolvm pack)
+
+use crate::crun::CrunCommand;
+use crate::oci::{generate_container_id, OciSpec};
+use crate::paths::{self, STORAGE_ROOT};
+use crate::process::{WaitResult, TIMEOUT_EXIT_CODE};
+use sha2::{Digest, Sha256};
+#[cfg(test)]
+use smolvm_oci_layer::extract_oci_layer;
+use smolvm_oci_layer::{decompress_layer_reader, extract_oci_layer_with_size};
+use smolvm_protocol::guest_env;
+use smolvm_protocol::{
+    image_repo, normalize_image_ref, ImageInfo, OverlayInfo, RegistryAuth, StorageStatus,
+};
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use tracing::{debug, info, warn};
+
+/// Directory structure within storage.
+const LAYERS_DIR: &str = "layers";
+const CONFIGS_DIR: &str = "configs";
+const MANIFESTS_DIR: &str = "manifests";
+const IMAGE_METADATA_DIR: &str = "image-metadata";
+const OVERLAYS_DIR: &str = "overlays";
+const WORKSPACE_DIR: &str = "workspace";
+const DOCKER_HUB_AUTH_CONFIG_KEY: &str = "https://index.docker.io/v1/";
+const DOCKER_HUB_REGISTRY_ALIASES: &[&str] = &["docker.io", "index.docker.io"];
+/// Username Docker uses when the secret is an OAuth identity token.
+const DOCKER_IDENTITY_TOKEN_USERNAME: &str = "<token>";
+
+fn validate_storage_id(value: &str, context: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(StorageError::ValidationFailed {
+            context: context.to_string(),
+            reason: "cannot be empty".to_string(),
+        });
+    }
+
+    if value.len() > 128 {
+        return Err(StorageError::ValidationFailed {
+            context: context.to_string(),
+            reason: "too long (max 128 chars)".to_string(),
+        });
+    }
+
+    if value.contains('/') || value.contains('\\') {
+        return Err(StorageError::ValidationFailed {
+            context: context.to_string(),
+            reason: "path separators are not allowed".to_string(),
+        });
+    }
+
+    let path = Path::new(value);
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(StorageError::ValidationFailed {
+                    context: context.to_string(),
+                    reason: "parent traversal is not allowed".to_string(),
+                });
+            }
+            std::path::Component::CurDir => {
+                return Err(StorageError::ValidationFailed {
+                    context: context.to_string(),
+                    reason: "dot segments are not allowed".to_string(),
+                });
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(StorageError::ValidationFailed {
+                    context: context.to_string(),
+                    reason: "path separators are not allowed".to_string(),
+                });
+            }
+            std::path::Component::Normal(seg) => {
+                let seg = seg.to_string_lossy();
+                if !seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+                {
+                    return Err(StorageError::ValidationFailed {
+                        context: context.to_string(),
+                        reason: format!("contains invalid character(s): {}", value),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn overlay_root_for_workload(workload_id: &str) -> Result<PathBuf> {
+    validate_storage_id(workload_id, "workload_id")?;
+    Ok(Path::new(STORAGE_ROOT).join(OVERLAYS_DIR).join(workload_id))
+}
+
+/// Merged rootfs directory of a persistent overlay, derived without preparing
+/// it. Lets the keep-alive `crun exec` path read the running container's
+/// `/etc/passwd` (to resolve a username to a numeric uid, #632) when joining an
+/// already-running container, where no fresh `prepare_for_run_persistent` ran.
+pub fn persistent_overlay_rootfs(overlay_id: &str) -> PathBuf {
+    Path::new(STORAGE_ROOT)
+        .join(OVERLAYS_DIR)
+        .join(format!("persistent-{}", overlay_id))
+        .join("merged")
+}
+
+fn validate_container_destination_path(container_path: &str) -> Result<PathBuf> {
+    if !container_path.starts_with('/') {
+        return Err(StorageError::ValidationFailed {
+            context: "mount destination".to_string(),
+            reason: "must be an absolute path".to_string(),
+        });
+    }
+    if container_path == "/" {
+        return Err(StorageError::ValidationFailed {
+            context: "mount destination".to_string(),
+            reason: "mounting to '/' is not allowed".to_string(),
+        });
+    }
+
+    let mut relative = PathBuf::new();
+    for component in Path::new(container_path).components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(seg) => relative.push(seg),
+            std::path::Component::ParentDir => {
+                return Err(StorageError::ValidationFailed {
+                    context: "mount destination".to_string(),
+                    reason: "parent traversal is not allowed".to_string(),
+                });
+            }
+            std::path::Component::CurDir => {
+                return Err(StorageError::ValidationFailed {
+                    context: "mount destination".to_string(),
+                    reason: "dot segments are not allowed".to_string(),
+                });
+            }
+            std::path::Component::Prefix(_) => {
+                return Err(StorageError::ValidationFailed {
+                    context: "mount destination".to_string(),
+                    reason: "path prefixes are not allowed".to_string(),
+                });
+            }
+        }
+    }
+
+    if relative.as_os_str().is_empty() {
+        return Err(StorageError::ValidationFailed {
+            context: "mount destination".to_string(),
+            reason: "cannot resolve mount destination".to_string(),
+        });
+    }
+
+    Ok(relative)
+}
+
+fn ensure_mount_target_under_root(rootfs: &Path, container_path: &str) -> Result<PathBuf> {
+    let root_canon = rootfs.canonicalize().map_err(|e| StorageError::ReadFile {
+        path: rootfs.display().to_string(),
+        cause: format!("failed to canonicalize rootfs: {}", e),
+    })?;
+
+    let relative = validate_container_destination_path(container_path)?;
+    let components: Vec<_> = relative.components().collect();
+    let last_idx = components.len().saturating_sub(1);
+    let mut current = root_canon.clone();
+
+    for (idx, component) in components.into_iter().enumerate() {
+        let std::path::Component::Normal(seg) = component else {
+            return Err(StorageError::ValidationFailed {
+                context: "mount destination".to_string(),
+                reason: "invalid destination component".to_string(),
+            });
+        };
+
+        current.push(seg);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    let canon = current.canonicalize().map_err(|e| StorageError::ReadFile {
+                        path: current.display().to_string(),
+                        cause: format!("failed to canonicalize symlink target: {}", e),
+                    })?;
+                    if !canon.starts_with(&root_canon) {
+                        return Err(StorageError::ValidationFailed {
+                            context: "mount destination".to_string(),
+                            reason: "resolved path escapes rootfs".to_string(),
+                        });
+                    }
+                    if idx == last_idx {
+                        // The mount target itself is a symlink within the rootfs.
+                        // Previous VM runs can leave such symlinks (e.g. /workspace →
+                        // /storage/workspace) in the writable agent rootfs. Replace it
+                        // with a real directory so the bind mount claims the path
+                        // directly rather than following through to the symlink target.
+                        std::fs::remove_file(&current).map_err(|e| StorageError::ReadFile {
+                            path: current.display().to_string(),
+                            cause: format!("failed to remove symlink at mount target: {}", e),
+                        })?;
+                        std::fs::create_dir(&current).map_err(|err| StorageError::CreateDir {
+                            path: current.display().to_string(),
+                            cause: err.to_string(),
+                        })?;
+                    } else if !current.is_dir() {
+                        // Intermediate symlink must resolve to a directory.
+                        return Err(StorageError::ValidationFailed {
+                            context: "mount destination".to_string(),
+                            reason: format!(
+                                "destination component is not a directory: {}",
+                                current.display()
+                            ),
+                        });
+                    }
+                } else if !meta.is_dir() {
+                    return Err(StorageError::ValidationFailed {
+                        context: "mount destination".to_string(),
+                        reason: format!(
+                            "destination component is not a directory: {}",
+                            current.display()
+                        ),
+                    });
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current).map_err(|err| StorageError::CreateDir {
+                    path: current.display().to_string(),
+                    cause: err.to_string(),
+                })?;
+            }
+            Err(e) => {
+                return Err(StorageError::ReadFile {
+                    path: current.display().to_string(),
+                    cause: e.to_string(),
+                });
+            }
+        }
+    }
+
+    let final_canon = current.canonicalize().map_err(|e| StorageError::ReadFile {
+        path: current.display().to_string(),
+        cause: format!("failed to canonicalize mount destination: {}", e),
+    })?;
+    if !final_canon.starts_with(&root_canon) {
+        return Err(StorageError::ValidationFailed {
+            context: "mount destination".to_string(),
+            reason: "resolved path escapes rootfs".to_string(),
+        });
+    }
+
+    Ok(final_canon)
+}
+
+/// Create a regular-file mountpoint without following a final symlink outside
+/// the container root. OCI runtimes require a file destination when the bind
+/// source is a file.
+pub(crate) fn ensure_file_mount_target_under_root(
+    rootfs: &Path,
+    container_path: &str,
+) -> Result<PathBuf> {
+    let relative = validate_container_destination_path(container_path)?;
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| StorageError::ValidationFailed {
+            context: "mount destination".to_string(),
+            reason: "file mount destination has no filename".to_string(),
+        })?;
+    let parent = relative
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| StorageError::ValidationFailed {
+            context: "mount destination".to_string(),
+            reason: "file mount destination must have a parent directory".to_string(),
+        })?;
+    let parent_destination = format!("/{}", parent.display());
+    let parent_path = ensure_mount_target_under_root(rootfs, &parent_destination)?;
+    let target = parent_path.join(file_name);
+
+    match std::fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            std::fs::remove_file(&target).map_err(|error| StorageError::ReadFile {
+                path: target.display().to_string(),
+                cause: format!("failed to replace symlink at file mount target: {error}"),
+            })?;
+            std::fs::File::create(&target).map_err(|error| StorageError::ReadFile {
+                path: target.display().to_string(),
+                cause: format!("failed to create file mount target: {error}"),
+            })?;
+        }
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return Err(StorageError::ValidationFailed {
+                context: "mount destination".to_string(),
+                reason: format!(
+                    "file mount destination is not a regular file: {}",
+                    target.display()
+                ),
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::File::create(&target).map_err(|error| StorageError::ReadFile {
+                path: target.display().to_string(),
+                cause: format!("failed to create file mount target: {error}"),
+            })?;
+        }
+        Err(error) => {
+            return Err(StorageError::ReadFile {
+                path: target.display().to_string(),
+                cause: error.to_string(),
+            });
+        }
+    }
+    Ok(target)
+}
+
+/// Global state for packed layers support.
+/// Set at startup if SMOLVM_PACKED_LAYERS env var is present.
+static PACKED_LAYERS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Global state for boot-time volume mounts.
+/// Set at startup if SMOLVM_MOUNT_COUNT env var is present.
+static BOOT_VOLUME_MOUNTS: OnceLock<Vec<(String, String, bool)>> = OnceLock::new();
+static BOOT_VOLUME_MOUNTS_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Prefix used only inside the guest agent's mount table. Runtime tags are
+/// `staged+<stable-id>+<device-tag>`: the virtiofs device keeps `device-tag`,
+/// while `stable-id` prevents reordered/replaced mounts from reusing stale data.
+const STAGED_MOUNT_TAG_PREFIX: &str = "staged+";
+const STAGED_MOUNT_ROOT: &str = "/storage/staged-mounts";
+
+fn split_staged_mount_tag(tag: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = tag.strip_prefix(STAGED_MOUNT_TAG_PREFIX) {
+        if let Some((working_id, device_tag)) = rest.split_once('+') {
+            return (device_tag, Some(working_id));
+        }
+    }
+    (tag, None)
+}
+
+/// Path a workload container should bind for a prepared mount.
+/// Staged mounts bind the guest-local working copy; live mounts bind the
+/// virtiofs staging directory.
+pub fn volume_bind_source(tag: &str) -> PathBuf {
+    let (device_tag, staged_id) = split_staged_mount_tag(tag);
+    if let Some(staged_id) = staged_id {
+        Path::new(STAGED_MOUNT_ROOT).join(staged_id)
+    } else {
+        Path::new(paths::VIRTIOFS_MOUNT_ROOT).join(device_tag)
+    }
+}
+
+/// Add each prepared mount to a container spec as a bind of its
+/// [`volume_bind_source`]. crun applies the spec's mounts in order, so a mount
+/// goes ahead of those nested below it (see [`mounts_parents_first`]).
+pub fn add_volume_bind_mounts(spec: &mut OciSpec, mounts: &[(String, String, bool)]) {
+    for (tag, container_path, read_only) in mounts_parents_first(mounts) {
+        let source = volume_bind_source(tag);
+        spec.add_bind_mount(&source.to_string_lossy(), container_path, *read_only);
+    }
+    // Directories attached while the machine runs reach every container,
+    // including ones created after the attach.
+    let targets: Vec<&str> = mounts
+        .iter()
+        .map(|(_, target, _)| target.as_str())
+        .collect();
+    for (source, target, read_only) in crate::attach::container_binds(&targets) {
+        spec.add_bind_mount(&source.to_string_lossy(), &target, read_only);
+    }
+}
+
+/// Mount a virtiofs device with one policy for every host-backed filesystem:
+/// request DAX first, then fall back to the normal buffered data path when the
+/// host did not give this device a DAX window. Explicit fsync still provides
+/// durability; forcing the whole mount synchronous serializes every small
+/// write and is unlike Docker/Podman's bind-mount behavior.
+#[cfg(target_os = "linux")]
+fn mount_virtiofs(tag: &str, mount_point: &Path) -> std::io::Result<bool> {
+    let src = std::ffi::CString::new(tag)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid tag"))?;
+    let dst = std::ffi::CString::new(mount_point.to_string_lossy().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid mount point")
+    })?;
+    let fstype = std::ffi::CString::new("virtiofs").expect("static filesystem type");
+    let opts_dax = std::ffi::CString::new("dax").expect("static mount options");
+
+    // SAFETY: every argument is a valid, live CString and mount() copies them.
+    let dax_rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            dst.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            opts_dax.as_ptr() as *const libc::c_void,
+        )
+    };
+    if dax_rc == 0 {
+        return Ok(true);
+    }
+
+    // SAFETY: same arguments and lifetime as the DAX attempt above.
+    let plain_rc = unsafe {
+        libc::mount(
+            src.as_ptr(),
+            dst.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if plain_rc == 0 {
+        Ok(false)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Initialize packed layers support by checking SMOLVM_PACKED_LAYERS env var.
+/// Format: "virtiofs_tag:mount_point" (e.g., "smolvm_layers:/packed_layers")
+/// Returns the mount point path if successfully mounted.
+pub fn init_packed_layers() -> Option<PathBuf> {
+    let env_val = match std::env::var("SMOLVM_PACKED_LAYERS") {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    // Parse "tag:mount_point"
+    let parts: Vec<&str> = env_val.split(':').collect();
+    if parts.len() != 2 {
+        warn!(env_val = %env_val, "invalid SMOLVM_PACKED_LAYERS format, expected 'tag:mount_point'");
+        return None;
+    }
+
+    let tag = parts[0];
+    let mount_point = PathBuf::from(parts[1]);
+
+    info!(tag = %tag, mount_point = %mount_point.display(), "setting up packed layers from virtiofs");
+
+    // Create mount point
+    if let Err(e) = std::fs::create_dir_all(&mount_point) {
+        warn!(error = %e, mount_point = %mount_point.display(), "failed to create packed layers mount point");
+        return None;
+    }
+
+    // Mount virtiofs using direct syscall (avoids ~3-5ms fork+exec overhead)
+    #[cfg(target_os = "linux")]
+    {
+        let dax = match mount_virtiofs(tag, &mount_point) {
+            Ok(dax) => dax,
+            Err(err) => {
+                warn!(error = %err, tag = %tag, "failed to mount packed layers virtiofs");
+                return None;
+            }
+        };
+        info!(mount_point = %mount_point.display(), dax, "packed layers mounted successfully");
+
+        // List contents for debugging (only at debug level to avoid boot overhead)
+        if let Ok(entries) = std::fs::read_dir(&mount_point) {
+            let layer_dirs: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            debug!(layer_count = layer_dirs.len(), layers = ?layer_dirs, "packed layers available");
+        }
+
+        Some(mount_point)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        warn!("packed layers mount not supported on non-Linux");
+        None
+    }
+}
+
+/// Get the packed layers directory if available.
+/// Seed `/storage/workspace` from a pack's workspace seed, once.
+///
+/// `pack create --from-vm --include-workspace` ships the source machine's
+/// `/workspace` as `workspace-seed/workspace.tar` beside the staged layers. The
+/// workspace lives on the storage disk, which is fresh for every ephemeral run
+/// and for a machine's first boot, so this is the only way those files reach
+/// it. Runs as root, so ownership is exactly what the source machine had.
+///
+/// Guarded by a marker on the storage disk: a persistent machine seeds on its
+/// first boot only, and later boots leave whatever the user has done since.
+/// Absent seed, or any failure, leaves the workspace as it was.
+pub fn seed_workspace_from_pack() {
+    const SEED_DIR: &str = "workspace-seed";
+    const SEED_FILE: &str = "workspace.tar";
+    const MARKER: &str = ".smolvm-workspace-seeded";
+    let Some(packed) = get_packed_layers_dir() else {
+        return;
+    };
+    let seed = packed.join(SEED_DIR).join(SEED_FILE);
+    if !seed.is_file() {
+        return;
+    }
+    let workspace = Path::new(STORAGE_ROOT).join(WORKSPACE_DIR);
+    let marker = workspace.join(MARKER);
+    if marker.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&workspace) {
+        warn!(error = %e, "workspace seed: cannot create workspace dir");
+        return;
+    }
+    info!("seeding /workspace from the pack");
+    match extract_layer_tar(&seed, &workspace) {
+        Ok(()) => {
+            if let Err(e) = std::fs::write(&marker, b"") {
+                warn!(error = %e, "workspace seed: cannot write marker");
+            }
+        }
+        Err(e) => warn!(error = %e, "workspace seed: extraction failed; workspace left as-is"),
+    }
+}
+
+pub fn get_packed_layers_dir() -> Option<&'static PathBuf> {
+    PACKED_LAYERS_DIR.get_or_init(init_packed_layers).as_ref()
+}
+
+/// Whether any boot-time mount needs the persistent guest storage disk.
+///
+/// Live virtiofs mounts can be initialized before `/storage` is available, but
+/// staged mounts place their working copy there and must not race the deferred
+/// storage mount.
+pub fn staged_boot_mount_requested() -> bool {
+    let count = std::env::var("SMOLVM_MOUNT_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    (0..count).any(|index| {
+        std::env::var(format!("SMOLVM_MOUNT_{index}")).is_ok_and(|value| value.ends_with(":staged"))
+    })
+}
+
+pub fn boot_volume_mounts_failed() -> bool {
+    BOOT_VOLUME_MOUNTS_FAILED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Initialize volume mounts at boot by reading SMOLVM_MOUNT_* env vars.
+///
+/// The host launcher sets:
+///   SMOLVM_MOUNT_COUNT=N
+///   SMOLVM_MOUNT_0=smolvm0:/data:rw
+///   SMOLVM_MOUNT_1=smolvm1:/config:ro
+///
+/// This mounts each virtiofs device at its staging area and bind-mounts
+/// to the guest target path, making volumes visible to all code paths
+/// including VmExec.
+pub fn init_volume_mounts() -> &'static [(String, String, bool)] {
+    BOOT_VOLUME_MOUNTS.get_or_init(|| {
+        let count: usize = match std::env::var("SMOLVM_MOUNT_COUNT") {
+            Ok(v) => match v.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    warn!(value = %v, "invalid SMOLVM_MOUNT_COUNT");
+                    return Vec::new();
+                }
+            },
+            // No host mounts; a cache disk may still be attached.
+            Err(_) => 0,
+        };
+
+        let mut mounts = Vec::with_capacity(count);
+        for i in 0..count {
+            let env_key = format!("SMOLVM_MOUNT_{}", i);
+            let env_val = match std::env::var(&env_key) {
+                Ok(v) => v,
+                Err(_) => {
+                    warn!(key = %env_key, "missing mount env var");
+                    continue;
+                }
+            };
+
+            // Parse "tag:guest_path:ro|rw"
+            let parts: Vec<&str> = env_val.splitn(3, ':').collect();
+            if parts.len() != 3 {
+                warn!(key = %env_key, value = %env_val, "invalid mount format, expected tag:path:ro|rw");
+                continue;
+            }
+
+            let staged = parts[2] == "staged";
+            if staged && split_staged_mount_tag(parts[0]).1.is_none() {
+                BOOT_VOLUME_MOUNTS_FAILED.store(true, std::sync::atomic::Ordering::Release);
+                warn!(key = %env_key, "staged mount is missing its stable working-copy identity");
+                continue;
+            }
+            let tag = parts[0].to_string();
+            let guest_path = parts[1].to_string();
+            let read_only = parts[2] == "ro";
+
+            info!(tag = %tag, guest_path = %guest_path, read_only, staged, "boot volume mount");
+            mounts.push((tag, guest_path, read_only));
+        }
+
+        if mounts
+            .iter()
+            .any(|(tag, _, _)| split_staged_mount_tag(tag).1.is_some())
+        {
+            if let Err(error) = prune_staged_working_copies(&mounts) {
+                BOOT_VOLUME_MOUNTS_FAILED.store(true, std::sync::atomic::Ordering::Release);
+                warn!(error = %error, "failed to prune stale staged working copies");
+                return mounts;
+            }
+        }
+
+        // The cache disk is mounted at a staging path beside the virtiofs
+        // devices', so the binds below expose it like any boot mount: at its
+        // guest path, and in every container's own mount list.
+        if let Some(cache) = mount_cache_disk() {
+            mounts.push(cache);
+        }
+        for volume in mount_disk_volumes() {
+            if mounts.iter().any(|(_, target, _)| target == &volume.1) {
+                warn!(target = %volume.1, "disk volume shadowed by a mount at the same path");
+                continue;
+            }
+            mounts.push(volume);
+        }
+
+        // Mount using existing logic with empty rootfs prefix so bind mounts
+        // go to absolute guest paths (e.g., "/data"), visible to VmExec.
+        if !mounts.is_empty() {
+            if let Err(e) = setup_volume_mounts("/", &mounts) {
+                BOOT_VOLUME_MOUNTS_FAILED.store(true, std::sync::atomic::Ordering::Release);
+                warn!(error = %e, "failed to setup boot volume mounts");
+            }
+        }
+
+        mounts
+    })
+}
+
+/// The staging tag the cache disk's filesystem is mounted under, beside the
+/// virtiofs devices' staging paths.
+const CACHE_MOUNT_TAG: &str = "smolvm_cache";
+
+/// Staging-tag prefix for disk volumes. Each volume's directory on the storage
+/// disk is bound at its staging path, so boot-mount setup and every container's
+/// mount list expose it exactly like a virtiofs share, without a device.
+const DISK_VOLUME_TAG_PREFIX: &str = "smolvm_disk_";
+
+/// Where disk volumes keep their data on the storage disk.
+const DISK_VOLUME_ROOT: &str = "/storage/volumes";
+
+static DISK_VOLUMES_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a requested disk volume could not be prepared at boot.
+pub fn disk_volumes_failed() -> bool {
+    DISK_VOLUMES_FAILED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn is_disk_volume_tag(tag: &str) -> bool {
+    tag.starts_with(DISK_VOLUME_TAG_PREFIX)
+}
+
+/// The disk volumes the host requested, already validated.
+fn disk_volume_targets() -> Vec<String> {
+    std::env::var(guest_env::DISK_VOLUMES)
+        .map(|value| smolvm_protocol::disk_volume::decode(&value))
+        .unwrap_or_default()
+}
+
+/// Whether any disk volume was requested, so the storage disk must be mounted
+/// before boot mounts are set up.
+pub fn disk_volumes_requested() -> bool {
+    !disk_volume_targets().is_empty()
+}
+
+/// Prepare each requested disk volume: create its directory on the storage
+/// disk and bind it at its staging path. Returns the boot mounts that expose
+/// them. A volume that cannot be prepared fails the boot mounts rather than
+/// silently leaving its path on the overlay root, where nested overlayfs fails
+/// in ways that do not name the cause.
+#[cfg(target_os = "linux")]
+fn mount_disk_volumes() -> Vec<(String, String, bool)> {
+    let mut mounts = Vec::new();
+    for target in disk_volume_targets() {
+        let name = smolvm_protocol::disk_volume::storage_dir_name(&target);
+        let tag = format!("{DISK_VOLUME_TAG_PREFIX}{name}");
+        let data = Path::new(DISK_VOLUME_ROOT).join(&name);
+        let staging = Path::new(paths::VIRTIOFS_MOUNT_ROOT).join(&tag);
+        // A volume created now has no owner of its own yet: mark it so the
+        // first image it is mounted into gives it that image's ownership.
+        let created = !data.exists();
+        let prepared = std::fs::create_dir_all(&data)
+            .and_then(|()| {
+                if created {
+                    std::fs::write(disk_volume_owner_marker(&name), b"")
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|()| std::fs::create_dir_all(&staging))
+            .and_then(|()| {
+                if is_mountpoint(&staging) {
+                    Ok(())
+                } else {
+                    bind_dir(&data, &staging)
+                }
+            });
+        match prepared {
+            Ok(()) => {
+                info!(target = %target, data = %data.display(), "disk volume ready");
+                mounts.push((tag, target, false));
+            }
+            Err(error) => {
+                DISK_VOLUMES_FAILED.store(true, std::sync::atomic::Ordering::Release);
+                warn!(%error, target = %target, "failed to prepare disk volume");
+            }
+        }
+    }
+    mounts
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mount_disk_volumes() -> Vec<(String, String, bool)> {
+    Vec::new()
+}
+
+/// Marks a disk volume that has not yet taken its owner from an image. It sits
+/// beside the volume directories (whose names never start with `.`), outside
+/// what the workload sees.
+fn disk_volume_owner_marker(name: &str) -> PathBuf {
+    Path::new(DISK_VOLUME_ROOT).join(format!(".{name}.owner-pending"))
+}
+
+/// Give a new disk volume the ownership the image has at its path, as Docker
+/// does for a new named volume: a volume at `/var/lib/postgresql/data` in a
+/// postgres image belongs to postgres, not root. When the image has no such
+/// directory, the volume takes the owner (not the mode) of the nearest
+/// directory above it, so `/home/node/.cache` belongs to node. This runs once
+/// per volume, so an owner later set inside the machine is kept.
+#[cfg(target_os = "linux")]
+fn adopt_image_ownership(rootfs: &Path, tag: &str, container_path: &str, volume: &Path) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let Some(name) = tag.strip_prefix(DISK_VOLUME_TAG_PREFIX) else {
+        return;
+    };
+    let marker = disk_volume_owner_marker(name);
+    if !marker.exists() {
+        return;
+    }
+    let result = match image_dir_at(rootfs, container_path) {
+        Some((meta, exact)) => std::os::unix::fs::chown(volume, Some(meta.uid()), Some(meta.gid()))
+            .and_then(|()| {
+                info!(
+                    target = %container_path,
+                    uid = meta.uid(),
+                    gid = meta.gid(),
+                    exact,
+                    "disk volume took the image's ownership"
+                );
+                if exact {
+                    std::fs::set_permissions(
+                        volume,
+                        std::fs::Permissions::from_mode(meta.mode() & 0o7777),
+                    )
+                } else {
+                    Ok(())
+                }
+            }),
+        None => Ok(()),
+    };
+    // Drop the marker either way: the first image decides, and a later one
+    // must not override an owner set inside the machine in between.
+    if let Err(error) = result.and_then(|()| std::fs::remove_file(&marker)) {
+        warn!(%error, target = %container_path, "failed to set disk volume owner");
+    }
+}
+
+/// The image directory at `container_path` (`true`), or else the nearest
+/// directory above it (`false`), without following symlinks so nothing outside
+/// the rootfs is read. `None` when that is the rootfs itself: a volume at a new
+/// top-level path keeps the root ownership it was created with.
+///
+/// A mount above the path (an enclosing volume) ends the walk as the parent:
+/// what lies below it is that mount's content, such as the root-owned mount
+/// point boot setup made for a nested volume, not the image's.
+#[cfg(target_os = "linux")]
+fn image_dir_at(rootfs: &Path, container_path: &str) -> Option<(std::fs::Metadata, bool)> {
+    let relative = Path::new(container_path.trim_start_matches('/'));
+    let depth = relative.components().count();
+    let mut current = rootfs.to_path_buf();
+    let mut found = None;
+    for (index, component) in relative.components().enumerate() {
+        current.push(component);
+        let exact = index + 1 == depth;
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.is_dir() => {
+                if !exact && is_mountpoint(&current) {
+                    return Some((meta, false));
+                }
+                found = Some((meta, exact));
+            }
+            _ => break,
+        }
+    }
+    found
+}
+
+/// Bind `source` onto `target`.
+#[cfg(target_os = "linux")]
+fn bind_dir(source: &Path, target: &Path) -> std::io::Result<()> {
+    let to_c = |path: &Path| {
+        std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    };
+    let (source, target) = (to_c(source)?, to_c(target)?);
+    // SAFETY: valid NUL-terminated paths, a plain bind with no data.
+    let rc = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// The cache disk the host attached, from `SMOLVM_CACHE_DISK=<device>:<guest
+/// path>[:slot]`: its guest device, the path it is exposed at, and whether it
+/// is a slot left unmounted until a restore puts a cache under it.
+fn cache_disk_from_env() -> Option<(String, String, bool)> {
+    let value = std::env::var(guest_env::CACHE_DISK).ok()?;
+    let parsed = parse_cache_disk_env(&value);
+    if parsed.is_none() {
+        warn!(value = %value, "invalid cache disk, expected /dev/vdX:/guest/path[:slot]");
+    }
+    parsed
+}
+
+/// Make `path` a mount point (a bind of itself), so boot-mount setup treats
+/// it as a mounted device rather than a virtiofs share to mount.
+#[cfg(target_os = "linux")]
+fn make_self_bind(path: &Path) -> std::io::Result<()> {
+    if is_mountpoint(path) {
+        return Ok(());
+    }
+    let target = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    // SAFETY: valid NUL-terminated path bound onto itself, no data.
+    let rc = unsafe {
+        libc::mount(
+            target.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// `/dev/vdX:/guest/path[:slot]` as its device, guest path and slot flag.
+fn parse_cache_disk_env(value: &str) -> Option<(String, String, bool)> {
+    let (value, slot) = match value.strip_suffix(":slot") {
+        Some(rest) => (rest, true),
+        None => (value, false),
+    };
+    let (device, guest_path) = value.split_once(':')?;
+    let letter = device.strip_prefix("/dev/vd")?;
+    let valid_device = letter.len() == 1 && letter.bytes().all(|b| b.is_ascii_lowercase());
+    (valid_device && guest_path.starts_with('/') && guest_path.len() > 1)
+        .then(|| (device.to_string(), guest_path.to_string(), slot))
+}
+
+/// Whether `device` holds an ext4 (or ext2/3) filesystem: its superblock's
+/// magic, `0xEF53` at byte 1080. An error reading it is returned, never taken
+/// for a blank disk, so a disk that merely failed to read is never formatted.
+fn has_ext_superblock(device: &Path) -> std::io::Result<bool> {
+    use std::io::{Seek, SeekFrom};
+    let mut disk = std::fs::File::open(device)?;
+    disk.seek(SeekFrom::Start(1080))?;
+    let mut magic = [0u8; 2];
+    disk.read_exact(&mut magic)?;
+    Ok(magic == [0x53, 0xEF])
+}
+
+/// Mounts `device`'s ext4 filesystem at `mount_point` with `noatime`.
+#[cfg(target_os = "linux")]
+fn mount_ext4(device: &Path, mount_point: &Path) -> std::io::Result<()> {
+    let to_c = |path: &Path| {
+        std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    };
+    let (source, target) = (to_c(device)?, to_c(mount_point)?);
+    let fstype = std::ffi::CString::new("ext4").expect("static filesystem type");
+    // SAFETY: valid NUL-terminated strings, and no mount data.
+    let rc = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            libc::MS_NOATIME,
+            std::ptr::null(),
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Mounts the cache disk at its staging path, making an ext4 filesystem on a
+/// blank one (a new cache's base), and returns its boot mount. A machine
+/// resumed from a branch arrives with it mounted already. A disk that holds a
+/// filesystem the guest cannot mount is checked and repaired once, never
+/// reformatted: it holds a cache someone built.
+#[cfg(target_os = "linux")]
+fn mount_cache_disk() -> Option<(String, String, bool)> {
+    let (device, guest_path, slot) = cache_disk_from_env()?;
+    let device = PathBuf::from(device);
+    let staging = Path::new(paths::VIRTIOFS_MOUNT_ROOT).join(CACHE_MOUNT_TAG);
+    if slot {
+        // Reserve the path, but never read or format the device: a restore
+        // swaps a cache under it and mounts that, and nothing this guest
+        // cached about the empty slot may survive the swap.
+        if let Err(error) = std::fs::create_dir_all(&staging) {
+            warn!(%error, "cache slot: cannot create its staging path");
+            return None;
+        }
+        // Boot-mount setup mounts a virtiofs share at any staging path that is
+        // not a mount point yet; the slot must not be mistaken for one.
+        if let Err(error) = make_self_bind(&staging) {
+            warn!(%error, "cache slot: cannot bind its staging path");
+            return None;
+        }
+        info!(device = %device.display(), guest_path = %guest_path, "cache slot reserved, not mounted");
+        return Some((CACHE_MOUNT_TAG.to_string(), guest_path, false));
+    }
+    if !is_mountpoint(&staging) {
+        if let Err(error) = std::fs::create_dir_all(&staging) {
+            warn!(%error, "cache disk: cannot create its staging path");
+            return None;
+        }
+        if !device.exists() {
+            // virtio-blk is major 253, sixteen minors per disk.
+            let index = device
+                .to_string_lossy()
+                .bytes()
+                .last()
+                .map_or(0, |b| b - b'a');
+            if let Ok(path) = std::ffi::CString::new(device.as_os_str().as_encoded_bytes()) {
+                // SAFETY: a block device node for a disk the host attached.
+                unsafe {
+                    libc::mknod(
+                        path.as_ptr(),
+                        libc::S_IFBLK | 0o660,
+                        libc::makedev(253, u32::from(index) * 16),
+                    );
+                }
+            }
+        }
+        match has_ext_superblock(&device) {
+            Ok(true) => {}
+            Ok(false) => {
+                info!(device = %device.display(), "cache disk is blank, making its filesystem");
+                let made = Command::new("mkfs.ext4")
+                    .args(["-F", "-q", "-O", "^has_journal", "-L", "smolvm-cache"])
+                    .arg(&device)
+                    .status()
+                    .is_ok_and(|status| status.success());
+                if !made {
+                    warn!(device = %device.display(), "cache disk: mkfs.ext4 failed");
+                    return None;
+                }
+            }
+            Err(error) => {
+                warn!(%error, device = %device.display(), "cache disk: cannot read its superblock");
+                return None;
+            }
+        }
+        if let Err(error) = mount_ext4(&device, &staging) {
+            warn!(%error, "cache disk did not mount, checking its filesystem");
+            let _ = Command::new("fsck.ext4")
+                .args(["-y", "-f"])
+                .arg(&device)
+                .status();
+            if let Err(error) = mount_ext4(&device, &staging) {
+                warn!(%error, device = %device.display(), "cache disk did not mount after a check");
+                return None;
+            }
+        }
+        info!(device = %device.display(), guest_path = %guest_path, "cache disk mounted");
+    }
+    Some((CACHE_MOUNT_TAG.to_string(), guest_path, false))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mount_cache_disk() -> Option<(String, String, bool)> {
+    None
+}
+
+/// Re-establish boot-time virtiofs mounts after a fork restore.
+///
+/// A clone resumes the golden agent after its one-time boot initialization,
+/// while libkrun attaches fresh virtiofs devices to the clone VMM. The restored
+/// mount can remain under the golden's old overlay tree, but a newly selected
+/// clone overlay hides its bind target. Accessing that stale mount can block in
+/// the dead golden virtiofs session indefinitely. Check only mount metadata
+/// (never the stale filesystem), detach a stale staging mount if present, and
+/// bind the clone's fresh device before acknowledging its first host request.
+#[cfg(target_os = "linux")]
+pub fn repair_boot_volume_mounts() -> Result<()> {
+    // A cache disk is a block device the branch pivoted under its mounted
+    // filesystem, not a virtiofs session that died with the source. Disk
+    // volumes live on the storage disk, so they survive the same way.
+    let missing = init_volume_mounts()
+        .iter()
+        .filter(|(tag, target, _)| {
+            tag != CACHE_MOUNT_TAG && !is_disk_volume_tag(tag) && !is_mountpoint(Path::new(target))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    for mount in &missing {
+        let (tag, target, _) = mount;
+        let (device_tag, _) = split_staged_mount_tag(tag);
+        let staging = Path::new(paths::VIRTIOFS_MOUNT_ROOT).join(device_tag);
+        if is_mountpoint(&staging) {
+            detach_mount(&staging);
+        }
+        setup_volume_mounts("/", std::slice::from_ref(mount))?;
+        if !is_mountpoint(Path::new(target)) {
+            return Err(StorageError::new(format!(
+                "boot volume mount '{}' was not restored at '{}'",
+                tag, target
+            )));
+        }
+        info!(tag = %device_tag, target = %target, "restored boot volume mount after clone resume");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn repair_boot_volume_mounts() -> Result<()> {
+    Ok(())
+}
+
+/// True when a user mount target claims /workspace itself or anything beneath it.
+///
+/// Compares path *components*, not string prefixes: `/workspaces/project` begins
+/// with the characters of `/workspace` but is a sibling rather than a child, and
+/// must not suppress the fallback. Slash-normalized so a trailing `/` on the
+/// user's target still matches.
+fn claims_workspace(target: &str) -> bool {
+    Path::new(target.trim_end_matches('/')).starts_with(paths::WORKSPACE_GUEST_PATH)
+}
+
+/// Add the /storage/workspace → /workspace fallback bind mount to an OCI spec,
+/// unless a user-provided volume already claims /workspace or a path under it.
+///
+/// The fallback exposes the storage disk's workspace directory inside containers
+/// so that persistent files written to /workspace survive across VM restarts.
+/// It must be skipped whenever the user has mounted at or below /workspace, to
+/// avoid silently overwriting their virtiofs mount (which comes earlier in the
+/// spec). Binding /workspace on top of a user mount at, say, /workspace/project
+/// replaces the parent directory the nested mount hangs from: the mount stays in
+/// the namespace and is listed in /proc/self/mountinfo, but no longer resolves by
+/// path, so the user sees an empty directory instead of their files.
+pub fn add_workspace_fallback(spec: &mut OciSpec, mounts: &[(String, String, bool)]) {
+    let workspace_src = Path::new(STORAGE_ROOT).join(WORKSPACE_DIR);
+    if !workspace_src.exists() {
+        return;
+    }
+    add_workspace_fallback_from(spec, mounts, &workspace_src);
+}
+
+/// Core of [`add_workspace_fallback`], with the fallback source injected so the
+/// rule can be exercised without a real /storage/workspace on the test host.
+fn add_workspace_fallback_from(
+    spec: &mut OciSpec,
+    mounts: &[(String, String, bool)],
+    workspace_src: &Path,
+) {
+    let user_owns_workspace = mounts.iter().any(|(_, path, _)| claims_workspace(path));
+    if !user_owns_workspace {
+        spec.add_bind_mount(
+            &workspace_src.to_string_lossy(),
+            paths::WORKSPACE_GUEST_PATH,
+            false,
+        );
+    }
+}
+
+/// Expose the per-VM `/storage` disk inside privileged containers, so an
+/// `--image` machine has the same filesystem topology as a bare VM: `/storage`
+/// (and therefore `/storage/docker`, `/storage/workspace`, …) resolves to the
+/// ext4 disk identically with or without `--image`, and bind-mounts the workload
+/// makes against it — e.g. docker-in-VM binding `/storage/docker` →
+/// `/var/lib/docker` so overlay2 lands on ext4, not the rootfs overlay — work
+/// the same in a container as in a bare VM.
+///
+/// Privileged-only: when `unprivileged` the container is a defense-in-depth
+/// boundary for untrusted code, so it must NOT see the VM's storage disk (its
+/// image archives and overlay plumbing). `/storage` is per-machine, so for a
+/// privileged workload — where the microVM is the security boundary — exposing
+/// it crosses no isolation boundary; it only mirrors what a bare VM already has.
+///
+/// Skipped when the user already mounted something at `/storage`, and a no-op
+/// when the disk isn't mounted (bare agent rootfs / no storage disk).
+pub fn add_storage_fallback(
+    spec: &mut OciSpec,
+    mounts: &[(String, String, bool)],
+    unprivileged: bool,
+) {
+    // Decide policy first (testable without a mounted disk), then gate on the
+    // disk actually being present (a no-op on a bare agent rootfs).
+    if should_expose_storage(mounts, unprivileged) && Path::new(STORAGE_ROOT).exists() {
+        spec.add_bind_mount(STORAGE_ROOT, STORAGE_ROOT, false);
+    }
+}
+
+/// Policy for [`add_storage_fallback`]: a privileged workload that hasn't already
+/// claimed `/storage` should see the VM's storage disk. Unprivileged containers
+/// never do (defense-in-depth boundary for untrusted code).
+fn should_expose_storage(mounts: &[(String, String, bool)], unprivileged: bool) -> bool {
+    if unprivileged {
+        return false;
+    }
+    !mounts
+        .iter()
+        .any(|(_, path, _)| path.trim_end_matches('/') == STORAGE_ROOT)
+}
+
+/// Name of the optional index file (written into the packed-layers dir at
+/// extraction time) recording the layers in OCI order, bottom-most first, one
+/// short layer id per line.
+///
+/// Packed layer subdirs are content-addressed (named by digest), so sorting
+/// their names does NOT reproduce the manifest's stacking order. That is fine
+/// for the common single-flattened-layer image, but a multi-layer pack (e.g. an
+/// init-cache base + init-overlay layer from `pack create --from-vm`) gets
+/// mis-stacked: the base can sort above the overlay, so overlayfs shadows the
+/// overlay's in-place edits to base files (`/etc/ld.so.cache`,
+/// `/var/lib/dpkg/status`) while keeping its new files — installed packages then
+/// appear on disk but unregistered, and libs in multiarch dirs fail to load.
+/// Honoring this index restores the true order; absent (older packs) we fall
+/// back to a name sort.
+const LAYER_ORDER_FILE: &str = "layer-order";
+
+/// Subdir on the storage disk holding layers this VM unpacked for itself.
+const GUEST_LAYERS_DIR: &str = "packed-layers";
+/// Marker written once every staged tar has been unpacked, holding the staged
+/// set's signature so a restart reuses the work and a changed pack redoes it.
+const GUEST_LAYERS_MARKER: &str = ".extracted";
+
+/// Written by the host beside layers it extracted itself, declaring that their
+/// opaque-directory markers use `user.overlay.*`. Absent means `trusted.*`,
+/// which every existing `.smolmachine` uses, so older artifacts are untouched.
+const OPAQUE_XATTR_MARKER: &str = "opaque-xattr";
+
+/// Whether the packed layers carry `user.overlay.*` opaque markers, which the
+/// overlay must be mounted with `userxattr` to honor. Getting this pairing
+/// wrong fails silently (stale lower content shows through), so the producer
+/// declares it rather than the consumer guessing.
+/// `,userxattr` when the packed layers need it, for the mount(8) fallback.
+fn userxattr_mount_suffix() -> &'static str {
+    if packed_layers_use_userxattr() {
+        ",userxattr"
+    } else {
+        ""
+    }
+}
+
+pub fn packed_layers_use_userxattr() -> bool {
+    static USERXATTR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *USERXATTR.get_or_init(|| {
+        get_packed_layers_dir()
+            .map(|dir| {
+                std::fs::read_to_string(dir.join(OPAQUE_XATTR_MARKER))
+                    .map(|value| value.trim() == "user")
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// The layer tars a host staged for us rather than unpacking itself, if any.
+///
+/// A `.tar` whose sibling directory already exists was unpacked by the host, so
+/// it is not ours to redo.
+fn staged_layer_tars(packed_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut tars = Vec::new();
+    let entries = std::fs::read_dir(packed_dir)
+        .map_err(|e| StorageError::read_error(packed_dir.display().to_string(), e))?;
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "tar") && !path.with_extension("").is_dir() {
+            tars.push(path);
+        }
+    }
+    tars.sort();
+    Ok(tars)
+}
+
+/// Unpack host-staged layer tars onto the storage disk and return that
+/// directory, or `None` when the host already unpacked them.
+///
+/// A host only unpacks a pack's layers itself when it can reproduce the
+/// archived uid/gid, which in practice means running as root on Unix.
+/// Everywhere else — macOS, Windows, a rootless Linux daemon — `chown` is
+/// simply unavailable, and unpacking there silently re-owns every file to
+/// whoever ran the command: an image's postgres files (uid 999) arrive owned by
+/// the host user, and the service cannot read the data directory it owns.
+///
+/// Those hosts stage the raw tars instead and we unpack them here, where the
+/// agent is root no matter what the host OS is. That is the same reason the
+/// ordinary registry-pull path (`crane` + `tar`, in-guest) has always got
+/// ownership right on every platform; this brings packs onto it.
+///
+/// Returning `None` for an already-unpacked dir leaves that path untouched, so
+/// artifacts made by earlier versions keep working and a root Linux host keeps
+/// sharing one extracted copy across every VM built on the pack.
+fn ensure_packed_layers_extracted_with_progress<F>(
+    packed_dir: &Path,
+    mut progress: F,
+) -> Result<Option<PathBuf>>
+where
+    F: FnMut(&str, u64),
+{
+    let tars = staged_layer_tars(packed_dir)?;
+    if tars.is_empty() {
+        return Ok(None);
+    }
+
+    let key = packed_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("packed");
+    let out = Path::new(STORAGE_ROOT).join(GUEST_LAYERS_DIR).join(key);
+    let marker = out.join(GUEST_LAYERS_MARKER);
+    let signature = staged_tars_signature(&tars)?;
+    if std::fs::read_to_string(&marker).ok().as_deref() == Some(signature.as_str()) {
+        return Ok(Some(out));
+    }
+
+    // First boot on this disk, or the pack changed under a reused one.
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out)?;
+    for tar in &tars {
+        let stem = tar.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+            StorageError::new(format!("unreadable layer name: {}", tar.display()))
+        })?;
+        let dir = out.join(stem);
+        std::fs::create_dir_all(&dir)?;
+        info!(layer = %stem, "unpacking staged layer");
+        progress("unpacking image layers", 0);
+        extract_layer_tar_with_progress(tar, &dir, || progress("unpacking image layers", 0))?;
+    }
+
+    // Carry the stacking order across; without it the guest would fall back to
+    // sorting layer dirs by digest, which is not OCI order.
+    let order = packed_dir.join(LAYER_ORDER_FILE);
+    if order.is_file() {
+        let _ = std::fs::copy(&order, out.join(LAYER_ORDER_FILE));
+    }
+
+    // Marker last, so an interrupted unpack is redone rather than trusted.
+    std::fs::write(&marker, signature)?;
+    Ok(Some(out))
+}
+
+/// Identify the staged set by each tar's name, size and mtime — enough to catch
+/// a machine re-created from a different pack on a reused storage disk, without
+/// reading hundreds of megabytes to hash them.
+fn staged_tars_signature(tars: &[PathBuf]) -> Result<String> {
+    let mut parts = Vec::with_capacity(tars.len());
+    for tar in tars {
+        let meta = std::fs::metadata(tar)
+            .map_err(|e| StorageError::read_error(tar.display().to_string(), e))?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let name = tar.file_name().unwrap_or_default().to_string_lossy();
+        parts.push(format!("{name}:{}:{mtime}", meta.len()));
+    }
+    Ok(parts.join(","))
+}
+
+/// Unpack one layer tar into `dir`, preserving ownership.
+///
+/// `tar` restores the archived uid/gid when it runs as root, which the agent
+/// always does — that is the whole point of unpacking here rather than on the
+/// host. `--numeric-owner` keeps the image's ids instead of resolving the
+/// archived names through the agent's Alpine users, whose ids differ.
+fn extract_layer_tar(tar: &Path, dir: &Path) -> Result<()> {
+    extract_layer_tar_with_progress(tar, dir, || {})
+}
+
+fn extract_layer_tar_with_progress(tar: &Path, dir: &Path, progress: impl FnMut()) -> Result<()> {
+    let mut command = Command::new("tar");
+    command
+        .arg("-x")
+        .arg("--numeric-owner")
+        .arg("-f")
+        .arg(tar)
+        .arg("-C")
+        .arg(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let out = command_output_with_progress(&mut command, progress)
+        .map_err(|e| StorageError::new(format!("failed to run tar: {e}")))?;
+    if !out.status.success() {
+        return Err(StorageError::new(format!(
+            "failed to unpack layer {}: {}",
+            tar.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Drain child output while the caller keeps its streaming RPC responsive.
+fn command_output_with_progress(
+    command: &mut Command,
+    mut progress: impl FnMut(),
+) -> std::io::Result<std::process::Output> {
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("layer-unpack".into())
+            .spawn_scoped(scope, move || {
+                let _ = tx.send(command.output());
+            })?;
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                Ok(result) => return result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => progress(),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(std::io::Error::other("layer unpack worker stopped"));
+                }
+            }
+        }
+    })
+}
+
+/// The directory whose subdirs are this pack's layers, materialising them first
+/// if the host staged tars for us or handed us a saved-image archive.
+fn effective_packed_dir(packed_dir: &Path) -> Result<PathBuf> {
+    effective_packed_dir_with_progress(packed_dir, |_, _| {})
+}
+
+fn effective_packed_dir_with_progress<F>(packed_dir: &Path, mut progress: F) -> Result<PathBuf>
+where
+    F: FnMut(&str, u64),
+{
+    if let Some(flattened) = ensure_archive_flattened_with_progress(packed_dir, &mut progress)? {
+        return Ok(flattened);
+    }
+    if let Some(extracted) =
+        ensure_packed_layers_extracted_with_progress(packed_dir, &mut progress)?
+    {
+        return Ok(extracted);
+    }
+    Ok(packed_dir.to_path_buf())
+}
+
+/// Packed layer directory names in OCI order, **bottom-most layer first**.
+///
+/// Honors [`LAYER_ORDER_FILE`] when present and self-consistent; otherwise falls
+/// back to a lexical name sort (correct for the single-flattened-layer case).
+/// Only names backed by an existing subdirectory are returned, which also drops
+/// stray non-layer dirs (e.g. macOS `.fseventsd`) when the index is present.
+fn ordered_packed_layer_names(packed_dir: &Path) -> Result<Vec<String>> {
+    // The layer subdirs actually present (excluding source `.tar` files and the
+    // order index itself, which is a plain file).
+    let mut present: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let entries = std::fs::read_dir(packed_dir)
+        .map_err(|e| StorageError::read_error(packed_dir.display().to_string(), e))?;
+    for entry in entries {
+        let entry = entry?;
+        if entry.path().is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // A packed store is a volume root on macOS, so it always carries
+            // filesystem bookkeeping directories. They are not image layers,
+            // and mistaking one for the whole image builds a rootfs out of it.
+            // A `.partial` directory is an extraction the host had not finished
+            // (it renames a complete one into its layer name); it is never a
+            // layer, whatever it happens to contain.
+            if !name.ends_with(".tar")
+                && !name.ends_with(".partial")
+                && !is_volume_metadata(&entry.file_name())
+            {
+                present.insert(name);
+            }
+        }
+    }
+
+    // A store with no usable layer directory at all cannot produce the image's
+    // filesystem. Returning an empty list here would hand the caller an overlay
+    // with no lower layer, which surfaces much later as a missing executable.
+    if present.is_empty() {
+        return Err(StorageError::new(format!(
+            "no image layers are present in {}. The image has to be unpacked again \
+             before this machine can start.",
+            packed_dir.display()
+        )));
+    }
+
+    // Prefer the explicit order index when it resolves to layers we actually have.
+    // A stale index that names a layer we do not have falls back to the name sort
+    // below rather than dropping the real layers that are here.
+    if let Ok(contents) = std::fs::read_to_string(packed_dir.join(LAYER_ORDER_FILE)) {
+        let ordered: Vec<String> = contents
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| present.contains(l))
+            .collect();
+        if !ordered.is_empty() {
+            return Ok(ordered);
+        }
+    }
+
+    // Fallback: name sort (BTreeSet is already ascending = bottom→top by the
+    // legacy "stub creates layers in order" convention).
+    Ok(present.into_iter().collect())
+}
+
+/// Create a synthetic ImageInfo from packed layers.
+/// This is used when running from a packed binary where layers are pre-extracted.
+fn create_packed_image_info(image: &str, packed_dir: &Path) -> Result<ImageInfo> {
+    // Layer dirs in OCI order (bottom→top), as sha256:{short_digest} ids.
+    let layer_dirs: Vec<String> = ordered_packed_layer_names(packed_dir)?
+        .into_iter()
+        .map(|name| format!("sha256:{}", name))
+        .collect();
+
+    // Size is informational only — never walk the layer trees for it. The
+    // packed dir is virtiofs-backed, and stat-ing a multi-GB extracted layer
+    // (hundreds of thousands of files) costs a FUSE round-trip per entry:
+    // minutes on the first Run, which blows the client's 120s read timeout and
+    // surfaces as EAGAIN before the container ever assembles.
+    let total_size = 0u64;
+
+    // Determine architecture from environment or default
+    #[cfg(target_arch = "aarch64")]
+    let architecture = "arm64".to_string();
+    #[cfg(target_arch = "x86_64")]
+    let architecture = "amd64".to_string();
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    let architecture = "unknown".to_string();
+
+    // For a flattened local archive these come from the recovered image config;
+    // a .smolmachine has no config.json so they stay empty (its config lives in
+    // the PackManifest).
+    let (entrypoint, cmd, env, workdir, user) = read_packed_image_config(packed_dir);
+
+    Ok(ImageInfo {
+        reference: image.to_string(),
+        digest: "packed".to_string(), // No real digest available for packed images
+        size: total_size,
+        created: None,
+        architecture,
+        os: "linux".to_string(),
+        layer_count: layer_dirs.len(),
+        layers: layer_dirs,
+        entrypoint,
+        cmd,
+        env,
+        workdir,
+        user,
+    })
+}
+
+// =============================================================================
+// Local image archives (`docker save`, `podman save`, and OCI layouts)
+// =============================================================================
+//
+// smolvm delegates turning a saved-image archive into a rootfs to the bundled
+// `crane` (and `gunzip`/`tar`) rather than parsing OCI layers itself. The host
+// stages `archive.tar` into a content-addressed dir mounted via virtiofs as the
+// packed-layers dir; here we flatten it once into a rootfs on the writable
+// storage disk, recover the image config, and present it as a single packed
+// layer that the existing overlay path consumes.
+
+/// Filename the host stages the saved-image archive under.
+const ARCHIVE_FILE_NAME: &str = "archive.tar";
+/// Subdir the flattened rootfs is written to (a single packed "layer").
+const ARCHIVE_ROOTFS_DIR: &str = "0000_rootfs";
+/// Recovered image config (`crane config` output) beside the rootfs.
+const ARCHIVE_CONFIG_FILE: &str = "config.json";
+/// Marker written once a flatten completes, so restarts reuse it.
+const ARCHIVE_EXTRACTED_MARKER: &str = ".extracted";
+
+/// Env var to override where archive staging spills its scratch. Point it at a
+/// mounted volume with more room than the storage disk, or elsewhere entirely.
+const ARCHIVE_SCRATCH_DIR_ENV: &str = "SMOLVM_ARCHIVE_SCRATCH_DIR";
+
+/// Scratch space for archive staging. Defaults to the storage disk because the
+/// guest's `/tmp` is a tmpfs sized from VM RAM, so multi-GiB scratch — crane's
+/// stdin spool, the decompressed copy of a compressed archive — must land on
+/// the machine's disk instead: a 10 GB `docker save` archive would otherwise
+/// fill `/tmp` while `/storage` sits idle (#955). Precedence:
+///   1. `SMOLVM_ARCHIVE_SCRATCH_DIR`, when set to a dir that can be created;
+///   2. `/storage/tmp`, the storage disk;
+///   3. the default temp dir, when the storage disk is absent (host-side unit
+///      tests).
+pub(crate) fn archive_scratch_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var(ARCHIVE_SCRATCH_DIR_ENV) {
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            let p = PathBuf::from(dir);
+            if std::fs::create_dir_all(&p).is_ok() {
+                return p;
+            }
+            warn!(dir = %p.display(), "{ARCHIVE_SCRATCH_DIR_ENV} unusable, falling back to the storage disk");
+        }
+    }
+    // Unit tests never stage on the machine they run on. On a smol machine the
+    // real /storage/tmp exists, owned by root, and a non-root test cannot write
+    // in it.
+    if cfg!(test) {
+        return std::env::temp_dir();
+    }
+    let dir = Path::new(STORAGE_ROOT).join("tmp");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        dir
+    } else {
+        std::env::temp_dir()
+    }
+}
+
+/// If `packed_dir` is a staged local image archive (it contains `archive.tar`),
+/// flatten it once into a rootfs on the storage disk and return that directory
+/// (holding `0000_rootfs/` + `config.json`). Returns `None` for an ordinary
+/// packed-layers dir (a `.smolmachine`'s pre-extracted layers).
+///
+/// The output is keyed by the virtiofs mount-point name (constant per VM, since
+/// `/storage` is per-machine), and the completion marker stores the archive's
+/// size+mtime signature. A start reuses the flatten only when that signature
+/// still matches, so a machine re-created from a different image on a reused
+/// disk re-flattens instead of booting the old rootfs. The marker is written
+/// last, so the image-info and overlay paths share one flatten within a start.
+fn ensure_archive_flattened_with_progress<F>(
+    packed_dir: &Path,
+    mut progress: F,
+) -> Result<Option<PathBuf>>
+where
+    F: FnMut(&str, u64),
+{
+    let archive = packed_dir.join(ARCHIVE_FILE_NAME);
+    if !archive.exists() {
+        return Ok(None);
+    }
+    let key = packed_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("archive");
+    let out_base = Path::new(STORAGE_ROOT).join("image-archives").join(key);
+    let marker = out_base.join(ARCHIVE_EXTRACTED_MARKER);
+    let signature = archive_signature(&archive)?;
+    if std::fs::read_to_string(&marker).ok().as_deref() == Some(signature.as_str()) {
+        return Ok(Some(out_base));
+    }
+
+    // First flatten, or the archive changed under a reused disk: rebuild.
+    let _ = std::fs::remove_dir_all(&out_base);
+    let rootfs = out_base.join(ARCHIVE_ROOTFS_DIR);
+    std::fs::create_dir_all(&rootfs)?;
+    info!(archive = %archive.display(), rootfs = %rootfs.display(), "flattening local image archive");
+    progress("flattening local image archive", 0);
+    let oci_config = flatten_archive_with_progress(&archive, &rootfs, &mut progress)?;
+    // Recover the image config before writing the marker, so a later reuse can
+    // rely on config.json being present. A docker/podman `save` always carries
+    // one.
+    progress("recovering image configuration", 0);
+    if let Some(config) = oci_config {
+        std::fs::write(out_base.join(ARCHIVE_CONFIG_FILE), config)?;
+    } else {
+        recover_archive_config(&archive, &out_base.join(ARCHIVE_CONFIG_FILE))?;
+    }
+    std::fs::write(&marker, signature)?;
+    Ok(Some(out_base))
+}
+
+/// A cheap content signature for a staged archive (size + mtime), used to
+/// invalidate a stale flatten when a reused disk's archive changed.
+fn archive_signature(archive: &Path) -> Result<String> {
+    let meta = std::fs::metadata(archive)?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(format!("{}:{}", meta.len(), mtime))
+}
+
+/// Feed an archive to `cmd`'s stdin, transparently decompressing a gzip- OR
+/// zstd-compressed outer archive first. A compressed archive is expanded to a
+/// temp file whose handle is returned so the caller keeps it alive until `cmd`
+/// has consumed it; a plain archive streams straight through. This handles zstd,
+/// which the old `gunzip`-only path silently mangled.
+fn pipe_archive_into(cmd: &mut Command, archive: &Path) -> Result<Option<tempfile::NamedTempFile>> {
+    pipe_archive_into_with_progress(cmd, archive, &mut |_, _| {})
+}
+
+fn pipe_archive_into_with_progress<F>(
+    cmd: &mut Command,
+    archive: &Path,
+    progress: &mut F,
+) -> Result<Option<tempfile::NamedTempFile>>
+where
+    F: FnMut(&str, u64),
+{
+    let (input, tmp) = prepare_archive_input_with_progress(archive, progress)?;
+    cmd.stdin(Stdio::from(input));
+    Ok(tmp)
+}
+
+fn prepare_archive_input_with_progress<F>(
+    archive: &Path,
+    progress: &mut F,
+) -> Result<(std::fs::File, Option<tempfile::NamedTempFile>)>
+where
+    F: FnMut(&str, u64),
+{
+    let file = std::fs::File::open(archive)?;
+    if !is_compressed(archive)? {
+        return Ok((file, None));
+    }
+    // Expand to a temp file, then feed that. `docker save` archives are a local
+    // dev-import path, so the extra copy is cheap and avoids threading a
+    // streaming decompressor into a subprocess's stdin. The guest ships no zstd
+    // tool, so decompression is done in-process.
+    let mut reader = decompress_layer_reader(file)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(archive_scratch_dir())
+        .map_err(|e| StorageError::new(format!("failed to create temp file: {e}")))?;
+    copy_with_progress(
+        &mut reader,
+        tmp.as_file_mut(),
+        "decompressing image archive",
+        progress,
+    )
+    .map_err(|e| StorageError::new(format!("failed to decompress archive: {e}")))?;
+    let reopened = tmp
+        .reopen()
+        .map_err(|e| StorageError::new(format!("failed to reopen temp file: {e}")))?;
+    Ok((reopened, Some(tmp)))
+}
+
+fn copy_with_progress<R, W, F>(
+    reader: &mut R,
+    writer: &mut W,
+    phase: &str,
+    progress: &mut F,
+) -> std::io::Result<u64>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(&str, u64),
+{
+    const BUFFER_SIZE: usize = 1024 * 1024;
+    const REPORT_BYTES: u64 = 16 * 1024 * 1024;
+    const REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut total = 0u64;
+    let mut last_reported = 0u64;
+    let mut last_report = std::time::Instant::now();
+
+    progress(phase, 0);
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        total += read as u64;
+
+        if total - last_reported >= REPORT_BYTES || last_report.elapsed() >= REPORT_INTERVAL {
+            progress(phase, total);
+            last_reported = total;
+            last_report = std::time::Instant::now();
+        }
+    }
+    writer.flush()?;
+    if total != last_reported {
+        progress(phase, total);
+    }
+    Ok(total)
+}
+
+fn spawn_copy_with_progress<R, W>(
+    mut reader: R,
+    mut writer: W,
+    phase: &'static str,
+) -> (
+    std::thread::JoinHandle<std::io::Result<u64>>,
+    std::sync::mpsc::Receiver<(&'static str, u64)>,
+)
+where
+    R: Read + Send + 'static,
+    W: Write + Send + 'static,
+{
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        copy_with_progress(&mut reader, &mut writer, phase, &mut |_, bytes| {
+            let _ = progress_tx.send((phase, bytes));
+        })
+    });
+    (handle, progress_rx)
+}
+
+fn forward_latest_progress<F>(
+    progress_rx: &std::sync::mpsc::Receiver<(&'static str, u64)>,
+    progress: &mut F,
+) where
+    F: FnMut(&str, u64),
+{
+    let mut latest = None;
+    while let Ok(update) = progress_rx.try_recv() {
+        latest = Some(update);
+    }
+    if let Some((phase, bytes)) = latest {
+        progress(phase, bytes);
+    }
+}
+
+#[cfg(unix)]
+fn copy_process_output_with_progress<R, W, F>(
+    reader: &mut R,
+    writer: &mut W,
+    phase: &str,
+    input_progress: &std::sync::mpsc::Receiver<(&'static str, u64)>,
+    progress: &mut F,
+) -> std::io::Result<u64>
+where
+    R: Read + AsRawFd,
+    W: Write,
+    F: FnMut(&str, u64),
+{
+    const BUFFER_SIZE: usize = 1024 * 1024;
+    const REPORT_BYTES: u64 = 16 * 1024 * 1024;
+    const REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut total = 0u64;
+    let mut last_reported = 0u64;
+    let mut last_report = std::time::Instant::now();
+
+    progress(phase, 0);
+    loop {
+        forward_latest_progress(input_progress, progress);
+        let mut poll_fd = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, 1000) };
+        if ready < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if ready == 0 {
+            continue;
+        }
+
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        total += read as u64;
+
+        if total - last_reported >= REPORT_BYTES || last_report.elapsed() >= REPORT_INTERVAL {
+            progress(phase, total);
+            last_reported = total;
+            last_report = std::time::Instant::now();
+        }
+    }
+    writer.flush()?;
+    forward_latest_progress(input_progress, progress);
+    if total != last_reported {
+        progress(phase, total);
+    }
+    Ok(total)
+}
+
+#[cfg(not(unix))]
+fn copy_process_output_with_progress<R, W, F>(
+    reader: &mut R,
+    writer: &mut W,
+    phase: &str,
+    input_progress: &std::sync::mpsc::Receiver<(&'static str, u64)>,
+    progress: &mut F,
+) -> std::io::Result<u64>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(&str, u64),
+{
+    let result = copy_with_progress(reader, writer, phase, progress);
+    forward_latest_progress(input_progress, progress);
+    result
+}
+
+/// Flatten a local image archive into `rootfs`, delegating to the bundled
+/// `crane export`. The flattened tar is a single layer with no whiteouts, so
+/// plain `tar -x` is sufficient (no per-layer handling needed).
+fn flatten_archive_with_progress<F>(
+    archive: &Path,
+    rootfs: &Path,
+    progress: &mut F,
+) -> Result<Option<Vec<u8>>>
+where
+    F: FnMut(&str, u64),
+{
+    // crane export - - : read an image tarball from stdin, write a flat rootfs
+    // tar to stdout.
+    let mut crane = Command::new("crane");
+    crane
+        .args(["export", "-", "-"])
+        // crane spools the stdin tarball to a temp file before flattening it;
+        // point that at the storage disk so an archive bigger than the RAM-sized
+        // /tmp tmpfs doesn't fail with a full filesystem (#955).
+        .env("TMPDIR", archive_scratch_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // Capture (don't discard) crane's stderr so a failure reports the REAL
+        // reason — e.g. "file manifest.json not found in tar" for an empty or
+        // truncated archive — instead of a misleading guess.
+        .stderr(Stdio::piped());
+    // Held alive until crane has consumed it (the decompressed input, if any).
+    let (mut archive_input, _archive_tmp) = prepare_archive_input_with_progress(archive, progress)?;
+    let oci = oci_archive_compatibility(&mut archive_input)?;
+    archive_input.seek(SeekFrom::Start(0))?;
+
+    let mut crane_child = crane
+        .spawn()
+        .map_err(|e| StorageError::new(format!("failed to spawn crane export: {e}")))?;
+    let crane_in = crane_child
+        .stdin
+        .take()
+        .ok_or_else(|| StorageError::new("failed to open crane stdin".to_string()))?;
+    let oci_config = oci.as_ref().map(|(_, config)| config.clone());
+    let (input_copy_thread, input_progress) = if let Some((manifest, _)) = oci {
+        spawn_oci_archive_copy(archive_input, crane_in, manifest)
+    } else {
+        spawn_copy_with_progress(archive_input, crane_in, "reading image archive")
+    };
+    let crane_out = crane_child
+        .stdout
+        .take()
+        .ok_or_else(|| StorageError::new("failed to capture crane stdout".to_string()))?;
+    let mut crane_err = crane_child
+        .stderr
+        .take()
+        .ok_or_else(|| StorageError::new("failed to capture crane stderr".to_string()))?;
+
+    let mut tar_child = Command::new("tar")
+        .arg("-x")
+        .arg("--numeric-owner")
+        .arg("-C")
+        .arg(rootfs)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| StorageError::new(format!("failed to run tar: {e}")))?;
+
+    let mut tar_in = tar_child
+        .stdin
+        .take()
+        .ok_or_else(|| StorageError::new("failed to open tar stdin".to_string()))?;
+
+    // Drain stderr concurrently: crane may emit enough diagnostics to fill its
+    // pipe while stdout is still flowing, which would otherwise deadlock the
+    // crane -> host -> tar pipeline.
+    let crane_err_thread = std::thread::spawn(move || {
+        let mut stderr = String::new();
+        let _ = std::io::Read::read_to_string(&mut crane_err, &mut stderr);
+        stderr
+    });
+
+    let mut crane_out = crane_out;
+    let copy_result = copy_process_output_with_progress(
+        &mut crane_out,
+        &mut tar_in,
+        "extracting flattened rootfs",
+        &input_progress,
+        progress,
+    );
+    drop(tar_in);
+
+    let tar_out = tar_child
+        .wait_with_output()
+        .map_err(|e| StorageError::new(format!("failed to wait for tar: {e}")))?;
+
+    let crane_status = crane_child
+        .wait()
+        .map_err(|e| StorageError::new(format!("failed to wait for crane: {e}")))?;
+    let input_copy_result = input_copy_thread
+        .join()
+        .unwrap_or_else(|_| Err(std::io::Error::other("archive input worker panicked")));
+    let crane_stderr = crane_err_thread.join().unwrap_or_default();
+
+    if !crane_status.success() {
+        let stderr = crane_stderr.trim();
+        return Err(StorageError::new(format!(
+            "crane export failed{} (is the image a valid `docker save` / OCI archive?)",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    if !tar_out.status.success() {
+        return Err(StorageError::new(format!(
+            "extracting flattened rootfs failed: {}",
+            String::from_utf8_lossy(&tar_out.stderr)
+        )));
+    }
+    input_copy_result
+        .map_err(|e| StorageError::new(format!("streaming image archive failed: {e}")))?;
+    copy_result
+        .map_err(|e| StorageError::new(format!("streaming flattened rootfs failed: {e}")))?;
+    Ok(oci_config)
+}
+
+// A pure OCI archive has no docker-save manifest.json, which `crane export -`
+// requires. Add only that small compatibility entry while streaming the archive
+// into crane; leave the user's archive and every layer blob untouched.
+fn spawn_oci_archive_copy(
+    input: std::fs::File,
+    output: impl Write + Send + 'static,
+    manifest: Vec<u8>,
+) -> (
+    std::thread::JoinHandle<std::io::Result<u64>>,
+    std::sync::mpsc::Receiver<(&'static str, u64)>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let mut archive = tar::Archive::new(input);
+        let mut builder = tar::Builder::new(output);
+        let mut bytes = 0;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let header = entry.header().clone();
+            bytes += header.size()?;
+            builder.append(&header, &mut entry)?;
+            let _ = tx.send(("reading image archive", bytes));
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder.append_data(&mut header, "manifest.json", manifest.as_slice())?;
+        builder.finish()?;
+        Ok(bytes)
+    });
+    (handle, rx)
+}
+
+// Locate the small OCI metadata blobs using tar's seekable iterator. Skipping
+// layers by seeking avoids buffering or decompressing them into guest memory.
+fn oci_archive_compatibility(file: &mut std::fs::File) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    const MAX_METADATA: u64 = 4 * 1024 * 1024;
+    let mut positions: HashMap<String, (u64, u64)> = HashMap::new();
+    {
+        let mut archive = tar::Archive::new(&mut *file);
+        for entry in archive.entries_with_seek()? {
+            let entry = entry?;
+            let name = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+            if name == "manifest.json" {
+                return Ok(None); // Existing docker-save path, including hybrid archives.
+            }
+            if !entry.header().entry_type().is_file()
+                || (name != "index.json" && !name.starts_with("blobs/sha256/"))
+            {
+                continue;
+            }
+            if positions
+                .insert(name, (entry.raw_file_position(), entry.size()))
+                .is_some()
+            {
+                return Err(StorageError::new("duplicate OCI archive metadata path"));
+            }
+            if positions.len() > 16_384 {
+                return Err(StorageError::new("OCI archive contains too many blobs"));
+            }
+        }
+    }
+    if !positions.contains_key("index.json") {
+        return Ok(None); // Let crane report its ordinary invalid archive error.
+    }
+    let mut read_metadata = |name: &str| -> Result<Vec<u8>> {
+        let (position, size) = positions
+            .get(name)
+            .ok_or_else(|| StorageError::new(format!("missing OCI archive member {name}")))?;
+        if *size == 0 || *size > MAX_METADATA {
+            return Err(StorageError::new("OCI archive metadata exceeds 4 MiB"));
+        }
+        file.seek(SeekFrom::Start(*position))?;
+        let mut data = vec![0; *size as usize];
+        file.read_exact(&mut data)?;
+        Ok(data)
+    };
+    let index: serde_json::Value = serde_json::from_slice(&read_metadata("index.json")?)
+        .map_err(|e| StorageError::parse_error("OCI archive index", e))?;
+    let mut get_blob = |digest: &str| -> Result<Vec<u8>> {
+        let hex = digest.strip_prefix("sha256:").unwrap_or("");
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(StorageError::new("invalid OCI archive blob digest"));
+        }
+        let data = read_metadata(&format!("blobs/sha256/{hex}"))?;
+        if format!("{:x}", Sha256::digest(&data)) != hex.to_ascii_lowercase() {
+            return Err(StorageError::new("OCI archive metadata digest mismatch"));
+        }
+        Ok(data)
+    };
+    let mut descriptors = index["manifests"]
+        .as_array()
+        .ok_or_else(|| StorageError::new("OCI archive has no image manifests"))?
+        .clone();
+    let mut manifest = None;
+    for _ in 0..2 {
+        let guest_arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "amd64"
+        };
+        let chosen = descriptors
+            .iter()
+            .find(|d| d["platform"]["os"] == "linux" && d["platform"]["architecture"] == guest_arch)
+            .or_else(|| {
+                if descriptors.len() == 1 {
+                    descriptors.first()
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| StorageError::new("OCI archive has no image for this platform"))?;
+        let digest = chosen["digest"]
+            .as_str()
+            .ok_or_else(|| StorageError::new("OCI archive descriptor has no digest"))?;
+        let body: serde_json::Value = serde_json::from_slice(&get_blob(digest)?)
+            .map_err(|e| StorageError::parse_error("OCI archive manifest", e))?;
+        if body.get("config").is_some() {
+            manifest = Some(body);
+            break;
+        }
+        descriptors = body["manifests"]
+            .as_array()
+            .ok_or_else(|| StorageError::new("OCI archive index has no platform"))?
+            .clone();
+    }
+    let image = manifest.ok_or_else(|| StorageError::new("OCI archive has no image manifest"))?;
+    let config_digest = image["config"]["digest"]
+        .as_str()
+        .ok_or_else(|| StorageError::new("OCI image has no config digest"))?;
+    let config = get_blob(config_digest)?;
+    let parsed: serde_json::Value = serde_json::from_slice(&config)
+        .map_err(|e| StorageError::parse_error("OCI archive config", e))?;
+    if let Some(arch) = parsed["architecture"].as_str() {
+        ensure_archive_arch_compatible(arch)?;
+    }
+    let layers = image["layers"]
+        .as_array()
+        .ok_or_else(|| StorageError::new("OCI image has no layers"))?;
+    let mut paths = Vec::with_capacity(layers.len());
+    let mut sources = serde_json::Map::new();
+    for layer in layers {
+        let digest = layer["digest"]
+            .as_str()
+            .ok_or_else(|| StorageError::new("OCI layer has no digest"))?;
+        let hex = digest.strip_prefix("sha256:").unwrap_or("");
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(StorageError::new("invalid OCI layer digest"));
+        }
+        let path = format!("blobs/sha256/{hex}");
+        if !positions.contains_key(&path) {
+            return Err(StorageError::new(format!(
+                "missing OCI archive member {path}"
+            )));
+        }
+        paths.push(path);
+        sources.insert(digest.to_string(), layer.clone());
+    }
+    let synthetic = serde_json::to_vec(&serde_json::json!([{
+        "Config": format!("blobs/sha256/{}", &config_digest[7..]),
+        "RepoTags": null,
+        "Layers": paths,
+        "LayerSources": sources,
+    }]))
+    .map_err(|e| StorageError::new(format!("serialize OCI archive compatibility manifest: {e}")))?;
+    Ok(Some((synthetic, config)))
+}
+
+/// Recover the image config (Entrypoint/Cmd/Env/…) from a `docker save` archive
+/// and write it to `dest`. The archive's `manifest.json` names the config blob
+/// under its `Config` key; both are small JSON members extracted with `tar`
+/// (image metadata, not layer/rootfs assembly — that stays delegated to crane).
+fn recover_archive_config(archive: &Path, dest: &Path) -> Result<()> {
+    let manifest_bytes = extract_tar_member(archive, "manifest.json")?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| StorageError::new(format!("parse archive manifest.json: {e}")))?;
+    let config_path = manifest[0]["Config"].as_str().ok_or_else(|| {
+        StorageError::new("archive manifest.json has no Config entry".to_string())
+    })?;
+    let config_bytes = extract_tar_member(archive, config_path)?;
+    if let Ok(config_json) = serde_json::from_slice::<serde_json::Value>(&config_bytes) {
+        if let Some(arch) = config_json["architecture"].as_str() {
+            ensure_archive_arch_compatible(arch)?;
+        }
+    }
+    std::fs::write(dest, &config_bytes)?;
+    Ok(())
+}
+
+/// Validate that a local image archive's architecture is compatible with the guest microVM.
+fn ensure_archive_arch_compatible(archive_arch: &str) -> Result<()> {
+    let guest_arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let norm_arch = match archive_arch.trim() {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "i386" | "i486" | "i586" | "i686" => "386",
+        "armhf" | "armel" | "armv5" | "armv6" | "armv7" => "arm",
+        other => other,
+    };
+
+    // If Rosetta translation is active on an arm64 guest, amd64 is supported.
+    let rosetta_supported =
+        guest_arch == "arm64" && norm_arch == "amd64" && crate::rosetta::is_enabled();
+
+    if matches!(
+        norm_arch,
+        "amd64" | "arm64" | "386" | "arm" | "riscv64" | "ppc64le" | "s390x"
+    ) && norm_arch != guest_arch
+        && !rosetta_supported
+    {
+        return Err(StorageError::new(format!(
+            "this local image archive is built for architecture '{archive_arch}', but this guest microVM is '{guest_arch}'. \
+             A local image archive carries native binaries and cannot run on an incompatible CPU architecture — save the image on or for an '{guest_arch}' system."
+        )));
+    }
+    Ok(())
+}
+
+/// Extract a single named member from an archive to memory via `tar -xO`,
+/// transparently `gunzip`-ing a gzipped outer archive.
+fn extract_tar_member(archive: &Path, member: &str) -> Result<Vec<u8>> {
+    let mut tar = Command::new("tar");
+    tar.args(["-x", "-O", "-f", "-"])
+        .arg(member)
+        .stderr(Stdio::null());
+    // Held alive until tar has consumed it (the decompressed input, if any).
+    let _archive_tmp = pipe_archive_into(&mut tar, archive)?;
+    let out = tar
+        .output()
+        .map_err(|e| StorageError::new(format!("failed to run tar: {e}")))?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return Err(StorageError::new(format!(
+            "could not read '{member}' from archive"
+        )));
+    }
+    Ok(out.stdout)
+}
+
+/// Whether a file begins with a supported compression magic — gzip (`1f 8b`) or
+/// zstd (`28 b5 2f fd`).
+fn is_compressed(path: &Path) -> Result<bool> {
+    use std::io::Read;
+    let mut magic = [0u8; 4];
+    let n = std::fs::File::open(path)?.read(&mut magic).unwrap_or(0);
+    Ok((n >= 2 && magic[0] == 0x1f && magic[1] == 0x8b)
+        || (n >= 4 && magic[..4] == [0x28, 0xb5, 0x2f, 0xfd]))
+}
+
+/// Read `Entrypoint`/`Cmd`/`Env`/`WorkingDir`/`User` from a recovered image
+/// `config.json` (the `crane config` output) in `packed_dir`, defaulting to
+/// empty when absent — a `.smolmachine` has no such file.
+#[allow(clippy::type_complexity)]
+fn read_packed_image_config(
+    packed_dir: &Path,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let empty = (Vec::new(), Vec::new(), Vec::new(), None, None);
+    let Ok(content) = std::fs::read_to_string(packed_dir.join(ARCHIVE_CONFIG_FILE)) else {
+        return empty;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return empty;
+    };
+    let cfg = &json["config"];
+    let string_list = |key: &str| -> Vec<String> {
+        cfg[key]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let non_empty = |key: &str| -> Option<String> {
+        cfg[key]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    (
+        string_list("Entrypoint"),
+        string_list("Cmd"),
+        string_list("Env"),
+        non_empty("WorkingDir"),
+        non_empty("User"),
+    )
+}
+
+/// Error type for storage operations.
+#[derive(Debug)]
+#[allow(dead_code)] // Some variants reserved for future use
+pub enum StorageError {
+    // ========================================================================
+    // I/O Errors
+    // ========================================================================
+    /// Failed to create a directory.
+    CreateDir { path: String, cause: String },
+    /// Failed to remove a directory.
+    RemoveDir { path: String, cause: String },
+    /// Failed to read a file or directory.
+    ReadFile { path: String, cause: String },
+    /// Failed to write a file.
+    WriteFile { path: String, cause: String },
+    /// Failed to create a symlink.
+    Symlink {
+        source: String,
+        target: String,
+        cause: String,
+    },
+    /// Path conversion error.
+    InvalidPath { path: String },
+
+    // ========================================================================
+    // Image Errors
+    // ========================================================================
+    /// Image not found locally.
+    ImageNotFound { image: String },
+    /// A persistent overlay built from one image was asked to run another.
+    /// Mounting the new image's layers under the old upper layer would mix the
+    /// two filesystems, so it is refused.
+    OverlayImageConflict {
+        overlay: String,
+        recorded: String,
+        requested: String,
+    },
+    /// Failed to pull image from registry.
+    ImagePullFailed { image: String, cause: String },
+    /// Invalid image reference format.
+    InvalidImageReference { reference: String, reason: String },
+
+    // ========================================================================
+    // Layer Errors
+    // ========================================================================
+    /// Layer not found.
+    LayerNotFound { digest: String },
+    /// Failed to extract layer.
+    LayerExtractionFailed { digest: String, cause: String },
+    /// Layer index out of bounds.
+    LayerIndexOutOfBounds {
+        image: String,
+        index: usize,
+        total: usize,
+    },
+
+    // ========================================================================
+    // Manifest/Config Errors
+    // ========================================================================
+    /// Failed to parse manifest or config JSON.
+    ParseError { context: String, cause: String },
+    /// Missing required field in manifest/config.
+    MissingField { context: String, field: String },
+    /// Unsupported manifest format.
+    UnsupportedManifest { media_type: String },
+
+    // ========================================================================
+    // Mount Errors
+    // ========================================================================
+    /// Failed to mount overlay filesystem.
+    OverlayMountFailed { path: String, cause: String },
+    /// Failed to unmount filesystem.
+    UnmountFailed { path: String, cause: String },
+
+    // ========================================================================
+    // Command Execution Errors
+    // ========================================================================
+    /// External command (crane, crun, etc.) failed.
+    CommandFailed {
+        command: String,
+        exit_code: Option<i32>,
+        stderr: String,
+    },
+    /// Failed to spawn external command.
+    SpawnFailed { command: String, cause: String },
+
+    // ========================================================================
+    // Validation Errors
+    // ========================================================================
+    /// Input validation failed.
+    ValidationFailed { context: String, reason: String },
+
+    // ========================================================================
+    // Storage State Errors
+    // ========================================================================
+    /// Storage not formatted/initialized.
+    StorageNotReady { reason: String },
+    /// No images found in storage.
+    NoImagesFound,
+
+    // ========================================================================
+    // Generic
+    // ========================================================================
+    /// Internal error with message (fallback for complex cases).
+    Internal { message: String },
+}
+
+#[allow(dead_code)] // Some helpers reserved for future use
+impl StorageError {
+    /// Create a new internal error with the given message.
+    /// Use this as a fallback when no specific variant fits.
+    pub fn new(message: impl Into<String>) -> Self {
+        StorageError::Internal {
+            message: message.into(),
+        }
+    }
+
+    /// Create an I/O read error.
+    pub fn read_error(path: impl Into<String>, cause: impl std::fmt::Display) -> Self {
+        StorageError::ReadFile {
+            path: path.into(),
+            cause: cause.to_string(),
+        }
+    }
+
+    /// Create an I/O write error.
+    pub fn write_error(path: impl Into<String>, cause: impl std::fmt::Display) -> Self {
+        StorageError::WriteFile {
+            path: path.into(),
+            cause: cause.to_string(),
+        }
+    }
+
+    /// Create a directory creation error.
+    pub fn create_dir_error(path: impl Into<String>, cause: impl std::fmt::Display) -> Self {
+        StorageError::CreateDir {
+            path: path.into(),
+            cause: cause.to_string(),
+        }
+    }
+
+    /// Create a parse error.
+    pub fn parse_error(context: impl Into<String>, cause: impl std::fmt::Display) -> Self {
+        StorageError::ParseError {
+            context: context.into(),
+            cause: cause.to_string(),
+        }
+    }
+
+    /// Create a command failed error.
+    pub fn command_failed(
+        command: impl Into<String>,
+        exit_code: Option<i32>,
+        stderr: impl Into<String>,
+    ) -> Self {
+        StorageError::CommandFailed {
+            command: command.into(),
+            exit_code,
+            stderr: stderr.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // I/O errors
+            StorageError::CreateDir { path, cause } => {
+                write!(f, "failed to create directory '{}': {}", path, cause)
+            }
+            StorageError::RemoveDir { path, cause } => {
+                write!(f, "failed to remove directory '{}': {}", path, cause)
+            }
+            StorageError::ReadFile { path, cause } => {
+                write!(f, "failed to read '{}': {}", path, cause)
+            }
+            StorageError::WriteFile { path, cause } => {
+                write!(f, "failed to write '{}': {}", path, cause)
+            }
+            StorageError::Symlink {
+                source,
+                target,
+                cause,
+            } => {
+                write!(
+                    f,
+                    "failed to create symlink '{}' -> '{}': {}",
+                    source, target, cause
+                )
+            }
+            StorageError::InvalidPath { path } => {
+                write!(f, "invalid path: {}", path)
+            }
+
+            // Image errors
+            StorageError::ImageNotFound { image } => {
+                write!(f, "image not found: {}", image)
+            }
+            StorageError::OverlayImageConflict {
+                overlay,
+                recorded,
+                requested,
+            } => write!(
+                f,
+                "overlay {overlay} was built from {recorded} and cannot run {requested}"
+            ),
+            StorageError::ImagePullFailed { image, cause } => {
+                write!(f, "failed to pull image '{}': {}", image, cause)
+            }
+            StorageError::InvalidImageReference { reference, reason } => {
+                write!(f, "invalid image reference '{}': {}", reference, reason)
+            }
+
+            // Layer errors
+            StorageError::LayerNotFound { digest } => {
+                write!(f, "layer not found: {}", digest)
+            }
+            StorageError::LayerExtractionFailed { digest, cause } => {
+                write!(f, "failed to extract layer '{}': {}", digest, cause)
+            }
+            StorageError::LayerIndexOutOfBounds {
+                image,
+                index,
+                total,
+            } => {
+                write!(
+                    f,
+                    "layer index {} out of bounds for image '{}' (has {} layers)",
+                    index, image, total
+                )
+            }
+
+            // Manifest/config errors
+            StorageError::ParseError { context, cause } => {
+                write!(f, "failed to parse {}: {}", context, cause)
+            }
+            StorageError::MissingField { context, field } => {
+                write!(f, "missing '{}' in {}", field, context)
+            }
+            StorageError::UnsupportedManifest { media_type } => {
+                write!(f, "unsupported manifest format: {}", media_type)
+            }
+
+            // Mount errors
+            StorageError::OverlayMountFailed { path, cause } => {
+                write!(f, "overlay mount failed at '{}': {}", path, cause)
+            }
+            StorageError::UnmountFailed { path, cause } => {
+                write!(f, "failed to unmount '{}': {}", path, cause)
+            }
+
+            // Command errors
+            StorageError::CommandFailed {
+                command,
+                exit_code,
+                stderr,
+            } => {
+                if let Some(code) = exit_code {
+                    write!(f, "{} failed (exit {}): {}", command, code, stderr)
+                } else {
+                    write!(f, "{} failed: {}", command, stderr)
+                }
+            }
+            StorageError::SpawnFailed { command, cause } => {
+                write!(f, "failed to spawn '{}': {}", command, cause)
+            }
+
+            // Validation errors
+            StorageError::ValidationFailed { context, reason } => {
+                write!(f, "{}: {}", context, reason)
+            }
+
+            // Storage state errors
+            StorageError::StorageNotReady { reason } => {
+                write!(f, "storage not ready: {}", reason)
+            }
+            StorageError::NoImagesFound => {
+                write!(f, "no images found")
+            }
+
+            // Generic
+            StorageError::Internal { message } => {
+                write!(f, "{}", message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for StorageError {}
+
+impl From<std::io::Error> for StorageError {
+    fn from(e: std::io::Error) -> Self {
+        StorageError::Internal {
+            message: e.to_string(),
+        }
+    }
+}
+
+type Result<T> = std::result::Result<T, StorageError>;
+
+/// Marker recording that a layer finished extracting AND its data reached the
+/// disk (written only after the writeback barrier in the pull). It sits NEXT TO
+/// the layer directory, never inside it — layer dirs are overlay lowerdirs, so
+/// a file inside would surface in every container's root.
+fn layer_ok_marker(layer_dir: &Path) -> PathBuf {
+    let mut name = layer_dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".ok");
+    layer_dir.with_file_name(name)
+}
+
+/// Cached logical size of one immutable content-addressed layer. Like the
+/// completion marker, this lives beside the lowerdir so it never appears in a
+/// container filesystem.
+fn layer_size_marker(layer_dir: &Path) -> PathBuf {
+    let mut name = layer_dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".size");
+    layer_dir.with_file_name(name)
+}
+
+fn read_layer_size(layer_dir: &Path) -> Option<u64> {
+    std::fs::read_to_string(layer_size_marker(layer_dir))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn image_size_cache_path(root: &Path, image: &str) -> PathBuf {
+    root.join(IMAGE_METADATA_DIR)
+        .join(sanitize_image_name(image) + ".size")
+}
+
+fn read_cached_image_size(root: &Path, image: &str) -> Option<u64> {
+    std::fs::read_to_string(image_size_cache_path(root, image))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn calculate_image_size(root: &Path, layers: &[String]) -> u64 {
+    layers
+        .iter()
+        .filter_map(|digest| {
+            let id = digest.strip_prefix("sha256:").unwrap_or(digest);
+            let layer_dir = root.join(LAYERS_DIR).join(id);
+            read_layer_size(&layer_dir).or_else(|| dir_size(&layer_dir).ok())
+        })
+        .sum()
+}
+
+fn cache_image_size(root: &Path, image: &str, size: u64) {
+    let dir = root.join(IMAGE_METADATA_DIR);
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(image_size_cache_path(root, image), size.to_string());
+    }
+}
+
+/// Check if a layer directory is properly cached: its completion marker and
+/// directory both exist.
+///
+/// The marker is written only after extraction succeeded and the filesystem
+/// reported the data flushed, so its absence covers every bad state the old
+/// "directory is non-empty" check trusted: interrupted extraction, and
+/// extraction whose writeback later failed (a host out of disk surfaces as
+/// guest I/O errors AFTER tar exits, leaving corrupt layers that were then
+/// reused on every restart). A successfully extracted OCI layer may legitimately
+/// contain no filesystem entries, so the marker—not directory contents—is the
+/// integrity signal.
+fn is_layer_cached(layer_dir: &Path) -> bool {
+    layer_dir.is_dir() && layer_ok_marker(layer_dir).is_file()
+}
+
+/// Force writeback of everything extracted onto the storage filesystem and
+/// surface any I/O error doing so. `sync(2)` reports nothing — during a
+/// host-out-of-disk incident it happily returned while every dirtied page
+/// failed to land — so this uses `syncfs(2)`, which returns writeback errors.
+#[cfg(target_os = "linux")]
+fn sync_layer_writeback(root: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::fs::File::open(root)
+        .map_err(|e| StorageError::new(format!("open {} for syncfs: {}", root.display(), e)))?;
+    // SAFETY: syncfs on a valid, owned fd.
+    if unsafe { libc::syncfs(dir.as_raw_fd()) } != 0 {
+        return Err(StorageError::new(format!(
+            "flushing extracted layers to disk failed (out of space?): {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sync_layer_writeback(_root: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Initialize storage directories.
+///
+/// This function ensures all required storage directories exist and are accessible.
+/// Returns early (successfully) if storage hasn't been formatted yet.
+///
+/// Note: `mount_storage_disk()` already creates all directories, so this is
+/// not called during boot. Kept for manual validation/repair use cases.
+#[allow(dead_code)]
+pub fn init() -> Result<()> {
+    let root = Path::new(STORAGE_ROOT);
+
+    // Check if storage root exists or can be created
+    if !root.exists() {
+        info!(path = %root.display(), "creating storage root directory");
+        std::fs::create_dir_all(root).map_err(|e| {
+            StorageError::new(format!(
+                "failed to create storage root '{}': {} (check permissions and disk space)",
+                root.display(),
+                e
+            ))
+        })?;
+    }
+
+    // Verify storage root is accessible
+    if let Err(e) = std::fs::read_dir(root) {
+        return Err(StorageError::new(format!(
+            "storage root '{}' exists but is not accessible: {} (check permissions)",
+            root.display(),
+            e
+        )));
+    }
+
+    // Create container runtime directories unconditionally — these are needed
+    // as soon as containers are requested, regardless of storage format state.
+    let container_dirs = [
+        (paths::CONTAINERS_RUN_DIR, "container runtime state"),
+        (paths::CONTAINERS_LOGS_DIR, "container logs"),
+        (paths::CONTAINERS_EXIT_DIR, "container exit codes"),
+        (paths::CRUN_ROOT_DIR, "crun state root"),
+    ];
+
+    let mut created_count = 0;
+    for (dir, description) in &container_dirs {
+        let path = Path::new(dir);
+        if !path.exists() {
+            std::fs::create_dir_all(path).map_err(|e| {
+                StorageError::new(format!(
+                    "failed to create {} directory '{}': {}",
+                    description,
+                    path.display(),
+                    e
+                ))
+            })?;
+            debug!(path = %path.display(), description = %description, "created directory");
+            created_count += 1;
+        }
+    }
+
+    // Check for marker file to see if formatted
+    let marker = root.join(".smolvm_formatted");
+    if !marker.exists() {
+        info!(path = %root.display(), "storage not formatted, waiting for format request");
+        return Ok(());
+    }
+
+    // Create OCI storage directory structure
+    let required_dirs = [
+        (LAYERS_DIR, "OCI image layers"),
+        (CONFIGS_DIR, "image configurations"),
+        (MANIFESTS_DIR, "image manifests"),
+        (OVERLAYS_DIR, "overlay filesystems"),
+        (
+            WORKSPACE_DIR,
+            "shared workspace (visible inside containers)",
+        ),
+    ];
+
+    for (dir, description) in &required_dirs {
+        let path = root.join(dir);
+        if !path.exists() {
+            std::fs::create_dir_all(&path).map_err(|e| {
+                StorageError::new(format!(
+                    "failed to create {} directory '{}': {}",
+                    description,
+                    path.display(),
+                    e
+                ))
+            })?;
+            debug!(path = %path.display(), description = %description, "created directory");
+            created_count += 1;
+        }
+    }
+
+    info!(
+        path = %root.display(),
+        dirs_created = created_count,
+        "storage initialized"
+    );
+    Ok(())
+}
+
+/// Format the storage disk.
+///
+/// Creates all required directories and writes the format marker file.
+/// If directories already exist, they are left as-is.
+pub fn format() -> Result<()> {
+    let root = Path::new(STORAGE_ROOT);
+
+    // Ensure storage root exists
+    if !root.exists() {
+        std::fs::create_dir_all(root).map_err(|e| {
+            StorageError::new(format!(
+                "failed to create storage root '{}': {}",
+                root.display(),
+                e
+            ))
+        })?;
+    }
+
+    // Create all storage directories
+    let all_dirs = [
+        (root.join(LAYERS_DIR), "layers"),
+        (root.join(CONFIGS_DIR), "configs"),
+        (root.join(MANIFESTS_DIR), "manifests"),
+        (root.join(IMAGE_METADATA_DIR), "image metadata"),
+        (root.join(OVERLAYS_DIR), "overlays"),
+        (PathBuf::from(paths::CONTAINERS_RUN_DIR), "container run"),
+        (PathBuf::from(paths::CONTAINERS_LOGS_DIR), "container logs"),
+        (PathBuf::from(paths::CONTAINERS_EXIT_DIR), "container exit"),
+        (PathBuf::from(paths::CRUN_ROOT_DIR), "crun state root"),
+    ];
+
+    for (path, name) in &all_dirs {
+        std::fs::create_dir_all(path).map_err(|e| {
+            StorageError::new(format!(
+                "failed to create {} directory '{}': {}",
+                name,
+                path.display(),
+                e
+            ))
+        })?;
+    }
+
+    // Create marker file
+    let marker = root.join(".smolvm_formatted");
+    std::fs::write(&marker, "1").map_err(|e| {
+        StorageError::new(format!(
+            "failed to write format marker '{}': {}",
+            marker.display(),
+            e
+        ))
+    })?;
+
+    info!(path = %root.display(), "storage formatted");
+    Ok(())
+}
+
+/// Get storage status.
+pub fn status() -> Result<StorageStatus> {
+    let root = Path::new(STORAGE_ROOT);
+    let marker = root.join(".smolvm_formatted");
+
+    let ready = marker.exists();
+
+    // Get disk usage (simplified)
+    let (total_bytes, used_bytes) = get_disk_usage(root)?;
+
+    // Count layers and images. Layers count directories only — their `.ok`
+    // completion markers are sibling files and would double the number.
+    let layer_count = count_dir_entries(&root.join(LAYERS_DIR))?;
+    let image_count = count_entries(&root.join(MANIFESTS_DIR))?;
+
+    Ok(StorageStatus {
+        ready,
+        total_bytes,
+        used_bytes,
+        layer_count,
+        image_count,
+    })
+}
+
+/// Extract a JSON array of strings from a JSON value.
+fn json_string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value[key]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pull an OCI image with progress callback and optional authentication.
+///
+/// The callback is called for each layer being pulled with (current, total, layer_id).
+/// Fetch one layer blob from the registry and unpack it into `layer_dir`.
+///
+/// Runs on a worker thread, so it touches only this layer's own directory and
+/// reports nothing: progress belongs to the caller's thread.
+/// [`fetch_and_extract_layer`], retried on a transient network failure like the
+/// manifest and config fetches in [`run_crane`]. One dropped connection while
+/// downloading any layer otherwise fails the whole pull. A retry is safe: each
+/// attempt starts by removing what an earlier one left in `layer_dir`.
+#[allow(clippy::too_many_arguments)]
+fn fetch_and_extract_layer_with_retry(
+    image: &str,
+    layer_digest: &str,
+    layer_id: &str,
+    layer_dir: &Path,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+    index: usize,
+    total_layers: usize,
+) -> Result<u64> {
+    use crate::retry::{
+        is_permanent_error, is_transient_network_error, retry_with_backoff, RetryConfig,
+    };
+    retry_with_backoff(
+        RetryConfig::for_network(),
+        &format!("fetch layer {layer_id}"),
+        || {
+            fetch_and_extract_layer(
+                image,
+                layer_digest,
+                layer_id,
+                layer_dir,
+                oci_platform,
+                auth,
+                proxy,
+                no_proxy,
+                index,
+                total_layers,
+            )
+        },
+        |e| {
+            let error_msg = e.to_string();
+            !is_permanent_error(&error_msg) && is_transient_network_error(&error_msg)
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_and_extract_layer(
+    image: &str,
+    layer_digest: &str,
+    layer_id: &str,
+    layer_dir: &Path,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+    index: usize,
+    total_layers: usize,
+) -> Result<u64> {
+    // Clean up an incomplete or unverified layer directory: empty, or left
+    // by an interrupted/unflushed earlier extraction (no completion marker).
+    if layer_dir.exists() {
+        warn!(layer = %layer_id, "removing incomplete or unverified layer directory");
+        if let Err(e) = std::fs::remove_dir_all(layer_dir) {
+            warn!(layer = %layer_id, error = %e, "failed to remove incomplete layer directory");
+        }
+    }
+    let _ = std::fs::remove_file(layer_ok_marker(layer_dir));
+    let _ = std::fs::remove_file(layer_size_marker(layer_dir));
+
+    info!(
+        layer = %layer_id,
+        progress = format!("{}/{}", index + 1, total_layers),
+        "extracting layer"
+    );
+
+    std::fs::create_dir_all(layer_dir)?;
+
+    // Set up auth if provided (temp_dir must stay alive until command completes)
+    let temp_dir = setup_docker_auth(image, auth)?;
+
+    let mut crane_cmd = Command::new("crane");
+    crane_cmd.arg("blob");
+    crane_cmd.arg(format!("{}@{}", image_repo(image), layer_digest));
+    if let Some(p) = oci_platform {
+        crane_cmd.arg("--platform").arg(p);
+    }
+    crane_cmd.stdout(Stdio::piped());
+    // Capture crane stderr to a file (not a pipe — a file can't deadlock on a
+    // full buffer) so the real fetch failure (DNS, TLS, 4xx, redirect) is
+    // surfaced instead of a bare "crane blob failed".
+    let crane_stderr_path = layer_dir.join(".crane-stderr");
+    match std::fs::File::create(&crane_stderr_path) {
+        Ok(f) => {
+            crane_cmd.stderr(Stdio::from(f));
+        }
+        Err(_) => {
+            crane_cmd.stderr(Stdio::null());
+        }
+    }
+    crane_cmd.env("DOCKER_CONFIG", temp_dir.path());
+    apply_proxy_env(&mut crane_cmd, proxy, no_proxy);
+    apply_registry_trust(&mut crane_cmd);
+
+    let mut crane = crane_cmd
+        .spawn()
+        .map_err(|e| StorageError::new(format!("failed to spawn crane: {}", e)))?;
+
+    // Extract straight from crane's stdout. `extract_oci_layer` transparently
+    // decompresses gzip- OR zstd-compressed layers in-process (the guest
+    // ships no zstd tool, and the old external `gunzip` pipe silently failed
+    // on every zstd layer). Reading the stream to EOF also drives the crane
+    // fetch to completion.
+    let crane_stdout = crane
+        .stdout
+        .take()
+        .ok_or_else(|| StorageError::new("failed to capture crane stdout".to_string()))?;
+
+    let extract_result = extract_oci_layer_with_size(crane_stdout, layer_dir);
+
+    let crane_status = crane
+        .wait()
+        .map_err(|e| StorageError::new(format!("failed to wait for crane: {}", e)))?;
+
+    let crane_stderr = std::fs::read_to_string(&crane_stderr_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&crane_stderr_path);
+    let crane_stderr = crane_stderr.trim();
+
+    // Order matters. A genuine crane fetch failure (network/auth) prints a
+    // real message to its stderr, so surface that first. Otherwise, if
+    // extraction failed, THAT is the real cause — a crane that exited
+    // non-zero with empty stderr is just the SIGPIPE from us closing the pipe
+    // when extraction stopped reading (the exact trap that made every zstd
+    // layer look like "crane blob failed" when the real problem was that the
+    // old pipeline couldn't decompress it).
+    let layer_failure = if !crane_status.success() && !crane_stderr.is_empty() {
+        Some(format!(
+            "crane blob failed for layer {}: {}",
+            layer_digest, crane_stderr
+        ))
+    } else if let Err(ref e) = extract_result {
+        Some(format!(
+            "layer extraction failed for layer {}: {}",
+            layer_digest, e
+        ))
+    } else if !crane_status.success() {
+        Some(format!("crane blob failed for layer {}", layer_digest))
+    } else {
+        None
+    };
+
+    if let Some(message) = layer_failure {
+        if let Err(e) = std::fs::remove_dir_all(layer_dir) {
+            warn!(layer = %layer_id, error = %e, "failed to clean up layer directory after extraction failure");
+        }
+        return Err(StorageError::new(message));
+    }
+
+    Ok(extract_result.unwrap_or(0))
+}
+
+/// One `crane pull` into an OCI layout at `dest`: manifest, config and every
+/// layer blob through a single crane process, so a cold pull pays one process
+/// start and one registry token exchange instead of one per request.
+///
+/// Retries like every other crane call. Each attempt starts from an empty
+/// `dest` so a partial layout from a failed attempt never leaks into the next.
+fn crane_pull_layout(
+    image: &str,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+    dest: &Path,
+) -> Result<()> {
+    use crate::retry::{
+        is_permanent_error, is_transient_network_error, retry_with_backoff, RetryConfig,
+    };
+
+    retry_with_backoff(
+        RetryConfig::for_network(),
+        "crane pull",
+        || {
+            let _ = std::fs::remove_dir_all(dest);
+            let mut cmd = Command::new("crane");
+            cmd.arg("pull").arg("--format=oci").arg(image).arg(dest);
+            if let Some(p) = oci_platform {
+                cmd.arg("--platform").arg(p);
+            }
+            // Set up auth if provided (temp_dir must stay alive until command completes)
+            let _temp_dir = setup_docker_auth(image, auth)?;
+            cmd.env("DOCKER_CONFIG", _temp_dir.path());
+            apply_proxy_env(&mut cmd, proxy, no_proxy);
+            apply_registry_trust(&mut cmd);
+            let output = cmd.output()?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(StorageError::new(format!("crane pull failed: {}", stderr)));
+            }
+            Ok(())
+        },
+        |e| {
+            let error_msg = e.to_string();
+            if is_permanent_error(&error_msg) {
+                return false;
+            }
+            is_transient_network_error(&error_msg)
+        },
+    )
+}
+
+// Keep the temporary OCI layout on the fast path small and leave ample room
+// for the unpacked layers. Large images use the existing streaming path, which
+// never needs a second copy of the compressed image on disk.
+const MAX_COLD_LAYOUT_BYTES: u64 = 128 * 1024 * 1024;
+const COLD_LAYOUT_FREE_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+
+fn cold_layout_fits(manifest: &serde_json::Value, available_bytes: u64) -> bool {
+    let Some(layers) = manifest["layers"].as_array() else {
+        return false;
+    };
+    let Some(config_size) = manifest["config"]["size"].as_u64() else {
+        return false;
+    };
+    let total = layers.iter().try_fold(config_size, |sum, layer| {
+        sum.checked_add(layer["size"].as_u64()?)
+    });
+    total.is_some_and(|bytes| {
+        bytes <= MAX_COLD_LAYOUT_BYTES
+            && available_bytes >= bytes.saturating_add(COLD_LAYOUT_FREE_RESERVE_BYTES)
+    })
+}
+
+/// Remove pull layouts left behind by a crashed agent (their [`LayoutGuard`]
+/// never ran). An hour is far beyond any live pull, so a layout older than
+/// that is garbage holding storage space.
+fn sweep_stale_pull_layouts(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".pull-layout-")
+        {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(60 * 60));
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Removes a transient pull layout on every exit path.
+struct LayoutGuard(PathBuf);
+impl Drop for LayoutGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Path of a blob inside an OCI layout.
+fn oci_layout_blob(layout: &Path, digest: &str) -> PathBuf {
+    layout
+        .join("blobs")
+        .join("sha256")
+        .join(digest.strip_prefix("sha256:").unwrap_or(digest))
+}
+
+/// The platform image manifest inside an OCI layout, as raw bytes.
+///
+/// `crane pull --platform` normally writes a single-entry index, but a nested
+/// index is followed one level, preferring the entry whose architecture
+/// matches `oci_platform`.
+fn oci_layout_manifest(layout: &Path, oci_platform: Option<&str>) -> Result<String> {
+    let index = std::fs::read_to_string(layout.join("index.json"))?;
+    let index: serde_json::Value =
+        serde_json::from_str(&index).map_err(|e| StorageError::parse_error("oci index", e))?;
+    let mut digest = index["manifests"][0]["digest"]
+        .as_str()
+        .ok_or_else(|| StorageError::MissingField {
+            context: "oci index".into(),
+            field: "manifests[0].digest".into(),
+        })?
+        .to_string();
+    for _ in 0..2 {
+        let body = std::fs::read_to_string(oci_layout_blob(layout, &digest))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| StorageError::parse_error("manifest", e))?;
+        if json.get("config").is_some() {
+            return Ok(body);
+        }
+        let Some(entries) = json["manifests"].as_array() else {
+            break;
+        };
+        let want_arch = oci_platform.map(oci_platform_to_arch);
+        let chosen = entries
+            .iter()
+            .find(|m| {
+                want_arch
+                    .as_deref()
+                    .is_some_and(|arch| m["platform"]["architecture"].as_str() == Some(arch))
+            })
+            .or_else(|| entries.first());
+        match chosen.and_then(|m| m["digest"].as_str()) {
+            Some(next) => digest = next.to_string(),
+            None => break,
+        }
+    }
+    Err(StorageError::new(
+        "oci layout holds no platform image manifest".to_string(),
+    ))
+}
+
+/// [`fetch_and_extract_layer`] for a blob that is already on disk in an OCI
+/// layout. Identical cleanup and marker handling, no crane process. The blob
+/// file is removed after a successful extraction to release temporary space.
+fn extract_layer_from_file(
+    layer_digest: &str,
+    layer_id: &str,
+    layer_dir: &Path,
+    blob: &Path,
+    index: usize,
+    total_layers: usize,
+) -> Result<u64> {
+    if layer_dir.exists() {
+        warn!(layer = %layer_id, "removing incomplete or unverified layer directory");
+        if let Err(e) = std::fs::remove_dir_all(layer_dir) {
+            warn!(layer = %layer_id, error = %e, "failed to remove incomplete layer directory");
+        }
+    }
+    let _ = std::fs::remove_file(layer_ok_marker(layer_dir));
+    let _ = std::fs::remove_file(layer_size_marker(layer_dir));
+
+    info!(
+        layer = %layer_id,
+        progress = format!("{}/{}", index + 1, total_layers),
+        "extracting layer"
+    );
+
+    std::fs::create_dir_all(layer_dir)?;
+    let reader = std::fs::File::open(blob)?;
+    match extract_oci_layer_with_size(reader, layer_dir) {
+        Ok(size) => {
+            let _ = std::fs::remove_file(blob);
+            Ok(size)
+        }
+        Err(e) => {
+            if let Err(cleanup) = std::fs::remove_dir_all(layer_dir) {
+                warn!(layer = %layer_id, error = %cleanup, "failed to clean up layer directory after extraction failure");
+            }
+            Err(StorageError::new(format!(
+                "layer extraction failed for layer {}: {}",
+                layer_digest, e
+            )))
+        }
+    }
+}
+
+pub fn pull_image_with_progress_and_auth<F>(
+    image: &str,
+    cache_as: Option<&str>,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+    mut progress: F,
+) -> Result<ImageInfo>
+where
+    F: FnMut(usize, usize, &str),
+{
+    // Validate the fetch reference and the stable cache key before any operations.
+    crate::oci::validate_image_reference(image).map_err(|e| {
+        StorageError::InvalidImageReference {
+            reference: image.to_string(),
+            reason: e,
+        }
+    })?;
+    if let Some(cache_as) = cache_as {
+        crate::oci::validate_image_reference(cache_as).map_err(|e| {
+            StorageError::InvalidImageReference {
+                reference: cache_as.to_string(),
+                reason: e,
+            }
+        })?;
+    }
+
+    // Fetch from the effective (possibly mirrored) reference, but cache under
+    // the user's canonical reference so subsequent Query/Run requests find it.
+    let fetch_image = normalize_image_ref(image);
+    let cache_image = normalize_image_ref(cache_as.unwrap_or(image));
+    let image = fetch_image.as_str();
+    let cache_image = cache_image.as_str();
+
+    // If packed layers are available, return synthetic image info
+    if let Some(packed_dir) = get_packed_layers_dir() {
+        info!(image = %image, "using packed layers, skipping network pull");
+        // A saved-image archive is flattened, host-staged tars are unpacked
+        // here, and an already-unpacked dir is used as-is.
+        let effective = effective_packed_dir_with_progress(packed_dir, |phase, _| {
+            progress(0, 0, phase);
+        })?;
+        return create_packed_image_info(cache_image, &effective);
+    }
+
+    // Determine OCI platform - default to current architecture
+    // This must happen BEFORE the cache check so we can verify architecture
+    let oci_platform = oci_platform.or({
+        #[cfg(target_arch = "aarch64")]
+        {
+            Some("linux/arm64")
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            Some("linux/amd64")
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+        {
+            None
+        }
+    });
+
+    // Check if already cached with correct architecture
+    if let Ok(Some(info)) = query_image(cache_image) {
+        // Verify cached image architecture matches requested OCI platform
+        let cached_arch = &info.architecture;
+        let requested_arch = oci_platform
+            .map(oci_platform_to_arch)
+            .unwrap_or_else(|| cached_arch.clone());
+
+        if cached_arch == &requested_arch {
+            debug!(
+                image = %image,
+                architecture = %cached_arch,
+                "image already cached with correct architecture, skipping pull"
+            );
+            return Ok(info);
+        } else {
+            // Architecture mismatch - need to re-pull
+            info!(
+                image = %image,
+                cached_arch = %cached_arch,
+                requested_arch = %requested_arch,
+                "cached image has wrong architecture, will re-pull"
+            );
+            // Clean up the mismatched cached manifest
+            let root = Path::new(STORAGE_ROOT);
+            let manifest_path = root
+                .join(MANIFESTS_DIR)
+                .join(sanitize_image_name(cache_image) + ".json");
+            let _ = std::fs::remove_file(&manifest_path);
+            let _ = std::fs::remove_file(image_size_cache_path(root, cache_image));
+        }
+    }
+
+    let root = Path::new(STORAGE_ROOT);
+
+    // Get manifest with OCI platform specified
+    progress(0, 0, "fetching manifest");
+    info!(image = %image, oci_platform = ?oci_platform, "fetching manifest");
+    let mut manifest = crane_manifest(image, oci_platform, auth, proxy, no_proxy)?;
+
+    // Parse manifest to get config and layers
+    let mut manifest_json: serde_json::Value =
+        serde_json::from_str(&manifest).map_err(|e| StorageError::parse_error("manifest", e))?;
+
+    // Handle manifest list (multi-arch)
+    let mut config_digest: String = if manifest_json.get("config").is_some() {
+        manifest_json["config"]["digest"]
+            .as_str()
+            .ok_or_else(|| StorageError::MissingField {
+                context: "manifest".into(),
+                field: "config digest".into(),
+            })?
+            .to_string()
+    } else if manifest_json.get("manifests").is_some() {
+        return Err(StorageError::new(format!(
+            "got manifest list instead of image manifest - platform may not be available. \
+             manifests: {:?}",
+            manifest_json["manifests"].as_array().map(|arr| arr
+                .iter()
+                .filter_map(|m| m["platform"]["architecture"].as_str())
+                .collect::<Vec<_>>())
+        )));
+    } else {
+        return Err(StorageError::UnsupportedManifest {
+            media_type: "unknown".into(),
+        });
+    };
+
+    let mut layers: Vec<String> = manifest_json["layers"]
+        .as_array()
+        .ok_or_else(|| StorageError::MissingField {
+            context: "manifest".into(),
+            field: "layers".into(),
+        })?
+        .iter()
+        .filter_map(|l| l["digest"].as_str().map(String::from))
+        .collect();
+
+    let mut total_layers = layers.len();
+
+    // Save manifest
+    let manifest_path = root
+        .join(MANIFESTS_DIR)
+        .join(sanitize_image_name(cache_image) + ".json");
+    std::fs::write(&manifest_path, &manifest)?;
+
+    // Extract layers with progress updates.
+    //
+    // Each layer is fetched from the registry and unpacked into its OWN
+    // directory, so layers are independent and run concurrently: a serial loop
+    // leaves the network idle while a layer unpacks and the CPU idle while the
+    // next one downloads, which on a multi-layer image is most of the wall
+    // clock. Stacking order is applied later from the manifest, so completion
+    // order here does not matter. Concurrency is bounded because each worker
+    // holds a crane process and a decompressor.
+    //
+    // Layers extracted by THIS pull; their completion markers are written only
+    // after the writeback barrier below confirms the data reached the disk.
+    let mut newly_extracted: Vec<(PathBuf, u64)> = Vec::new();
+
+    // Decide what actually needs fetching before spawning anything: duplicate
+    // digests within one manifest, and layers a previous pull already
+    // completed, are reported as progress and skipped.
+    let mut pending: Vec<(usize, String, String, PathBuf)> = Vec::new();
+    let mut seen_dirs: Vec<PathBuf> = Vec::new();
+    let mut any_cached = false;
+    for (i, layer_digest) in layers.iter().enumerate() {
+        let layer_id = layer_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(layer_digest)
+            .to_string();
+        let layer_dir = root.join(LAYERS_DIR).join(&layer_id);
+        if seen_dirs.contains(&layer_dir) {
+            progress(i + 1, total_layers, &layer_id);
+            continue;
+        }
+        if is_layer_cached(&layer_dir) {
+            info!(layer = %layer_id, "layer already cached");
+            any_cached = true;
+            progress(i + 1, total_layers, &layer_id);
+            continue;
+        }
+        seen_dirs.push(layer_dir.clone());
+        pending.push((i, layer_digest.clone(), layer_id, layer_dir));
+    }
+
+    // For small, fully cold images with enough free space, crane pulls the
+    // blobs together into a temporary OCI layout. Larger images, tight disks,
+    // and warm pulls retain the streaming per-blob path and its retries.
+    let available_bytes = get_disk_usage(root)
+        .ok()
+        .map(|(total, used)| total.saturating_sub(used))
+        .unwrap_or(0);
+    let use_layout =
+        !pending.is_empty() && !any_cached && cold_layout_fits(&manifest_json, available_bytes);
+    let layout_guard: Option<LayoutGuard> = if use_layout {
+        sweep_stale_pull_layouts(root);
+        // Unique per pull: two concurrent pulls of the same image must not
+        // share a directory, and a crashed pull's leftover (its guard never
+        // ran) must not collide with the next one.
+        let layout_dir = root.join(format!(
+            ".pull-layout-{}-{}-{}",
+            sanitize_image_name(image),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let guard = LayoutGuard(layout_dir);
+        progress(0, 0, "downloading image");
+        crane_pull_layout(image, oci_platform, auth, proxy, no_proxy, &guard.0)?;
+        Some(guard)
+    } else {
+        None
+    };
+    if let Some(layout) = &layout_guard {
+        let pulled_manifest = oci_layout_manifest(&layout.0, oci_platform)?;
+        if pulled_manifest != manifest {
+            // The tag moved between the manifest call and the pull. The
+            // layout is what was actually pulled, so it is the truth from
+            // here on: stored manifest, config digest, layer list and the
+            // extraction work list all follow it.
+            info!(image = %image, "image moved between manifest and pull; following the pulled manifest");
+            manifest = pulled_manifest;
+            manifest_json = serde_json::from_str(&manifest)
+                .map_err(|e| StorageError::parse_error("manifest", e))?;
+            config_digest = manifest_json["config"]["digest"]
+                .as_str()
+                .ok_or_else(|| StorageError::MissingField {
+                    context: "manifest".into(),
+                    field: "config digest".into(),
+                })?
+                .to_string();
+            layers = manifest_json["layers"]
+                .as_array()
+                .ok_or_else(|| StorageError::MissingField {
+                    context: "manifest".into(),
+                    field: "layers".into(),
+                })?
+                .iter()
+                .filter_map(|l| l["digest"].as_str().map(String::from))
+                .collect();
+            total_layers = layers.len();
+            std::fs::write(&manifest_path, &manifest)?;
+            pending.clear();
+            seen_dirs.clear();
+            for (i, layer_digest) in layers.iter().enumerate() {
+                let layer_id = layer_digest
+                    .strip_prefix("sha256:")
+                    .unwrap_or(layer_digest)
+                    .to_string();
+                let layer_dir = root.join(LAYERS_DIR).join(&layer_id);
+                if seen_dirs.contains(&layer_dir) || is_layer_cached(&layer_dir) {
+                    continue;
+                }
+                seen_dirs.push(layer_dir.clone());
+                pending.push((i, layer_digest.clone(), layer_id, layer_dir));
+            }
+        }
+    }
+
+    // Save config: from the layout when one was pulled, else its own crane
+    // call (the only remaining per-request fetch on the warm path).
+    let config = match &layout_guard {
+        Some(layout) => std::fs::read_to_string(oci_layout_blob(&layout.0, &config_digest))?,
+        None => crane_config(image, oci_platform, auth, proxy, no_proxy)?,
+    };
+    let config_id = config_digest
+        .strip_prefix("sha256:")
+        .unwrap_or(&config_digest);
+    let config_path = root.join(CONFIGS_DIR).join(format!("{}.json", config_id));
+    std::fs::write(&config_path, &config)?;
+
+    // Parse config for metadata
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config).map_err(|e| StorageError::parse_error("config", e))?;
+
+    if !pending.is_empty() {
+        // One crane fetch + decompress per worker; more than a handful of
+        // concurrent streams only competes for the same link and page cache.
+        let workers = pending.len().min(4);
+        let queue = std::sync::Mutex::new(
+            pending
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        );
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(usize, String, PathBuf, u64)>>();
+
+        // Shared by every worker; `Option<&LayoutGuard>` is Copy, so the move
+        // closures below capture the reference, not the guard.
+        let layout_ref = layout_guard.as_ref();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let tx = tx.clone();
+                let queue = &queue;
+                scope.spawn(move || loop {
+                    let Some((i, layer_digest, layer_id, layer_dir)) =
+                        queue.lock().unwrap().pop_front()
+                    else {
+                        break;
+                    };
+                    let outcome = match layout_ref {
+                        Some(layout) => extract_layer_from_file(
+                            &layer_digest,
+                            &layer_id,
+                            &layer_dir,
+                            &oci_layout_blob(&layout.0, &layer_digest),
+                            i,
+                            total_layers,
+                        ),
+                        None => fetch_and_extract_layer_with_retry(
+                            image,
+                            &layer_digest,
+                            &layer_id,
+                            &layer_dir,
+                            oci_platform,
+                            auth,
+                            proxy,
+                            no_proxy,
+                            i,
+                            total_layers,
+                        ),
+                    }
+                    .map(|size| (i, layer_id, layer_dir, size));
+                    let failed = outcome.is_err();
+                    if tx.send(outcome).is_err() || failed {
+                        break;
+                    }
+                });
+            }
+            drop(tx);
+
+            // Progress stays on this thread: the caller's closure is FnMut and
+            // is not required to be thread-safe.
+            let mut done = 0usize;
+            let mut first_error: Option<StorageError> = None;
+            for received in rx {
+                match received {
+                    Ok((_, layer_id, layer_dir, size)) => {
+                        newly_extracted.push((layer_dir, size));
+                        done += 1;
+                        progress(done, total_layers, &layer_id);
+                    }
+                    Err(e) => {
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    }
+                }
+            }
+            match first_error {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        })?;
+    }
+
+    // Signal that layers are done and we're syncing — this can take a while
+    // for large images (gigabytes flushed through virtio-blk).
+    progress(total_layers, total_layers, "syncing");
+
+    // Writeback barrier before anything marks these layers trustworthy.
+    // Defense in depth: even though shutdown waits for acknowledgment (which also
+    // syncs), we sync here because:
+    // 1. Commands may complete and VM may exit before shutdown is called
+    // 2. Protects against ungraceful termination (SIGKILL, host crash)
+    // 3. tar can exit cleanly while every page it dirtied later fails writeback
+    //    (a host out of disk surfaces exactly this way) — only an error-reporting
+    //    sync catches it, and a pull must FAIL then, not report done.
+    if let Err(sync_error) = sync_layer_writeback(root) {
+        for (dir, _) in &newly_extracted {
+            let _ = std::fs::remove_dir_all(dir);
+            let _ = std::fs::remove_file(layer_ok_marker(dir));
+            let _ = std::fs::remove_file(layer_size_marker(dir));
+        }
+        return Err(sync_error);
+    }
+
+    // Markers last: a layer without one is re-pulled, never trusted.
+    for (dir, logical_bytes) in &newly_extracted {
+        std::fs::write(layer_ok_marker(dir), "ok")
+            .map_err(|e| StorageError::new(format!("write layer completion marker: {}", e)))?;
+        std::fs::write(layer_size_marker(dir), logical_bytes.to_string())
+            .map_err(|e| StorageError::new(format!("write layer size marker: {}", e)))?;
+    }
+
+    // Directory traversal is expensive for multi-gigabyte images and image
+    // metadata is consulted on every persistent exec. Compute the physical
+    // size once after the verified pull and keep it out of the command hot path.
+    let total_size = calculate_image_size(root, &layers);
+    cache_image_size(root, cache_image, total_size);
+
+    // Build ImageInfo
+    let architecture = config_json["architecture"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let os = config_json["os"].as_str().unwrap_or("linux").to_string();
+    let created = config_json["created"].as_str().map(String::from);
+
+    // Extract OCI config fields (Entrypoint, Cmd, Env, WorkingDir, User)
+    let oci_config = &config_json["config"];
+    let entrypoint = json_string_array(oci_config, "Entrypoint");
+    let cmd = json_string_array(oci_config, "Cmd");
+    let env = json_string_array(oci_config, "Env");
+    let workdir = oci_config["WorkingDir"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let user = oci_config["User"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    Ok(ImageInfo {
+        reference: cache_image.to_string(),
+        digest: config_digest.to_string(),
+        size: total_size,
+        created,
+        architecture,
+        os,
+        layer_count: layers.len(),
+        layers,
+        entrypoint,
+        cmd,
+        env,
+        workdir,
+        user,
+    })
+}
+
+/// Inspect only completed local materializations; never extract during Query.
+fn query_packed_image(
+    image: &str,
+    packed_dir: &Path,
+    storage_root: &Path,
+) -> Result<Option<ImageInfo>> {
+    let archive = packed_dir.join(ARCHIVE_FILE_NAME);
+    let effective = if archive.exists() {
+        let key = packed_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("archive");
+        let out = storage_root.join("image-archives").join(key);
+        if std::fs::read_to_string(out.join(ARCHIVE_EXTRACTED_MARKER)).ok()
+            != Some(archive_signature(&archive)?)
+        {
+            return Ok(None);
+        }
+        out
+    } else {
+        let tars = staged_layer_tars(packed_dir)?;
+        if tars.is_empty() {
+            packed_dir.to_path_buf()
+        } else {
+            let key = packed_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("packed");
+            let out = storage_root.join(GUEST_LAYERS_DIR).join(key);
+            if std::fs::read_to_string(out.join(GUEST_LAYERS_MARKER)).ok()
+                != Some(staged_tars_signature(&tars)?)
+            {
+                return Ok(None);
+            }
+            out
+        }
+    };
+    create_packed_image_info(image, &effective).map(Some)
+}
+
+/// Query if an image exists locally.
+pub fn query_image(image: &str) -> Result<Option<ImageInfo>> {
+    let image = normalize_image_ref(image);
+    let image = image.as_str();
+
+    // Query must not unpack an image: it has a short, single-response RPC
+    // deadline. Unprepared local images go through the streaming pull path.
+    if let Some(packed_dir) = get_packed_layers_dir() {
+        return query_packed_image(image, packed_dir, Path::new(STORAGE_ROOT));
+    }
+
+    let root = Path::new(STORAGE_ROOT);
+    let manifest_path = root
+        .join(MANIFESTS_DIR)
+        .join(sanitize_image_name(image) + ".json");
+
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    // Read and parse manifest
+    let manifest = std::fs::read_to_string(&manifest_path)?;
+    let manifest_json: serde_json::Value =
+        serde_json::from_str(&manifest).map_err(|e| StorageError::parse_error("manifest", e))?;
+
+    let config_digest =
+        manifest_json["config"]["digest"]
+            .as_str()
+            .ok_or_else(|| StorageError::MissingField {
+                context: "manifest".into(),
+                field: "config digest".into(),
+            })?;
+
+    let layers: Vec<String> = manifest_json["layers"]
+        .as_array()
+        .ok_or_else(|| StorageError::MissingField {
+            context: "manifest".into(),
+            field: "layers".into(),
+        })?
+        .iter()
+        .filter_map(|l| l["digest"].as_str().map(String::from))
+        .collect();
+
+    // Read config
+    let config_id = config_digest
+        .strip_prefix("sha256:")
+        .unwrap_or(config_digest);
+    let config_path = root.join(CONFIGS_DIR).join(format!("{}.json", config_id));
+    let config = std::fs::read_to_string(&config_path)?;
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config).map_err(|e| StorageError::parse_error("config", e))?;
+
+    let architecture = config_json["architecture"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let os = config_json["os"].as_str().unwrap_or("linux").to_string();
+    let created = config_json["created"].as_str().map(String::from);
+
+    // Verify all layers are present AND verified (completion marker written
+    // after the pull's writeback barrier) and calculate total size. A layer dir
+    // that exists without its marker is an interrupted or unflushed extraction —
+    // trusting it is how a corrupted store kept "booting" after an out-of-disk
+    // pull — so the image re-pulls instead.
+    for layer_digest in &layers {
+        let layer_id = layer_digest.strip_prefix("sha256:").unwrap_or(layer_digest);
+        let layer_dir = root.join(LAYERS_DIR).join(layer_id);
+        if !is_layer_cached(&layer_dir) {
+            // Clean up corrupt manifest to avoid repeated failures
+            warn!(layer = %layer_id, image = %image, "cached image has a missing or unverified layer, cleaning up and will re-pull");
+            let _ = std::fs::remove_file(&manifest_path);
+            let _ = std::fs::remove_file(image_size_cache_path(root, image));
+            return Ok(None);
+        }
+    }
+
+    // Older stores have no size sidecar. Pay the directory walk once, persist
+    // it, and keep all subsequent execs O(layer-count) instead of O(files).
+    let total_size = read_cached_image_size(root, image).unwrap_or_else(|| {
+        let size = calculate_image_size(root, &layers);
+        cache_image_size(root, image, size);
+        size
+    });
+
+    // Extract OCI config fields
+    let oci_config = &config_json["config"];
+    let entrypoint = json_string_array(oci_config, "Entrypoint");
+    let cmd = json_string_array(oci_config, "Cmd");
+    let env = json_string_array(oci_config, "Env");
+    let workdir = oci_config["WorkingDir"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let user = oci_config["User"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    Ok(Some(ImageInfo {
+        reference: image.to_string(),
+        digest: config_digest.to_string(),
+        size: total_size,
+        created,
+        architecture,
+        os,
+        layer_count: layers.len(),
+        layers,
+        entrypoint,
+        cmd,
+        env,
+        workdir,
+        user,
+    }))
+}
+
+/// List all cached images.
+pub fn list_images() -> Result<Vec<ImageInfo>> {
+    let root = Path::new(STORAGE_ROOT);
+    let manifests_dir = root.join(MANIFESTS_DIR);
+
+    if !manifests_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut images = Vec::new();
+
+    for entry in std::fs::read_dir(&manifests_dir)? {
+        let entry: std::fs::DirEntry = entry?;
+        let path = entry.path();
+
+        if path.extension().map(|e| e == "json").unwrap_or(false) {
+            // Extract image name from filename
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(unsanitize_image_name)
+                .unwrap_or_default();
+
+            if let Ok(Some(info)) = query_image(&name) {
+                images.push(info);
+            }
+        }
+    }
+
+    Ok(images)
+}
+
+/// Export a layer as a tar archive to a file.
+///
+/// Used by `smolvm pack` to extract layers for packaging.
+/// Returns the path to the created tar file.
+/// Find the directory path for a specific layer of an image.
+///
+/// Scans manifests to find the image by digest, then resolves the layer
+/// directory. Used by the streaming export handler to pipe tar directly
+/// without creating a temp file.
+pub fn find_layer_path(image_digest: &str, layer_index: usize) -> Result<PathBuf> {
+    let root = Path::new(STORAGE_ROOT);
+
+    let manifests_dir = root.join(MANIFESTS_DIR);
+    if !manifests_dir.exists() {
+        return Err(StorageError::NoImagesFound);
+    }
+
+    let mut layers: Option<Vec<String>> = None;
+
+    for entry in std::fs::read_dir(&manifests_dir)? {
+        let entry = entry?;
+        let content = std::fs::read_to_string(entry.path())?;
+        if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(config) = manifest.get("config") {
+                if let Some(digest) = config.get("digest").and_then(|d| d.as_str()) {
+                    if digest == image_digest {
+                        layers = manifest["layers"].as_array().map(|arr| {
+                            arr.iter()
+                                .filter_map(|l| l["digest"].as_str().map(String::from))
+                                .collect()
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let layers = layers.ok_or_else(|| {
+        StorageError::new(format!("image with digest {} not found", image_digest))
+    })?;
+
+    if layer_index >= layers.len() {
+        return Err(StorageError::new(format!(
+            "layer index {} out of bounds (image has {} layers)",
+            layer_index,
+            layers.len()
+        )));
+    }
+
+    let layer_digest = &layers[layer_index];
+    let layer_id = layer_digest.strip_prefix("sha256:").unwrap_or(layer_digest);
+    let layer_dir = root.join(LAYERS_DIR).join(layer_id);
+
+    if !layer_dir.exists() {
+        return Err(StorageError::new(format!(
+            "layer directory not found: {}",
+            layer_dir.display()
+        )));
+    }
+
+    Ok(layer_dir)
+}
+
+/// Remove all image manifests and configs, making all layers unreferenced.
+///
+/// Call this before `garbage_collect()` to implement `prune --all`.
+pub fn purge_all_images() -> Result<()> {
+    let root = Path::new(STORAGE_ROOT);
+    let manifests_dir = root.join(MANIFESTS_DIR);
+    let configs_dir = root.join(CONFIGS_DIR);
+    let metadata_dir = root.join(IMAGE_METADATA_DIR);
+
+    if manifests_dir.exists() {
+        std::fs::remove_dir_all(&manifests_dir)?;
+    }
+    if configs_dir.exists() {
+        std::fs::remove_dir_all(&configs_dir)?;
+    }
+    if metadata_dir.exists() {
+        std::fs::remove_dir_all(&metadata_dir)?;
+    }
+
+    Ok(())
+}
+
+/// Run garbage collection.
+pub fn garbage_collect(dry_run: bool) -> Result<u64> {
+    let root = Path::new(STORAGE_ROOT);
+    let layers_dir = root.join(LAYERS_DIR);
+    let manifests_dir = root.join(MANIFESTS_DIR);
+
+    // Collect all referenced layers
+    let mut referenced_layers = std::collections::HashSet::new();
+
+    if manifests_dir.exists() {
+        for entry in std::fs::read_dir(&manifests_dir)? {
+            let entry = entry?;
+            let content = std::fs::read_to_string(entry.path())?;
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(layers) = manifest["layers"].as_array() {
+                    for layer in layers {
+                        if let Some(digest) = layer["digest"].as_str() {
+                            let id = digest.strip_prefix("sha256:").unwrap_or(digest);
+                            referenced_layers.insert(id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Find unreferenced layers
+    let mut freed = 0u64;
+
+    if layers_dir.exists() {
+        for entry in std::fs::read_dir(&layers_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                // Completion and size sidecars live beside layer directories;
+                // they are handled with their directory below, not mistaken
+                // for independently garbage-collectable layers.
+                continue;
+            }
+            let layer_id = entry.file_name().to_string_lossy().to_string();
+
+            if !referenced_layers.contains(&layer_id) {
+                let size = read_layer_size(&entry.path())
+                    .unwrap_or_else(|| dir_size(&entry.path()).unwrap_or(0));
+                info!(layer = %layer_id, size = size, dry_run = dry_run, "unreferenced layer");
+
+                if !dry_run {
+                    std::fs::remove_dir_all(entry.path())?;
+                    let _ = std::fs::remove_file(layer_ok_marker(&entry.path()));
+                    let _ = std::fs::remove_file(layer_size_marker(&entry.path()));
+                }
+
+                freed += size;
+            }
+        }
+    }
+
+    Ok(freed)
+}
+
+// ============================================================================
+// Overlay Setup Helper
+// ============================================================================
+
+/// Helper for setting up overlay filesystems.
+///
+/// Encapsulates the common logic for preparing overlay directories,
+/// mounting layers, and creating OCI bundles.
+/// Entries a filesystem puts at a volume root that never belong to an image
+/// layer. A layer store on macOS is an APFS volume, so it always carries at
+/// least `.fseventsd` -- which made an emptied store look populated and let a
+/// container start on an image that no longer had a filesystem.
+fn is_volume_metadata(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_string_lossy().as_ref(),
+        ".fseventsd"
+            | ".Spotlight-V100"
+            | ".Trashes"
+            | ".TemporaryItems"
+            | ".DS_Store"
+            | ".DocumentRevisions-V100"
+            | "lost+found"
+    )
+}
+
+/// The directory beside an overlay that backed its workload's /tmp through a
+/// bind mount, before /tmp moved into the root filesystem
+/// ([`reset_workload_tmp`] removes it).
+const LEGACY_WORKLOAD_TMP_DIR: &str = "tmp";
+
+/// Give a workload a fresh /tmp before its overlay mounts: an empty, sticky,
+/// world-writable directory in the upper layer, marked opaque so the image's
+/// own /tmp stays hidden as it was under the tmpfs. /tmp is part of the root
+/// filesystem, as on GitHub's runners and most VMs: a separate /tmp mount made
+/// rename(2) from /tmp into the workspace fail with EXDEV (@expo/repack-app
+/// moving its APK out of /tmp), and a tmpfs sized from boot RAM ran out of space
+/// with the disk mostly empty. Only the upper layer is written, never a mounted
+/// overlay's. Also removes the on-disk directory that backed /tmp through a bind
+/// mount before (`overlay_root/tmp`). Best effort: a /tmp that cannot be reset
+/// is still usable, so this never fails the boot.
+/// Where a boot moves the previous /tmp before deleting it in the background:
+/// beside the upper layer, on the same filesystem (so the move is one rename),
+/// outside the overlay (so nothing in it is visible to the workload or to an
+/// export of the upper layer).
+const TMP_TRASH_DIR: &str = ".tmp-trash";
+
+/// Give the workload an empty /tmp in the upper layer for this boot, as a tmpfs
+/// gave it: the previous one is moved to [`TMP_TRASH_DIR`] in one rename and
+/// deleted on a background thread, so a /tmp a build filled with gigabytes
+/// costs the boot nothing, and the fresh directory is sticky, world-writable
+/// and marked opaque so the image's own /tmp stays hidden. Returns whether the
+/// upper layer's /tmp is fit to serve as the workload's /tmp; when it is not
+/// (it could not be cleared or created, or could not be made opaque), the
+/// marker [`crate::oci::TMP_KEEP_TMPFS_MARKER`] is left in the overlay root and
+/// the bundle keeps its tmpfs /tmp instead, so a boot never shows the image's
+/// /tmp or a previous boot's files.
+fn reset_workload_tmp(overlay_root: &Path, upper_path: &Path) -> bool {
+    reset_workload_tmp_with(overlay_root, upper_path, mark_opaque)
+}
+
+/// [`reset_workload_tmp`] with the opaque marking supplied, for tests.
+fn reset_workload_tmp_with(
+    overlay_root: &Path,
+    upper_path: &Path,
+    mark_opaque: impl Fn(&Path) -> bool,
+) -> bool {
+    let ready = prepare_workload_tmp(overlay_root, upper_path, &mark_opaque);
+    let marker = overlay_root.join(crate::oci::TMP_KEEP_TMPFS_MARKER);
+    if ready {
+        if let Err(e) = std::fs::remove_file(&marker) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!(path = %marker.display(), error = %e, "could not remove the keep-tmpfs marker");
+            }
+        }
+    } else {
+        warn!(overlay = %overlay_root.display(), "the workload keeps a tmpfs /tmp this boot");
+        if let Err(e) = std::fs::write(&marker, b"") {
+            warn!(path = %marker.display(), error = %e, "could not write the keep-tmpfs marker");
+        }
+    }
+    sweep_tmp_trash(overlay_root);
+    ready
+}
+
+fn prepare_workload_tmp(
+    overlay_root: &Path,
+    upper_path: &Path,
+    mark_opaque: &dyn Fn(&Path) -> bool,
+) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let trash = overlay_root.join(TMP_TRASH_DIR);
+    let unique = |what: &str| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        trash.join(format!("{what}-{now}-{}", std::process::id()))
+    };
+    if let Err(e) = std::fs::create_dir_all(&trash) {
+        warn!(path = %trash.display(), error = %e, "could not create the /tmp trash directory");
+    }
+    // The directory that backed /tmp through a bind mount before: gone like a
+    // previous boot's /tmp.
+    let legacy = overlay_root.join(LEGACY_WORKLOAD_TMP_DIR);
+    if legacy.symlink_metadata().is_ok() && std::fs::rename(&legacy, unique("legacy")).is_err() {
+        if let Err(e) = std::fs::remove_dir_all(&legacy) {
+            warn!(path = %legacy.display(), error = %e, "could not remove the old workload /tmp directory");
+        }
+    }
+    let dir = upper_path.join("tmp");
+    match std::fs::symlink_metadata(&dir) {
+        // a directory, a whiteout or a file where /tmp should be: moved aside
+        Ok(m) => {
+            if std::fs::rename(&dir, unique("tmp")).is_err() {
+                let removed = if m.is_dir() {
+                    std::fs::remove_dir_all(&dir)
+                } else {
+                    std::fs::remove_file(&dir)
+                };
+                if let Err(e) = removed {
+                    warn!(path = %dir.display(), error = %e, "could not clear workload /tmp");
+                    return false;
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            warn!(path = %dir.display(), error = %e, "could not read workload /tmp");
+            return false;
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!(path = %dir.display(), error = %e, "could not create workload /tmp");
+        return false;
+    }
+    // Set after creation: the process umask would drop the sticky and
+    // world-writable bits from create_dir's mode.
+    if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o1777)) {
+        warn!(path = %dir.display(), error = %e, "could not make workload /tmp world-writable");
+        return false;
+    }
+    mark_opaque(&dir)
+}
+
+/// Delete everything a boot moved into [`TMP_TRASH_DIR`], this boot's and any
+/// earlier boot's that did not finish, on a background thread.
+fn sweep_tmp_trash(overlay_root: &Path) {
+    let trash = overlay_root.join(TMP_TRASH_DIR);
+    let Ok(entries) = std::fs::read_dir(&trash) else {
+        return;
+    };
+    let paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    if paths.is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("tmp-trash".into())
+        .spawn(move || {
+            for path in paths {
+                let removed = if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                if let Err(e) = removed {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        warn!(path = %path.display(), error = %e, "could not delete a previous /tmp");
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        warn!(error = %e, "could not start the /tmp trash sweep; a later boot retries");
+    }
+}
+
+/// Mark an upper-layer directory opaque, in the xattr namespace the overlay is
+/// mounted with (see [`packed_layers_use_userxattr`]), so the lower layers'
+/// entries at that path stay hidden. Returns whether it could.
+#[cfg(target_os = "linux")]
+fn mark_opaque(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let name = if packed_layers_use_userxattr() {
+        c"user.overlay.opaque"
+    } else {
+        c"trusted.overlay.opaque"
+    };
+    let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: path and name are NUL-terminated; the value is a valid 1-byte buffer.
+    let rc = unsafe {
+        libc::setxattr(
+            c_path.as_ptr(),
+            name.as_ptr(),
+            b"y".as_ptr() as *const libc::c_void,
+            1,
+            0,
+        )
+    };
+    if rc != 0 {
+        warn!(path = %dir.display(), error = %std::io::Error::last_os_error(), "could not mark workload /tmp opaque");
+        return false;
+    }
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mark_opaque(_dir: &Path) -> bool {
+    false
+}
+
+/// Reject lower layers that cannot produce the image's filesystem.
+///
+/// A single empty layer is legal -- an OCI layer may carry only metadata or
+/// whiteouts. Every layer being empty is not: the image then contributes
+/// nothing, the container runs on its upper layer alone, and the first sign of
+/// trouble is `executable file not found in $PATH` for a binary the image was
+/// supposed to provide. Failing here names the real problem instead.
+fn verify_layers(lowerdirs: &[String]) -> Result<()> {
+    let mut populated = 0usize;
+    for layer_path in lowerdirs {
+        let path = Path::new(layer_path);
+        if !path.exists() {
+            return Err(StorageError::new(format!(
+                "layer path does not exist: {}",
+                layer_path
+            )));
+        }
+        let entry_count = std::fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| !is_volume_metadata(&e.file_name()))
+                    .count()
+            })
+            .unwrap_or(0);
+        if entry_count == 0 {
+            warn!(layer = %layer_path, "layer directory is empty");
+        } else {
+            populated += 1;
+        }
+    }
+    if populated == 0 && !lowerdirs.is_empty() {
+        return Err(StorageError::new(format!(
+            "the machine's image layers are missing: all {} unpacked layer \
+             director{} empty, so the container would have no image \
+             filesystem. The image has to be unpacked again before this \
+             machine can start.",
+            lowerdirs.len(),
+            if lowerdirs.len() == 1 {
+                "y is"
+            } else {
+                "ies are"
+            },
+        )));
+    }
+    Ok(())
+}
+
+struct OverlaySetup {
+    overlay_root: PathBuf,
+    upper_path: PathBuf,
+    work_path: PathBuf,
+    merged_path: PathBuf,
+    workload_id: String,
+}
+
+impl OverlaySetup {
+    /// Create a new overlay setup for the given workload.
+    fn new(workload_id: &str) -> Result<Self> {
+        let overlay_root = overlay_root_for_workload(workload_id)?;
+        Ok(Self {
+            upper_path: overlay_root.join("upper"),
+            work_path: overlay_root.join("work"),
+            merged_path: overlay_root.join("merged"),
+            overlay_root,
+            workload_id: workload_id.to_string(),
+        })
+    }
+
+    /// Prepare overlay directories, cleaning up any previous state.
+    fn prepare_directories(&self) -> Result<()> {
+        // Clean up any previous overlay state - workdir must be empty for overlay mount
+        if self.overlay_root.exists() {
+            // Try to unmount if previously mounted
+            if let Err(e) = Command::new("umount").arg(&self.merged_path).output() {
+                debug!(path = %self.merged_path.display(), error = %e, "failed to unmount previous overlay (may not have been mounted)");
+            }
+            // Remove old directories to ensure clean state
+            if let Err(e) = std::fs::remove_dir_all(&self.overlay_root) {
+                warn!(path = %self.overlay_root.display(), error = %e, "failed to remove old overlay directory");
+            }
+        }
+
+        std::fs::create_dir_all(&self.upper_path)?;
+        std::fs::create_dir_all(&self.work_path)?;
+        std::fs::create_dir_all(&self.merged_path)?;
+
+        Ok(())
+    }
+
+    /// Set up the upper layer with DNS resolution and /dev directory.
+    fn setup_upper_layer(&self, lowerdirs: &[String]) -> Result<()> {
+        let _ = reset_workload_tmp(&self.overlay_root, &self.upper_path);
+        // Set up DNS resolution BEFORE mounting. Image-backed workloads read
+        // `/etc/resolv.conf` from the overlay upper layer, so this file must
+        // match the active networking mode rather than always hardcoding
+        // public resolvers.
+        let upper_etc = self.upper_path.join("etc");
+        std::fs::create_dir_all(&upper_etc)?;
+        let resolv_path = upper_etc.join("resolv.conf");
+        let resolv_contents = overlay_resolv_conf_contents();
+        if let Err(e) = std::fs::write(&resolv_path, resolv_contents) {
+            warn!(error = %e, "failed to write resolv.conf to upper layer");
+        }
+
+        // Prefer IPv4 for dual-stack destinations so a flaky or wrongly-advertised
+        // IPv6 path can never cause a hard hang: glibc reads /etc/gai.conf, and
+        // this entry ranks IPv4-mapped addresses above the default IPv6
+        // precedences (RFC 6724), so clients try v4 first and fall back to v6
+        // only when v4 is unavailable. The host only advertises v6 when a real
+        // reachability probe passes; this is the belt-and-suspenders for the
+        // window where an advertised v6 later goes bad. Distros ship gai.conf
+        // with this line COMMENTED (Debian/Ubuntu), so provide it unless the
+        // image sets its own active rules; musl does its own sorting and ignores
+        // gai.conf, so those guests rely solely on the host probe.
+        let gai_path = upper_etc.join("gai.conf");
+        let image_has_gai_rules = lowerdirs
+            .iter()
+            .any(|l| hosts_file_has_entries(&Path::new(l).join("etc/gai.conf")));
+        if !image_has_gai_rules && !gai_path.exists() {
+            let gai_contents =
+                "# Managed by smolvm: prefer IPv4 so a flaky IPv6 path cannot hang clients.\n\
+                 precedence ::ffff:0:0/96  100\n";
+            if let Err(e) = std::fs::write(&gai_path, gai_contents) {
+                warn!(error = %e, "failed to write gai.conf to upper layer");
+            }
+        }
+
+        // Container runtimes are expected to provide /etc/hosts (Docker bind-
+        // mounts a generated one), so minimal images like rancher/k3s ship
+        // without it — and software that templates from it (containerd's pod
+        // sandbox hosts generation, for one) hard-fails on the missing file.
+        // Provide a default only when neither the image nor a previous session
+        // supplies one: unlike resolv.conf, image-provided copies and
+        // in-container edits are preserved (the hostname is appended after
+        // mounting if it is not already mapped). "Supplies
+        // one" means actual name mappings — Ubuntu-derived images often ship an
+        // empty or comments-only /etc/hosts, and counting those left `localhost`
+        // unresolvable inside the container.
+        let hosts_path = upper_etc.join("hosts");
+        let image_has_hosts = lowerdirs
+            .iter()
+            .any(|l| hosts_file_has_entries(&Path::new(l).join("etc/hosts")));
+        if !image_has_hosts && !hosts_path.exists() {
+            let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+            if let Err(e) = std::fs::write(&hosts_path, overlay_hosts_contents(hostname.trim())) {
+                warn!(error = %e, "failed to write hosts to upper layer");
+            }
+        }
+
+        // Create /dev directory in upper layer - we'll bind mount the real /dev later
+        let upper_dev = self.upper_path.join("dev");
+        std::fs::create_dir_all(&upper_dev)?;
+
+        Ok(())
+    }
+
+    /// Verify that all layer paths exist and log warnings for empty layers.
+    fn verify_layers(&self, lowerdirs: &[String]) -> Result<()> {
+        verify_layers(lowerdirs)
+    }
+
+    /// Mount the overlay filesystem with fallback from multi-lowerdir to sequential.
+    fn mount(&self, lowerdirs: &[String]) -> Result<()> {
+        // OCI manifests may repeat a content-addressed layer. Reapplying the
+        // exact same filesystem diff is idempotent, while passing the same
+        // directory to overlayfs twice makes fsconfig reject the stack with
+        // ELOOP and needlessly sends large images through the physical merge
+        // fallback.
+        let lowerdirs = unique_lowerdirs(lowerdirs);
+
+        // Try multi-lowerdir mount first (efficient)
+        let mount_result = try_mount_overlay_multi_lower(
+            &lowerdirs,
+            &self.upper_path,
+            &self.work_path,
+            &self.merged_path,
+        );
+
+        if let Err(multi_err) = mount_result {
+            if lowerdirs.len() > 1 {
+                // Multi-lowerdir failed, try sequential approach
+                warn!(
+                    layer_count = lowerdirs.len(),
+                    error = %multi_err,
+                    "multi-lowerdir mount failed, trying sequential overlay construction"
+                );
+
+                mount_overlay_sequential(
+                    &lowerdirs,
+                    &self.upper_path,
+                    &self.work_path,
+                    &self.merged_path,
+                    &self.overlay_root,
+                )?;
+            } else {
+                // Single layer, can't use sequential approach
+                return Err(multi_err);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify that the mount succeeded by checking merged directory contents.
+    fn verify_mount(&self) -> usize {
+        let entry_count = std::fs::read_dir(&self.merged_path)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+
+        if entry_count == 0 {
+            warn!(
+                workload_id = %self.workload_id,
+                merged_path = %self.merged_path.display(),
+                "overlay mount returned success but merged directory is empty"
+            );
+            // Try to get more info about the mount state
+            if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+                let merged_str = self.merged_path.to_string_lossy();
+                let is_mounted = mounts.lines().any(|line| line.contains(&*merged_str));
+                warn!(is_mounted = is_mounted, "mount point status");
+            }
+        }
+
+        entry_count
+    }
+
+    /// Create OCI bundle directory structure.
+    fn create_bundle(&self) -> Result<()> {
+        let bundle_path = self.overlay_root.join("bundle");
+        std::fs::create_dir_all(&bundle_path)?;
+
+        // Create symlink: bundle/rootfs -> ../merged
+        let rootfs_link = bundle_path.join("rootfs");
+        if !rootfs_link.exists() {
+            std::os::unix::fs::symlink("../merged", &rootfs_link).map_err(|e| {
+                StorageError::new(format!("failed to create rootfs symlink: {}", e))
+            })?;
+        }
+
+        debug!(bundle = %bundle_path.display(), "OCI bundle directory created");
+        Ok(())
+    }
+
+    /// Convert to OverlayInfo result.
+    fn into_overlay_info(self) -> OverlayInfo {
+        OverlayInfo {
+            rootfs_path: self.merged_path.display().to_string(),
+            upper_path: self.upper_path.display().to_string(),
+            work_path: self.work_path.display().to_string(),
+        }
+    }
+
+    /// Execute the full overlay setup pipeline with the given lower directories.
+    fn execute(self, lowerdirs: Vec<String>) -> Result<OverlayInfo> {
+        self.prepare_directories()?;
+        self.setup_upper_layer(&lowerdirs)?;
+        self.verify_layers(&lowerdirs)?;
+        self.mount(&lowerdirs)?;
+
+        let entry_count = self.verify_mount();
+        info!(workload_id = %self.workload_id, entry_count = entry_count, "overlay mounted");
+
+        refresh_overlay_hostname(&self.merged_path);
+        self.create_bundle()?;
+        Ok(self.into_overlay_info())
+    }
+
+    /// Reuse an existing persistent overlay or create a new one.
+    ///
+    /// If the overlay is already mounted AND healthy, returns it immediately.
+    /// A mounted-but-stale overlay (a fork clone's RAM image carries the
+    /// golden's overlay mount, whose virtiofs lowerdirs died with the pre-fork
+    /// virtiofsd session — every fresh lookup through it is ESTALE) is torn
+    /// down and remounted from its intact upper layer, so the clone keeps the
+    /// golden's exec-written state instead of erroring on every exec.
+    /// If the overlay directory exists but is not mounted (e.g. after VM restart),
+    /// remounts it preserving the upper layer (which contains previous changes).
+    /// If the overlay does not exist at all, creates it fresh.
+    fn execute_or_remount(self, lowerdirs: Vec<String>) -> Result<OverlayInfo> {
+        let mut restored_fork = false;
+        // Already mounted — reuse it only if it actually answers lookups.
+        if self.merged_path.exists() && is_mountpoint(&self.merged_path) {
+            if mounted_overlay_is_healthy(&self.merged_path) {
+                info!(workload_id = %self.workload_id, "reusing existing persistent overlay");
+                // Intent: persistent-overlay DNS follows the active backend (INTENT.md).
+                refresh_overlay_resolver(&self.merged_path)?;
+                refresh_overlay_hostname(&self.merged_path);
+                self.create_bundle()?;
+                return Ok(self.into_overlay_info());
+            }
+            // Stale restored mount (fork clone). The restored keep-alive
+            // container (if any) still runs from it — kill it so the next
+            // exec establishes a fresh one on the healed overlay, then detach
+            // the dead mount and fall through to the remount path below,
+            // which reuses the (CoW-inherited) upper layer.
+            warn!(
+                workload_id = %self.workload_id,
+                "persistent overlay mount is stale (restored fork state); remounting from its upper layer"
+            );
+            let id_path = paths::main_container_id_path(&self.workload_id);
+            if let Ok(cid) = std::fs::read_to_string(&id_path) {
+                let cid = cid.trim();
+                if !cid.is_empty() {
+                    let _ = CrunCommand::delete(cid, true).output();
+                }
+            }
+            let _ = std::fs::remove_file(&id_path);
+            detach_mount(&self.merged_path);
+            restored_fork = true;
+        }
+
+        // Upper layer exists from a previous session — remount preserving it
+        if self.upper_path.exists() {
+            info!(workload_id = %self.workload_id, "remounting persistent overlay with existing upper layer");
+            // A boot starts with an empty /tmp, as it did on the tmpfs; a fork
+            // clone keeps the golden's, like the rest of its state.
+            if !restored_fork {
+                let _ = reset_workload_tmp(&self.overlay_root, &self.upper_path);
+            }
+            refresh_overlay_resolver(&self.upper_path)?;
+
+            // overlayfs requires an empty work directory at mount time
+            if self.work_path.exists() {
+                let _ = std::fs::remove_dir_all(&self.work_path);
+            }
+            std::fs::create_dir_all(&self.work_path)?;
+            std::fs::create_dir_all(&self.merged_path)?;
+
+            self.verify_layers(&lowerdirs)?;
+            self.mount(&lowerdirs)?;
+
+            let entry_count = self.verify_mount();
+            info!(workload_id = %self.workload_id, entry_count = entry_count, "persistent overlay remounted");
+
+            refresh_overlay_hostname(&self.merged_path);
+            self.create_bundle()?;
+            return Ok(self.into_overlay_info());
+        }
+
+        // First time — full setup
+        info!(workload_id = %self.workload_id, "creating new persistent overlay");
+        self.execute(lowerdirs)
+    }
+}
+
+// Intent: INTENT.md, persistent-overlay resolver refresh only.
+// Mounted overlays must be written through merged, never their live upperdir.
+fn refresh_overlay_resolver(root: &Path) -> Result<()> {
+    let path = root.join("etc/resolv.conf");
+    match write_overlay_resolver(root) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            // A symlinked resolv.conf that resolves inside the image (an image
+            // running systemd-resolved, say) is the image's own resolver setup:
+            // keep it rather than write through a link the agent would resolve
+            // against its own root.
+            info!(path = %path.display(), "resolv.conf is a symlink; leaving the image's resolver in place");
+            Ok(())
+        }
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "persistent overlay resolver refresh failed");
+            Err(StorageError::new(format!(
+                "refresh persistent overlay resolver {}: {error}",
+                path.display()
+            )))
+        }
+    }
+}
+
+/// Write the resolver to `root/etc/resolv.conf`, or `Ok(false)` when the image
+/// keeps its own: a symlinked `etc`, or a symlinked `resolv.conf` whose target
+/// exists inside `root`. A dangling link (installing `systemd-resolved` in a
+/// container leaves one pointing at a stub nothing creates) would leave the
+/// workload with no DNS, so it is replaced by the file, as a container runtime
+/// that owns `resolv.conf` would; the link itself is removed, never followed.
+fn write_overlay_resolver(root: &Path) -> std::io::Result<bool> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let root_dir = std::fs::File::open(root)?;
+    // SAFETY: `root_dir` is open and the path is a NUL-terminated literal.
+    let etc = unsafe {
+        libc::openat(
+            root_dir.as_raw_fd(),
+            c"etc".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if etc < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ELOOP | libc::ENOTDIR) => Ok(false),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: `etc` was just opened here and is owned from now on.
+    let etc = unsafe { std::fs::File::from_raw_fd(etc) };
+    // Look before opening: overlayfs answers an O_NOFOLLOW create on a
+    // dangling link with ENOENT, not the ELOOP other filesystems give.
+    // SAFETY: an all-zero `stat` is a valid out-parameter.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `etc` is open, the name is NUL-terminated, `st` is writable.
+    let found = unsafe {
+        libc::fstatat(
+            etc.as_raw_fd(),
+            c"resolv.conf".as_ptr(),
+            &mut st,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0;
+    if found && st.st_mode & libc::S_IFMT == libc::S_IFLNK {
+        if link_resolves_in_root(&root_dir, c"etc/resolv.conf") {
+            return Ok(false);
+        }
+        // SAFETY: `etc` is open and the name is NUL-terminated.
+        if unsafe { libc::unlinkat(etc.as_raw_fd(), c"resolv.conf".as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    // SAFETY: `etc` is open and the name is NUL-terminated.
+    let fd = unsafe {
+        libc::openat(
+            etc.as_raw_fd(),
+            c"resolv.conf".as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o644 as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        // A link that appeared since the look is the image's to keep.
+        return match error.raw_os_error() {
+            Some(libc::ELOOP) => Ok(false),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: `fd` was just opened here and is owned from now on.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    file.write_all(overlay_resolv_conf_contents().as_bytes())?;
+    Ok(true)
+}
+
+/// Whether `path` names an existing file when its links are resolved with
+/// `root` as `/`, so an absolute link means the image's path, not the agent's.
+#[cfg(target_os = "linux")]
+fn link_resolves_in_root(root: &std::fs::File, path: &std::ffi::CStr) -> bool {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: an all-zero `open_how` is valid; the fields are set below.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_IN_ROOT;
+    // SAFETY: `root` is open, `path` is NUL-terminated and `how` is a valid
+    // `open_how` of the size passed.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root.as_raw_fd(),
+            path.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: `fd` was just opened here and is closed once.
+        unsafe { libc::close(fd as libc::c_int) };
+        return true;
+    }
+    // Without openat2 the link cannot be resolved safely; keep it, as before.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn link_resolves_in_root(_root: &std::fs::File, _path: &std::ffi::CStr) -> bool {
+    true
+}
+
+/// Open `etc/<name>` under an overlay root without following a symlink at
+/// `etc` or at `name`: the image owns both, and a link would be resolved
+/// against the agent's root, not the container's. `None` when either one is a
+/// symlink. `flags` are the access flags for `name`.
+fn open_overlay_etc_file(
+    root: &Path,
+    name: &std::ffi::CStr,
+    flags: libc::c_int,
+) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::unix::io::FromRawFd;
+    fn refused(fd: libc::c_int) -> std::io::Result<Option<libc::c_int>> {
+        if fd >= 0 {
+            return Ok(Some(fd));
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ELOOP | libc::ENOTDIR) => Ok(None),
+            _ => Err(error),
+        }
+    }
+    let root = std::fs::File::open(root)?;
+    // SAFETY: `root` is open and the path is a NUL-terminated literal.
+    let etc = unsafe {
+        libc::openat(
+            root.as_raw_fd(),
+            c"etc".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    let Some(etc) = refused(etc)? else {
+        return Ok(None);
+    };
+    // SAFETY: `etc` was just opened here and is owned from now on.
+    let etc = unsafe { std::fs::File::from_raw_fd(etc) };
+    // SAFETY: `etc` is open and `name` is NUL-terminated.
+    let file = unsafe {
+        libc::openat(
+            etc.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o644 as libc::c_uint,
+        )
+    };
+    // SAFETY: an fd returned by `refused` was just opened and is owned here.
+    Ok(refused(file)?.map(|fd| unsafe { std::fs::File::from_raw_fd(fd) }))
+}
+
+fn overlay_resolv_conf_contents() -> String {
+    // Resolver options (`--dns-option`) ride on every file.
+    let options = crate::resolv_options();
+
+    // A nameserver supplied by the host (SMOLVM_NETWORK_DNS) wins for either
+    // backend: under virtio-net it's the gateway address, and under TSI it's a
+    // custom resolver (--dns) the guest queries directly. Only fall back to
+    // public resolvers when the host didn't specify one.
+    if let Ok(dns_server) = std::env::var(guest_env::DNS) {
+        if !dns_server.trim().is_empty() {
+            return smolvm_protocol::resolv::render(&[dns_server.trim()], &options);
+        }
+    }
+
+    // Same order as the TSI boot path (`tsi_resolv_conf`): the two writers
+    // used to disagree (8.8.8.8 first here, 1.1.1.1 first at boot).
+    smolvm_protocol::resolv::render(&smolvm_protocol::resolv::DEFAULT_NAMESERVERS, &options)
+}
+
+fn refresh_overlay_hostname(root: &Path) {
+    if let Err(error) = ensure_overlay_hostname(root, &crate::oci::container_hostname()) {
+        // Some images deliberately make /etc/hosts unwritable. Keep their
+        // previous behavior rather than making the workload fail to start.
+        warn!(path = %root.join("etc/hosts").display(), error = %error, "failed to add guest hostname to hosts");
+    }
+}
+
+/// Make the OCI container hostname resolvable without replacing the image's
+/// /etc/hosts or any mappings the workload added. Work through the mounted
+/// overlay: writing directly into a live upperdir is unsafe on overlayfs.
+fn ensure_overlay_hostname(root: &Path, hostname: &str) -> Result<()> {
+    if hostname.is_empty() || hostname == "localhost" {
+        return Ok(());
+    }
+    // A symlinked /etc/hosts belongs to the image: keep it, as with resolv.conf.
+    let existing = match open_overlay_etc_file(root, c"hosts", libc::O_RDONLY) {
+        Ok(Some(mut file)) => {
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents)?;
+            contents
+        }
+        Ok(None) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(mut file) = open_overlay_etc_file(
+                root,
+                c"hosts",
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            )? {
+                file.write_all(overlay_hosts_contents(hostname).as_bytes())?;
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if existing.split(|&byte| byte == b'\n').any(|line| {
+        let mapping = line.split(|&byte| byte == b'#').next().unwrap_or_default();
+        mapping
+            .split(|byte| byte.is_ascii_whitespace())
+            .skip(1)
+            .any(|name| name == hostname.as_bytes())
+    }) {
+        return Ok(());
+    }
+    let Some(mut file) = open_overlay_etc_file(root, c"hosts", libc::O_WRONLY | libc::O_APPEND)?
+    else {
+        return Ok(());
+    };
+    if !existing.is_empty() && !existing.ends_with(b"\n") {
+        file.write_all(b"\n")?;
+    }
+    file.write_all(format!("127.0.1.1\t{hostname}\n").as_bytes())?;
+    Ok(())
+}
+
+/// Default /etc/hosts for images that ship without one, mirroring the file
+/// Docker generates: loopback names plus the guest hostname (Debian-style
+/// 127.0.1.1), so `hostname`-resolving software works out of the box.
+fn overlay_hosts_contents(hostname: &str) -> String {
+    let mut hosts =
+        String::from("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n");
+    if !hostname.is_empty() && hostname != "localhost" {
+        hosts.push_str(&format!("127.0.1.1\t{}\n", hostname));
+    }
+    hosts
+}
+
+/// True when this /etc/hosts actually provides name mappings — at least one
+/// non-comment, non-blank line. An empty or comments-only file must not count
+/// as image-provided, or `localhost` never resolves in the container.
+fn hosts_file_has_entries(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|contents| {
+            contents
+                .lines()
+                .map(str::trim)
+                .any(|line| !line.is_empty() && !line.starts_with('#'))
+        })
+        .unwrap_or(false)
+}
+
+/// Prepare an overlay filesystem for a workload.
+///
+/// Reuses an existing overlay if already mounted, remounts if the upper
+/// directory exists (preserving state from previous sessions), or creates
+/// a fresh overlay. This idempotent behavior is critical for `machine cp`
+/// which may call this before or after `machine exec`.
+pub fn prepare_overlay(image: &str, workload_id: &str) -> Result<OverlayInfo> {
+    // Check if we have packed layers available
+    if let Some(packed_dir) = get_packed_layers_dir() {
+        info!(image = %image, packed_dir = %packed_dir.display(), "using packed layers");
+        // A saved-image archive is flattened into a rootfs (a single packed
+        // layer), host-staged tars are unpacked here, and an already-unpacked
+        // dir is used as-is.
+        let effective = effective_packed_dir(packed_dir)?;
+        return prepare_overlay_from_packed(image, workload_id, &effective);
+    }
+
+    // Ensure image exists
+    let info = query_image(image)?
+        .ok_or_else(|| StorageError::new(format!("image not found: {}", image)))?;
+
+    // Build lowerdir from layers (reversed for overlay order - top layer first)
+    let root = Path::new(STORAGE_ROOT);
+    let lowerdirs: Vec<String> = info
+        .layers
+        .iter()
+        .rev()
+        .map(|digest| {
+            let id = digest.strip_prefix("sha256:").unwrap_or(digest);
+            root.join(LAYERS_DIR).join(id).display().to_string()
+        })
+        .collect();
+
+    let setup = OverlaySetup::new(workload_id)?;
+    if !workload_id.starts_with("persistent-") {
+        return setup.execute_or_remount(lowerdirs);
+    }
+    let overlay_root = setup.overlay_root.clone();
+    check_overlay_image(&overlay_root, workload_id, image)?;
+    let overlay = setup.execute_or_remount(lowerdirs)?;
+    record_overlay_image(&overlay_root, image)?;
+    Ok(overlay)
+}
+
+/// File in a persistent overlay's directory naming the image it was built from.
+const OVERLAY_IMAGE_FILE: &str = "image_ref";
+
+/// Refuse to mount a persistent overlay for `image` when it was built from a
+/// different image: the new image's layers under the old upper layer would be
+/// a mix of both filesystems. An overlay with no record (one made before images
+/// were recorded) is accepted, and gets one once it mounts.
+fn check_overlay_image(overlay_root: &Path, workload_id: &str, image: &str) -> Result<()> {
+    let Ok(recorded) = std::fs::read_to_string(overlay_root.join(OVERLAY_IMAGE_FILE)) else {
+        return Ok(());
+    };
+    let recorded = recorded.trim();
+    let requested = smolvm_protocol::normalize_image_ref(image);
+    if recorded.is_empty() || recorded == requested {
+        return Ok(());
+    }
+    Err(StorageError::OverlayImageConflict {
+        overlay: workload_id.to_string(),
+        recorded: recorded.to_string(),
+        requested,
+    })
+}
+
+/// Record the image a persistent overlay was built from, once.
+fn record_overlay_image(overlay_root: &Path, image: &str) -> Result<()> {
+    let path = overlay_root.join(OVERLAY_IMAGE_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    let tmp = overlay_root.join(format!(".{OVERLAY_IMAGE_FILE}.tmp"));
+    std::fs::write(&tmp, smolvm_protocol::normalize_image_ref(image))
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|e| StorageError::WriteFile {
+            path: path.display().to_string(),
+            cause: e.to_string(),
+        })
+}
+
+/// Prepare an overlay filesystem using pre-packed layers.
+///
+/// Packed layers are stored as directories named by short digest (first 12 chars)
+/// in the packed_dir. This function builds the overlay using these layers.
+fn prepare_overlay_from_packed(
+    image: &str,
+    workload_id: &str,
+    packed_dir: &Path,
+) -> Result<OverlayInfo> {
+    // An unpacked-image directory IS the rootfs — one lowerdir, not its subdirs
+    // treated as separate layers.
+    if is_rootfs_dir(packed_dir) {
+        return OverlaySetup::new(workload_id)?
+            .execute_or_remount(vec![packed_dir.display().to_string()]);
+    }
+
+    // Packed layers are named by short digest (first 12 chars of sha256).
+    // Order is taken from the layer-order index (manifest order, bottom→top),
+    // falling back to a name sort — see `ordered_packed_layer_names`.
+    let layer_names = ordered_packed_layer_names(packed_dir)?;
+
+    if layer_names.is_empty() {
+        return Err(StorageError::new(format!(
+            "no layer directories found in {}",
+            packed_dir.display()
+        )));
+    }
+
+    info!(
+        image = %image,
+        layer_count = layer_names.len(),
+        layers = ?layer_names,
+        "found packed layers"
+    );
+
+    // Build lowerdir from layers (reversed so the top-most layer is leftmost,
+    // as overlayfs gives leftmost lowerdir the highest priority).
+    let lowerdirs: Vec<String> = layer_names
+        .iter()
+        .rev()
+        .map(|name| packed_dir.join(name).display().to_string())
+        .collect();
+
+    // Use shared overlay setup logic — execute_or_remount preserves the
+    // upper layer from a previous session (e.g., packages installed via exec)
+    // instead of recreating the overlay from scratch.
+    OverlaySetup::new(workload_id)?.execute_or_remount(lowerdirs)
+}
+
+/// Build lowerdir list from a pulled OCI image's layers.
+fn get_image_lowerdirs(image: &str) -> Result<Vec<String>> {
+    let info = query_image(image)?
+        .ok_or_else(|| StorageError::new(format!("image not found: {}", image)))?;
+
+    let root = Path::new(STORAGE_ROOT);
+    Ok(info
+        .layers
+        .iter()
+        .rev()
+        .map(|digest| {
+            let id = digest.strip_prefix("sha256:").unwrap_or(digest);
+            root.join(LAYERS_DIR).join(id).display().to_string()
+        })
+        .collect())
+}
+
+/// Whether `dir` is itself a root filesystem (an unpacked-image directory,
+/// `--image ./rootfs/`) rather than a set of layer subdirs — detected by the
+/// presence of standard top-level rootfs directories. A `.smolmachine`'s
+/// packed-layers dir holds per-layer subdirs, not these, so it reads as false.
+fn is_rootfs_dir(dir: &Path) -> bool {
+    ["bin", "usr", "etc", "sbin"]
+        .iter()
+        .any(|d| dir.join(d).is_dir())
+}
+
+/// Build lowerdir list from pre-packed layer directories.
+fn get_packed_lowerdirs(packed_dir: &Path) -> Result<Vec<String>> {
+    // An unpacked-image directory IS the rootfs — one lowerdir, not its subdirs
+    // treated as separate layers.
+    if is_rootfs_dir(packed_dir) {
+        return Ok(vec![packed_dir.display().to_string()]);
+    }
+
+    // Order from the layer-order index (manifest order, bottom→top), falling
+    // back to a name sort — see `ordered_packed_layer_names`.
+    let layer_names = ordered_packed_layer_names(packed_dir)?;
+
+    if layer_names.is_empty() {
+        return Err(StorageError::new(format!(
+            "no layer directories found in {}",
+            packed_dir.display()
+        )));
+    }
+
+    // Reversed so the top-most layer is leftmost (overlayfs priority order).
+    Ok(layer_names
+        .iter()
+        .rev()
+        .map(|name| packed_dir.join(name).display().to_string())
+        .collect())
+}
+
+/// Clean up an overlay filesystem.
+/// Log the error inside this function to skip the repetitive Err matching when unnecessary.
+pub fn cleanup_overlay(workload_id: &str) -> Result<()> {
+    let overlay_root = overlay_root_for_workload(workload_id)?;
+    let merged_path = overlay_root.join("merged");
+
+    // Unmount nested bind mounts inside the overlay rootfs first. Volume mounts
+    // like /workspace are bind-mounted under merged/, and they keep the overlay
+    // rootfs busy if we try to unmount merged directly.
+    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+        let merged_prefix = format!("{}/", merged_path.display());
+        let mut nested_mounts: Vec<PathBuf> = mounts
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 2 {
+                    return None;
+                }
+
+                let mount_point = PathBuf::from(parts[1]);
+                let mount_point_str = mount_point.to_string_lossy();
+                if mount_point_str.starts_with(&merged_prefix) {
+                    Some(mount_point)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        nested_mounts.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+
+        for mount_point in nested_mounts {
+            if let Err(e) = Command::new("umount").arg(&mount_point).status() {
+                debug!(
+                    workload_id = %workload_id,
+                    path = %mount_point.display(),
+                    error = %e,
+                    "failed to unmount nested overlay mount"
+                );
+            }
+        }
+    }
+
+    // Unmount main merged path if mounted
+    if merged_path.exists() {
+        if let Err(e) = Command::new("umount").arg(&merged_path).status() {
+            debug!(
+                workload_id = %workload_id,
+                path = %merged_path.display(),
+                error = %e,
+                "failed to unmount overlay (may not have been mounted)"
+            );
+        }
+    }
+
+    // Remove overlay directories (includes merged_layers, upper, work, etc.)
+    if overlay_root.exists() {
+        if let Err(cleanup_err) = std::fs::remove_dir_all(&overlay_root) {
+            warn!(
+                workload_id = %workload_id,
+                error = %cleanup_err,
+                "failed to clean up overlay."
+            );
+            return Err(cleanup_err.into());
+        }
+    }
+
+    info!(workload_id = %workload_id, "overlay cleaned up");
+    Ok(())
+}
+
+/// Result of running a command.
+///
+/// Uses `Vec<u8>` so binary output is preserved end-to-end.
+pub struct RunResult {
+    pub exit_code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Prepared rootfs info for a single ephemeral run.
+pub struct PreparedOverlayRootfs {
+    pub workload_id: String,
+    pub rootfs_path: String,
+}
+
+fn prepare_rootfs_for_ephemeral_run(image: &str) -> Result<PreparedOverlayRootfs> {
+    let workload_id = format!(
+        "run-{}-{}",
+        sanitize_image_name(image),
+        generate_container_id()
+    );
+    let overlay = prepare_overlay(image, &workload_id)?;
+    debug!(
+        workload_id = %workload_id,
+        rootfs = %overlay.rootfs_path,
+        "prepared ephemeral overlay for command execution"
+    );
+    Ok(PreparedOverlayRootfs {
+        workload_id,
+        rootfs_path: overlay.rootfs_path,
+    })
+}
+
+/// Run a command in an image's overlay rootfs using crun OCI runtime.
+///
+/// When `persistent_overlay_id` is `Some`, the overlay persists across runs
+/// (filesystem changes accumulate). When `None`, an ephemeral overlay is
+/// created and destroyed after the run.
+// The workload parameter list, mirrored by `main::handle_run`; both want
+// folding into a shared spec struct rather than trimming here.
+#[allow(clippy::too_many_arguments)]
+pub fn run_command(
+    image: &str,
+    command: &[String],
+    env: &[(String, String)],
+    workdir: Option<&str>,
+    user: Option<&str>,
+    mounts: &[(String, String, bool)],
+    timeout_ms: Option<u64>,
+    persistent_overlay_id: Option<&str>,
+    stdin_data: Option<&str>,
+    client_fd: Option<std::os::unix::io::RawFd>,
+    unprivileged: bool,
+) -> Result<RunResult> {
+    // Validate inputs
+    crate::oci::validate_image_reference(image).map_err(StorageError::new)?;
+    crate::oci::validate_env_vars(env).map_err(StorageError::new)?;
+
+    let prepared = match persistent_overlay_id {
+        Some(id) => prepare_for_run_persistent(image, id)?,
+        None => prepare_rootfs_for_ephemeral_run(image)?,
+    };
+    debug!(rootfs = %prepared.rootfs_path, persistent = persistent_overlay_id.is_some(), "using overlay for command execution");
+
+    // Gather all steps to run a command in a single anon function
+    let result = (|| {
+        // Setup volume mounts (mount virtiofs to staging area)
+        let mounted_paths = setup_volume_mounts(&prepared.rootfs_path, mounts)?;
+
+        // Get bundle path
+        let overlay_root = Path::new(STORAGE_ROOT)
+            .join(OVERLAYS_DIR)
+            .join(&prepared.workload_id);
+        let bundle_path = overlay_root.join("bundle");
+
+        // Create OCI spec
+        let workdir_str = workdir.unwrap_or("/");
+        let identity = crate::oci::resolve_process_identity(Path::new(&prepared.rootfs_path), user)
+            .map_err(StorageError::new)?;
+
+        // Build an OCI spec for `cmd` sharing this overlay's rootfs, virtiofs
+        // mounts, workspace/storage fallbacks, and the same injections. Used for
+        // both the one-shot exec spec and the keep-alive spec so a container the
+        // execs join has the identical mount view as the exec itself.
+        let build_spec = |cmd: &[String], spec_env: &[(String, String)]| {
+            let mut spec = OciSpec::new(cmd, spec_env, workdir_str, false, &identity, unprivileged);
+            spec.add_vm_devices_if_available();
+            add_volume_bind_mounts(&mut spec, mounts);
+            add_workspace_fallback(&mut spec, mounts);
+            add_storage_fallback(&mut spec, mounts, unprivileged);
+            // Forward SSH agent + published sockets + forkpoint if enabled at boot.
+            crate::ssh_agent::inject_into_container(&mut spec);
+            crate::publish_socket::inject_into_container(&mut spec);
+            crate::forkpoint::inject_into_container(&mut spec);
+            crate::cuda::inject_into_container(&mut spec, Path::new(&prepared.rootfs_path));
+            crate::vulkan::inject_into_container(&mut spec, Path::new(&prepared.rootfs_path));
+            crate::credentials::inject_into_container(
+                &mut spec,
+                Path::new(&prepared.rootfs_path),
+                mounts,
+            );
+            spec
+        };
+
+        // If a main workload container is running for this overlay, join it
+        // via crun exec instead of creating a fresh isolated container.
+        if let Some(cid) = crate::resolve_main_container(persistent_overlay_id) {
+            let result = run_exec_in_container(&cid, command, env, workdir, timeout_ms, client_fd);
+            let _ = mounted_paths;
+            return result;
+        }
+
+        // Persistent overlay with no keep-alive container. This is the fork-clone
+        // path: the clone's restored keep-alive was reaped as stale during the
+        // remount above, and without re-establishing one every exec would pay a
+        // fresh container (~seconds) instead of a `crun exec` join (~ms).
+        // Establish a keep-alive (PID 1 = `tail -f /dev/null`) sharing this
+        // overlay's mounts, persist its id so subsequent execs join it, then
+        // exec the command INTO it.
+        if let Some(overlay_id) = persistent_overlay_id {
+            let keepalive = [
+                "tail".to_string(),
+                "-f".to_string(),
+                "/dev/null".to_string(),
+            ];
+            match establish_keepalive_container(
+                &build_spec(&keepalive, env),
+                &bundle_path,
+                overlay_id,
+            ) {
+                Ok(cid) => {
+                    let result =
+                        run_exec_in_container(&cid, command, env, workdir, timeout_ms, client_fd);
+                    let _ = mounted_paths;
+                    return result;
+                }
+                Err(e) => {
+                    warn!(error = %e, "keep-alive main container setup failed; running in a fresh container")
+                }
+            }
+        }
+
+        // Ephemeral overlay (or keep-alive setup failed): one-shot fresh container.
+        let spec = build_spec(command, env);
+        spec.write_to(&bundle_path)
+            .map_err(|e| StorageError::new(format!("failed to write OCI spec: {}", e)))?;
+        let container_id = generate_container_id();
+        let result = run_with_crun(
+            &bundle_path,
+            &container_id,
+            timeout_ms,
+            stdin_data,
+            client_fd,
+        );
+
+        // Note: virtiofs mounts are left in place for reuse
+        // They will be cleaned up when the overlay is cleaned up or the VM shuts down
+        let _ = mounted_paths; // Suppress unused warning
+
+        result
+    })();
+
+    // Only clean up ephemeral overlays; persistent ones survive across runs
+    if persistent_overlay_id.is_none() {
+        let _ = cleanup_overlay(&prepared.workload_id);
+    }
+    result
+}
+
+/// Spawn a command in an image's overlay rootfs and return the crun PID.
+///
+/// Unlike `run_command`, this does not wait for the container to exit. The
+/// container runs detached under crun with stdout/stderr redirected to
+/// /dev/null; the returned PID is the crun process, which stays alive as
+/// long as the container init runs.
+///
+/// Requires a persistent overlay ID — ephemeral overlays would leak their
+/// upper/work/merged directories because nothing is waiting to clean them
+/// up after the container exits.
+// Same workload parameter list as `run_command`, minus the wait-related args.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_in_overlay(
+    image: &str,
+    command: &[String],
+    env: &[(String, String)],
+    workdir: Option<&str>,
+    user: Option<&str>,
+    mounts: &[(String, String, bool)],
+    persistent_overlay_id: &str,
+    unprivileged: bool,
+) -> Result<u32> {
+    crate::oci::validate_image_reference(image).map_err(StorageError::new)?;
+    crate::oci::validate_env_vars(env).map_err(StorageError::new)?;
+
+    let prepared = prepare_for_run_persistent(image, persistent_overlay_id)?;
+    debug!(rootfs = %prepared.rootfs_path, "using persistent overlay for background command");
+
+    let mounted_paths = setup_volume_mounts(&prepared.rootfs_path, mounts)?;
+
+    let overlay_root = Path::new(STORAGE_ROOT)
+        .join(OVERLAYS_DIR)
+        .join(&prepared.workload_id);
+    let bundle_path = overlay_root.join("bundle");
+
+    let workdir_str = workdir.unwrap_or("/");
+    let identity = crate::oci::resolve_process_identity(Path::new(&prepared.rootfs_path), user)
+        .map_err(StorageError::new)?;
+    let mut spec = OciSpec::new(command, env, workdir_str, false, &identity, unprivileged);
+
+    add_volume_bind_mounts(&mut spec, mounts);
+
+    add_workspace_fallback(&mut spec, mounts);
+    add_storage_fallback(&mut spec, mounts, unprivileged);
+
+    crate::ssh_agent::inject_into_container(&mut spec);
+    crate::publish_socket::inject_into_container(&mut spec);
+    crate::forkpoint::inject_into_container(&mut spec);
+    crate::cuda::inject_into_container(&mut spec, Path::new(&prepared.rootfs_path));
+    crate::vulkan::inject_into_container(&mut spec, Path::new(&prepared.rootfs_path));
+    crate::credentials::inject_into_container(&mut spec, Path::new(&prepared.rootfs_path), mounts);
+    spec.add_vm_devices_if_available();
+
+    spec.write_to(&bundle_path)
+        .map_err(|e| StorageError::new(format!("failed to write OCI spec: {}", e)))?;
+
+    let container_id = generate_container_id();
+
+    let child = CrunCommand::run(&bundle_path, &container_id)
+        .stdin_null()
+        .discard_output()
+        .spawn()
+        .map_err(|e| {
+            StorageError::new(format!(
+                "failed to spawn crun: {}. Is crun installed at {}?",
+                e,
+                paths::CRUN_PATH
+            ))
+        })?;
+
+    let pid = child.id();
+    // Don't wait on the child; it reaps itself when the container exits.
+    // reap_background_children() in the agent's accept loop collects the
+    // eventual zombie.
+    std::mem::forget(child);
+
+    let _ = mounted_paths; // suppress unused warning; mounts persist with the overlay
+    info!(container_id = %container_id, pid = pid, "background container started");
+    Ok(pid)
+}
+
+/// Prepare for running a command - returns the rootfs path.
+/// This is used by interactive mode which spawns the command separately.
+pub fn prepare_for_run(image: &str) -> Result<PreparedOverlayRootfs> {
+    prepare_rootfs_for_ephemeral_run(image)
+}
+
+/// Prepare a persistent overlay that survives across exec sessions.
+///
+/// Uses a deterministic workload ID derived from `overlay_id` (typically the
+/// machine name). If the overlay already exists and is mounted, reuses it.
+/// If it exists but is unmounted (e.g. after VM restart), remounts preserving
+/// the upper layer that contains previous changes.
+pub fn prepare_for_run_persistent(image: &str, overlay_id: &str) -> Result<PreparedOverlayRootfs> {
+    prepare_for_run_persistent_with_progress(image, overlay_id, |_, _| {})
+}
+
+pub fn prepare_for_run_persistent_with_progress<F>(
+    image: &str,
+    overlay_id: &str,
+    mut progress: F,
+) -> Result<PreparedOverlayRootfs>
+where
+    F: FnMut(&str, u64),
+{
+    validate_storage_id(overlay_id, "persistent overlay id")?;
+    let workload_id = format!("persistent-{}", overlay_id);
+
+    // Resolve image layers (same logic as prepare_overlay). A local image
+    // archive is flattened into a rootfs first; a packed-layers dir is used
+    // as-is. A packed machine has exactly one image, so only an image-store
+    // overlay records and checks which image it was built from.
+    let (lowerdirs, image_store) = if let Some(packed_dir) = get_packed_layers_dir() {
+        let effective = effective_packed_dir_with_progress(packed_dir, &mut progress)?;
+        (get_packed_lowerdirs(&effective)?, false)
+    } else {
+        (get_image_lowerdirs(image)?, true)
+    };
+
+    progress("preparing persistent overlay", 0);
+    let setup = OverlaySetup::new(&workload_id)?;
+    let overlay_root = setup.overlay_root.clone();
+    if image_store {
+        check_overlay_image(&overlay_root, &workload_id, image)?;
+    }
+    let overlay = setup.execute_or_remount(lowerdirs)?;
+    if image_store {
+        record_overlay_image(&overlay_root, image)?;
+    }
+
+    debug!(
+        workload_id = %workload_id,
+        rootfs = %overlay.rootfs_path,
+        "prepared persistent overlay for command execution"
+    );
+    Ok(PreparedOverlayRootfs {
+        workload_id,
+        rootfs_path: overlay.rootfs_path,
+    })
+}
+
+/// Setup volume mounts for a rootfs (public wrapper).
+/// Request mounts merged with the BOOT env mounts (SMOLVM_MOUNT_*): boot-time
+/// binds land in a rootfs the workload's overlay later mounts OVER, so
+/// launcher-injected mounts (e.g. the CUDA ring mount) must ride every
+/// container's own mount list. Boot entries win on target collision because
+/// they retain the launch-time positional tag and staged/live mode; a caller
+/// rebuilding bindings from an older persisted shape may not have either.
+pub fn merged_with_boot_mounts(mounts: &[(String, String, bool)]) -> Vec<(String, String, bool)> {
+    let mut v = init_volume_mounts().to_vec();
+    for mount in mounts {
+        if !v.iter().any(|(_, target, _)| target == &mount.1) {
+            v.push(mount.clone());
+        }
+    }
+    v
+}
+
+pub fn setup_mounts(rootfs: &str, mounts: &[(String, String, bool)]) -> Result<()> {
+    let _mounted_paths = setup_volume_mounts(rootfs, mounts)?;
+    Ok(())
+}
+
+/// `mounts` with every mount ahead of those nested below it, keeping the given
+/// order otherwise. Binding a parent after its child would cover the child:
+/// `-v /home/node/.npm -v /home/node` left `.npm` hidden under the
+/// `/home/node` volume.
+fn mounts_parents_first(mounts: &[(String, String, bool)]) -> Vec<&(String, String, bool)> {
+    let mut ordered: Vec<_> = mounts.iter().collect();
+    ordered.sort_by_key(|(_, container_path, _)| Path::new(container_path).components().count());
+    ordered
+}
+
+/// Setup volume mounts by mounting virtiofs and bind-mounting into the rootfs.
+#[cfg(target_os = "linux")]
+fn setup_volume_mounts(rootfs: &str, mounts: &[(String, String, bool)]) -> Result<Vec<PathBuf>> {
+    let mut mounted_paths = Vec::new();
+    let rootfs_path = Path::new(rootfs);
+
+    for (tag, container_path, read_only) in mounts_parents_first(mounts) {
+        let (device_tag, staged_id) = split_staged_mount_tag(tag);
+        let staged = staged_id.is_some();
+        validate_storage_id(device_tag, "mount tag")?;
+        if let Some(staged_id) = staged_id {
+            validate_storage_id(staged_id, "staged mount identity")?;
+        }
+        debug!(tag = %device_tag, container_path = %container_path, read_only = %read_only, staged, "setting up volume mount");
+
+        // First, mount the virtiofs device at a staging location
+        let virtiofs_mount = Path::new(paths::VIRTIOFS_MOUNT_ROOT).join(device_tag);
+        std::fs::create_dir_all(&virtiofs_mount)?;
+
+        // Check if already mounted
+        if !is_mountpoint(&virtiofs_mount) {
+            info!(tag = %device_tag, mount_point = %virtiofs_mount.display(), "mounting virtiofs");
+
+            let dax = match mount_virtiofs(device_tag, &virtiofs_mount) {
+                Ok(dax) => dax,
+                Err(err) => {
+                    warn!(error = %err, tag = %device_tag, "failed to mount virtiofs device");
+                    if staged {
+                        return Err(err.into());
+                    }
+                    continue;
+                }
+            };
+            info!(tag = %device_tag, dax, "virtiofs mount active");
+        }
+
+        let bind_source = if staged {
+            ensure_staged_working_copy(staged_id.expect("checked staged id"), &virtiofs_mount)?
+        } else {
+            virtiofs_mount.clone()
+        };
+
+        // Boot binds onto the agent root ("/") carry no image; the first
+        // container rootfs a volume is mounted into supplies its ownership.
+        if rootfs_path != Path::new("/") && is_disk_volume_tag(device_tag) {
+            adopt_image_ownership(rootfs_path, device_tag, container_path, &bind_source);
+        }
+
+        // Now bind-mount into the container rootfs
+        let target_path = ensure_mount_target_under_root(rootfs_path, container_path)?;
+
+        // Check if already bind-mounted
+        if !is_mountpoint(&target_path) {
+            info!(
+                source = %bind_source.display(),
+                target = %target_path.display(),
+                read_only = %read_only,
+                "bind-mounting into container"
+            );
+
+            // Bind mount using direct syscall
+            let bind_src =
+                std::ffi::CString::new(bind_source.to_string_lossy().as_ref()).map_err(|e| {
+                    StorageError::Internal {
+                        message: format!("invalid source: {}", e),
+                    }
+                })?;
+            let bind_dst =
+                std::ffi::CString::new(target_path.to_string_lossy().as_ref()).map_err(|e| {
+                    StorageError::Internal {
+                        message: format!("invalid target: {}", e),
+                    }
+                })?;
+            // SAFETY: bind mount with MS_BIND flag
+            let rc = unsafe {
+                libc::mount(
+                    bind_src.as_ptr(),
+                    bind_dst.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                )
+            };
+            if rc != 0 {
+                let err = std::io::Error::last_os_error();
+                warn!(error = %err, target = %target_path.display(), "failed to bind-mount");
+                if staged {
+                    return Err(StorageError::new(format!(
+                        "failed to bind staged mount '{}' at '{}': {err}",
+                        device_tag,
+                        target_path.display()
+                    )));
+                }
+                continue;
+            }
+
+            // Remount read-only if requested
+            if *read_only {
+                // SAFETY: remount with MS_BIND|MS_RDONLY|MS_REMOUNT
+                unsafe {
+                    libc::mount(
+                        std::ptr::null(),
+                        bind_dst.as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+                        std::ptr::null(),
+                    );
+                }
+            }
+        }
+
+        mounted_paths.push(target_path);
+    }
+
+    Ok(mounted_paths)
+}
+
+/// Materialize a host share once into the guest storage disk. The temporary
+/// directory and atomic rename mean an interrupted first boot can never leave
+/// a partially seeded working tree looking complete on the next start.
+#[cfg(target_os = "linux")]
+fn ensure_staged_working_copy(tag: &str, source: &Path) -> Result<PathBuf> {
+    use std::process::{Command, Stdio};
+
+    validate_storage_id(tag, "staged mount tag")?;
+    let root = Path::new(STAGED_MOUNT_ROOT);
+    std::fs::create_dir_all(root)?;
+    let destination = root.join(tag);
+    if destination.exists() {
+        return Ok(destination);
+    }
+
+    let temporary = root.join(format!(".{tag}.seed-{}", std::process::id()));
+    if temporary.exists() {
+        std::fs::remove_dir_all(&temporary)?;
+    }
+    std::fs::create_dir(&temporary)?;
+
+    let mut producer = Command::new("tar")
+        .args(["-cf", "-", "-C"])
+        .arg(source)
+        .arg(".")
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| StorageError::new(format!("start staged mount archive: {error}")))?;
+    let producer_stdout = producer
+        .stdout
+        .take()
+        .ok_or_else(|| StorageError::new("staged mount archive stdout was not captured"))?;
+    let consumer_status = Command::new("tar")
+        .args(["-x", "--numeric-owner", "-f", "-", "-C"])
+        .arg(&temporary)
+        .stdin(Stdio::from(producer_stdout))
+        .status()
+        .map_err(|error| StorageError::new(format!("extract staged mount archive: {error}")))?;
+    let producer_status = producer
+        .wait()
+        .map_err(|error| StorageError::new(format!("wait for staged mount archive: {error}")))?;
+    if !tar_create_succeeded(producer_status) || !consumer_status.success() {
+        let _ = std::fs::remove_dir_all(&temporary);
+        return Err(StorageError::new(format!(
+            "staged mount seed failed (archive={producer_status}, extract={consumer_status})"
+        )));
+    }
+    std::fs::rename(&temporary, &destination)?;
+    Ok(destination)
+}
+
+#[cfg(target_os = "linux")]
+pub fn prune_staged_working_copies(mounts: &[(String, String, bool)]) -> Result<()> {
+    let root = Path::new(STAGED_MOUNT_ROOT);
+    if !root.exists() {
+        return Ok(());
+    }
+    let wanted = mounts
+        .iter()
+        .filter_map(|(tag, _, _)| split_staged_mount_tag(tag).1)
+        .collect::<std::collections::HashSet<_>>();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !wanted.contains(name.to_string_lossy().as_ref()) {
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                std::fs::remove_dir_all(entry.path())?;
+            } else {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn prune_staged_working_copies(_mounts: &[(String, String, bool)]) -> Result<()> {
+    Ok(())
+}
+
+/// Stub for non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
+fn setup_volume_mounts(_rootfs: &str, _mounts: &[(String, String, bool)]) -> Result<Vec<PathBuf>> {
+    Ok(Vec::new())
+}
+
+/// Check if a path is a mountpoint (delegates to paths::is_mount_point).
+fn is_mountpoint(path: &Path) -> bool {
+    paths::is_mount_point(path)
+}
+
+/// Whether a persistent overlay's mounted state (if any) answers lookups.
+/// True when the overlay isn't mounted at all — "nothing stale to heal".
+/// Used by `resolve_main_container` to refuse handing out a restored
+/// keep-alive container whose rootfs mount is dead.
+pub fn persistent_overlay_mount_is_healthy(workload_id: &str) -> bool {
+    let Ok(root) = overlay_root_for_workload(workload_id) else {
+        return true;
+    };
+    let merged = root.join("merged");
+    !(merged.exists() && is_mountpoint(&merged)) || mounted_overlay_is_healthy(&merged)
+}
+
+/// Whether an already-mounted persistent overlay actually answers lookups.
+///
+/// A fork clone's restored RAM image carries the golden's overlay mount, but
+/// the mount's virtiofs lowerdirs reference the pre-fork virtiofsd session —
+/// in the clone every *fresh* lookup through it fails with ESTALE, while
+/// page-cached entries may still read fine. So the probe is a lookup that
+/// cannot be served from cache: a name never looked up before. A healthy
+/// mount answers NotFound; a stale one surfaces the lowerdir error.
+fn mounted_overlay_is_healthy(merged: &Path) -> bool {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let probe = merged.join(format!(".smolvm-stale-probe-{nonce}"));
+    match std::fs::metadata(&probe) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            warn!(path = %merged.display(), error = %e, "mounted overlay failed the lookup probe");
+            false
+        }
+        Ok(_) => true,
+    }
+}
+
+/// Lazily detach a dead mount (`umount2(MNT_DETACH)`): the tree is unhooked
+/// immediately while any restored process still holding it keeps its
+/// references until it exits. Best-effort — a failure here just means the
+/// subsequent fresh mount shadows the stale one.
+fn detach_mount(path: &Path) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+            let rc = unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+            if rc != 0 {
+                warn!(
+                    path = %path.display(),
+                    errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                    "could not detach stale overlay mount"
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+    }
+}
+
+/// Run a command using crun OCI runtime (one-shot execution).
+///
+/// This uses `crun run` which creates, starts, waits, and deletes the container
+/// in a single operation. Stdout and stderr are captured.
+/// Establish a long-lived keep-alive main container for a persistent overlay so
+/// that this and every subsequent exec joins it via `crun exec` (~ms) instead of
+/// launching a fresh container (~seconds). `spec` is the keep-alive OCI spec
+/// (PID 1 = `tail -f /dev/null`) already carrying this overlay's rootfs, mounts,
+/// and injections; it is written into `bundle_dir`. Returns the new container id,
+/// persisted under `persistent-<overlay_id>` so `resolve_main_container` finds it.
+///
+/// This mirrors `crate::ensure_main_container` (the machine-start / interactive
+/// path) for the fork-clone case: a clone's restored keep-alive is reaped as
+/// stale on the first exec's remount, and without re-establishing one here every
+/// clone exec would one-shot a fresh container.
+fn establish_keepalive_container(
+    spec: &OciSpec,
+    bundle_dir: &Path,
+    overlay_id: &str,
+) -> Result<String> {
+    spec.write_to(bundle_dir)
+        .map_err(|e| StorageError::new(format!("failed to write keep-alive OCI spec: {}", e)))?;
+
+    let container_id = generate_container_id();
+
+    let create = CrunCommand::create(bundle_dir, &container_id)
+        .output()
+        .map_err(|e| StorageError::new(format!("keep-alive crun create failed: {}", e)))?;
+    if !create.status.success() {
+        return Err(StorageError::new(format!(
+            "keep-alive crun create failed: {}",
+            crate::crun::create_failure_reason(&container_id, &create)
+        )));
+    }
+
+    let start = CrunCommand::start(&container_id)
+        .output()
+        .map_err(|e| StorageError::new(format!("keep-alive crun start failed: {}", e)))?;
+    if !start.status.success() {
+        let _ = CrunCommand::delete(&container_id, true).output();
+        return Err(StorageError::new(format!(
+            "keep-alive crun start failed: {}",
+            String::from_utf8_lossy(&start.stderr).trim()
+        )));
+    }
+
+    let workload_id = format!("persistent-{}", overlay_id);
+    if let Err(e) = std::fs::write(
+        paths::main_container_id_path(&workload_id),
+        container_id.as_bytes(),
+    ) {
+        let _ = CrunCommand::kill(&container_id, "SIGKILL").status();
+        let _ = CrunCommand::delete(&container_id, true).output();
+        return Err(StorageError::new(format!(
+            "failed to persist keep-alive container id: {}",
+            e
+        )));
+    }
+
+    info!(container_id = %container_id, overlay_id = %overlay_id, "established keep-alive main container for clone exec");
+    Ok(container_id)
+}
+
+/// Join a running container via `crun exec` (non-interactive).
+fn run_exec_in_container(
+    container_id: &str,
+    command: &[String],
+    env: &[(String, String)],
+    workdir: Option<&str>,
+    timeout_ms: Option<u64>,
+    client_fd: Option<std::os::unix::io::RawFd>,
+) -> Result<RunResult> {
+    info!(container_id = %container_id, command = ?command, "joining container via crun exec");
+
+    let exec_pid_file = crate::crun::ExecPidFile::new()
+        .map_err(|e| StorageError::new(format!("create crun exec pid file failed: {}", e)))?;
+    let mut child = CrunCommand::exec(container_id, env, command, workdir, false)
+        .pid_file(exec_pid_file.path())
+        .stdin_null()
+        .capture_output()
+        .spawn()
+        .map_err(|e| StorageError::new(format!("crun exec failed: {}", e)))?;
+
+    // On timeout/disconnect, kill only the exec'd process — NOT the main
+    // container. The main container hosts the shared namespace for all execs;
+    // a timed-out `exec -- sleep 10` must not destroy the workload.
+    let result = crate::process::wait_with_timeout_cleanup_and_liveness(
+        &mut child,
+        timeout_ms,
+        client_fd,
+        || {
+            exec_pid_file.kill_workload();
+        },
+    )?;
+
+    match result {
+        WaitResult::Completed { exit_code, output } => Ok(RunResult {
+            exit_code,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }),
+        WaitResult::TimedOut { output, timeout_ms } => {
+            let mut stderr = output.stderr;
+            stderr.extend_from_slice(
+                format!("\ncommand timed out after {}ms", timeout_ms).as_bytes(),
+            );
+            Ok(RunResult {
+                exit_code: 124,
+                stdout: output.stdout,
+                stderr,
+            })
+        }
+        WaitResult::ClientDisconnected { output } => {
+            let mut stderr = output.stderr;
+            stderr.extend_from_slice(b"\nclient disconnected");
+            Ok(RunResult {
+                exit_code: 137,
+                stdout: output.stdout,
+                stderr,
+            })
+        }
+    }
+}
+
+fn run_with_crun(
+    bundle_dir: &Path,
+    container_id: &str,
+    timeout_ms: Option<u64>,
+    stdin_data: Option<&str>,
+    client_fd: Option<std::os::unix::io::RawFd>,
+) -> Result<RunResult> {
+    info!(
+        container_id = %container_id,
+        bundle = %bundle_dir.display(),
+        timeout_ms = ?timeout_ms,
+        "running container with crun"
+    );
+
+    // Spawn the container using CrunCommand.
+    // stdin_null() is critical when no input is supplied: without it, crun
+    // inherits the agent's vsock stdin, and /bin/sh reads protocol bytes
+    // instead of user input, hanging. With input, pipe it in and close the
+    // pipe so the command sees EOF (same contract as the bare-VM exec path).
+    let builder = CrunCommand::run(bundle_dir, container_id);
+    let builder = if stdin_data.is_some() {
+        builder.stdin_piped()
+    } else {
+        builder.stdin_null()
+    };
+    let mut child = builder.capture_output().spawn().map_err(|e| {
+        StorageError::new(format!(
+            "failed to spawn crun: {}. Is crun installed at {}?",
+            e,
+            paths::CRUN_PATH
+        ))
+    })?;
+
+    // Write stdin on a separate thread so the wait/timeout loop stays live
+    // even if the child never reads and the pipe buffer fills. Dropping the
+    // handle closes the pipe → EOF.
+    let _stdin_writer = stdin_data.and_then(|data| {
+        child.stdin.take().map(|mut child_stdin| {
+            let data = data.to_owned();
+            std::thread::Builder::new()
+                .name("run-stdin".into())
+                .spawn(move || {
+                    use std::io::Write;
+                    let _ = child_stdin.write_all(data.as_bytes());
+                })
+        })
+    });
+
+    // Capture container_id for the cleanup closure
+    let cid = container_id.to_string();
+
+    // Wait with timeout + client liveness, cleaning up container on timeout.
+    // If the client disconnects mid-exec, we kill the container so the agent's
+    // accept loop is free to serve the next request.
+    let result = crate::process::wait_with_timeout_cleanup_and_liveness(
+        &mut child,
+        timeout_ms,
+        client_fd,
+        || {
+            // Kill and delete the container on timeout
+            let _ = CrunCommand::kill(&cid, "SIGKILL").status();
+            let _ = CrunCommand::delete(&cid, true).status();
+        },
+    )?;
+
+    // Convert WaitResult to RunResult
+    match result {
+        WaitResult::Completed { exit_code, output } => {
+            info!(
+                container_id = %container_id,
+                exit_code = exit_code,
+                stdout_len = output.stdout.len(),
+                stderr_len = output.stderr.len(),
+                "container finished"
+            );
+            Ok(RunResult {
+                exit_code,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            })
+        }
+        WaitResult::TimedOut { output, timeout_ms } => {
+            warn!(
+                container_id = %container_id,
+                timeout_ms = timeout_ms,
+                "container timed out"
+            );
+            let mut stderr = output.stderr;
+            stderr.extend_from_slice(
+                format!("\ncontainer timed out after {}ms", timeout_ms).as_bytes(),
+            );
+            Ok(RunResult {
+                exit_code: TIMEOUT_EXIT_CODE,
+                stdout: output.stdout,
+                stderr,
+            })
+        }
+        WaitResult::ClientDisconnected { output } => {
+            // Client gave up before the container finished. Also clean up the
+            // crun container state so the next exec starts fresh.
+            let _ = CrunCommand::kill(container_id, "SIGKILL").status();
+            let _ = CrunCommand::delete(container_id, true).status();
+            warn!(
+                container_id = %container_id,
+                "container killed — client disconnected"
+            );
+            let mut stderr = output.stderr;
+            stderr.extend_from_slice(b"\ncontainer killed: client disconnected");
+            Ok(RunResult {
+                exit_code: 129, // SIGHUP convention for disconnect
+                stdout: output.stdout,
+                stderr,
+            })
+        }
+    }
+}
+
+// ============================================================================
+// Overlay mounting helper functions
+// ============================================================================
+
+/// Mount an overlay with multiple lower layers, appending each layer via the new
+/// mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`) instead of shelling out
+/// to `mount(8)`.
+///
+/// Why not `mount -o lowerdir=…`: the `mount(8)` command rejects a `lowerdir=`
+/// value longer than ~255 bytes, so any image with ≥4 layers (each OCI layer path
+/// `/storage/layers/<64-hex>` is ~79 bytes) failed this fast path and fell back to
+/// a slow physical layer-merge on *every* (re)mount. The kernel has no such limit
+/// — verified on the guest kernel (6.12) that a raw `mount(2)` AND this `fsconfig`
+/// path both mount a 599-byte / 8-layer overlay. Passing each layer as its own
+/// `lowerdir+` also sidesteps the classic `mount(2)` PAGE_SIZE option ceiling.
+fn try_mount_overlay_multi_lower(
+    lowerdirs: &[String],
+    upper_path: &Path,
+    work_path: &Path,
+    merged_path: &Path,
+) -> Result<()> {
+    info!(
+        layer_count = lowerdirs.len(),
+        merged_path = %merged_path.display(),
+        "attempting multi-lowerdir overlay mount (fsconfig API)"
+    );
+    mount_overlay_fsconfig(lowerdirs, upper_path, work_path, merged_path)
+}
+
+/// Linux implementation of the overlay mount via the new mount API. Requires
+/// `lowerdir+` support (Linux ≥ 6.7); returns `Err` on older kernels (or any other
+/// failure) so the caller falls back to the physical merge.
+#[cfg(target_os = "linux")]
+fn mount_overlay_fsconfig(
+    lowerdirs: &[String],
+    upper_path: &Path,
+    work_path: &Path,
+    merged_path: &Path,
+) -> Result<()> {
+    use rustix::fd::AsFd;
+    use rustix::mount::{
+        fsconfig_create, fsconfig_set_string, fsmount, fsopen, move_mount, FsMountFlags,
+        FsOpenFlags, MountAttrFlags, MoveMountFlags,
+    };
+
+    let upper = upper_path
+        .to_str()
+        .ok_or_else(|| StorageError::new("upperdir path is not valid UTF-8".to_string()))?;
+    let work = work_path
+        .to_str()
+        .ok_or_else(|| StorageError::new("workdir path is not valid UTF-8".to_string()))?;
+
+    let fs = fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC)
+        .map_err(|e| StorageError::new(format!("fsopen(overlay) failed: {e}")))?;
+
+    // Append each lower layer individually — no single long option string, so
+    // neither the `mount(8)` ~255-byte limit nor the `mount(2)` page limit applies.
+    for lower in lowerdirs {
+        fsconfig_set_string(fs.as_fd(), "lowerdir+", lower.as_str()).map_err(|e| {
+            StorageError::new(format!(
+                "fsconfig lowerdir+={lower} failed (kernel may lack lowerdir+ (<6.7)): {e}"
+            ))
+        })?;
+    }
+    fsconfig_set_string(fs.as_fd(), "upperdir", upper)
+        .map_err(|e| StorageError::new(format!("fsconfig upperdir failed: {e}")))?;
+    fsconfig_set_string(fs.as_fd(), "workdir", work)
+        .map_err(|e| StorageError::new(format!("fsconfig workdir failed: {e}")))?;
+    // Preserve prior semantics: index=off disables the inode-index feature.
+    fsconfig_set_string(fs.as_fd(), "index", "off")
+        .map_err(|e| StorageError::new(format!("fsconfig index=off failed: {e}")))?;
+    // Host-extracted layers mark opaque dirs in the `user.*` namespace; the
+    // kernel only consults it when mounted with `userxattr`.
+    if packed_layers_use_userxattr() {
+        rustix::mount::fsconfig_set_flag(fs.as_fd(), "userxattr")
+            .map_err(|e| StorageError::new(format!("fsconfig userxattr failed: {e}")))?;
+    }
+
+    fsconfig_create(fs.as_fd())
+        .map_err(|e| StorageError::new(format!("fsconfig create (overlay) failed: {e}")))?;
+
+    let mnt = fsmount(
+        fs.as_fd(),
+        FsMountFlags::FSMOUNT_CLOEXEC,
+        MountAttrFlags::empty(),
+    )
+    .map_err(|e| StorageError::new(format!("fsmount(overlay) failed: {e}")))?;
+
+    // Attach the freshly-created mount at merged_path (the mount fd itself is the
+    // source, via MOVE_MOUNT_F_EMPTY_PATH).
+    move_mount(
+        mnt.as_fd(),
+        "",
+        rustix::fs::CWD,
+        merged_path,
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    )
+    .map_err(|e| {
+        StorageError::new(format!(
+            "move_mount to {} failed: {e}",
+            merged_path.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Non-Linux stub: overlayfs is Linux-only, so error and let callers fall back.
+#[cfg(not(target_os = "linux"))]
+fn mount_overlay_fsconfig(
+    _lowerdirs: &[String],
+    _upper_path: &Path,
+    _work_path: &Path,
+    _merged_path: &Path,
+) -> Result<()> {
+    Err(StorageError::new(
+        "overlay mount is only supported on Linux".to_string(),
+    ))
+}
+
+/// A merged, readable view of a stack of layers.
+///
+/// Owns the overlay mount for as long as the caller needs the merged tree and
+/// tears it down on drop. Handing back the mount rather than a finished archive
+/// is what lets a caller tar straight out of it: a flattened rootfs is as large
+/// as the image it came from, so writing the archive to the guest's own disk
+/// first needs room for a second full copy of it.
+#[derive(Debug)]
+pub struct FlattenedTree {
+    path: PathBuf,
+    /// False when a single surviving layer was used directly, in which case
+    /// there is no mount to undo and the directory belongs to someone else.
+    mounted: bool,
+}
+
+impl FlattenedTree {
+    /// The merged tree's root.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for FlattenedTree {
+    fn drop(&mut self) {
+        if !self.mounted {
+            return;
+        }
+        // Best-effort: a failed unmount must not mask the caller's own error.
+        let _ = std::process::Command::new("umount")
+            .arg(&self.path)
+            .status();
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Merge `lowerdirs` into a single readable tree.
+///
+/// Backs [`AgentRequest::FlattenLayers`](smolvm_protocol::AgentRequest::FlattenLayers).
+/// The merge is a read-only overlay mount so that whiteouts and opaque markers
+/// resolve exactly as they do for a running container — a file copy would ship
+/// deleted paths back into the flattened layer.
+///
+/// `lowerdirs` is **topmost first**, the same order the runtime container mount
+/// uses, because that is the order `lowerdir+` stacks them in. Passing an image's
+/// layers bottom-up instead silently inverts precedence: the base layer wins
+/// every conflicting path, so a merged `/etc/passwd` loses the users later layers
+/// added and the machine's own writes rank lowest of all.
+///
+/// Entries that are missing or empty are dropped: callers pass a container
+/// overlay's upper dir without knowing whether the machine ever wrote to it, and
+/// overlayfs rejects a lowerdir that does not exist. A single surviving directory
+/// is used directly, since overlayfs requires two lower layers when there is no
+/// upperdir.
+pub fn flatten_layers(lowerdirs: &[String]) -> Result<FlattenedTree> {
+    let present = unique_lowerdirs(&mountable_lowerdirs(lowerdirs));
+
+    match present.len() {
+        0 => Err(StorageError::new(
+            "no layers to flatten: every directory was missing or empty".to_string(),
+        )),
+        // One layer needs no merge, and overlayfs would refuse it anyway.
+        1 => Ok(FlattenedTree {
+            path: PathBuf::from(&present[0]),
+            mounted: false,
+        }),
+        _ => {
+            let merged = Path::new(STORAGE_ROOT).join("flatten-merged");
+            let _ = std::fs::remove_dir_all(&merged);
+            std::fs::create_dir_all(&merged)?;
+            mount_overlay_lowers_only(&present, &merged)?;
+            Ok(FlattenedTree {
+                path: merged,
+                mounted: true,
+            })
+        }
+    }
+}
+
+/// Merge `lowerdirs` into `output` as a single tar archive.
+///
+/// The staged form of [`flatten_layers`], for callers that want the archive as a
+/// file in the guest rather than streamed out of it.
+pub fn flatten_layers_to_tar(lowerdirs: &[String], output: &Path) -> Result<()> {
+    let tree = flatten_layers(lowerdirs)?;
+    tar_directory(tree.path(), output)
+}
+
+/// Keep the entries of `lowerdirs` that overlayfs can actually stack.
+///
+/// overlayfs fails the whole mount on a lowerdir that does not exist, and an
+/// empty directory contributes nothing to the merge, so dropping both lets a
+/// caller pass a container overlay's upper dir unconditionally.
+fn mountable_lowerdirs(lowerdirs: &[String]) -> Vec<String> {
+    lowerdirs
+        .iter()
+        .filter(|dir| {
+            let path = Path::new(dir);
+            path.is_dir()
+                && std::fs::read_dir(path)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Keep the first (highest-priority) occurrence of each lower directory.
+fn unique_lowerdirs(lowerdirs: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(lowerdirs.len());
+    lowerdirs
+        .iter()
+        .filter(|dir| seen.insert((*dir).clone()))
+        .cloned()
+        .collect()
+}
+
+/// Whether a `tar -c` run produced a complete archive. GNU tar exits 1 when a
+/// file changed while it was read (a live directory), and the archive is still
+/// whole; only 2 and up are fatal.
+pub(crate) fn tar_create_succeeded(status: std::process::ExitStatus) -> bool {
+    status.success() || status.code() == Some(1)
+}
+
+/// Tar `dir`'s contents (not the directory itself) into `output`.
+/// What a flattened tree leaves out: the contents of /tmp, which the machine
+/// gets fresh at each boot (`reset_workload_tmp`) and which never belonged in a
+/// pack or an export (the directory itself is kept). GNU tar: anchored, so only
+/// the tree's own top-level /tmp matches.
+pub const FLATTEN_TAR_EXCLUDES: &[&str] = &["--anchored", "--exclude=./tmp/*"];
+
+fn tar_directory(dir: &Path, output: &Path) -> Result<()> {
+    let status = std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(output)
+        .args(FLATTEN_TAR_EXCLUDES)
+        .arg("-C")
+        .arg(dir)
+        .arg(".")
+        .status()
+        .map_err(|e| StorageError::new(format!("spawning tar failed: {e}")))?;
+    if !tar_create_succeeded(status) {
+        return Err(StorageError::new(format!(
+            "tar of {} failed: {status}",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Mount a read-only overlay of `lowerdirs` (topmost first) at `merged_path`.
+///
+/// Same `fsconfig` path as [`mount_overlay_fsconfig`] but with no upperdir or
+/// workdir, which is what makes the mount read-only. Appending each layer with
+/// its own `lowerdir+` is the whole point: a single `lowerdir=` string caps out
+/// at ~255 bytes through `mount(8)`, which is only about three layer paths.
+#[cfg(target_os = "linux")]
+fn mount_overlay_lowers_only(lowerdirs: &[String], merged_path: &Path) -> Result<()> {
+    use rustix::fd::AsFd;
+    use rustix::mount::{
+        fsconfig_create, fsconfig_set_string, fsmount, fsopen, move_mount, FsMountFlags,
+        FsOpenFlags, MountAttrFlags, MoveMountFlags,
+    };
+
+    info!(
+        layer_count = lowerdirs.len(),
+        merged_path = %merged_path.display(),
+        "mounting read-only overlay for flatten"
+    );
+
+    let fs = fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC)
+        .map_err(|e| StorageError::new(format!("fsopen(overlay) failed: {e}")))?;
+
+    // Each `lowerdir+` ranks below the one before it, so the caller's
+    // topmost-first order is passed straight through.
+    for lower in lowerdirs {
+        fsconfig_set_string(fs.as_fd(), "lowerdir+", lower.as_str()).map_err(|e| {
+            StorageError::new(format!(
+                "fsconfig lowerdir+={lower} failed (kernel may lack lowerdir+ (<6.7)): {e}"
+            ))
+        })?;
+    }
+
+    fsconfig_create(fs.as_fd())
+        .map_err(|e| StorageError::new(format!("fsconfig create (overlay) failed: {e}")))?;
+
+    let mnt = fsmount(
+        fs.as_fd(),
+        FsMountFlags::FSMOUNT_CLOEXEC,
+        MountAttrFlags::empty(),
+    )
+    .map_err(|e| StorageError::new(format!("fsmount(overlay) failed: {e}")))?;
+
+    move_mount(
+        mnt.as_fd(),
+        "",
+        rustix::fs::CWD,
+        merged_path,
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    )
+    .map_err(|e| {
+        StorageError::new(format!(
+            "move_mount to {} failed: {e}",
+            merged_path.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Non-Linux stub: overlayfs is Linux-only.
+#[cfg(not(target_os = "linux"))]
+fn mount_overlay_lowers_only(_lowerdirs: &[String], _merged_path: &Path) -> Result<()> {
+    Err(StorageError::new(
+        "overlay mount is only supported on Linux".to_string(),
+    ))
+}
+
+/// Mount overlay by merging layers into a single directory (most compatible).
+///
+/// This approach physically copies all layers into a single merged directory,
+/// then creates a simple overlay on top of it. This works on all kernels with
+/// basic overlay support, but uses more disk space and is slower for initial setup.
+///
+/// This is the fallback when multi-lowerdir overlay mounts fail.
+fn mount_overlay_sequential(
+    lowerdirs: &[String],
+    upper_path: &Path,
+    work_path: &Path,
+    merged_path: &Path,
+    overlay_root: &Path,
+) -> Result<()> {
+    info!(
+        layer_count = lowerdirs.len(),
+        "building overlay by merging layers"
+    );
+
+    // If only one layer, mount directly
+    if lowerdirs.len() == 1 {
+        let mount_opts = format!(
+            "lowerdir={},upperdir={},workdir={},index=off{}",
+            lowerdirs[0],
+            upper_path.display(),
+            work_path.display(),
+            userxattr_mount_suffix()
+        );
+
+        let output = Command::new("mount")
+            .args(["-t", "overlay", "overlay", "-o", &mount_opts])
+            .arg(merged_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(StorageError::new(format!(
+                "overlay mount failed: {}",
+                stderr
+            )));
+        }
+        return Ok(());
+    }
+
+    // Create a directory to hold the physically merged layers
+    let merged_layers_dir = overlay_root.join("merged_layers");
+    std::fs::create_dir_all(&merged_layers_dir)?;
+
+    // lowerdirs is in overlay order (topmost first)
+    // We need to copy from bottom up so top layers overwrite bottom layers
+    let layers: Vec<&String> = lowerdirs.iter().rev().collect();
+
+    info!(
+        layer_count = layers.len(),
+        merged_dir = %merged_layers_dir.display(),
+        "physically merging layers"
+    );
+
+    for (i, layer_path) in layers.iter().enumerate() {
+        debug!(
+            layer_index = i,
+            layer_path = %layer_path,
+            "copying layer to merged directory"
+        );
+
+        // Copy layer contents preserving all attributes.
+        // cp -a preserves symlinks, permissions, etc.
+        // Uses explicit args instead of shell to avoid injection risks.
+        let layer_src = format!("{}/.", layer_path);
+        let output = Command::new("cp")
+            .arg("-a")
+            .arg(&layer_src)
+            .arg(merged_layers_dir.as_os_str())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+
+        // Don't fail on cp errors - some layers might have special files
+        // that can't be copied, but the overlay should still work
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                debug!(
+                    layer_index = i,
+                    stderr = %stderr,
+                    "layer copy had warnings (non-fatal)"
+                );
+            }
+        }
+    }
+
+    info!(
+        merged_dir = %merged_layers_dir.display(),
+        "layer merge complete, mounting overlay"
+    );
+
+    // Now mount a simple overlay with just the merged directory as lowerdir
+    let mount_opts = format!(
+        "lowerdir={},upperdir={},workdir={},index=off{}",
+        merged_layers_dir.display(),
+        upper_path.display(),
+        work_path.display(),
+        userxattr_mount_suffix()
+    );
+
+    let output = Command::new("mount")
+        .args(["-t", "overlay", "overlay", "-o", &mount_opts])
+        .arg(merged_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(StorageError::new(format!(
+            "overlay mount on merged layers failed: {}",
+            stderr
+        )));
+    }
+
+    info!(
+        layer_count = lowerdirs.len(),
+        "overlay construction complete (merged layers approach)"
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Extract the registry hostname from an image reference.
+/// e.g., "alpine:latest" -> "https://index.docker.io/v1/"
+/// e.g., "ghcr.io/owner/repo" -> "ghcr.io"
+fn extract_registry_from_image(image: &str) -> String {
+    if let Some(slash_pos) = image.find('/') {
+        let potential_registry = &image[..slash_pos];
+        if potential_registry.contains('.') || potential_registry.contains(':') {
+            return docker_config_registry_key(potential_registry).to_string();
+        }
+    }
+    // Docker Hub uses this URL in config.json
+    DOCKER_HUB_AUTH_CONFIG_KEY.to_string()
+}
+
+fn docker_config_registry_key(registry: &str) -> &str {
+    if DOCKER_HUB_REGISTRY_ALIASES.contains(&registry) {
+        DOCKER_HUB_AUTH_CONFIG_KEY
+    } else {
+        registry
+    }
+}
+
+/// Simple base64 encoding for auth string.
+fn base64_encode(input: &str) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut result = String::new();
+
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+
+        result.push(ALPHABET[b0 >> 2] as char);
+        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+
+        if chunk.len() > 1 {
+            result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+        } else {
+            result.push('=');
+        }
+
+        if chunk.len() > 2 {
+            result.push(ALPHABET[b2 & 0x3f] as char);
+        } else {
+            result.push('=');
+        }
+    }
+
+    result
+}
+
+/// Set up the Docker config crane reads for a pull.
+///
+/// Always creates a private config directory so crane never consults a
+/// mounted `/root/.docker`: a host config that names a credential helper
+/// (`credsStore`) makes crane exec a binary the guest does not have, and the
+/// pull fails even for public images. The host resolves credentials itself
+/// and forwards them here as `auth`; a username of `<token>` carries an OAuth
+/// identity token, which crane takes as `identitytoken`.
+///
+/// The returned TempDir must be kept alive for the duration of the command.
+fn setup_docker_auth(image: &str, auth: Option<&RegistryAuth>) -> Result<tempfile::TempDir> {
+    // The guest root filesystem (and thus the default temp dir, /tmp) is
+    // read-only, so create the auth config under the writable storage disk.
+    let temp_dir = tempfile::Builder::new()
+        .prefix("smolauth")
+        .tempdir_in(STORAGE_ROOT)
+        .map_err(|e| {
+            StorageError::new(format!("failed to create temp directory for auth: {}", e))
+        })?;
+
+    let config_json = match auth {
+        Some(a) => {
+            let registry = extract_registry_from_image(image);
+            let entry = if a.username == DOCKER_IDENTITY_TOKEN_USERNAME {
+                serde_json::json!({ "identitytoken": a.password })
+            } else {
+                serde_json::json!({ "auth": base64_encode(&format!("{}:{}", a.username, a.password)) })
+            };
+            debug!(
+                registry = %registry,
+                username = %a.username,
+                "using registry credentials via docker config"
+            );
+            serde_json::json!({ "auths": { registry: entry } }).to_string()
+        }
+        None => "{}".to_string(),
+    };
+
+    let config_path = temp_dir.path().join("config.json");
+    std::fs::write(&config_path, &config_json)
+        .map_err(|e| StorageError::new(format!("failed to write docker auth config: {}", e)))?;
+
+    Ok(temp_dir)
+}
+
+/// Set HTTP_PROXY / HTTPS_PROXY / NO_PROXY on a crane subprocess so the
+/// in-VM registry client can reach the registry through a corporate proxy.
+fn apply_proxy_env(cmd: &mut Command, proxy: Option<&str>, no_proxy: Option<&str>) {
+    if let Some(p) = proxy {
+        cmd.env("HTTP_PROXY", p);
+        cmd.env("HTTPS_PROXY", p);
+    }
+    if let Some(np) = no_proxy {
+        cmd.env("NO_PROXY", np);
+    }
+}
+
+/// The host trust volume is mounted at boot, before image pulls. Keep its
+/// trust scoped to registry subprocesses and only opt in when the bundle is
+/// present; crane (Go) reads SSL_CERT_FILE for manifests, auth and blobs.
+///
+/// A machine with credential substitution also has its interceptor's CA
+/// mounted at boot, and the interceptor terminates TLS for the hosts its
+/// credentials are bound to. When one of those hosts is the registry's token
+/// realm (a credential for our own API, whose host serves `/v2/auth`), crane
+/// meets the interceptor's certificate mid-pull, so it must trust that CA too:
+/// it gets its usual roots followed by the machine CA, as the workload does.
+fn apply_registry_trust(cmd: &mut Command) {
+    let credential_ca = Path::new(smolvm_protocol::credentials::GUEST_CA_DIR)
+        .join(smolvm_protocol::credentials::GUEST_CA_FILE);
+    apply_registry_trust_from(
+        cmd,
+        &RegistryTrust {
+            host_bundle: Path::new("/etc/smolvm-host-trust/ca-bundle.pem"),
+            credential_ca: &credential_ca,
+            system_bundle: Path::new("/etc/ssl/certs/ca-certificates.crt"),
+            assembled: Path::new("/run/smolvm-credentials/registry-ca-bundle.pem"),
+        },
+    );
+}
+
+/// Where registry trust comes from, so tests can point it at fixtures.
+struct RegistryTrust<'a> {
+    /// Host-provided roots (`--host-trust`), a complete bundle when present.
+    host_bundle: &'a Path,
+    /// The credential interceptor's CA, when the machine has credentials.
+    credential_ca: &'a Path,
+    /// The agent's own roots, used when there is no host bundle.
+    system_bundle: &'a Path,
+    /// Where the combined bundle is written.
+    assembled: &'a Path,
+}
+
+fn apply_registry_trust_from(cmd: &mut Command, trust: &RegistryTrust<'_>) {
+    let Ok(credential_ca) = std::fs::read(trust.credential_ca) else {
+        if trust.host_bundle.is_file() {
+            cmd.env("SSL_CERT_FILE", trust.host_bundle);
+        }
+        return;
+    };
+    // SSL_CERT_FILE replaces the default store, so the bundle carries the
+    // roots crane would otherwise use, followed by the machine CA.
+    let base = if trust.host_bundle.is_file() {
+        trust.host_bundle
+    } else {
+        trust.system_bundle
+    };
+    let mut bundle = std::fs::read(base).unwrap_or_default();
+    if !bundle.is_empty() && !bundle.ends_with(b"\n") {
+        bundle.push(b'\n');
+    }
+    bundle.extend_from_slice(&credential_ca);
+    let written = trust
+        .assembled
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(trust.assembled, &bundle));
+    match written {
+        Ok(()) => {
+            cmd.env("SSL_CERT_FILE", trust.assembled);
+        }
+        Err(e) => {
+            warn!(error = %e, "could not write the registry trust bundle; pulls through the credential interceptor will fail");
+            if trust.host_bundle.is_file() {
+                cmd.env("SSL_CERT_FILE", trust.host_bundle);
+            }
+        }
+    }
+}
+
+/// Run a crane command with the given operation.
+///
+/// If auth is provided, creates a temporary Docker config for crane to use.
+/// Includes retry logic for transient network failures.
+fn run_crane(
+    operation: &str,
+    image: &str,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+) -> Result<String> {
+    use crate::retry::{
+        is_permanent_error, is_transient_network_error, retry_with_backoff, RetryConfig,
+    };
+
+    let op_name = format!("crane {}", operation);
+
+    retry_with_backoff(
+        RetryConfig::for_network(),
+        &op_name,
+        || run_crane_once(operation, image, oci_platform, auth, proxy, no_proxy),
+        |e| {
+            let error_msg = e.to_string();
+            // Don't retry permanent errors
+            if is_permanent_error(&error_msg) {
+                return false;
+            }
+            // Retry transient network errors
+            is_transient_network_error(&error_msg)
+        },
+    )
+}
+
+/// Execute a single crane command attempt.
+fn run_crane_once(
+    operation: &str,
+    image: &str,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+) -> Result<String> {
+    let mut cmd = Command::new("crane");
+    cmd.arg(operation).arg(image);
+
+    if let Some(p) = oci_platform {
+        cmd.arg("--platform").arg(p);
+    }
+
+    // Set up auth if provided (temp_dir must stay alive until command completes)
+    let _temp_dir = setup_docker_auth(image, auth)?;
+    cmd.env("DOCKER_CONFIG", _temp_dir.path());
+
+    apply_proxy_env(&mut cmd, proxy, no_proxy);
+    apply_registry_trust(&mut cmd);
+
+    let output = cmd.output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(StorageError::new(format!(
+            "crane {} failed: {}",
+            operation, stderr
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Run crane manifest command.
+fn crane_manifest(
+    image: &str,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+) -> Result<String> {
+    run_crane("manifest", image, oci_platform, auth, proxy, no_proxy)
+}
+
+/// Run crane config command.
+fn crane_config(
+    image: &str,
+    oci_platform: Option<&str>,
+    auth: Option<&RegistryAuth>,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+) -> Result<String> {
+    run_crane("config", image, oci_platform, auth, proxy, no_proxy)
+}
+
+/// Sanitize image name for use as filename.
+fn sanitize_image_name(image: &str) -> String {
+    image.replace(['/', ':', '@'], "_")
+}
+
+/// Reverse sanitization of a canonical image filename back to an image reference.
+///
+/// Because we now always store under the canonical form the mapping is
+/// deterministic:
+/// - The last `_`-delimited segment is the tag (or digest hex), except when
+///   the penultimate segment is `sha256`, in which case `sha256_<hex>` is the
+///   digest.
+/// - Everything else is the `registry/path` portion, with `_` reversed to `/`.
+///
+/// The result is passed to `query_image`, which normalizes it before
+/// computing the cache key.
+fn unsanitize_image_name(name: &str) -> String {
+    let parts: Vec<&str> = name.split('_').collect();
+    if parts.len() < 2 {
+        return name.to_string();
+    }
+
+    // Detect sha256 digest: penultimate segment is "sha256", last is 64 hex chars.
+    let n = parts.len();
+    if n >= 2
+        && parts[n - 2] == "sha256"
+        && parts[n - 1].len() == 64
+        && parts[n - 1].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        let name_part = parts[..n - 2].join("/");
+        return format!("{name_part}@sha256:{}", parts[n - 1]);
+    }
+
+    // Normal case: last segment is the tag.
+    let name_part = parts[..n - 1].join("/");
+    format!("{name_part}:{}", parts[n - 1])
+}
+
+/// Get disk usage for a path.
+#[allow(unused_variables)] // path is used only on Linux
+fn get_disk_usage(path: &Path) -> Result<(u64, u64)> {
+    // Use statvfs on Linux
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        use std::mem::MaybeUninit;
+
+        let path_cstr = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| {
+            StorageError::InvalidPath {
+                path: "overlay path".into(),
+            }
+        })?;
+
+        unsafe {
+            let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+            if libc::statvfs(path_cstr.as_ptr(), stat.as_mut_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+
+            let stat = stat.assume_init();
+            let total = stat.f_blocks * stat.f_frsize;
+            let free = stat.f_bfree * stat.f_frsize;
+            let used = total - free;
+
+            Ok((total, used))
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok((0, 0))
+    }
+}
+
+/// Count entries in a directory.
+fn count_entries(path: &Path) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    Ok(std::fs::read_dir(path)?.count())
+}
+
+/// Count only the directory entries in a directory.
+fn count_dir_entries(path: &Path) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    Ok(std::fs::read_dir(path)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .count())
+}
+
+/// Convert an OCI platform string to its architecture component.
+///
+/// # Examples
+/// - "linux/arm64" -> "arm64"
+/// - "linux/amd64" -> "amd64"
+/// - "linux/arm64/v8" -> "arm64"
+fn oci_platform_to_arch(oci_platform: &str) -> String {
+    // OCI platform format is "os/arch" or "os/arch/variant"
+    // We want just the arch part
+    let parts: Vec<&str> = oci_platform.split('/').collect();
+    if parts.len() >= 2 {
+        parts[1].to_string()
+    } else {
+        // Fallback: return as-is if not in expected format
+        oci_platform.to_string()
+    }
+}
+
+/// Calculate directory size recursively.
+fn dir_size(path: &Path) -> Result<u64> {
+    let mut size = 0;
+
+    if path.is_file() {
+        return Ok(std::fs::metadata(path)?.len());
+    }
+
+    for entry in std::fs::read_dir(path)? {
+        let entry: std::fs::DirEntry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            size += std::fs::metadata(&path)?.len();
+        } else if path.is_dir() {
+            size += dir_size(&path)?;
+        }
+    }
+
+    Ok(size)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mounts_bind_parents_before_their_nested_mounts() {
+        let mount = |tag: &str, path: &str| (tag.to_string(), path.to_string(), false);
+        let mounts = vec![
+            mount("npm", "/home/node/.npm"),
+            mount("data", "/data"),
+            mount("node", "/home/node"),
+            mount("cache", "/home/node/.cache"),
+        ];
+        let tags: Vec<_> = super::mounts_parents_first(&mounts)
+            .into_iter()
+            .map(|(tag, _, _)| tag.as_str())
+            .collect();
+        assert_eq!(tags, ["data", "node", "npm", "cache"]);
+    }
+
+    /// A boot gives the workload an empty, sticky, world-writable /tmp in the
+    /// upper layer, whatever was there (files, a whiteout), moving the previous
+    /// one aside in one rename and deleting it in the background, and removes
+    /// the directory that backed /tmp through a bind mount before.
+    #[test]
+    fn a_boot_gives_the_workload_an_empty_tmp_in_its_upper_layer() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let overlay = tempfile::tempdir().unwrap();
+        let upper = overlay.path().join("upper");
+        std::fs::create_dir_all(upper.join("tmp/sub")).unwrap();
+        std::fs::write(upper.join("tmp/left-over"), b"x").unwrap();
+        std::fs::create_dir_all(overlay.path().join(LEGACY_WORKLOAD_TMP_DIR)).unwrap();
+        std::fs::write(overlay.path().join("tmp/old"), b"x").unwrap();
+
+        let marked = std::cell::Cell::new(None);
+        let ready = reset_workload_tmp_with(overlay.path(), &upper, |dir| {
+            marked.set(Some(dir.to_path_buf()));
+            true
+        });
+        assert!(ready);
+        let dir = upper.join("tmp");
+        assert_eq!(
+            marked.take(),
+            Some(dir.clone()),
+            "the fresh /tmp is marked opaque"
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o1777);
+        assert!(
+            !overlay.path().join("tmp/old").exists(),
+            "the old bind-mount directory is gone"
+        );
+        assert!(
+            !overlay
+                .path()
+                .join(crate::oci::TMP_KEEP_TMPFS_MARKER)
+                .exists(),
+            "a prepared /tmp leaves no keep-tmpfs marker"
+        );
+        // the previous contents left the upper layer at once and are deleted
+        // from the trash shortly after
+        let trash = overlay.path().join(TMP_TRASH_DIR);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::fs::read_dir(&trash).map(|d| d.count()).unwrap_or(0) > 0 {
+            assert!(std::time::Instant::now() < deadline, "trash not swept");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::write(&dir, b"").unwrap();
+        assert!(reset_workload_tmp_with(overlay.path(), &upper, |_| true));
+        assert!(dir.is_dir(), "a file where /tmp belongs is replaced");
+
+        // when the fresh /tmp cannot be made opaque, the boot keeps the tmpfs
+        // and says so with the marker; the next boot that can clears it
+        assert!(!reset_workload_tmp_with(overlay.path(), &upper, |_| false));
+        assert!(overlay
+            .path()
+            .join(crate::oci::TMP_KEEP_TMPFS_MARKER)
+            .exists());
+        assert!(reset_workload_tmp_with(overlay.path(), &upper, |_| true));
+        assert!(!overlay
+            .path()
+            .join(crate::oci::TMP_KEEP_TMPFS_MARKER)
+            .exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_dir_at_prefers_the_exact_path_then_the_nearest_parent() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let rootfs = root.path();
+        std::fs::create_dir_all(rootfs.join("var/lib/postgresql/data")).unwrap();
+        std::fs::create_dir_all(rootfs.join("home/node")).unwrap();
+        std::os::unix::fs::symlink("/etc", rootfs.join("home/link")).unwrap();
+
+        let (meta, exact) = super::image_dir_at(rootfs, "/var/lib/postgresql/data").unwrap();
+        assert!(exact);
+        let expected = std::fs::metadata(rootfs.join("var/lib/postgresql/data")).unwrap();
+        assert_eq!(meta.ino(), expected.ino());
+
+        let (meta, exact) = super::image_dir_at(rootfs, "/home/node/.cache/x").unwrap();
+        assert!(!exact);
+        let node = std::fs::metadata(rootfs.join("home/node")).unwrap();
+        assert_eq!(meta.ino(), node.ino());
+
+        // A symlink is never followed: the parent above it decides.
+        let (meta, exact) = super::image_dir_at(rootfs, "/home/link/data").unwrap();
+        assert!(!exact);
+        let home = std::fs::metadata(rootfs.join("home")).unwrap();
+        assert_eq!(meta.ino(), home.ino());
+
+        // A new top-level path keeps the volume's own (root) ownership.
+        assert!(super::image_dir_at(rootfs, "/data").is_none());
+    }
+
+    #[test]
+    fn pure_oci_archive_streams_with_docker_compatibility_manifest() {
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Seek, SeekFrom};
+
+        fn digest(bytes: &[u8]) -> String {
+            format!("sha256:{:x}", Sha256::digest(bytes))
+        }
+        fn append(builder: &mut tar::Builder<&mut std::fs::File>, name: &str, data: &[u8]) {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o600);
+            header.set_size(data.len() as u64);
+            header.set_cksum();
+            builder.append_data(&mut header, name, data).unwrap();
+        }
+        for nested in [false, true] {
+            let mut original = tempfile::tempfile().unwrap();
+            let arch = if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "amd64"
+            };
+            let config =
+                serde_json::to_vec(&serde_json::json!({"os":"linux", "architecture":arch}))
+                    .unwrap();
+            let config_digest = digest(&config);
+            let layer = b"a small layer";
+            let layer_digest = digest(layer);
+            let image = serde_json::to_vec(&serde_json::json!({
+                "config":{"digest":config_digest},
+                "layers":[{"digest":layer_digest,"mediaType":"application/vnd.oci.image.layer.v1.tar","size":layer.len()}],
+            })).unwrap();
+            let image_digest = digest(&image);
+            let wrapper = serde_json::to_vec(&serde_json::json!({
+                "manifests":[{"digest":image_digest,"mediaType":"application/vnd.oci.image.manifest.v1+json"}],
+            })).unwrap();
+            let top_digest = if nested {
+                digest(&wrapper)
+            } else {
+                image_digest.clone()
+            };
+            let index = serde_json::to_vec(&serde_json::json!({
+                "manifests":[{"digest":top_digest,"mediaType":if nested {"application/vnd.oci.image.index.v1+json"} else {"application/vnd.oci.image.manifest.v1+json"}}],
+            })).unwrap();
+            {
+                let mut builder = tar::Builder::new(&mut original);
+                append(
+                    &mut builder,
+                    &format!("blobs/sha256/{}", &layer_digest[7..]),
+                    layer,
+                );
+                append(
+                    &mut builder,
+                    &format!("blobs/sha256/{}", &image_digest[7..]),
+                    &image,
+                );
+                append(
+                    &mut builder,
+                    &format!("blobs/sha256/{}", &config_digest[7..]),
+                    &config,
+                );
+                if nested {
+                    append(
+                        &mut builder,
+                        &format!("blobs/sha256/{}", &top_digest[7..]),
+                        &wrapper,
+                    );
+                }
+                append(&mut builder, "index.json", &index); // Blob order must not matter.
+                builder.finish().unwrap();
+            }
+            original.seek(SeekFrom::Start(0)).unwrap();
+            let (synthetic, recovered) = super::oci_archive_compatibility(&mut original)
+                .unwrap()
+                .unwrap();
+            assert_eq!(recovered, config);
+            let manifest: serde_json::Value = serde_json::from_slice(&synthetic).unwrap();
+            assert_eq!(
+                manifest[0]["Config"],
+                format!("blobs/sha256/{}", &config_digest[7..])
+            );
+            assert_eq!(
+                manifest[0]["Layers"][0],
+                format!("blobs/sha256/{}", &layer_digest[7..])
+            );
+
+            original.seek(SeekFrom::Start(0)).unwrap();
+            let mut result = tempfile::tempfile().unwrap();
+            let (worker, _) =
+                super::spawn_oci_archive_copy(original, result.try_clone().unwrap(), synthetic);
+            worker.join().unwrap().unwrap();
+            result.seek(SeekFrom::Start(0)).unwrap();
+            let mut output = tar::Archive::new(result);
+            let mut member = output
+                .entries()
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .find(|entry| entry.path().unwrap() == std::path::Path::new("manifest.json"))
+                .unwrap();
+            let mut raw = Vec::new();
+            member.read_to_end(&mut raw).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&raw).unwrap(),
+                manifest
+            );
+        }
+    }
+
+    #[test]
+    fn cold_layout_is_bounded_by_manifest_and_available_disk() {
+        use super::{cold_layout_fits, COLD_LAYOUT_FREE_RESERVE_BYTES, MAX_COLD_LAYOUT_BYTES};
+        let mib = 1024 * 1024;
+        let manifest = serde_json::json!({
+            "config": { "size": mib },
+            "layers": [{ "size": 8 * mib }, { "size": 16 * mib }]
+        });
+        assert!(cold_layout_fits(
+            &manifest,
+            COLD_LAYOUT_FREE_RESERVE_BYTES + 25 * mib
+        ));
+        assert!(!cold_layout_fits(
+            &manifest,
+            COLD_LAYOUT_FREE_RESERVE_BYTES + 25 * mib - 1
+        ));
+        assert!(!cold_layout_fits(
+            &serde_json::json!({ "config": { "size": mib }, "layers": [{ "size": MAX_COLD_LAYOUT_BYTES }] }),
+            u64::MAX
+        ));
+        assert!(!cold_layout_fits(
+            &serde_json::json!({ "config": { "size": mib }, "layers": [{ "digest": "sha256:abc" }] }),
+            u64::MAX
+        ));
+        assert!(!cold_layout_fits(
+            &serde_json::json!({ "config": { "size": u64::MAX }, "layers": [{ "size": 1 }] }),
+            u64::MAX
+        ));
+    }
+
+    #[test]
+    fn failed_pull_guard_cleans_partial_layout() {
+        fn failed_pull(layout: &std::path::Path) -> std::io::Result<()> {
+            let _guard = super::LayoutGuard(layout.to_path_buf());
+            std::fs::create_dir_all(layout)?;
+            std::fs::write(layout.join("partial-blob"), "partial")?;
+            Err(std::io::Error::other("fetch failed"))
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let layout = temp.path().join(".pull-layout-test");
+        assert!(failed_pull(&layout).is_err());
+        assert!(!layout.exists());
+    }
+
+    #[test]
+    fn cache_disk_env_names_a_virtio_disk_and_an_absolute_path() {
+        assert_eq!(
+            super::parse_cache_disk_env("/dev/vdc:/cache"),
+            Some(("/dev/vdc".to_string(), "/cache".to_string(), false))
+        );
+        assert_eq!(
+            super::parse_cache_disk_env("/dev/vdc:/cache:slot"),
+            Some(("/dev/vdc".to_string(), "/cache".to_string(), true))
+        );
+        for bad in [
+            "/dev/vdc",
+            "/dev/sda:/cache",
+            "/dev/vdcc:/cache",
+            "/dev/vdc:cache",
+            "/dev/vdc:/",
+            "",
+        ] {
+            assert_eq!(super::parse_cache_disk_env(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_an_ext_superblock_counts_as_a_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let blank = dir.path().join("blank.img");
+        std::fs::write(&blank, vec![0u8; 4096]).unwrap();
+        assert!(!super::has_ext_superblock(&blank).unwrap());
+
+        let ext = dir.path().join("ext.img");
+        let mut image = vec![0u8; 4096];
+        image[1080] = 0x53;
+        image[1081] = 0xEF;
+        std::fs::write(&ext, image).unwrap();
+        assert!(super::has_ext_superblock(&ext).unwrap());
+
+        // Too short to hold a superblock is an error, never "blank": a disk
+        // that fails to read must not be formatted.
+        let short = dir.path().join("short.img");
+        std::fs::write(&short, vec![0u8; 100]).unwrap();
+        assert!(super::has_ext_superblock(&short).is_err());
+    }
+    #[test]
+    fn an_overlay_runs_only_the_image_it_was_built_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // An overlay made before images were recorded is accepted, then recorded.
+        check_overlay_image(root, "persistent-web", "python:3.12-alpine").unwrap();
+        record_overlay_image(root, "alpine:3.20").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("image_ref")).unwrap(),
+            "docker.io/library/alpine:3.20"
+        );
+
+        // Any spelling of the same image matches.
+        check_overlay_image(root, "persistent-web", "alpine:3.20").unwrap();
+        check_overlay_image(root, "persistent-web", "docker.io/library/alpine:3.20").unwrap();
+
+        // Another image is refused instead of being mixed into this overlay.
+        match check_overlay_image(root, "persistent-web", "python:3.12-alpine") {
+            Err(StorageError::OverlayImageConflict {
+                overlay,
+                recorded,
+                requested,
+            }) => {
+                assert_eq!(overlay, "persistent-web");
+                assert_eq!(recorded, "docker.io/library/alpine:3.20");
+                assert_eq!(requested, "docker.io/library/python:3.12-alpine");
+            }
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+
+        // The first record stands.
+        record_overlay_image(root, "python:3.12-alpine").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("image_ref")).unwrap(),
+            "docker.io/library/alpine:3.20"
+        );
+    }
+
+    use super::*;
+
+    #[test]
+    fn packed_query_does_not_extract_staged_layers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let packed = tmp.path().join("packed");
+        let storage = tmp.path().join("storage");
+        std::fs::create_dir(&packed).unwrap();
+        let tar = packed.join("layer.tar");
+        // Deliberately not a valid archive: Query must not attempt extraction.
+        std::fs::write(&tar, b"not an archive").unwrap();
+        assert!(query_packed_image("ubuntu", &packed, &storage)
+            .unwrap()
+            .is_none());
+        assert!(!storage.exists());
+
+        let out = storage.join(GUEST_LAYERS_DIR).join("packed");
+        std::fs::create_dir_all(out.join("layer")).unwrap();
+        // A partial extraction is not usable until its completion marker exists.
+        assert!(query_packed_image("ubuntu", &packed, &storage)
+            .unwrap()
+            .is_none());
+        std::fs::write(
+            out.join(GUEST_LAYERS_MARKER),
+            staged_tars_signature(std::slice::from_ref(&tar)).unwrap(),
+        )
+        .unwrap();
+        let info = query_packed_image("ubuntu", &packed, &storage)
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.layers, vec!["sha256:layer"]);
+        std::fs::write(&tar, b"changed staged archive").unwrap();
+        assert!(query_packed_image("ubuntu", &packed, &storage)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn packed_query_does_not_flatten_saved_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let packed = tmp.path().join("packed");
+        let storage = tmp.path().join("storage");
+        std::fs::create_dir(&packed).unwrap();
+        std::fs::write(packed.join(ARCHIVE_FILE_NAME), b"not an archive").unwrap();
+        assert!(query_packed_image("ubuntu", &packed, &storage)
+            .unwrap()
+            .is_none());
+        assert!(!storage.exists());
+    }
+
+    #[test]
+    fn unpack_wait_reports_progress_and_preserves_failure_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 2; printf unpack-error >&2; exit 7"]);
+        let mut updates = 0;
+        let output = command_output_with_progress(&mut command, || updates += 1).unwrap();
+        assert!(updates >= 1);
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stderr, b"unpack-error");
+    }
+
+    #[test]
+    fn test_archive_arch_compatibility() {
+        let guest_arch = match std::env::consts::ARCH {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        };
+        let other_arch = if guest_arch == "amd64" {
+            "arm64"
+        } else {
+            "386"
+        };
+
+        // Same arch is accepted
+        assert!(ensure_archive_arch_compatible(guest_arch).is_ok());
+        // Unknown / empty arch is leniently accepted
+        assert!(ensure_archive_arch_compatible("").is_ok());
+        assert!(ensure_archive_arch_compatible("unknown_arch").is_ok());
+        // Incompatible arch is rejected
+        let err = ensure_archive_arch_compatible(other_arch).unwrap_err();
+        assert!(err.to_string().contains("is built for architecture"));
+    }
+
+    /// A lone layer is handed back as-is rather than mounted, so dropping the
+    /// tree must leave it alone — the path belongs to the caller, and the
+    /// teardown that follows a real merge would delete the machine's own layer.
+    #[test]
+    fn flattening_a_lone_layer_does_not_consume_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let only = dir.path().join("rootfs");
+        std::fs::create_dir_all(only.join("usr")).unwrap();
+
+        let path = {
+            let tree = flatten_layers(&[only.to_string_lossy().into_owned()]).unwrap();
+            assert_eq!(tree.path(), only.as_path());
+            tree.path().to_path_buf()
+        };
+
+        assert!(path.exists(), "dropping the tree deleted the source layer");
+        assert!(path.join("usr").exists());
+    }
+
+    /// Nothing mountable is an error rather than an empty archive: a silently
+    /// empty flatten would pack a machine as though it had no filesystem.
+    #[test]
+    fn flattening_nothing_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let missing = dir.path().join("missing");
+
+        let err = flatten_layers(&[
+            empty.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("no layers to flatten"));
+    }
+
+    /// One empty layer is a legal OCI layer (metadata or whiteouts only), so
+    /// verification must not reject an image just for containing one.
+    #[test]
+    fn a_single_empty_layer_beside_a_populated_one_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        let full = dir.path().join("full");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(full.join("usr")).unwrap();
+        let layers = vec![
+            empty.to_string_lossy().into_owned(),
+            full.to_string_lossy().into_owned(),
+        ];
+        assert!(verify_layers(&layers).is_ok());
+    }
+
+    /// Every layer empty means the container would run on its upper layer
+    /// alone. That used to be accepted with only a warning, and surfaced much
+    /// later as a misleading "executable file not found in $PATH".
+    #[test]
+    fn layers_that_are_all_empty_are_rejected_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let layers = vec![
+            a.to_string_lossy().into_owned(),
+            b.to_string_lossy().into_owned(),
+        ];
+        let err = verify_layers(&layers).expect_err("all-empty layers must not be accepted");
+        assert!(
+            err.to_string().contains("image layers are missing"),
+            "error should name the real problem, got: {err}"
+        );
+    }
+
+    /// The failure this pair of fixes came from: an emptied macOS layer store
+    /// still has `.fseventsd`, which was enumerated as the image's only layer,
+    /// so the container came up on a rootfs made of filesystem bookkeeping.
+    #[test]
+    fn volume_metadata_is_never_enumerated_as_an_image_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".fseventsd")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".Spotlight-V100")).unwrap();
+        let err = ordered_packed_layer_names(dir.path())
+            .expect_err("bookkeeping directories are not layers");
+        assert!(err.to_string().contains("no image layers"), "got: {err}");
+    }
+
+    /// An extraction the host did not finish is staged as `<layer>.partial`;
+    /// whatever it contains, it is not a layer, and a store holding nothing
+    /// else must fail the same way an empty one does.
+    #[test]
+    fn an_unfinished_extraction_is_never_enumerated_as_an_image_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("aaaa1111bbbb.partial");
+        std::fs::create_dir_all(staging.join("usr/bin")).unwrap();
+        std::fs::write(staging.join("usr/bin/sh"), b"").unwrap();
+        let err = ordered_packed_layer_names(dir.path())
+            .expect_err("a half-written layer must not be served as the image");
+        assert!(err.to_string().contains("no image layers"), "got: {err}");
+
+        // Once the host renames it into place it is a layer like any other.
+        std::fs::rename(&staging, dir.path().join("aaaa1111bbbb")).unwrap();
+        assert_eq!(
+            ordered_packed_layer_names(dir.path()).unwrap(),
+            vec!["aaaa1111bbbb".to_string()]
+        );
+    }
+
+    /// A store with no usable layer directory cannot produce the image, so it
+    /// must fail by name rather than hand back an empty layer list.
+    #[test]
+    fn a_store_with_no_usable_layer_directory_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".fseventsd")).unwrap();
+        std::fs::write(dir.path().join(LAYER_ORDER_FILE), "aaaa1111bbbb\n").unwrap();
+        let err = ordered_packed_layer_names(dir.path())
+            .expect_err("a store holding no layer must not resolve");
+        assert!(err.to_string().contains("no image layers"), "got: {err}");
+    }
+
+    /// The fallback still works for a legacy store that has no index at all.
+    #[test]
+    fn a_store_without_an_order_index_still_sorts_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("bbbb")).unwrap();
+        std::fs::create_dir_all(dir.path().join("aaaa")).unwrap();
+        let names = ordered_packed_layer_names(dir.path()).unwrap();
+        assert_eq!(names, vec!["aaaa".to_string(), "bbbb".to_string()]);
+    }
+
+    /// The exact shape that got through: a layer store that is an emptied
+    /// macOS volume still carries `.fseventsd`, which counted as content and
+    /// let a container start on an image with no filesystem.
+    #[test]
+    fn a_layer_holding_only_volume_metadata_counts_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("layers-cs");
+        std::fs::create_dir_all(store.join(".fseventsd")).unwrap();
+        std::fs::write(store.join(".DS_Store"), b"").unwrap();
+        let layers = vec![store.to_string_lossy().into_owned()];
+        let err = verify_layers(&layers).expect_err("volume metadata is not image content");
+        assert!(
+            err.to_string().contains("image layers are missing"),
+            "got: {err}"
+        );
+    }
+
+    /// A missing layer directory is still reported as such, not folded into
+    /// the all-empty case.
+    #[test]
+    fn a_missing_layer_path_is_reported_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("gone");
+        let layers = vec![gone.to_string_lossy().into_owned()];
+        let err = verify_layers(&layers).expect_err("a missing layer must not be accepted");
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
+    }
+
+    // OCI layer helpers now live in the shared crate; these tests exercise them
+    // through its public API (the crate also unit-tests them independently).
+    use smolvm_oci_layer::{classify_layer_entry, jailed_join, LayerEntry};
+    use std::sync::{Mutex, OnceLock};
+
+    /// The /workspace fallback is bound on top of the user's mounts, so it must
+    /// stand down for anything at or below /workspace — not only an exact
+    /// `-v host:/workspace`. A user mount at /workspace/project that keeps the
+    /// fallback ends up shadowed by its own parent: still listed in
+    /// /proc/self/mountinfo, but unreachable by path.
+    ///
+    /// The sibling /workspaces/project is the trap: it shares the string prefix
+    /// but is not under /workspace, and must still get the fallback.
+    #[test]
+    fn a_user_mount_below_workspace_suppresses_the_fallback() {
+        let fallback_src = std::path::Path::new("/storage/workspace");
+        let user_source = "/host/source".to_string();
+
+        // (user mount target, mount destinations expected in the spec afterwards)
+        let cases: &[(&str, &[&str])] = &[
+            // At /workspace: fallback suppressed, only the user's mount.
+            ("/workspace", &["/workspace"]),
+            // Below /workspace: fallback suppressed — the bug this guards.
+            ("/workspace/project", &["/workspace/project"]),
+            // Trailing slash is the same claim.
+            ("/workspace/project/", &["/workspace/project/"]),
+            // Sibling that merely shares the prefix: fallback still applies.
+            (
+                "/workspaces/project",
+                &["/workspaces/project", "/workspace"],
+            ),
+            // Unrelated targets: fallback still applies.
+            ("/mnt/project", &["/mnt/project", "/workspace"]),
+            (
+                "/opt/workspace/project",
+                &["/opt/workspace/project", "/workspace"],
+            ),
+        ];
+
+        for (target, expected) in cases {
+            let mut spec = OciSpec::new(
+                &[],
+                &[],
+                "/",
+                false,
+                &crate::oci::ProcessIdentity::root(),
+                false,
+            );
+            spec.mounts.clear();
+            let mounts = vec![(user_source.clone(), (*target).to_string(), false)];
+            for (source, destination, read_only) in &mounts {
+                spec.add_bind_mount(source, destination, *read_only);
+            }
+
+            add_workspace_fallback_from(&mut spec, &mounts, fallback_src);
+
+            let got: Vec<&str> = spec.mounts.iter().map(|m| m.destination.as_str()).collect();
+            assert_eq!(
+                got, *expected,
+                "user mount at {target} produced the wrong mount set"
+            );
+        }
+    }
+
+    /// With no user mount in play the fallback must still be added, otherwise
+    /// /workspace stops surviving VM restarts.
+    #[test]
+    fn no_user_mount_still_gets_the_workspace_fallback() {
+        let mut spec = OciSpec::new(
+            &[],
+            &[],
+            "/",
+            false,
+            &crate::oci::ProcessIdentity::root(),
+            false,
+        );
+        spec.mounts.clear();
+        add_workspace_fallback_from(&mut spec, &[], std::path::Path::new("/storage/workspace"));
+        let got: Vec<&str> = spec.mounts.iter().map(|m| m.destination.as_str()).collect();
+        assert_eq!(got, vec!["/workspace"]);
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// A machine that has never written to its container overlay still has the
+    /// caller append that upper dir, and overlayfs fails the whole mount on a
+    /// lowerdir that is not there — so it has to be dropped, not passed through.
+    #[test]
+    fn flatten_drops_lowerdirs_that_are_missing_or_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let populated = tmp.path().join("layer");
+        std::fs::create_dir_all(&populated).expect("create layer");
+        std::fs::write(populated.join("file"), b"x").expect("write file");
+        let empty = tmp.path().join("empty-upper");
+        std::fs::create_dir_all(&empty).expect("create empty");
+        let missing = tmp.path().join("never-created");
+
+        let kept = mountable_lowerdirs(&[
+            populated.to_string_lossy().into_owned(),
+            empty.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+        ]);
+
+        assert_eq!(
+            kept,
+            vec![populated.to_string_lossy().into_owned()],
+            "only the populated directory is mountable"
+        );
+    }
+
+    #[test]
+    fn duplicate_lowerdirs_keep_the_highest_priority_occurrence() {
+        let dirs = vec![
+            "/layers/top".to_string(),
+            "/layers/shared".to_string(),
+            "/layers/base".to_string(),
+            "/layers/shared".to_string(),
+        ];
+        assert_eq!(
+            unique_lowerdirs(&dirs),
+            vec![
+                "/layers/top".to_string(),
+                "/layers/shared".to_string(),
+                "/layers/base".to_string(),
+            ]
+        );
+    }
+
+    /// Order is the whole contract — `lowerdir+` ranks each layer below the one
+    /// before it, so the caller's topmost-first list must survive filtering
+    /// unreordered. Passing it bottom-up instead inverts precedence silently:
+    /// the base layer wins every conflicting path and the machine's own writes
+    /// rank lowest, which reads as an image that lost its later layers.
+    #[test]
+    fn flatten_preserves_topmost_first_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dirs: Vec<String> = ["upper", "top-layer", "base"]
+            .iter()
+            .map(|name| {
+                let dir = tmp.path().join(name);
+                std::fs::create_dir_all(&dir).expect("create dir");
+                std::fs::write(dir.join("f"), name.as_bytes()).expect("write");
+                dir.to_string_lossy().into_owned()
+            })
+            .collect();
+
+        assert_eq!(mountable_lowerdirs(&dirs), dirs);
+    }
+
+    /// Dropping an empty entry must not disturb the rank of the ones that stay:
+    /// a machine that never wrote anything still has its (empty) overlay passed
+    /// first, and removing it has to leave the image layers in their own order.
+    #[test]
+    fn flatten_keeps_rank_when_an_entry_is_dropped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let make = |name: &str, populated: bool| {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).expect("create dir");
+            if populated {
+                std::fs::write(dir.join("f"), name.as_bytes()).expect("write");
+            }
+            dir.to_string_lossy().into_owned()
+        };
+        let empty_upper = make("empty-upper", false);
+        let top = make("top-layer", true);
+        let base = make("base", true);
+
+        assert_eq!(
+            mountable_lowerdirs(&[empty_upper, top.clone(), base.clone()]),
+            vec![top, base]
+        );
+    }
+
+    #[test]
+    fn copy_with_progress_reports_bytes_while_streaming() {
+        let input = vec![0x5a; 17 * 1024 * 1024];
+        let mut reader = std::io::Cursor::new(&input);
+        let mut output = Vec::new();
+        let mut reports = Vec::new();
+
+        let copied = copy_with_progress(
+            &mut reader,
+            &mut output,
+            "flattening",
+            &mut |phase, bytes| reports.push((phase.to_string(), bytes)),
+        )
+        .unwrap();
+
+        assert_eq!(copied, input.len() as u64);
+        assert_eq!(output, input);
+        assert_eq!(reports.first(), Some(&("flattening".to_string(), 0)));
+        assert_eq!(
+            reports.last(),
+            Some(&("flattening".to_string(), input.len() as u64))
+        );
+        assert!(
+            reports.iter().any(|(_, bytes)| *bytes >= 16 * 1024 * 1024),
+            "large copies must report before completion"
+        );
+    }
+
+    #[test]
+    fn spawned_copy_reports_archive_input_progress() {
+        let input = std::io::Cursor::new(vec![0x5a; 17 * 1024 * 1024]);
+        let (copy_thread, progress_rx) =
+            spawn_copy_with_progress(input, std::io::sink(), "reading archive");
+        let reports: Vec<_> = progress_rx.iter().collect();
+        let copied = copy_thread.join().unwrap().unwrap();
+
+        assert_eq!(copied, 17 * 1024 * 1024);
+        assert_eq!(reports.first(), Some(&("reading archive", 0)));
+        assert_eq!(reports.last(), Some(&("reading archive", 17 * 1024 * 1024)));
+        assert!(
+            reports.iter().any(|(_, bytes)| *bytes >= 16 * 1024 * 1024),
+            "large archive inputs must report before completion"
+        );
+    }
+
+    #[test]
+    fn storage_exposed_only_to_privileged_workloads_without_a_user_storage_mount() {
+        // Privileged (default) and no user mount at /storage → expose it, so an
+        // --image VM sees /storage like a bare VM (docker-in-VM bind targets work).
+        assert!(should_expose_storage(&[], false));
+
+        // Unprivileged (untrusted code) never sees the VM's storage disk.
+        assert!(!should_expose_storage(&[], true));
+
+        // The user already claimed /storage (e.g. -v host:/storage) → don't clobber
+        // it, even when privileged. Trailing slash is normalized.
+        let user_mount = vec![("tag".to_string(), "/storage/".to_string(), false)];
+        assert!(!should_expose_storage(&user_mount, false));
+
+        // A user mount elsewhere doesn't suppress the /storage fallback.
+        let other_mount = vec![("tag".to_string(), "/data".to_string(), false)];
+        assert!(should_expose_storage(&other_mount, false));
+    }
+
+    #[test]
+    fn test_oci_platform_to_arch_linux_arm64() {
+        assert_eq!(oci_platform_to_arch("linux/arm64"), "arm64");
+    }
+
+    #[test]
+    fn classifies_oci_whiteout_markers() {
+        // Opaque marker must win over the generic `.wh.` prefix.
+        assert_eq!(classify_layer_entry(".wh..wh..opq"), LayerEntry::OpaqueDir);
+        // `.wh.<name>` carries the name to delete.
+        assert_eq!(
+            classify_layer_entry(".wh.RPM-GPG-KEY-kojiv2"),
+            LayerEntry::Whiteout("RPM-GPG-KEY-kojiv2")
+        );
+        // A bare `.wh.` (no name) and ordinary files are normal entries.
+        assert_eq!(classify_layer_entry(".wh."), LayerEntry::Normal);
+        assert_eq!(classify_layer_entry("CERN.repo"), LayerEntry::Normal);
+        assert_eq!(classify_layer_entry(".wherever"), LayerEntry::Normal);
+    }
+
+    #[test]
+    fn jailed_join_blocks_escapes() {
+        let base = Path::new("/layer");
+        assert_eq!(
+            jailed_join(base, Path::new("tmp/CERN.repo")),
+            Some(PathBuf::from("/layer/tmp/CERN.repo"))
+        );
+        assert_eq!(
+            jailed_join(base, Path::new("./tmp/./x")),
+            Some(PathBuf::from("/layer/tmp/x"))
+        );
+        // `..` and absolute paths escape the layer dir — rejected.
+        assert!(jailed_join(base, Path::new("../etc/passwd")).is_none());
+        assert!(jailed_join(base, Path::new("tmp/../../etc")).is_none());
+        assert!(jailed_join(base, Path::new("/etc/passwd")).is_none());
+    }
+
+    /// End-to-end extraction with whiteout conversion. mknod/setxattr(trusted.*)
+    /// need root, so skip when not privileged (the live guest is PID 1 root).
+    /// Linux-only: the syscalls and overlayfs semantics don't exist on macOS.
+    #[test]
+    fn extract_oci_layer_decompresses_gzip_and_zstd() {
+        use std::io::Write;
+
+        // A minimal single-file tar, owned by the current uid/gid so extraction
+        // (which preserves ownership) succeeds without root.
+        let uid = unsafe { libc::getuid() } as u64;
+        let gid = unsafe { libc::getgid() } as u64;
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let body = b"hello from a layer";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("greeting.txt").unwrap();
+            header.set_size(body.len() as u64);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(0o644);
+            header.set_uid(uid);
+            header.set_gid(gid);
+            header.set_cksum();
+            builder.append(&header, &body[..]).unwrap();
+            builder.finish().unwrap();
+        }
+
+        let extract = |bytes: &[u8]| -> Vec<u8> {
+            let dir = tempfile::tempdir().unwrap();
+            extract_oci_layer(bytes, dir.path()).expect("extraction should succeed");
+            std::fs::read(dir.path().join("greeting.txt")).unwrap()
+        };
+
+        // Plain tar passes through unchanged.
+        assert_eq!(extract(&tar_buf), b"hello from a layer");
+
+        // gzip-compressed layer.
+        let gz = {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap()
+        };
+        assert_eq!(&gz[..2], &[0x1f, 0x8b], "gzip magic");
+        assert_eq!(extract(&gz), b"hello from a layer");
+
+        // zstd-compressed layer — the format that broke every library-image pull.
+        let zst = zstd::stream::encode_all(&tar_buf[..], 0).unwrap();
+        assert_eq!(&zst[..4], &[0x28, 0xb5, 0x2f, 0xfd], "zstd magic");
+        assert_eq!(extract(&zst), b"hello from a layer");
+    }
+
+    /// A smolmachine pack blob pulled as if it were a container image must
+    /// fail fast on its sentinel entries — before the pack's multi-GiB
+    /// storage.ext4 fills the guest disk — with a host-flow routing hint.
+    #[test]
+    fn extract_oci_layer_rejects_smolmachine_pack_blobs() {
+        // Owned by the current uid/gid so the nested-file case (which really
+        // extracts, preserving ownership) succeeds without root.
+        let uid = unsafe { libc::getuid() } as u64;
+        let gid = unsafe { libc::getgid() } as u64;
+        let build_tar = |name: &str| -> Vec<u8> {
+            let mut buf = Vec::new();
+            let mut builder = tar::Builder::new(&mut buf);
+            let body = b"not really a disk image";
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name).unwrap();
+            header.set_size(body.len() as u64);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(0o644);
+            header.set_uid(uid);
+            header.set_gid(gid);
+            header.set_cksum();
+            builder.append(&header, &body[..]).unwrap();
+            builder.finish().unwrap();
+            drop(builder);
+            buf
+        };
+
+        for sentinel in ["storage.ext4", "agent-rootfs.tar", "./storage.ext4"] {
+            let dir = tempfile::tempdir().unwrap();
+            let err = extract_oci_layer(&build_tar(sentinel)[..], dir.path())
+                .expect_err("pack sentinel must abort extraction");
+            assert!(
+                err.to_string().contains("smolmachine pack"),
+                "clear error for {sentinel}, got: {err}"
+            );
+            assert!(
+                err.to_string().contains("host"),
+                "routing hint for {sentinel}, got: {err}"
+            );
+        }
+
+        // A NESTED file of the same name is legitimate image content.
+        let dir = tempfile::tempdir().unwrap();
+        extract_oci_layer(&build_tar("var/lib/foo/storage.ext4")[..], dir.path())
+            .expect("nested same-named file extracts normally");
+        assert!(dir.path().join("var/lib/foo/storage.ext4").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn extract_oci_layer_applies_whiteouts() {
+        // SAFETY: geteuid is always safe.
+        if unsafe { libc::geteuid() } != 0 {
+            eprintln!("skipping: extract_oci_layer whiteout test needs root (mknod/setxattr)");
+            return;
+        }
+        use std::os::unix::fs::FileTypeExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path();
+
+        // Build a layer tar: a real file, a `.wh.` delete marker shipped as a
+        // hardlink to that file (the issue #397 shape), and an opaque dir.
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            let mut header = tar::Header::new_gnu();
+            let body = b"repo-contents";
+            header.set_path("tmp/CERN.repo").unwrap();
+            header.set_size(body.len() as u64);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(0o644);
+            // Real layers carry an owner. Root preserves it, so an unset
+            // field would fail the test only when it runs as root.
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_cksum();
+            builder.append(&header, &body[..]).unwrap();
+
+            // Whiteout as a hardlink to the sibling file (would crash busybox tar).
+            let mut wh = tar::Header::new_gnu();
+            wh.set_entry_type(tar::EntryType::Link);
+            wh.set_size(0);
+            wh.set_mode(0o644);
+            wh.set_path("tmp/.wh.RPM-GPG-KEY-kojiv2").unwrap();
+            wh.set_link_name("tmp/CERN.repo").unwrap();
+            wh.set_uid(0);
+            wh.set_gid(0);
+            wh.set_cksum();
+            builder.append(&wh, std::io::empty()).unwrap();
+
+            // Opaque marker for an `etc` directory.
+            let mut opq = tar::Header::new_gnu();
+            opq.set_entry_type(tar::EntryType::Regular);
+            opq.set_size(0);
+            opq.set_mode(0o644);
+            opq.set_path("etc/.wh..wh..opq").unwrap();
+            opq.set_uid(0);
+            opq.set_gid(0);
+            opq.set_cksum();
+            builder.append(&opq, std::io::empty()).unwrap();
+
+            builder.finish().unwrap();
+        }
+
+        extract_oci_layer(&buf[..], dest).expect("extraction should succeed");
+
+        // The real file extracted.
+        assert_eq!(
+            std::fs::read(dest.join("tmp/CERN.repo")).unwrap(),
+            b"repo-contents"
+        );
+        // The whiteout became an overlayfs char-device whiteout (0/0).
+        let wh = dest.join("tmp/RPM-GPG-KEY-kojiv2");
+        let meta = std::fs::symlink_metadata(&wh).expect("whiteout node exists");
+        assert!(
+            meta.file_type().is_char_device(),
+            "whiteout is a char device"
+        );
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(meta.rdev(), 0, "whiteout device number is 0/0");
+        // The `.wh.` marker file itself is gone.
+        assert!(!dest.join("tmp/.wh.RPM-GPG-KEY-kojiv2").exists());
+        // The opaque xattr is set on the directory, and the marker file is gone.
+        assert!(dest.join("etc").is_dir());
+        assert_eq!(read_opaque_xattr(&dest.join("etc")), Some(b"y".to_vec()));
+        assert!(!dest.join("etc/.wh..wh..opq").exists());
+    }
+
+    /// Read `trusted.overlay.opaque` for the extraction test (root-only).
+    #[cfg(target_os = "linux")]
+    fn read_opaque_xattr(path: &Path) -> Option<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+        let name = std::ffi::CString::new("trusted.overlay.opaque").ok()?;
+        let mut buf = [0u8; 16];
+        // SAFETY: path/name are NUL-terminated; buf/len describe a valid buffer.
+        let len = unsafe {
+            libc::getxattr(
+                c_path.as_ptr(),
+                name.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        };
+        if len < 0 {
+            return None;
+        }
+        Some(buf[..len as usize].to_vec())
+    }
+
+    #[test]
+    fn test_oci_platform_to_arch_linux_amd64() {
+        assert_eq!(oci_platform_to_arch("linux/amd64"), "amd64");
+    }
+
+    #[test]
+    fn test_oci_platform_to_arch_with_variant() {
+        assert_eq!(oci_platform_to_arch("linux/arm64/v8"), "arm64");
+        assert_eq!(oci_platform_to_arch("linux/arm/v7"), "arm");
+    }
+
+    #[test]
+    fn test_oci_platform_to_arch_fallback() {
+        // If not in expected format, return as-is
+        assert_eq!(oci_platform_to_arch("arm64"), "arm64");
+        assert_eq!(oci_platform_to_arch("unknown"), "unknown");
+    }
+
+    /// Collect (name, value) for env vars explicitly set on a Command, with
+    /// inherited vars filtered out. `Command::get_envs()` yields a tuple per
+    /// explicit `.env()` / `.env_remove()` call: the value is `None` for
+    /// removals and `Some(_)` for sets. We only care about sets here.
+    fn explicit_envs(cmd: &Command) -> Vec<(String, String)> {
+        cmd.get_envs()
+            .filter_map(|(k, v)| {
+                v.map(|val| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        val.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn trust_fixture(dir: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        (
+            dir.join("host-ca-bundle.pem"),
+            dir.join("credentials/ca.pem"),
+            dir.join("system-ca-certificates.crt"),
+            dir.join("run/registry-ca-bundle.pem"),
+        )
+    }
+
+    #[test]
+    fn registry_trust_only_applies_when_the_bundle_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, credential, system, assembled) = trust_fixture(dir.path());
+        let trust = RegistryTrust {
+            host_bundle: &host,
+            credential_ca: &credential,
+            system_bundle: &system,
+            assembled: &assembled,
+        };
+        let mut cmd = Command::new("crane");
+        apply_registry_trust_from(&mut cmd, &trust);
+        assert!(explicit_envs(&cmd).is_empty());
+
+        std::fs::write(&host, "certificate fixture").unwrap();
+        apply_registry_trust_from(&mut cmd, &trust);
+        assert_eq!(
+            explicit_envs(&cmd),
+            vec![(
+                "SSL_CERT_FILE".to_string(),
+                host.to_string_lossy().into_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn registry_pulls_trust_the_credential_interceptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, credential, system, assembled) = trust_fixture(dir.path());
+        let trust = RegistryTrust {
+            host_bundle: &host,
+            credential_ca: &credential,
+            system_bundle: &system,
+            assembled: &assembled,
+        };
+        std::fs::create_dir_all(credential.parent().unwrap()).unwrap();
+        std::fs::write(&credential, "MACHINE CA\n").unwrap();
+        std::fs::write(&system, "SYSTEM ROOTS").unwrap();
+
+        // No host bundle: the agent's own roots, then the machine CA.
+        let mut cmd = Command::new("crane");
+        apply_registry_trust_from(&mut cmd, &trust);
+        assert_eq!(
+            explicit_envs(&cmd),
+            vec![(
+                "SSL_CERT_FILE".to_string(),
+                assembled.to_string_lossy().into_owned()
+            )]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&assembled).unwrap(),
+            "SYSTEM ROOTS\nMACHINE CA\n"
+        );
+
+        // A host bundle replaces the agent's roots as the base.
+        std::fs::write(&host, "HOST ROOTS\n").unwrap();
+        let mut cmd = Command::new("crane");
+        apply_registry_trust_from(&mut cmd, &trust);
+        assert_eq!(
+            std::fs::read_to_string(&assembled).unwrap(),
+            "HOST ROOTS\nMACHINE CA\n"
+        );
+    }
+
+    #[test]
+    fn apply_proxy_env_sets_http_and_https_when_proxy_present() {
+        let mut cmd = Command::new("crane");
+        apply_proxy_env(&mut cmd, Some("http://proxy.example.com:3128"), None);
+
+        let envs = explicit_envs(&cmd);
+        assert!(envs.contains(&(
+            "HTTP_PROXY".to_string(),
+            "http://proxy.example.com:3128".to_string()
+        )));
+        assert!(envs.contains(&(
+            "HTTPS_PROXY".to_string(),
+            "http://proxy.example.com:3128".to_string()
+        )));
+        // No NO_PROXY when not asked for — silent overreach would be a bug.
+        assert!(!envs.iter().any(|(k, _)| k == "NO_PROXY"));
+    }
+
+    #[test]
+    fn apply_proxy_env_sets_no_proxy_when_present() {
+        let mut cmd = Command::new("crane");
+        apply_proxy_env(&mut cmd, None, Some("127.0.0.1,.internal"));
+
+        let envs = explicit_envs(&cmd);
+        assert!(envs.contains(&("NO_PROXY".to_string(), "127.0.0.1,.internal".to_string())));
+        // proxy=None must not set HTTP_PROXY / HTTPS_PROXY.
+        assert!(!envs.iter().any(|(k, _)| k == "HTTP_PROXY"));
+        assert!(!envs.iter().any(|(k, _)| k == "HTTPS_PROXY"));
+    }
+
+    #[test]
+    fn apply_proxy_env_with_both_sets_all_three() {
+        let mut cmd = Command::new("crane");
+        apply_proxy_env(
+            &mut cmd,
+            Some("http://192.168.127.254:3128"),
+            Some("127.0.0.1,localhost"),
+        );
+
+        let envs = explicit_envs(&cmd);
+        assert_eq!(
+            envs.len(),
+            3,
+            "expected exactly HTTP_PROXY, HTTPS_PROXY, NO_PROXY"
+        );
+        let map: std::collections::HashMap<_, _> = envs.into_iter().collect();
+        assert_eq!(
+            map.get("HTTP_PROXY").map(String::as_str),
+            Some("http://192.168.127.254:3128")
+        );
+        assert_eq!(
+            map.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://192.168.127.254:3128")
+        );
+        assert_eq!(
+            map.get("NO_PROXY").map(String::as_str),
+            Some("127.0.0.1,localhost")
+        );
+    }
+
+    #[test]
+    fn apply_proxy_env_with_none_is_noop() {
+        let mut cmd = Command::new("crane");
+        apply_proxy_env(&mut cmd, None, None);
+
+        // Without explicit envs the iterator is empty — no accidental fallbacks.
+        assert_eq!(explicit_envs(&cmd).len(), 0);
+    }
+
+    #[test]
+    fn test_sanitize_image_name() {
+        // sanitize_image_name operates on already-canonical refs
+        assert_eq!(
+            sanitize_image_name("docker.io/library/alpine:latest"),
+            "docker.io_library_alpine_latest"
+        );
+        assert_eq!(
+            sanitize_image_name("docker.io/library/alpine:3.18"),
+            "docker.io_library_alpine_3.18"
+        );
+        assert_eq!(
+            sanitize_image_name("ghcr.io/owner/repo@sha256:abc123"),
+            "ghcr.io_owner_repo_sha256_abc123"
+        );
+    }
+
+    #[test]
+    fn test_unsanitize_image_name() {
+        // Normal tag case
+        assert_eq!(
+            unsanitize_image_name("docker.io_library_alpine_3.20"),
+            "docker.io/library/alpine:3.20"
+        );
+        assert_eq!(
+            unsanitize_image_name("ghcr.io_owner_repo_v1"),
+            "ghcr.io/owner/repo:v1"
+        );
+        // Digest case
+        let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            unsanitize_image_name(&format!("docker.io_library_alpine_sha256_{hex}")),
+            format!("docker.io/library/alpine@sha256:{hex}")
+        );
+    }
+
+    #[test]
+    fn test_extract_registry_from_image_normalizes_docker_hub() {
+        assert_eq!(
+            extract_registry_from_image("alpine:latest"),
+            DOCKER_HUB_AUTH_CONFIG_KEY
+        );
+        assert_eq!(
+            extract_registry_from_image("library/alpine:latest"),
+            DOCKER_HUB_AUTH_CONFIG_KEY
+        );
+        assert_eq!(
+            extract_registry_from_image("docker.io/nginxinc/nginx-unprivileged:stable-alpine"),
+            DOCKER_HUB_AUTH_CONFIG_KEY
+        );
+        assert_eq!(
+            extract_registry_from_image("index.docker.io/library/alpine:latest"),
+            DOCKER_HUB_AUTH_CONFIG_KEY
+        );
+    }
+
+    #[test]
+    fn test_extract_registry_from_image_preserves_non_docker_hub_registry() {
+        assert_eq!(
+            extract_registry_from_image("ghcr.io/owner/repo:tag"),
+            "ghcr.io"
+        );
+        assert_eq!(
+            extract_registry_from_image("registry.example.com:5000/image:tag"),
+            "registry.example.com:5000"
+        );
+    }
+
+    #[test]
+    fn overlay_resolv_conf_uses_virtio_dns_server() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(guest_env::BACKEND, guest_env::BACKEND_VIRTIO_NET);
+        std::env::set_var(guest_env::DNS, "100.96.0.1");
+
+        assert_eq!(overlay_resolv_conf_contents(), "nameserver 100.96.0.1\n");
+
+        std::env::remove_var(guest_env::BACKEND);
+        std::env::remove_var(guest_env::DNS);
+    }
+
+    #[test]
+    fn overlay_resolv_conf_uses_custom_dns_under_tsi() {
+        // TSI sets SMOLVM_NETWORK_DNS without SMOLVM_NETWORK_BACKEND. The guest
+        // must honor the custom resolver (--dns) rather than the public default.
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var(guest_env::BACKEND);
+        std::env::set_var(guest_env::DNS, "100.100.100.100");
+
+        assert_eq!(
+            overlay_resolv_conf_contents(),
+            "nameserver 100.100.100.100\n"
+        );
+
+        std::env::remove_var(guest_env::DNS);
+    }
+
+    #[test]
+    fn archive_scratch_dir_honors_env_override() {
+        let _guard = env_lock().lock().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        // A dir that doesn't exist yet, to prove it's created on demand.
+        let target = base.path().join("scratch");
+        std::env::set_var(ARCHIVE_SCRATCH_DIR_ENV, &target);
+
+        assert_eq!(archive_scratch_dir(), target);
+        assert!(target.is_dir(), "override dir should be created");
+
+        std::env::remove_var(ARCHIVE_SCRATCH_DIR_ENV);
+    }
+
+    #[test]
+    fn archive_scratch_dir_ignores_blank_override() {
+        // A blank/whitespace override is treated as unset, not as "use CWD".
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(ARCHIVE_SCRATCH_DIR_ENV, "   ");
+
+        // Without a storage disk on the host, this falls through to the OS temp
+        // dir — never the override, never an empty path.
+        let dir = archive_scratch_dir();
+        assert!(dir.is_absolute() && dir.is_dir());
+        assert_ne!(dir.as_os_str(), "   ");
+
+        std::env::remove_var(ARCHIVE_SCRATCH_DIR_ENV);
+    }
+
+    #[test]
+    fn overlay_resolv_conf_defaults_to_public_resolvers() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var(guest_env::BACKEND);
+        std::env::remove_var(guest_env::DNS);
+        std::env::remove_var(guest_env::DNS_OPTIONS);
+
+        // Same order as the TSI boot repair (`tsi_resolv_conf`).
+        assert_eq!(
+            overlay_resolv_conf_contents(),
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+        );
+    }
+
+    #[test]
+    fn overlay_resolv_conf_carries_resolver_options_on_every_path() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var(guest_env::BACKEND);
+        std::env::remove_var(guest_env::DNS);
+        std::env::set_var(
+            guest_env::DNS_OPTIONS,
+            "timeout:1 attempts:3 rotate use-vc bogus",
+        );
+
+        assert_eq!(
+            overlay_resolv_conf_contents(),
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:1 attempts:3 rotate use-vc\n"
+        );
+        std::env::set_var(guest_env::DNS, "100.100.100.100");
+        assert_eq!(
+            overlay_resolv_conf_contents(),
+            "nameserver 100.100.100.100\noptions timeout:1 attempts:3 rotate use-vc\n"
+        );
+        std::env::remove_var(guest_env::DNS);
+        std::env::remove_var(guest_env::DNS_OPTIONS);
+    }
+
+    #[test]
+    fn overlay_hosts_names_loopback_and_the_guest_hostname() {
+        assert_eq!(
+            overlay_hosts_contents("container"),
+            "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n127.0.1.1\tcontainer\n"
+        );
+        // No hostname (or a redundant one) still yields valid loopback entries.
+        for h in ["", "localhost"] {
+            assert_eq!(
+                overlay_hosts_contents(h),
+                "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n"
+            );
+        }
+    }
+
+    #[test]
+    fn mounted_overlay_preserves_image_hosts_and_resolves_active_hostname() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("etc")).unwrap();
+        let path = tmp.path().join("etc/hosts");
+        let image_hosts = "127.0.0.1 localhost\n::1 localhost\n10.0.0.9 pinned # keep\n";
+        std::fs::write(&path, image_hosts).unwrap();
+
+        ensure_overlay_hostname(tmp.path(), "worker-1").unwrap();
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(updated, format!("{image_hosts}127.0.1.1\tworker-1\n"));
+        ensure_overlay_hostname(tmp.path(), "worker-1").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), updated);
+        // A clone gets its new name even when it inherits the golden's hosts.
+        ensure_overlay_hostname(tmp.path(), "worker-2").unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .ends_with("127.0.1.1\tworker-2\n"));
+    }
+
+    // An image's symlinked hosts, or a symlinked resolv.conf that resolves
+    // inside the image (systemd-resolved's stub once it runs), is kept and
+    // never written through: the agent would resolve the link against its own
+    // root. A symlinked etc is refused too.
+    #[test]
+    fn symlinked_resolver_and_hosts_are_kept_and_never_written_through() {
+        let _guard = env_lock().lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("agent-file");
+        std::fs::write(&outside, "agent's own\n").unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::create_dir_all(root.join("run/systemd/resolve")).unwrap();
+        std::fs::write(
+            root.join("run/systemd/resolve/stub-resolv.conf"),
+            "nameserver 127.0.0.53\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "/run/systemd/resolve/stub-resolv.conf",
+            root.join("etc/resolv.conf"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("etc/hosts")).unwrap();
+        refresh_overlay_resolver(&root).unwrap();
+        ensure_overlay_hostname(&root, "worker-1").unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "agent's own\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("run/systemd/resolve/stub-resolv.conf")).unwrap(),
+            "nameserver 127.0.0.53\n"
+        );
+        for name in ["resolv.conf", "hosts"] {
+            assert!(std::fs::symlink_metadata(root.join("etc").join(name))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+
+        let linked_etc = tmp.path().join("linked-etc");
+        std::fs::create_dir_all(&linked_etc).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), linked_etc.join("etc")).unwrap();
+        refresh_overlay_resolver(&linked_etc).unwrap();
+        ensure_overlay_hostname(&linked_etc, "worker-1").unwrap();
+        assert!(!tmp.path().join("resolv.conf").exists());
+        assert!(!tmp.path().join("hosts").exists());
+    }
+
+    // Installing systemd-resolved in a container leaves resolv.conf a link to
+    // a stub nothing creates. It is replaced by the resolver, never followed:
+    // an absolute link is the image's path, so one naming an agent file is
+    // dangling in the image and the agent file is left alone.
+    #[test]
+    fn dangling_resolver_links_follow_platform_resolution_policy() {
+        let _guard = env_lock().lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("agent-file");
+        std::fs::write(&outside, "agent's own\n").unwrap();
+        for (name, target) in [
+            (
+                "relative",
+                std::path::PathBuf::from("../run/systemd/resolve/stub-resolv.conf"),
+            ),
+            ("absolute", outside.clone()),
+        ] {
+            let root = tmp.path().join(name);
+            std::fs::create_dir_all(root.join("etc")).unwrap();
+            std::os::unix::fs::symlink(&target, root.join("etc/resolv.conf")).unwrap();
+            refresh_overlay_resolver(&root).unwrap();
+            let resolver = root.join("etc/resolv.conf");
+            if cfg!(target_os = "linux") {
+                assert!(
+                    std::fs::symlink_metadata(&resolver).unwrap().is_file(),
+                    "{name}"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&resolver).unwrap(),
+                    overlay_resolv_conf_contents()
+                );
+            } else {
+                assert!(
+                    std::fs::symlink_metadata(&resolver)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink(),
+                    "{name}"
+                );
+                assert_eq!(std::fs::read_link(&resolver).unwrap(), target, "{name}");
+            }
+            assert!(!root.join("run").exists(), "{name}");
+        }
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "agent's own\n");
+    }
+
+    #[test]
+    fn a_regular_resolver_is_rewritten_and_a_missing_hosts_is_created() {
+        let _guard = env_lock().lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("etc")).unwrap();
+        std::fs::write(tmp.path().join("etc/resolv.conf"), "nameserver 9.9.9.9\n").unwrap();
+        refresh_overlay_resolver(tmp.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("etc/resolv.conf")).unwrap(),
+            overlay_resolv_conf_contents()
+        );
+        ensure_overlay_hostname(tmp.path(), "worker-1").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("etc/hosts")).unwrap(),
+            overlay_hosts_contents("worker-1")
+        );
+    }
+
+    #[test]
+    fn mounted_overlay_respects_custom_mapping_and_partial_last_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("etc")).unwrap();
+        let path = tmp.path().join("etc/hosts");
+        std::fs::write(&path, b"10.0.0.9 worker-1 # custom\n# worker-2\n").unwrap();
+        ensure_overlay_hostname(tmp.path(), "worker-1").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "10.0.0.9 worker-1 # custom\n# worker-2\n"
+        );
+        std::fs::write(&path, b"127.0.0.1 localhost").unwrap();
+        ensure_overlay_hostname(tmp.path(), "worker-2").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "127.0.0.1 localhost\n127.0.1.1\tworker-2\n"
+        );
+    }
+
+    #[test]
+    fn setup_upper_layer_defaults_hosts_only_when_image_lacks_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let builder = |name: &str| OverlaySetup {
+            workload_id: format!("hosts-test-{name}"),
+            overlay_root: tmp.path().join(name),
+            upper_path: tmp.path().join(name).join("upper"),
+            work_path: tmp.path().join(name).join("work"),
+            merged_path: tmp.path().join(name).join("merged"),
+        };
+
+        // Image without /etc/hosts: the upper layer gains a default.
+        let bare_layer = tmp.path().join("layer-bare");
+        std::fs::create_dir_all(&bare_layer).unwrap();
+        let b = builder("bare");
+        b.prepare_directories().unwrap();
+        b.setup_upper_layer(&[bare_layer.display().to_string()])
+            .unwrap();
+        let written = std::fs::read_to_string(b.upper_path.join("etc/hosts")).unwrap();
+        assert!(written.contains("127.0.0.1\tlocalhost"));
+
+        // Image that ships /etc/hosts: the upper layer must not shadow it.
+        let full_layer = tmp.path().join("layer-full");
+        std::fs::create_dir_all(full_layer.join("etc")).unwrap();
+        std::fs::write(full_layer.join("etc/hosts"), "10.0.0.9 pinned\n").unwrap();
+        let b = builder("full");
+        b.prepare_directories().unwrap();
+        b.setup_upper_layer(&[full_layer.display().to_string()])
+            .unwrap();
+        assert!(!b.upper_path.join("etc/hosts").exists());
+
+        // An EMPTY image /etc/hosts provides no mappings, so the default must
+        // still be written — otherwise `localhost` never resolves in-container.
+        let empty_layer = tmp.path().join("layer-empty");
+        std::fs::create_dir_all(empty_layer.join("etc")).unwrap();
+        std::fs::write(empty_layer.join("etc/hosts"), "").unwrap();
+        let b = builder("empty");
+        b.prepare_directories().unwrap();
+        b.setup_upper_layer(&[empty_layer.display().to_string()])
+            .unwrap();
+        let written = std::fs::read_to_string(b.upper_path.join("etc/hosts")).unwrap();
+        assert!(written.contains("127.0.0.1\tlocalhost"));
+
+        // Same for a comments-only file (Debian tooling ships these).
+        let comment_layer = tmp.path().join("layer-comments");
+        std::fs::create_dir_all(comment_layer.join("etc")).unwrap();
+        std::fs::write(comment_layer.join("etc/hosts"), "# static hosts\n\n").unwrap();
+        let b = builder("comments");
+        b.prepare_directories().unwrap();
+        b.setup_upper_layer(&[comment_layer.display().to_string()])
+            .unwrap();
+        let written = std::fs::read_to_string(b.upper_path.join("etc/hosts")).unwrap();
+        assert!(written.contains("127.0.0.1\tlocalhost"));
+    }
+
+    #[test]
+    fn layer_cache_trusts_only_marked_layers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = tmp.path().join("aabbccdd");
+
+        // Missing entirely: not cached.
+        assert!(!is_layer_cached(&layer));
+
+        // Non-empty but unverified — the exact state an interrupted or
+        // writeback-failed extraction leaves behind. Must NOT be trusted.
+        std::fs::create_dir_all(layer.join("bin")).unwrap();
+        assert!(!is_layer_cached(&layer));
+
+        // Marker present: cached.
+        std::fs::write(layer_ok_marker(&layer), "ok").unwrap();
+        assert!(is_layer_cached(&layer));
+        // The marker is a sibling of the layer dir, never inside it (layer
+        // dirs are overlay lowerdirs).
+        assert!(layer_ok_marker(&layer).parent() == layer.parent());
+
+        // Empty directories are valid OCI layers once extraction is verified.
+        std::fs::remove_dir_all(layer.join("bin")).unwrap();
+        assert!(is_layer_cached(&layer));
+
+        // The marker alone is insufficient if the layer directory disappeared.
+        std::fs::remove_dir(&layer).unwrap();
+        assert!(!is_layer_cached(&layer));
+    }
+
+    #[test]
+    fn image_size_uses_layer_sidecars_and_falls_back_for_old_caches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layers_root = tmp.path().join(LAYERS_DIR);
+        let cached = layers_root.join("cached");
+        let legacy = layers_root.join("legacy");
+        std::fs::create_dir_all(&cached).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(cached.join("ignored-by-sidecar"), b"123456789").unwrap();
+        std::fs::write(legacy.join("measured"), b"1234").unwrap();
+        std::fs::write(layer_size_marker(&cached), "7").unwrap();
+
+        assert_eq!(
+            calculate_image_size(tmp.path(), &["cached".into(), "legacy".into()]),
+            11
+        );
+        assert_eq!(read_layer_size(&cached), Some(7));
+        assert_eq!(layer_size_marker(&cached).parent(), cached.parent());
+    }
+
+    #[test]
+    fn test_validate_storage_id_rejects_traversal() {
+        assert!(validate_storage_id("../escape", "workload_id").is_err());
+        assert!(validate_storage_id("foo/bar", "workload_id").is_err());
+    }
+
+    #[test]
+    fn test_validate_container_destination_path_requires_absolute() {
+        assert!(validate_container_destination_path("var/data").is_err());
+        assert!(validate_container_destination_path("/").is_err());
+        assert!(validate_container_destination_path("/var/data").is_ok());
+    }
+
+    #[test]
+    fn test_ensure_mount_target_under_root_rejects_parent_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let rootfs = root.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+
+        assert!(ensure_mount_target_under_root(&rootfs, "/../../escape").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_mount_target_under_root_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let rootfs = root.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+
+        symlink(outside.path(), rootfs.join("link-out")).unwrap();
+        assert!(ensure_mount_target_under_root(&rootfs, "/link-out/dir").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_mount_target_under_root_replaces_intra_rootfs_symlink_with_dir() {
+        use std::os::unix::fs::symlink;
+
+        // Simulates the agent-rootfs having a pre-baked /workspace symlink from
+        // a previous VM run (via virtiofs write-through). The function must
+        // replace it with a real directory so the bind mount can claim the path.
+        let root = tempfile::tempdir().unwrap();
+        let rootfs = root.path().join("rootfs");
+        let target_dir = rootfs.join("storage").join("workspace");
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        // /workspace → /storage/workspace (relative to rootfs) — symlink within rootfs
+        let workspace_link = rootfs.join("workspace");
+        symlink(&target_dir, &workspace_link).unwrap();
+        assert!(workspace_link.is_symlink());
+
+        let result = ensure_mount_target_under_root(&rootfs, "/workspace");
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+
+        // The symlink must have been replaced with a real directory.
+        assert!(
+            !workspace_link.is_symlink(),
+            "/workspace should no longer be a symlink"
+        );
+        assert!(
+            workspace_link.is_dir(),
+            "/workspace should now be a directory"
+        );
+    }
+
+    #[test]
+    fn file_mount_target_creates_parent_and_regular_file() {
+        let root = tempfile::tempdir().unwrap();
+        let rootfs = root.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+
+        let target = ensure_file_mount_target_under_root(&rootfs, "/run/smolvm/init").unwrap();
+        assert!(target.is_file());
+        assert!(target.starts_with(rootfs.canonicalize().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_mount_target_replaces_final_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let rootfs = root.path().join("rootfs");
+        let destination_parent = rootfs.join("run/smolvm");
+        std::fs::create_dir_all(&destination_parent).unwrap();
+        let destination = destination_parent.join("init");
+        symlink(outside.path(), &destination).unwrap();
+
+        let target = ensure_file_mount_target_under_root(&rootfs, "/run/smolvm/init").unwrap();
+        assert!(target.is_file());
+        assert!(!target.is_symlink());
+        assert!(outside.path().is_file());
+    }
+
+    #[test]
+    fn ordered_packed_layers_honor_index_over_name_sort() {
+        // Two layers whose digest-named dirs sort base-above-overlay (the bug):
+        // base "fff…" sorts after overlay "4c8…", so a plain name sort + rev
+        // would stack the base on top and shadow the overlay's modified files.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["fff3795b4371", "4c857248e0e2"] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        // A stray non-layer dir (e.g. macOS .fseventsd) must be excluded when an
+        // index is present.
+        std::fs::create_dir_all(dir.path().join(".fseventsd")).unwrap();
+
+        // Index records true OCI order, bottom→top: base then overlay.
+        std::fs::write(
+            dir.path().join(LAYER_ORDER_FILE),
+            "fff3795b4371\n4c857248e0e2\n",
+        )
+        .unwrap();
+
+        let ordered = ordered_packed_layer_names(dir.path()).unwrap();
+        assert_eq!(
+            ordered,
+            vec!["fff3795b4371".to_string(), "4c857248e0e2".to_string()],
+            "must follow the index (base→overlay), not the name sort, and drop .fseventsd"
+        );
+    }
+
+    #[test]
+    fn ordered_packed_layers_fall_back_to_name_sort_without_index() {
+        // No index → legacy behavior: ascending name sort (correct for the
+        // single-flattened-layer common case).
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["bbb", "aaa"] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        let ordered = ordered_packed_layer_names(dir.path()).unwrap();
+        assert_eq!(ordered, vec!["aaa".to_string(), "bbb".to_string()]);
+    }
+
+    #[test]
+    fn ordered_packed_layers_ignore_index_entries_without_a_dir() {
+        // An index naming a missing layer falls back to the name sort rather
+        // than silently dropping real layers.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("aaa")).unwrap();
+        std::fs::write(dir.path().join(LAYER_ORDER_FILE), "does-not-exist\n").unwrap();
+        let ordered = ordered_packed_layer_names(dir.path()).unwrap();
+        assert_eq!(ordered, vec!["aaa".to_string()]);
+    }
+
+    /// Regression for the >255-byte `lowerdir` bug: the fsconfig mount path must
+    /// mount a multi-layer overlay whose joined lower paths far exceed 255 bytes —
+    /// the length the old `mount(8)` shell-out rejected. Needs root + Linux
+    /// overlayfs, so it's `#[ignore]`d; run on a Linux host with:
+    ///   cargo test -p smolvm-agent -- --ignored overlay_fsconfig_mounts_long_lowerdir
+    #[test]
+    #[ignore = "requires root + Linux overlayfs"]
+    #[cfg(target_os = "linux")]
+    fn overlay_fsconfig_mounts_long_lowerdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // 8 layers with 64-char names => joined lowerdir ~600 bytes (>255).
+        let mut lowerdirs = Vec::new();
+        for i in 0..8u32 {
+            let d = root.join("layers").join(format!("{i:064}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("f{i}")), b"x").unwrap();
+            lowerdirs.push(d.to_string_lossy().into_owned());
+        }
+        let joined_len: usize = lowerdirs.iter().map(|s| s.len() + 1).sum();
+        assert!(
+            joined_len > 255,
+            "test must exceed the old limit, got {joined_len}"
+        );
+
+        let upper = root.join("upper");
+        let work = root.join("work");
+        let merged = root.join("merged");
+        for p in [&upper, &work, &merged] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+
+        mount_overlay_fsconfig(&lowerdirs, &upper, &work, &merged)
+            .expect("fsconfig overlay mount with a >255B lowerdir should succeed");
+        // The merged view exposes files from every layer.
+        assert!(merged.join("f0").exists());
+        assert!(merged.join("f7").exists());
+        let _ = std::process::Command::new("umount").arg(&merged).status();
+    }
+
+    /// Verify that the new mount API preserves OCI layer precedence and hides a
+    /// lower-layer name deleted by a whiteout in the top layer. This catches
+    /// ordering changes that ordinary additive-layer tests cannot observe.
+    #[test]
+    #[ignore = "requires root + Linux overlayfs"]
+    #[cfg(target_os = "linux")]
+    fn overlay_fsconfig_applies_lower_layer_whiteouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let base = root.join("base");
+        let top = root.join("top");
+        let upper = root.join("upper");
+        let work = root.join("work");
+        let merged = root.join("merged");
+        for path in [&base, &top, &upper, &work, &merged] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::create_dir_all(base.join("dir")).unwrap();
+        std::fs::create_dir_all(top.join("dir")).unwrap();
+        std::fs::write(base.join("priority"), b"base").unwrap();
+        std::fs::write(top.join("priority"), b"top").unwrap();
+        std::fs::write(base.join("dir/deleted"), b"lower payload").unwrap();
+        smolvm_oci_layer::create_overlay_whiteout(&top.join("dir/deleted")).unwrap();
+
+        let lowerdirs = vec![
+            top.to_string_lossy().into_owned(),
+            base.to_string_lossy().into_owned(),
+        ];
+        mount_overlay_fsconfig(&lowerdirs, &upper, &work, &merged).unwrap();
+
+        assert_eq!(std::fs::read(merged.join("priority")).unwrap(), b"top");
+        assert!(!merged.join("dir/deleted").exists());
+        let names: Vec<_> = std::fs::read_dir(merged.join("dir"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(!names.iter().any(|name| name == "deleted"));
+
+        let _ = std::process::Command::new("umount").arg(&merged).status();
+    }
+}

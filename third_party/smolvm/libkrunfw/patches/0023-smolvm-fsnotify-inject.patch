@@ -1,0 +1,158 @@
+smolvm: inject fsnotify events for host-originated file changes
+
+virtiofs does not deliver host-side file changes to the guest as
+fsnotify/inotify events, so inotify-based hot-reload never fires on host
+edits. Add /proc/smolvm-fsnotify: writing "<mask_hex> <path>" fires the
+matching fsnotify events on the guest inode, so guest watchers wake as if
+the change happened locally. Driven by the smolvm host FS watcher via the
+guest agent.
+
+Signed-off-by: smolvm <noreply@smolvm>
+---
+diff --git a/fs/notify/Makefile b/fs/notify/Makefile
+index 63a4b8828..5f40866e7 100644
+--- a/fs/notify/Makefile
++++ b/fs/notify/Makefile
+@@ -2,6 +2,7 @@
+ obj-$(CONFIG_FSNOTIFY)		+= fsnotify.o notification.o group.o mark.o \
+ 				   fdinfo.o
+ 
++obj-$(CONFIG_FSNOTIFY)		+= smolvm_inject.o
+ obj-y			+= dnotify/
+ obj-y			+= inotify/
+ obj-y			+= fanotify/
+diff --git a/fs/notify/smolvm_inject.c b/fs/notify/smolvm_inject.c
+new file mode 100644
+index 000000000..f2aad9235
+--- /dev/null
++++ b/fs/notify/smolvm_inject.c
+@@ -0,0 +1,127 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * smolvm_inject.c - inject fsnotify events for host-originated file changes.
++ *
++ * virtiofs (FUSE) does not propagate host-side file changes into the guest as
++ * fsnotify/inotify events, so inotify-based hot-reload (Vite, webpack, nodemon)
++ * never fires when a file is edited on the host. smolvm watches the host mount
++ * source and, via the guest agent, writes "<mask_hex> <path>" to
++ * /proc/smolvm-fsnotify; this fires the matching fsnotify events on the guest
++ * inode so guest watchers wake up exactly as if the change happened locally.
++ *
++ * The write format is one event per write():
++ *     "<mask_hex> <absolute_guest_path>\n"
++ * where mask is an FS_* bitmask (see include/linux/fsnotify_backend.h), e.g.
++ * FS_MODIFY (0x2) or FS_CREATE (0x100). fsnotify_dentry() propagates the event
++ * to the inode's own watchers and, via fsnotify_parent(), to a watcher on the
++ * containing directory (with the child name) - covering both file and dir
++ * watches from a single call.
++ *
++ * Interface is write-only and root-only (0200). The guest is single-tenant and
++ * the agent runs as root, so no finer capability check is needed.
++ */
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/proc_fs.h>
++#include <linux/uaccess.h>
++#include <linux/namei.h>
++#include <linux/dcache.h>
++#include <linux/fsnotify.h>
++#include <linux/fs.h>
++#include <linux/magic.h>
++#include <linux/slab.h>
++#include <linux/limits.h>
++#if IS_ENABLED(CONFIG_FUSE_FS)
++#include "../fuse/fuse_i.h"
++#endif
++
++/* Bound a single request: an FS_* mask in hex plus one absolute path. */
++#define SMOLVM_FSNOTIFY_MAX (PATH_MAX + 32)
++
++static ssize_t smolvm_fsnotify_write(struct file *file, const char __user *ubuf,
++				     size_t count, loff_t *ppos)
++{
++	char *kbuf, *pathstr;
++	struct path path;
++	struct dentry *parent = NULL;
++	struct name_snapshot name;
++	u32 mask;
++	int ret;
++
++	if (count == 0 || count >= SMOLVM_FSNOTIFY_MAX)
++		return -EINVAL;
++
++	kbuf = memdup_user_nul(ubuf, count);
++	if (IS_ERR(kbuf))
++		return PTR_ERR(kbuf);
++
++	/* Trim a trailing newline so the path token stays clean. */
++	if (kbuf[count - 1] == '\n')
++		kbuf[count - 1] = '\0';
++
++	/* Split "<mask_hex> <path>" on the first space. */
++	pathstr = strchr(kbuf, ' ');
++	if (!pathstr) {
++		ret = -EINVAL;
++		goto out;
++	}
++	*pathstr++ = '\0';
++	while (*pathstr == ' ' || *pathstr == '\t')
++		pathstr++;
++	if (*pathstr == '\0') {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	if (kstrtou32(kbuf, 16, &mask)) {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	ret = kern_path(pathstr, LOOKUP_FOLLOW, &path);
++	if (ret)
++		goto out;
++
++	/*
++	 * The host may have replaced this name with a different inode. The
++	 * virtiofs entry timeout would otherwise leave subsequent guest opens on
++	 * the old dentry after delivering the event. Expire the cached FUSE name
++	 * before waking watchers so their rescan resolves the current host inode.
++	 */
++	if (!IS_ROOT(path.dentry)) {
++		parent = dget_parent(path.dentry);
++		take_dentry_name_snapshot(&name, path.dentry);
++	}
++#if IS_ENABLED(CONFIG_FUSE_FS)
++	if (path.dentry->d_sb->s_magic == FUSE_SUPER_MAGIC)
++		fuse_invalidate_entry_cache(path.dentry);
++#endif
++	if (d_really_is_positive(path.dentry))
++		fsnotify_inode(d_inode(path.dentry), mask);
++	if (parent) {
++		fsnotify_name(mask, path.dentry, FSNOTIFY_EVENT_DENTRY,
++			      d_inode(parent), &name.name, 0);
++		fsnotify_inode(d_inode(parent), FS_MODIFY);
++		release_dentry_name_snapshot(&name);
++		dput(parent);
++	}
++	path_put(&path);
++
++	ret = count;
++out:
++	kfree(kbuf);
++	return ret;
++}
++
++static const struct proc_ops smolvm_fsnotify_ops = {
++	.proc_write	= smolvm_fsnotify_write,
++	.proc_lseek	= noop_llseek,
++};
++
++static int __init smolvm_fsnotify_init(void)
++{
++	proc_create("smolvm-fsnotify", 0200, NULL, &smolvm_fsnotify_ops);
++	return 0;
++}
++
++late_initcall(smolvm_fsnotify_init);
+-- 
+2.43.0

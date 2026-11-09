@@ -1,0 +1,6267 @@
+//! vsock client for communicating with the smolvm-agent.
+//!
+//! This module provides a client for sending requests to the agent
+//! and receiving responses.
+
+use crate::error::{Error, Result};
+use crate::platform::uds::UdsStream;
+use crate::registry::{extract_registry, rewrite_image_registry, RegistryAuth, RegistryConfig};
+use crate::settings::SmolSettings;
+use smolvm_protocol::normalize_image_ref;
+pub use smolvm_protocol::WorkloadTarget;
+use smolvm_protocol::{
+    encode_message, AgentRequest, AgentResponse, Envelope, FsNotifyEvent, ImageInfo, MemoryStatus,
+    OverlayInfo, StorageStatus, FILE_TRANSFER_MAX_TOTAL, FILE_WRITE_CHUNK_SIZE,
+    FILE_WRITE_SINGLE_SHOT_MAX, MAX_FRAME_SIZE, PROTOCOL_VERSION, WORKLOAD_TARGET_CAPABILITY,
+};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// Metadata applied to an uploaded file after it lands: permissions and
+/// ownership. Ownership matters for non-root workload images — a root-owned
+/// upload is unreadable/unwritable to the user the container actually runs as.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FileWriteMeta {
+    /// File mode (e.g. 0o644). None = the agent's default.
+    pub mode: Option<u32>,
+    /// Owner uid. None = leave as written.
+    pub uid: Option<u32>,
+    /// Owner gid. None = leave as written.
+    pub gid: Option<u32>,
+}
+
+impl FileWriteMeta {
+    /// The pre-existing mode-only shape, for callers without ownership needs.
+    pub fn mode_only(mode: Option<u32>) -> Self {
+        Self {
+            mode,
+            ..Self::default()
+        }
+    }
+}
+
+/// Events from a streaming exec session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecEvent {
+    /// Standard output data.
+    Stdout(Vec<u8>),
+    /// Standard error data.
+    Stderr(Vec<u8>),
+    /// Command exited with this code.
+    Exit(i32),
+    /// An error occurred.
+    Error(String),
+}
+
+/// One input event fed into a channel-driven interactive session
+/// ([`AgentClient::interactive_session_io`]). This decouples the interactive
+/// poll loop from the process's real stdin so the session can be driven by a
+/// remote transport (e.g. a WebSocket terminal) instead of a local TTY.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractiveInput {
+    /// Bytes to forward to the command's stdin.
+    Stdin(Vec<u8>),
+    /// Terminal resize (PTY window change).
+    Resize {
+        /// New terminal width in columns.
+        cols: u16,
+        /// New terminal height in rows.
+        rows: u16,
+    },
+    /// End of input — sends an empty stdin frame (EOF) to the command.
+    Eof,
+}
+
+/// One output chunk produced by a channel-driven interactive session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractiveOutput {
+    /// A chunk of bytes from the command's stdout.
+    Stdout(Vec<u8>),
+    /// A chunk of bytes from the command's stderr.
+    Stderr(Vec<u8>),
+}
+
+/// The input side of a channel-driven interactive session has closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputClosed;
+
+/// Sending half of a channel-driven interactive session's input.
+///
+/// The session loop waits in `poll()` on the agent socket, which a channel
+/// cannot interrupt: input queued while it waited was only noticed when the
+/// poll timed out, up to [`POLL_TIMEOUT_MS`] later. Every send therefore also
+/// writes one byte to a socket pair whose other end the loop polls beside the
+/// agent socket, so input is forwarded as soon as it arrives.
+///
+/// The channel is bounded: [`send`](Self::send) waits while the session has
+/// not taken earlier input, which is what carries the session's backpressure
+/// to whoever produces the input.
+#[derive(Clone)]
+pub struct InteractiveInputSender {
+    tx: tokio::sync::mpsc::Sender<InteractiveInput>,
+    #[cfg(unix)]
+    wake: Arc<UdsStream>,
+}
+
+/// Receiving half of a channel-driven interactive session's input; see
+/// [`InteractiveInputSender`].
+pub struct InteractiveInputReceiver {
+    rx: tokio::sync::mpsc::Receiver<InteractiveInput>,
+    #[cfg(unix)]
+    wake: UdsStream,
+}
+
+/// Create the two halves of a session's input channel, holding at most
+/// `capacity` events.
+pub fn interactive_input(
+    capacity: usize,
+) -> std::io::Result<(InteractiveInputSender, InteractiveInputReceiver)> {
+    let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+    #[cfg(unix)]
+    {
+        // Neither end may block: the sender runs on an async worker, and the
+        // receiver only reads after poll() says there is something to read.
+        let (sender_end, receiver_end) = UdsStream::pair()?;
+        sender_end.as_socket().set_nonblocking(true)?;
+        receiver_end.as_socket().set_nonblocking(true)?;
+        Ok((
+            InteractiveInputSender {
+                tx,
+                wake: Arc::new(sender_end),
+            },
+            InteractiveInputReceiver {
+                rx,
+                wake: receiver_end,
+            },
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok((
+            InteractiveInputSender { tx },
+            InteractiveInputReceiver { rx },
+        ))
+    }
+}
+
+impl InteractiveInputSender {
+    /// Queue one input event, waiting while the channel is full.
+    pub async fn send(&self, input: InteractiveInput) -> std::result::Result<(), InputClosed> {
+        self.tx.send(input).await.map_err(|_| InputClosed)?;
+        // A full wake buffer already holds a pending wake-up, so a failed
+        // write loses nothing.
+        #[cfg(unix)]
+        let _ = (&*self.wake).write(&[0]);
+        Ok(())
+    }
+}
+
+impl InteractiveInputReceiver {
+    /// The descriptor that becomes readable when input may be waiting, or -1
+    /// where sessions are not wired up (non-Unix hosts).
+    fn wake_fd(&self) -> crate::agent::terminal::Fd {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            self.wake.as_raw_fd()
+        }
+        #[cfg(not(unix))]
+        {
+            -1
+        }
+    }
+
+    /// Consume pending wake-ups. Returns `false` once every sender is gone, when
+    /// the descriptor reads as closed forever and must not be polled again.
+    fn drain_wake(&mut self) -> bool {
+        #[cfg(unix)]
+        {
+            let mut scratch = [0u8; 64];
+            loop {
+                match self.wake.read(&mut scratch) {
+                    Ok(0) => return false,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    // Nothing more to read for now.
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return true,
+                    // A broken descriptor would report ready forever.
+                    Err(_) => return false,
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    }
+
+    pub(crate) fn try_recv(
+        &mut self,
+    ) -> std::result::Result<InteractiveInput, tokio::sync::mpsc::error::TryRecvError> {
+        self.rx.try_recv()
+    }
+}
+
+// ============================================================================
+// Socket Timeout Constants
+// ============================================================================
+//
+// These timeouts control how long the client waits for various operations.
+// They balance between allowing slow operations to complete and failing fast
+// when the agent is unresponsive.
+
+/// Default socket read timeout (30 seconds).
+/// Used for most request/response operations. Long enough for the agent to
+/// process requests, short enough to detect hung connections.
+const DEFAULT_READ_TIMEOUT_SECS: u64 = 30;
+
+/// Default socket write timeout (10 seconds).
+/// Writes should complete quickly - if they don't, the connection is likely broken.
+const DEFAULT_WRITE_TIMEOUT_SECS: u64 = 10;
+
+/// Maximum time a framed request may make no write progress after the socket's
+/// own timeout expires. Concurrent large transfers can legitimately fill the
+/// guest RX queue; retrying from the exact byte offset provides backpressure
+/// without corrupting the length-prefixed protocol stream.
+const REQUEST_WRITE_IDLE_TIMEOUT_SECS: u64 = 30;
+
+/// Large file chunks get a wider backpressure window. A verifier artifact can
+/// be hundreds of MiB and several branches may upload at once, while each
+/// individual frame is still bounded by the protocol limit.
+const FILE_WRITE_IDLE_TIMEOUT_SECS: u64 = 120;
+
+fn write_all_with_idle_timeout<W: Write>(
+    writer: &mut W,
+    data: &[u8],
+    idle_timeout: Duration,
+) -> std::io::Result<()> {
+    let mut written = 0;
+    let mut last_progress = Instant::now();
+    while written < data.len() {
+        match writer.write(&data[written..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "agent socket accepted no bytes",
+                ));
+            }
+            Ok(count) => {
+                written += count;
+                last_progress = Instant::now();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if last_progress.elapsed() >= idle_timeout {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "agent socket made no write progress for {:.1}s",
+                            idle_timeout.as_secs_f64()
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    writer.flush()
+}
+
+#[cfg(test)]
+mod write_backpressure_tests {
+    use super::*;
+
+    struct PartialThenBlocked {
+        calls: usize,
+        output: Vec<u8>,
+    }
+
+    impl Write for PartialThenBlocked {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            if self.calls == 2 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+            }
+            let count = if self.calls == 1 {
+                data.len().min(3)
+            } else {
+                data.len()
+            };
+            self.output.extend_from_slice(&data[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn framed_write_resumes_after_partial_progress_and_backpressure() {
+        let mut writer = PartialThenBlocked {
+            calls: 0,
+            output: Vec::new(),
+        };
+        write_all_with_idle_timeout(&mut writer, b"complete frame", Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(writer.output, b"complete frame");
+    }
+
+    #[test]
+    fn framed_write_retries_platform_socket_timeout() {
+        struct TimedOutOnce {
+            blocked: bool,
+            output: Vec<u8>,
+        }
+        impl Write for TimedOutOnce {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if !self.blocked {
+                    self.blocked = true;
+                    return Err(std::io::Error::from(std::io::ErrorKind::TimedOut));
+                }
+                self.output.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = TimedOutOnce {
+            blocked: false,
+            output: Vec::new(),
+        };
+        write_all_with_idle_timeout(&mut writer, b"complete frame", Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(writer.output, b"complete frame");
+    }
+
+    #[test]
+    fn framed_write_bounds_a_peer_that_never_drains() {
+        struct Blocked;
+        impl Write for Blocked {
+            fn write(&mut self, _data: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let error = write_all_with_idle_timeout(&mut Blocked, b"frame", Duration::ZERO)
+            .expect_err("a permanently blocked peer must time out");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+}
+
+/// Read timeout for image pull operations (10 minutes).
+/// Image pulls can take a long time for large images over slow connections.
+pub(crate) const IMAGE_PULL_TIMEOUT_SECS: u64 = 600;
+
+/// Maximum silence while starting a detached container.
+///
+/// Archive flattening may take arbitrarily long, but the agent streams progress
+/// while work is advancing. Each progress response starts a fresh socket read,
+/// so this remains an inactivity timeout rather than a total operation limit.
+const DETACHED_START_TIMEOUT_SECS: u64 = 600;
+
+/// Resolve the detached-start read window, honoring `SMOLVM_START_TIMEOUT_SECS`
+/// (seconds, must be > 0). A pack-backed machine's FIRST boot unpacks the whole
+/// flattened layer into guest storage before the workload can start, which on a
+/// loaded disk takes minutes — a window sized for warm boots kills every cold
+/// one.
+fn detached_start_timeout() -> Duration {
+    let secs = std::env::var("SMOLVM_START_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DETACHED_START_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
+// (Removed INTERACTIVE_TIMEOUT_SECS — no-user-timeout execs now disable
+// the socket read timeout entirely, matching interactive_session behavior.)
+
+/// Buffer time added to user-specified timeouts (5 seconds).
+/// When users specify a command timeout, we add this buffer to the socket
+/// timeout to allow for protocol overhead and response transmission.
+const TIMEOUT_BUFFER_SECS: u64 = 5;
+
+/// Maximum silence between complete shutdown progress frames.
+/// A timeout is not permission to terminate a guest with unflushed storage.
+const SHUTDOWN_ACK_TIMEOUT_SECS: u64 = 5;
+/// Overall limit on a shutdown's storage flush, on top of the time the
+/// workload is given to exit.
+const SHUTDOWN_FLUSH_LIMIT_SECS: u64 = 120;
+
+struct ShutdownDeadlines {
+    idle: Instant,
+    hard: Instant,
+    idle_timeout: Duration,
+}
+
+impl ShutdownDeadlines {
+    fn new(now: Instant, idle_timeout: Duration, maximum: Duration) -> Self {
+        Self {
+            idle: now + idle_timeout,
+            hard: now + maximum,
+            idle_timeout,
+        }
+    }
+
+    fn next(&self) -> Instant {
+        self.idle.min(self.hard)
+    }
+
+    fn progress(&mut self, now: Instant) {
+        self.idle = now + self.idle_timeout;
+    }
+}
+
+fn shutdown_io_until(
+    deadline: Instant,
+    mut operation: impl FnMut() -> std::io::Result<usize>,
+) -> std::io::Result<usize> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "shutdown deadline exceeded",
+            ));
+        }
+        match operation() {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed",
+                ))
+            }
+            Ok(count) => return Ok(count),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Default read window for a guest-side flatten (overlay merge + tar of tens
+/// of GiB to the guest disk). The guest stays quiet while tar runs, so the
+/// window must cover the whole tar, not just the mount. Pack size is
+/// unbounded, so a fixed window cannot cover every pack — raise it for very
+/// large packs with `SMOLVM_FLATTEN_TIMEOUT_SECS`.
+const FLATTEN_TIMEOUT_DEFAULT_SECS: u64 = 900;
+
+/// Resolve the flatten read window, honoring `SMOLVM_FLATTEN_TIMEOUT_SECS`
+/// (seconds, must be > 0). Falls back to [`FLATTEN_TIMEOUT_DEFAULT_SECS`].
+fn flatten_timeout() -> Duration {
+    let secs = std::env::var("SMOLVM_FLATTEN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(FLATTEN_TIMEOUT_DEFAULT_SECS);
+    Duration::from_secs(secs)
+}
+
+// ============================================================================
+// I/O Constants
+// ============================================================================
+
+/// Buffer size for reading stdin during interactive sessions.
+const STDIN_BUF_SIZE: usize = 4096;
+
+/// Poll timeout in milliseconds for interactive I/O loops.
+/// Short enough for responsive SIGWINCH handling, long enough to avoid busy-waiting.
+const POLL_TIMEOUT_MS: i32 = 100;
+
+/// Poll interval while waiting for writer-queue capacity.
+///
+/// A short interval limits added stdin latency without busy-waiting.
+const BACKPRESSURE_POLL_TIMEOUT_MS: i32 = 5;
+
+/// Maximum frames buffered by the interactive writer.
+///
+/// When full, stdin polling stops, providing backpressure instead of buffering
+/// indefinitely. 64 × 4 KiB stdin frames encode to roughly 350 KiB worst case.
+const WRITER_QUEUE_FRAMES: usize = 64;
+
+/// Write timeout for the interactive writer thread.
+///
+/// A short timeout lets blocked writes periodically observe shutdown.
+/// `WouldBlock` is flow control and is retried from the current frame offset.
+const WRITER_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Exit code reported when a channel-driven interactive session ends because the
+/// remote peer (e.g. a WebSocket terminal) disconnected rather than the command
+/// exiting. 128 + SIGINT(2), matching the shell convention for an interrupted job.
+const DISCONNECT_EXIT_CODE: i32 = 130;
+
+/// RAII guard that resets the socket read timeout on drop.
+///
+/// Ensures the timeout is always restored, even if the operation
+/// returns early due to an error. Uses a cloned UnixStream handle
+/// (shares the underlying fd) to avoid borrow conflicts.
+pub struct ReadTimeoutGuard {
+    stream: UdsStream,
+}
+
+impl ReadTimeoutGuard {
+    /// Create a guard from a reference to the stream.
+    /// Clones the underlying fd so the guard doesn't borrow the original.
+    fn new(stream: &UdsStream) -> Option<Self> {
+        stream.try_clone().ok().map(|s| Self { stream: s })
+    }
+}
+
+impl Drop for ReadTimeoutGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self
+            .stream
+            .set_read_timeout(Some(Duration::from_secs(DEFAULT_READ_TIMEOUT_SECS)))
+        {
+            tracing::warn!(error = %e, "failed to reset socket read timeout to default");
+        }
+    }
+}
+
+/// Dedicated writer for interactive-session frames.
+///
+/// Keeping socket writes off the session loop lets it continue draining guest
+/// output while writes are blocked, avoiding the full-duplex deadlock in issue #926.
+/// A single writer also lets partial writes resume without corrupting framing.
+struct FrameWriter {
+    /// Queued frames, bounded by [`WRITER_QUEUE_FRAMES`]. Taken (dropped) during
+    /// shutdown so the thread's `recv` returns and `join` cannot deadlock.
+    tx: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+    /// First fatal write error, published for the session loop to pick up.
+    error: Arc<Mutex<Option<std::io::Error>>>,
+    /// Extra handle to the same socket, kept only to restore the default write
+    /// timeout once the thread is gone.
+    restore: UdsStream,
+}
+
+impl FrameWriter {
+    /// Clone `stream` and start the writer thread on the clone.
+    ///
+    /// Note that socket options are properties of the socket, not of the
+    /// descriptor, so the write timeout set here applies to the caller's handle
+    /// too. That is harmless — an interactive session performs no direct writes
+    /// while the thread lives — and [`Drop`] puts the default back.
+    fn spawn(stream: &UdsStream) -> Result<Self> {
+        let write_half = stream
+            .try_clone()
+            .map_err(|e| Error::agent("clone agent socket", e.to_string()))?;
+        let restore = stream
+            .try_clone()
+            .map_err(|e| Error::agent("clone agent socket", e.to_string()))?;
+        // Best effort; on failure the writer retains the inherited timeout.
+        if let Err(e) = write_half.set_write_timeout(Some(WRITER_WRITE_TIMEOUT)) {
+            tracing::debug!(error = %e, "could not shorten agent socket write timeout");
+        }
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITER_QUEUE_FRAMES);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let error = Arc::new(Mutex::new(None));
+
+        let thread_shutdown = Arc::clone(&shutdown);
+        let thread_error = Arc::clone(&error);
+        let handle = std::thread::Builder::new()
+            .name("smolvm-agent-writer".to_string())
+            .spawn(move || {
+                write_frames(write_half, rx, &thread_shutdown, &thread_error);
+            })
+            .map_err(|e| Error::agent("spawn writer thread", e.to_string()))?;
+
+        Ok(Self {
+            tx: Some(tx),
+            handle: Some(handle),
+            shutdown,
+            error,
+            restore,
+        })
+    }
+
+    /// Queue `frame` without blocking.
+    ///
+    /// Returns `Ok(None)` when queued and `Ok(Some(frame))` — the frame handed
+    /// back — when the queue is full, so the caller can hold it and stop reading
+    /// more input. `Err` means the writer thread is gone.
+    fn try_send(&self, frame: Vec<u8>) -> Result<Option<Vec<u8>>> {
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx,
+            None => return Err(self.writer_gone_error()),
+        };
+        match tx.try_send(frame) {
+            Ok(()) => Ok(None),
+            Err(std::sync::mpsc::TrySendError::Full(frame)) => Ok(Some(frame)),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(self.writer_gone_error()),
+        }
+    }
+
+    /// Take the writer's fatal error, if it has hit one.
+    fn take_error(&self) -> Option<std::io::Error> {
+        self.error.lock().ok().and_then(|mut slot| slot.take())
+    }
+
+    /// The error to report when the thread has exited: its own if it stored one,
+    /// otherwise a generic description.
+    fn writer_gone_error(&self) -> Error {
+        match self.take_error() {
+            Some(e) => Error::agent("send message", e.to_string()),
+            None => Error::agent("send message", "agent socket writer stopped".to_string()),
+        }
+    }
+}
+
+impl Drop for FrameWriter {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        // Drop the sender first: a thread parked in `recv` wakes on disconnect,
+        // and one parked in `write` sees the flag at its next timeout tick.
+        self.tx = None;
+        if let Some(handle) = self.handle.take() {
+            if handle.join().is_err() {
+                tracing::warn!("agent socket writer thread panicked");
+            }
+        }
+        if let Err(e) = self
+            .restore
+            .set_write_timeout(Some(Duration::from_secs(DEFAULT_WRITE_TIMEOUT_SECS)))
+        {
+            tracing::warn!(error = %e, "failed to reset socket write timeout to default");
+        }
+    }
+}
+
+/// How writing one frame ended.
+enum FrameOutcome {
+    /// Every byte reached the socket.
+    Done,
+    /// Shutdown was requested before the frame finished.
+    Abandoned,
+    /// The socket rejected the write.
+    Failed(std::io::Error),
+}
+
+/// Body of the writer thread: drain `rx` and write each frame in full.
+fn write_frames(
+    stream: UdsStream,
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    shutdown: &AtomicBool,
+    error: &Mutex<Option<std::io::Error>>,
+) {
+    let mut sink = &stream;
+    // `recv` ends when every sender is dropped, i.e. at session teardown.
+    while let Ok(frame) = rx.recv() {
+        let mut pos = 0;
+        let outcome = loop {
+            if pos == frame.len() {
+                break FrameOutcome::Done;
+            }
+            match sink.write(&frame[pos..]) {
+                Ok(0) => {
+                    break FrameOutcome::Failed(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "agent socket accepted no bytes",
+                    ))
+                }
+                Ok(n) => pos += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // The send timeout expired because the guest is not draining
+                    // yet — the very condition that used to abort the session.
+                    // Resume from `pos` unless we are shutting down.
+                    if shutdown.load(Ordering::Relaxed) {
+                        break FrameOutcome::Abandoned;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => break FrameOutcome::Failed(e),
+            }
+        };
+
+        match outcome {
+            FrameOutcome::Done => {
+                if let Err(e) = sink.flush() {
+                    store_writer_error(error, e);
+                    return;
+                }
+            }
+            FrameOutcome::Abandoned => {
+                close_write_half_if_truncated(&stream, pos);
+                return;
+            }
+            FrameOutcome::Failed(e) => {
+                store_writer_error(error, e);
+                close_write_half_if_truncated(&stream, pos);
+                return;
+            }
+        }
+    }
+}
+
+/// Close the write half after a partial frame.
+///
+/// Otherwise the peer can wait indefinitely for the remaining bytes or
+/// interpret subsequent data as part of the incomplete frame.
+fn close_write_half_if_truncated(stream: &UdsStream, written: usize) {
+    if written == 0 {
+        return;
+    }
+    tracing::debug!(
+        written,
+        "agent socket writer stopped mid-frame; closing the write half"
+    );
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+/// Hand as many queued frames as fit to the writer thread, in order.
+///
+/// Anything left in `pending` means the writer is behind; the session loop then
+/// stops taking new input until this drains, which is what keeps host memory
+/// bounded without ever blocking the loop's read side.
+fn pump_frames(
+    writer: &FrameWriter,
+    pending: &mut std::collections::VecDeque<Vec<u8>>,
+) -> Result<()> {
+    while let Some(frame) = pending.pop_front() {
+        if let Some(frame) = writer.try_send(frame)? {
+            pending.push_front(frame);
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Publish the writer thread's first fatal error.
+fn store_writer_error(slot: &Mutex<Option<std::io::Error>>, err: std::io::Error) {
+    tracing::debug!(error = %err, "agent socket writer failed");
+    if let Ok(mut slot) = slot.lock() {
+        if slot.is_none() {
+            *slot = Some(err);
+        }
+    }
+}
+
+/// Configuration for running a command interactively.
+#[derive(Debug, Clone)]
+pub struct RunConfig {
+    /// OCI image to run.
+    pub image: String,
+    /// Command and arguments to execute.
+    pub command: Vec<String>,
+    /// Environment variables as (key, value) pairs.
+    pub env: Vec<(String, String)>,
+    /// Working directory inside the container.
+    pub workdir: Option<String>,
+    /// User to execute as inside the container.
+    pub user: Option<String>,
+    /// Volume mounts as (tag, guest_path, read_only) tuples.
+    pub mounts: Vec<(String, String, bool)>,
+    /// Timeout for command execution.
+    pub timeout: Option<Duration>,
+    /// Whether to allocate a TTY.
+    pub tty: bool,
+    /// Persistent overlay ID. If set, the overlay persists across exec sessions
+    /// so filesystem changes (e.g. package installs) survive.
+    pub persistent_overlay_id: Option<String>,
+    /// Data to pipe to the command's stdin (non-interactive runs only). The
+    /// pipe is closed after writing so the command sees EOF.
+    pub stdin: Option<String>,
+    /// Run as an unprivileged container (restricted caps, ro cgroup, no extra
+    /// tmpfs). Default false = "VM-grade" (the microVM is the boundary).
+    pub unprivileged: bool,
+    /// Remote-volume mount script to run inside the workload container before
+    /// its (image-resolved) command. Set by the workload launcher; the agent
+    /// wraps the resolved command so the image's real entrypoint still runs.
+    pub s3_volumes: Vec<smolvm_protocol::S3Volume>,
+    /// Power the machine off once this detached workload exits. Only the
+    /// workload launcher sets it; exec sessions never do.
+    pub stop_vm_on_exit: bool,
+    /// Signal the detached workload is sent when the machine stops.
+    pub stop_signal: Option<String>,
+    /// Seconds the detached workload gets to exit after its stop signal.
+    pub stop_timeout_secs: Option<u64>,
+}
+
+impl RunConfig {
+    /// Create a new run configuration with the given image and command.
+    ///
+    /// The image reference is canonicalized immediately so all downstream
+    /// code (cache keys, logs, protocol messages) sees the same form
+    /// regardless of how the caller spelled it.
+    pub fn new(image: impl Into<String>, command: Vec<String>) -> Self {
+        Self {
+            image: normalize_image_ref(&image.into()),
+            command,
+            env: Vec::new(),
+            workdir: None,
+            user: None,
+            mounts: Vec::new(),
+            timeout: None,
+            tty: false,
+            persistent_overlay_id: None,
+            stdin: None,
+            unprivileged: false,
+            s3_volumes: Vec::new(),
+            stop_vm_on_exit: false,
+            stop_signal: None,
+            stop_timeout_secs: None,
+        }
+    }
+
+    /// Target an existing machine: the overlay it runs in AND the buckets it
+    /// mounts, which must travel together.
+    ///
+    /// These two facts were previously set independently at ~15 launch and exec
+    /// sites, and a site that set the overlay but forgot the volumes produced a
+    /// workload running in the right filesystem with its bucket silently
+    /// missing — an empty directory, not an error. Binding them to one call
+    /// means a site either targets a machine completely or not at all, and a
+    /// future per-machine fact is added here rather than at every caller.
+    ///
+    /// `env` is the environment the machine will actually see (request env and
+    /// resolved secrets merged over the record's), because that is where the
+    /// bucket credentials come from.
+    pub fn in_machine(
+        mut self,
+        record: &crate::config::VmRecord,
+        machine_name: &str,
+        env: &[(String, String)],
+    ) -> Self {
+        // A caller with no env of its own (an interactive session, say) still
+        // needs the machine's credentials, which live on the record.
+        let env = if env.is_empty() { &record.env } else { env };
+        self.s3_volumes = crate::remote_volume::to_s3_volumes(&record.remote_volumes, env);
+        self.persistent_overlay_id = Some(crate::workload::persistent_overlay_owner_with_lineage(
+            machine_name,
+            record.golden.as_deref(),
+            record.fork_overlay_owner.as_deref(),
+        ));
+        self
+    }
+
+    /// [`Self::in_machine`] for callers holding an optional record.
+    ///
+    /// A machine with no record (an ephemeral or bare-VM session) simply keeps
+    /// the config as-is, so a caller never has to branch on it.
+    pub fn in_machine_opt(
+        self,
+        record: Option<&crate::config::VmRecord>,
+        machine_name: &str,
+        env: &[(String, String)],
+    ) -> Self {
+        match record {
+            Some(record) => self.in_machine(record, machine_name, env),
+            None => self,
+        }
+    }
+
+    /// Set the remote-volume mount script run inside the workload container.
+    pub fn with_s3_volumes(mut self, volumes: Vec<smolvm_protocol::S3Volume>) -> Self {
+        self.s3_volumes = volumes;
+        self
+    }
+
+    /// Set environment variables.
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Set working directory.
+    pub fn with_workdir(mut self, workdir: Option<String>) -> Self {
+        self.workdir = workdir;
+        self
+    }
+
+    /// Set container user.
+    pub fn with_user(mut self, user: Option<String>) -> Self {
+        self.user = user;
+        self
+    }
+
+    /// Set volume mounts.
+    pub fn with_mounts(mut self, mounts: Vec<(String, String, bool)>) -> Self {
+        self.mounts = mounts;
+        self
+    }
+
+    /// Set timeout.
+    pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Enable TTY mode.
+    pub fn with_tty(mut self, tty: bool) -> Self {
+        self.tty = tty;
+        self
+    }
+
+    /// Set stdin data piped to the command (non-interactive runs).
+    pub fn with_stdin(mut self, stdin: Option<String>) -> Self {
+        self.stdin = stdin;
+        self
+    }
+
+    /// Set persistent overlay ID for cross-session filesystem persistence.
+    pub fn with_persistent_overlay(mut self, id: Option<String>) -> Self {
+        self.persistent_overlay_id = id;
+        self
+    }
+
+    /// Run as an unprivileged container (defense-in-depth for untrusted code).
+    pub fn with_unprivileged(mut self, unprivileged: bool) -> Self {
+        self.unprivileged = unprivileged;
+        self
+    }
+
+    /// Power the machine off once this detached workload exits.
+    pub fn with_stop_vm_on_exit(mut self, stop: bool) -> Self {
+        self.stop_vm_on_exit = stop;
+        self
+    }
+
+    /// How the detached workload is stopped when the machine stops.
+    pub fn with_stop(mut self, signal: Option<String>, timeout_secs: Option<u64>) -> Self {
+        self.stop_signal = signal;
+        self.stop_timeout_secs = timeout_secs;
+        self
+    }
+}
+
+/// Options for pulling an OCI image.
+///
+/// Use `PullOptions::new()` to create with defaults, then chain methods
+/// to customize behavior.
+///
+/// # Example
+///
+/// ```ignore
+/// let options = PullOptions::new()
+///     .oci_platform("linux/arm64")
+///     .use_registry_config(true)
+///     .progress(|cur, total, layer| println!("{}/{}: {}", cur, total, layer));
+///
+/// client.pull("alpine:latest", options)?;
+/// ```
+#[derive(Default)]
+pub struct PullOptions<F = fn(usize, usize, &str)>
+where
+    F: FnMut(usize, usize, &str),
+{
+    /// OCI platform to pull (e.g., "linux/arm64").
+    pub oci_platform: Option<String>,
+    /// Explicit authentication credentials.
+    pub auth: Option<RegistryAuth>,
+    /// Whether to load credentials from registry config file.
+    pub use_registry_config: bool,
+    /// Proxy URL applied to the in-VM registry client (HTTP_PROXY/HTTPS_PROXY).
+    pub proxy: Option<String>,
+    /// Comma-separated NO_PROXY list of hosts/CIDRs that bypass the proxy.
+    pub no_proxy: Option<String>,
+    /// Progress callback: (current, total, layer_id).
+    pub progress: Option<F>,
+}
+
+impl PullOptions<fn(usize, usize, &str)> {
+    /// Create new pull options with defaults.
+    pub fn new() -> Self {
+        Self {
+            oci_platform: None,
+            auth: None,
+            use_registry_config: false,
+            proxy: None,
+            no_proxy: None,
+            progress: None,
+        }
+    }
+}
+
+impl<F: FnMut(usize, usize, &str)> PullOptions<F> {
+    /// Set the target OCI platform (e.g., "linux/arm64").
+    pub fn oci_platform(mut self, oci_platform: impl Into<String>) -> Self {
+        self.oci_platform = Some(oci_platform.into());
+        self
+    }
+
+    /// Set explicit authentication credentials.
+    pub fn auth(mut self, auth: RegistryAuth) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// Enable loading credentials from registry config file.
+    ///
+    /// When enabled, loads `~/.config/smolvm/registries.toml` and
+    /// automatically provides credentials for matching registries.
+    /// Also applies registry mirrors if configured.
+    pub fn use_registry_config(mut self, enabled: bool) -> Self {
+        self.use_registry_config = enabled;
+        self
+    }
+
+    /// Set the proxy URL applied to the in-VM registry client.
+    pub fn proxy(mut self, proxy: impl Into<String>) -> Self {
+        self.proxy = Some(proxy.into());
+        self
+    }
+
+    /// Set the NO_PROXY list for the in-VM registry client.
+    pub fn no_proxy(mut self, no_proxy: impl Into<String>) -> Self {
+        self.no_proxy = Some(no_proxy.into());
+        self
+    }
+
+    /// Set a progress callback.
+    ///
+    /// The callback receives (current_percent, total=100, layer_id) for each layer.
+    pub fn progress<G: FnMut(usize, usize, &str)>(self, callback: G) -> PullOptions<G> {
+        PullOptions {
+            oci_platform: self.oci_platform,
+            auth: self.auth,
+            use_registry_config: self.use_registry_config,
+            proxy: self.proxy,
+            no_proxy: self.no_proxy,
+            progress: Some(callback),
+        }
+    }
+}
+
+/// Raw descriptor of the process's stdin, in the portable form the terminal
+/// poll loop expects. Unix: the real fd; Windows: the `STD_INPUT_HANDLE`
+/// console handle cast into the portable `Fd`.
+fn stdin_raw_fd() -> crate::agent::terminal::Fd {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        std::io::stdin().as_raw_fd()
+    }
+    #[cfg(not(unix))]
+    {
+        // SAFETY: GetStdHandle has no preconditions; it returns the process's
+        // standard-input HANDLE (or INVALID_HANDLE_VALUE), which the Windows
+        // poll loop interprets.
+        let handle = unsafe {
+            windows_sys::Win32::System::Console::GetStdHandle(
+                windows_sys::Win32::System::Console::STD_INPUT_HANDLE,
+            )
+        };
+        handle as crate::agent::terminal::Fd
+    }
+}
+
+/// Check if a shutdown receive error is a benign race condition.
+///
+/// During shutdown the VM may tear down before the ack response is flushed,
+/// causing EAGAIN, connection reset, or similar errors. These are expected
+/// and don't indicate a problem — sync() has likely already completed.
+fn is_benign_shutdown_error(error_str: &str) -> bool {
+    error_str.contains("os error 35") // EAGAIN on macOS
+        || error_str.contains("os error 11") // EAGAIN on Linux
+        || error_str.contains("temporarily unavailable")
+        || error_str.contains("Connection reset")
+        || error_str.contains("connection reset")
+}
+
+/// Resolve credentials for the registry that will actually receive the pull.
+fn registry_pull_credentials(
+    config: &RegistryConfig,
+    effective_image: &str,
+    explicit: Option<RegistryAuth>,
+) -> Option<RegistryAuth> {
+    // A local archive or directory never reaches a registry. Asking the Docker
+    // credential helper anyway costs its whole timeout when the helper hangs.
+    if crate::data::image_source::is_local_ref(effective_image) {
+        return None;
+    }
+    let registry = extract_registry(effective_image);
+    explicit
+        .or_else(|| {
+            config.get_credentials(&registry).inspect(|creds| {
+                tracing::debug!(registry = %registry, username = %creds.username, "using configured registry credentials");
+            })
+        })
+        .or_else(|| {
+            crate::docker_config::credential_for(&registry).map(|cred| {
+                tracing::debug!(registry = %registry, username = %cred.username, "using host docker credentials");
+                RegistryAuth {
+                    username: cred.username,
+                    password: cred.secret,
+                }
+            })
+        })
+}
+
+/// Client for communicating with the smolvm-agent.
+pub struct AgentClient {
+    stream: UdsStream,
+    /// Trace ID for correlating this client session's requests with host API calls.
+    trace_id: Option<String>,
+    /// Filesystem this connection's file requests act on; see [`Self::use_target`].
+    file_target: Option<WorkloadTarget>,
+    /// The agent's advertised capabilities, read once per connection.
+    capabilities: Option<Vec<String>>,
+    /// Cumulative output ceiling of a streaming exec on this connection; see
+    /// [`MAX_STREAMING_EXEC_OUTPUT`] and [`Self::set_streaming_output_cap`].
+    streaming_output_cap: Option<usize>,
+}
+
+fn stalled_read_error(bytes_read: usize, propagate_initial_wouldblock: bool) -> std::io::Error {
+    if bytes_read == 0 && propagate_initial_wouldblock {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "timed out waiting for an agent response frame",
+        )
+    } else {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out reading frame body: peer stalled mid-frame",
+        )
+    }
+}
+
+// ============================================================================
+// Response match helpers
+// ============================================================================
+
+/// The host error for an agent error response: codes a caller can act on map
+/// to their kind; the rest stay generic agent errors.
+fn agent_error(op: &str, message: String, code: Option<&str>) -> Error {
+    match code {
+        Some(smolvm_protocol::error_codes::OVERLAY_IMAGE_CONFLICT) => {
+            Error::agent_conflict(op, message)
+        }
+        _ => Error::agent(op, message),
+    }
+}
+
+/// Translate an agent error that is really a protocol-version skew.
+///
+/// An agent replying `invalid request: unknown variant `X` …` is older than
+/// this CLI: its deserializer has no such request tag, which is what a stock
+/// older agent-rootfs under a newer binary produces (a 1.7.7 agent receiving
+/// `flatten_layers` from a 1.8+ `pack create --from-vm`, say — see #951). Old
+/// agents in the field already emit exactly this text, so matching the string
+/// is the only translation possible for them; the prefix comes from the
+/// agent's own request loop (`invalid request: {serde error}` in
+/// smolvm-agent's `main.rs`), which must keep it stable. Anything else passes
+/// through untouched.
+///
+/// Applied once, in [`AgentClient::receive`], as the response enters — so the
+/// shared match helpers and every inline `AgentResponse::Error` match
+/// (`branchpoint_*`, `pod_*`, …) all see the rewritten message.
+fn describe_agent_error(message: String) -> String {
+    let Some(rest) = message.strip_prefix("invalid request: unknown variant `") else {
+        return message;
+    };
+    let Some((variant, _)) = rest.split_once('`') else {
+        return message;
+    };
+    format!(
+        "the machine's guest agent is older than this CLI and does not support the \
+         '{variant}' request. Install the agent rootfs from this smolvm release (reinstall \
+         smolvm, or set SMOLVM_AGENT_ROOTFS to a matching rootfs), then restart the machine"
+    )
+}
+
+/// Extract typed data from an `Ok` response.
+fn expect_data<T: serde::de::DeserializeOwned>(resp: AgentResponse, op: &str) -> Result<T> {
+    match resp {
+        AgentResponse::Ok {
+            data: Some(data), ..
+        } => {
+            serde_json::from_value(data).map_err(|e| Error::agent("parse response", e.to_string()))
+        }
+        AgentResponse::Error { message, code } => Err(agent_error(op, message, code.as_deref())),
+        _ => Err(Error::agent(op, "unexpected response type")),
+    }
+}
+
+/// Give a PTY session a `TERM` unless the caller already set one.
+///
+/// A shell's line editor needs `TERM` to look up the terminal's cursor-movement
+/// capabilities. Without it the edit still happens — the buffer is correct — but
+/// the redraw is not: the screen never catches up, so backspace looks like it
+/// advances the cursor and deletes nothing. zsh's ZLE is strict here; bash's
+/// readline has built-in fallbacks and hides the problem.
+///
+/// The host's own `TERM` is deliberately NOT forwarded. An exotic value
+/// (`alacritty`, `foot`, …) often has no terminfo entry inside a slim container
+/// image, which fails exactly the same way — so a value every image ships with
+/// is the safer default. It also matches the `TERM` the launcher and OCI paths
+/// already set. Callers wanting something else pass `TERM` in `env` explicitly.
+fn with_term_default(mut env: Vec<(String, String)>, tty: bool) -> Vec<(String, String)> {
+    if tty && !env.iter().any(|(key, _)| key == "TERM") {
+        env.push(("TERM".to_string(), "xterm-256color".to_string()));
+    }
+    env
+}
+
+/// Expect an `Ok` response, ignoring any data.
+/// A typed branchpoint step's protocol outcome: `Err` carries the agent's
+/// error code (one of `smolvm_protocol::forkpoint::typed_error`) so the host
+/// can tell "no branchpoint declared" from "the helper went silent".
+pub type BranchpointOutcome<T> = std::result::Result<T, BranchpointFailure>;
+
+/// Everything a held clone needs to become a working branch: its per-clone
+/// parameters in both file forms, where to put them, and the idempotency token.
+#[derive(Debug, Clone)]
+pub struct BranchpointActivation {
+    pub env_dotenv: String,
+    pub env_sourceable: String,
+    pub env_path: String,
+    pub branch_env_path: String,
+    /// Must already exist (the clone's merged overlay root for image machines).
+    pub require_dir: Option<String>,
+    pub env_dir: String,
+    pub activation_token: String,
+}
+
+/// Why a typed branchpoint step did not succeed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchpointFailure {
+    /// The protocol error code, when the agent supplied one.
+    pub code: Option<String>,
+    /// The agent's explanation.
+    pub message: String,
+}
+
+impl std::fmt::Display for BranchpointFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+fn branchpoint_outcome<T>(
+    resp: AgentResponse,
+    from_data: impl FnOnce(Option<serde_json::Value>) -> T,
+) -> Result<BranchpointOutcome<T>> {
+    match resp {
+        AgentResponse::Ok { data } => Ok(Ok(from_data(data))),
+        AgentResponse::Error { message, code } => Ok(Err(BranchpointFailure { code, message })),
+        other => Err(Error::agent(
+            "branchpoint",
+            format!("unexpected response: {other:?}"),
+        )),
+    }
+}
+
+fn expect_ok(resp: AgentResponse, op: &str) -> Result<()> {
+    match resp {
+        AgentResponse::Ok { .. } => Ok(()),
+        AgentResponse::Error { message, code } => Err(agent_error(op, message, code.as_deref())),
+        _ => Err(Error::agent(op, "unexpected response type")),
+    }
+}
+
+/// Extract exit code, stdout, stderr from a `Completed` response.
+fn expect_completed(resp: AgentResponse, op: &str) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+    match resp {
+        AgentResponse::Completed {
+            exit_code,
+            stdout,
+            stderr,
+        } => Ok((exit_code, stdout, stderr)),
+        AgentResponse::Error { message, code } => Err(agent_error(op, message, code.as_deref())),
+        _ => Err(Error::agent(op, "unexpected response type")),
+    }
+}
+
+/// Whether a failed agent connect is worth retrying: the guest or its vsock
+/// muxer is briefly not ready, or turned the connection away.
+fn is_transient_connect_error(error_msg: &str) -> bool {
+    // Connection refused/reset are transient during VM startup.
+    // "No such file or directory" occurs when the vsock socket
+    // file hasn't been created yet by libkrun's muxer thread —
+    // transient under concurrent boot contention. A connect the
+    // guest hangs up mid-handshake (socket2 reports "no error set
+    // after POLLHUP") is a refusal too: a guest busy with many
+    // connections turns one away and accepts the next.
+    error_msg.contains("Connection refused")
+        || error_msg.contains("no error set after POLLHUP")
+        || error_msg.contains("connection refused")
+        || error_msg.contains("Connection reset")
+        || error_msg.contains("connection reset")
+        || error_msg.contains("Broken pipe")
+        || error_msg.contains("Resource temporarily unavailable")
+        || error_msg.contains("No such file or directory")
+}
+
+#[cfg(test)]
+impl AgentClient {
+    /// Build an `AgentClient` from a pre-connected `UnixStream`.
+    ///
+    /// Test-only: production code must go through [`AgentClient::connect`]
+    /// so socket timeouts are configured correctly. Used by the regression
+    /// tests that drive the client against a `UdsStream::pair()`.
+    pub(crate) fn from_stream(stream: UdsStream) -> Self {
+        Self {
+            stream,
+            trace_id: None,
+            file_target: None,
+            capabilities: None,
+            streaming_output_cap: Some(MAX_STREAMING_EXEC_OUTPUT),
+        }
+    }
+}
+
+impl AgentClient {
+    /// A second handle to this client's connection, so another thread can
+    /// shut it down (see `ExecCancel`) while this one is blocked reading.
+    pub(crate) fn clone_stream(&self) -> std::io::Result<UdsStream> {
+        self.stream.try_clone()
+    }
+    /// Set socket read timeout, returning an error if it fails.
+    ///
+    /// This is a helper to ensure timeout failures are always handled properly,
+    /// preventing indefinite hangs on read operations.
+    fn set_read_timeout(&self, timeout: Duration) -> Result<()> {
+        self.stream.set_read_timeout(Some(timeout)).map_err(|e| {
+            Error::agent(
+                "set read timeout",
+                format!("failed to set socket read timeout to {:?}: {}", timeout, e),
+            )
+        })
+    }
+
+    /// Connect to the agent via Unix socket.
+    ///
+    /// # Arguments
+    ///
+    /// * `socket_path` - Path to the vsock Unix socket
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Connection to the socket fails
+    /// - Socket timeouts cannot be configured (prevents indefinite hangs)
+    pub fn connect(socket_path: impl AsRef<Path>) -> Result<Self> {
+        Self::connect_once(socket_path.as_ref())
+    }
+
+    /// Connect to the agent with retry logic for transient failures.
+    ///
+    /// This is useful when the agent might be temporarily unavailable
+    /// (e.g., during high load or brief network issues).
+    pub fn connect_with_retry(socket_path: impl AsRef<Path>) -> Result<Self> {
+        use crate::util::{retry_with_backoff, RetryConfig};
+
+        let path = socket_path.as_ref();
+
+        retry_with_backoff(
+            RetryConfig::for_connection(),
+            "agent connect",
+            || Self::connect_once(path),
+            |e| is_transient_connect_error(&e.to_string()),
+        )
+    }
+
+    /// Connect with a short timeout, for use during startup ping probes.
+    /// Uses 100ms read timeout instead of 30s to fail fast during boot.
+    /// The agent completes init in ~130ms of guest uptime, so 100ms is enough
+    /// to detect a ready agent without wasting time on a full 1s timeout.
+    pub fn connect_with_short_timeout(socket_path: impl AsRef<Path>) -> Result<Self> {
+        Self::connect_with_timeouts_ms(socket_path.as_ref(), 100, 100)
+    }
+
+    /// Connect with a moderate timeout, for state-probe "is this agent alive"
+    /// checks from `machine ls` / `machine status`. 3 seconds is long enough
+    /// to avoid false "unreachable" readings when the agent is momentarily
+    /// busy (e.g., processing a Run request's overlayfs setup), but short
+    /// enough to not make `ls` feel sluggish when the agent is truly dead.
+    pub fn connect_for_state_probe(socket_path: impl AsRef<Path>) -> Result<Self> {
+        Self::connect_with_timeouts_ms(socket_path.as_ref(), 3000, 3000)
+    }
+
+    /// Connect with a very short timeout for boot-time probe cycles.
+    /// Uses 5ms timeout to minimize blocking between ready-marker checks.
+    /// Only used in the fallback path (old agents without ready markers).
+    pub fn connect_with_boot_probe_timeout(socket_path: impl AsRef<Path>) -> Result<Self> {
+        Self::connect_with_timeouts_ms(socket_path.as_ref(), 5, 5)
+    }
+
+    /// Connect to a restored clone while allowing its resumed vsock transport
+    /// to complete the handshake. Reopening 5 ms boot probes can fill the
+    /// restored RX queue before the agent receives any ping payload.
+    pub fn connect_with_clone_ready_timeout(socket_path: impl AsRef<Path>) -> Result<Self> {
+        Self::connect_with_timeouts_ms(socket_path.as_ref(), 1000, 1000)
+    }
+
+    /// Internal connect implementation (single attempt).
+    fn connect_once(socket_path: &Path) -> Result<Self> {
+        Self::connect_with_timeouts(
+            socket_path,
+            DEFAULT_READ_TIMEOUT_SECS,
+            DEFAULT_WRITE_TIMEOUT_SECS,
+        )
+    }
+
+    /// Connect for a periodic sampler: one short timeout for the connect and
+    /// every read and write, so a sampler thread never waits long on a guest
+    /// that is paused or shutting down.
+    pub(crate) fn connect_for_sampling(socket_path: &Path, timeout: Duration) -> Result<Self> {
+        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        Self::connect_with_timeouts_ms(socket_path, ms, ms)
+    }
+
+    /// Connect to the agent socket and configure read/write timeouts (in seconds).
+    fn connect_with_timeouts(socket_path: &Path, read_secs: u64, write_secs: u64) -> Result<Self> {
+        Self::connect_with_timeouts_ms(socket_path, read_secs * 1000, write_secs * 1000)
+    }
+
+    /// Connect to the agent socket and configure read/write timeouts (in milliseconds).
+    fn connect_with_timeouts_ms(socket_path: &Path, read_ms: u64, write_ms: u64) -> Result<Self> {
+        let stream = UdsStream::connect_timeout(socket_path, Duration::from_millis(read_ms.max(1)))
+            .map_err(|e| Error::agent("connect to agent", e.to_string()))?;
+
+        stream
+            .set_read_timeout(Some(Duration::from_millis(read_ms)))
+            .map_err(|e| Error::agent("set read timeout", e.to_string()))?;
+        stream
+            .set_write_timeout(Some(Duration::from_millis(write_ms)))
+            .map_err(|e| Error::agent("set write timeout", e.to_string()))?;
+
+        Ok(Self {
+            stream,
+            trace_id: None,
+            file_target: None,
+            capabilities: None,
+            streaming_output_cap: Some(MAX_STREAMING_EXEC_OUTPUT),
+        })
+    }
+
+    /// Change the cumulative output ceiling of streaming execs on this
+    /// connection (`None`: no ceiling). Only a caller that hands every event
+    /// straight to a consumer that pushes back, such as the CLI writing to its
+    /// own stdout, should lift it: the ceiling is what stops a guest that never
+    /// stops writing when nobody is reading any more.
+    pub fn set_streaming_output_cap(&mut self, cap: Option<usize>) {
+        self.streaming_output_cap = cap;
+    }
+
+    /// Set a trace ID for correlating this client session's requests with host API calls.
+    /// All subsequent requests will include this trace_id in the Envelope.
+    pub fn set_trace_id(&mut self, trace_id: String) {
+        self.trace_id = Some(trace_id);
+    }
+
+    /// Encode a request wrapped in an Envelope with the current trace_id.
+    fn encode_traced(&self, req: &AgentRequest) -> Result<Vec<u8>> {
+        let envelope = Envelope::with_trace_id(req, self.trace_id.clone());
+        encode_message(&envelope).map_err(|e| Error::agent("encode message", e.to_string()))
+    }
+
+    /// Send a request and receive a response.
+    fn request(&mut self, req: &AgentRequest) -> Result<AgentResponse> {
+        self.request_with_write_idle_timeout(
+            req,
+            Duration::from_secs(REQUEST_WRITE_IDLE_TIMEOUT_SECS),
+        )
+    }
+
+    fn request_with_write_idle_timeout(
+        &mut self,
+        req: &AgentRequest,
+        idle_timeout: Duration,
+    ) -> Result<AgentResponse> {
+        // Encode and send request
+        let data = self.encode_traced(req)?;
+        write_all_with_idle_timeout(&mut self.stream, &data, idle_timeout)
+            .map_err(|e| Error::agent("send message", e.to_string()))?;
+
+        // Read response
+        self.receive()
+    }
+
+    fn ping_info(&mut self) -> Result<(u32, Vec<String>)> {
+        let resp = self.request(&AgentRequest::Ping)?;
+
+        match resp {
+            AgentResponse::Pong {
+                version,
+                capabilities,
+            } => {
+                if version != PROTOCOL_VERSION {
+                    tracing::warn!(
+                        host_version = PROTOCOL_VERSION,
+                        agent_version = version,
+                        "protocol version mismatch — agent may be outdated or newer than host"
+                    );
+                }
+                Ok((version, capabilities))
+            }
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("ping", message, code.as_deref()))
+            }
+            _ => Err(Error::agent("ping", "unexpected response type")),
+        }
+    }
+
+    /// Ping the helper daemon and validate the protocol version.
+    ///
+    /// Returns the agent's protocol version. Logs a warning if the version
+    /// doesn't match the host's expected version.
+    pub fn ping(&mut self) -> Result<u32> {
+        self.ping_info().map(|(version, _)| version)
+    }
+
+    /// Return whether the live guest agent advertises an optional feature.
+    /// An agent's capabilities are fixed for its lifetime, so they are read
+    /// once per connection.
+    pub fn supports_capability(&mut self, capability: &str) -> Result<bool> {
+        if self.capabilities.is_none() {
+            self.capabilities = Some(self.ping_info()?.1);
+        }
+        Ok(self
+            .capabilities
+            .iter()
+            .flatten()
+            .any(|advertised| advertised == capability))
+    }
+
+    /// Point this connection's file requests (read, write, list, archive) at
+    /// `target`, so they see exactly the filesystem an `exec` with the same
+    /// target sees. A container target's image is pulled first if missing.
+    ///
+    /// An agent that predates [`WORKLOAD_TARGET_CAPABILITY`] infers the
+    /// filesystem itself from what is mounted and running, so for a container
+    /// target this makes that overlay the one it infers, as hosts did before
+    /// targets existed.
+    pub fn use_target(&mut self, target: WorkloadTarget) -> Result<()> {
+        if let WorkloadTarget::Container { image, .. } = &target {
+            if self.query(image)?.is_none() {
+                self.pull_with_registry_config(image)?;
+            }
+        }
+        if self.supports_capability(WORKLOAD_TARGET_CAPABILITY)? {
+            self.file_target = Some(target);
+            return Ok(());
+        }
+        self.file_target = None;
+        let WorkloadTarget::Container { image, overlay_id } = target else {
+            // Older agents infer the destination of a file operation from
+            // mounted overlays. On a bare VM, a prior run(image) can leave one
+            // mounted, so an unqualified write would silently land in that
+            // container instead of the VM where exec reads it. Permit the
+            // legacy path only when there is no persistent overlay to infer.
+            let (code, _, stderr) = self.vm_exec(
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    r#"for root in /storage/overlays/persistent-*/merged; do
+                         if [ -d "$root/bin" ] || [ -d "$root/usr" ]; then exit 1; fi
+                       done"#
+                        .into(),
+                ],
+                Vec::new(),
+                None,
+                Some(Duration::from_secs(10)),
+                None,
+            )?;
+            return match code {
+                0 => Ok(()),
+                1 => Err(Error::agent(
+                    "select VM filesystem",
+                    "this guest agent cannot target bare VM files after an image run; upgrade the guest agent and restart the machine",
+                )),
+                _ => Err(Error::agent(
+                    "select VM filesystem",
+                    format!(
+                        "could not verify the filesystem for this older guest agent (exit {code}): {}",
+                        String::from_utf8_lossy(&stderr).trim()
+                    ),
+                )),
+            };
+        };
+        // Newer agents prepare the overlay without executing an image command;
+        // only agents older than both capabilities need the legacy probe.
+        self.prepare_file_access(&image, &overlay_id)?;
+        Ok(())
+    }
+
+    /// Replay host-originated filesystem changes into the guest as fsnotify
+    /// events so inotify-based watchers on `-v` mounts fire. Used by the host
+    /// [`FsNotifyWatcher`](super::FsNotifyWatcher); a stale connection surfaces as
+    /// an error the watcher treats as "VM gone, stop".
+    pub fn fsnotify(&mut self, events: Vec<FsNotifyEvent>) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        match self.request(&AgentRequest::FsNotify { events })? {
+            AgentResponse::Ok { .. } => Ok(()),
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("fsnotify", message, code.as_deref()))
+            }
+            _ => Err(Error::agent("fsnotify", "unexpected response type")),
+        }
+    }
+
+    /// Pull an OCI image with the given options.
+    ///
+    /// This is the primary pull method. Use `PullOptions` to configure
+    /// authentication, platform, and progress tracking.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Simple pull
+    /// client.pull("alpine:latest", PullOptions::new())?;
+    ///
+    /// // Pull with registry config (loads credentials from config file)
+    /// client.pull("ghcr.io/owner/repo", PullOptions::new().use_registry_config(true))?;
+    ///
+    /// // Pull with explicit auth and progress
+    /// client.pull("private.registry/image", PullOptions::new()
+    ///     .auth(RegistryAuth { username: "user".into(), password: "pass".into() })
+    ///     .progress(|cur, total, layer| eprintln!("{}%", cur)))?;
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This operation uses a 10-minute timeout to accommodate large images.
+    pub fn pull<F: FnMut(usize, usize, &str)>(
+        &mut self,
+        image: &str,
+        options: PullOptions<F>,
+    ) -> Result<ImageInfo> {
+        let original_image = normalize_image_ref(image);
+        // Resolve effective image and auth based on options
+        let (effective_image, effective_auth) = if options.use_registry_config {
+            let registry_config = SmolSettings::load().unwrap_or_default().images;
+            let registry = extract_registry(image);
+
+            // Apply mirror if configured
+            let img = if let Some(mirror) = registry_config.get_mirror(&registry) {
+                let mirrored = rewrite_image_registry(image, mirror);
+                tracing::debug!(
+                    original = %image,
+                    mirrored = %mirrored,
+                    mirror = %mirror,
+                    "using registry mirror"
+                );
+                mirrored
+            } else {
+                image.to_string()
+            };
+
+            // Credentials must be scoped to the registry that receives the
+            // request. A mirror is a different host and cannot inherit the
+            // upstream registry's saved token or Docker login credentials.
+            let auth = registry_pull_credentials(&registry_config, &img, options.auth);
+            (img, auth)
+        } else {
+            (image.to_string(), options.auth)
+        };
+
+        let effective_image = normalize_image_ref(&effective_image);
+        let cache_as = (effective_image != original_image).then_some(original_image);
+        let request = AgentRequest::Pull {
+            image: effective_image,
+            cache_as,
+            oci_platform: options.oci_platform,
+            auth: effective_auth,
+            proxy: options.proxy,
+            no_proxy: options.no_proxy,
+        };
+        self.pull_image_internal(request, options.progress)
+    }
+
+    /// Internal implementation of image pull.
+    fn pull_image_internal<F: FnMut(usize, usize, &str)>(
+        &mut self,
+        request: AgentRequest,
+        mut progress: Option<F>,
+    ) -> Result<ImageInfo> {
+        // Use a long timeout for pull - large images can take minutes to download/extract.
+        // The guard resets the timeout on drop (including error paths).
+        self.set_read_timeout(Duration::from_secs(IMAGE_PULL_TIMEOUT_SECS))?;
+        let _timeout_guard = ReadTimeoutGuard::new(&self.stream);
+
+        // Send the pull request
+        let data = self.encode_traced(&request)?;
+
+        self.stream
+            .write_all(&data)
+            .map_err(|e| Error::agent("send request", e.to_string()))?;
+
+        // Read responses - loop until we get Ok or Error (skip Progress)
+        loop {
+            match self.receive()? {
+                AgentResponse::Progress {
+                    percent,
+                    layer,
+                    message: _,
+                } => {
+                    if let Some(ref mut cb) = progress {
+                        let current = percent.unwrap_or(0) as usize;
+                        let layer_id = layer.as_deref().unwrap_or("");
+                        cb(current, 100, layer_id);
+                    }
+                }
+                AgentResponse::Ok { data: Some(data) } => {
+                    return serde_json::from_value(data)
+                        .map_err(|e| Error::agent("parse response", e.to_string()));
+                }
+                AgentResponse::Error { message, .. } => {
+                    return Err(Error::agent("pull image", message));
+                }
+                _ => {
+                    return Err(Error::agent("pull image", "unexpected response type"));
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // Convenience methods for common pull patterns
+    // =========================================================================
+
+    /// Pull an OCI image with default options.
+    ///
+    /// Shorthand for `pull(image, PullOptions::new())`.
+    pub fn pull_simple(&mut self, image: &str) -> Result<ImageInfo> {
+        self.pull(image, PullOptions::new())
+    }
+
+    /// Pull an OCI image with automatic registry credential lookup.
+    ///
+    /// Loads credentials from `~/.config/smolvm/registries.toml` and applies
+    /// registry mirrors if configured.
+    ///
+    /// Shorthand for `pull(image, PullOptions::new().use_registry_config(true))`.
+    pub fn pull_with_registry_config(&mut self, image: &str) -> Result<ImageInfo> {
+        self.pull(image, PullOptions::new().use_registry_config(true))
+    }
+
+    /// Pull an OCI image with registry config and progress callback.
+    pub fn pull_with_registry_config_and_progress<F: FnMut(usize, usize, &str)>(
+        &mut self,
+        image: &str,
+        oci_platform: Option<&str>,
+        proxy: Option<&str>,
+        no_proxy: Option<&str>,
+        progress: F,
+    ) -> Result<ImageInfo> {
+        let mut opts = PullOptions::new()
+            .use_registry_config(true)
+            .progress(progress);
+        if let Some(p) = oci_platform {
+            opts = opts.oci_platform(p);
+        }
+        if let Some(p) = proxy {
+            opts = opts.proxy(p);
+        }
+        if let Some(np) = no_proxy {
+            opts = opts.no_proxy(np);
+        }
+        self.pull(image, opts)
+    }
+
+    /// Query if an image exists locally.
+    pub fn query(&mut self, image: &str) -> Result<Option<ImageInfo>> {
+        let resp = self.request(&AgentRequest::Query {
+            image: image.to_string(),
+        })?;
+
+        match resp {
+            AgentResponse::Ok { data: Some(data) } => {
+                let info: ImageInfo = serde_json::from_value(data)
+                    .map_err(|e| Error::agent("parse response", e.to_string()))?;
+                Ok(Some(info))
+            }
+            AgentResponse::Error { code, .. } if code.as_deref() == Some("NOT_FOUND") => Ok(None),
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("query image", message, code.as_deref()))
+            }
+            _ => Err(Error::agent("query image", "unexpected response type")),
+        }
+    }
+
+    /// List all cached images.
+    pub fn list_images(&mut self) -> Result<Vec<ImageInfo>> {
+        let resp = self.request(&AgentRequest::ListImages)?;
+        expect_data(resp, "list images")
+    }
+
+    /// Run garbage collection.
+    ///
+    /// # Arguments
+    ///
+    /// * `dry_run` - If true, only report what would be deleted
+    /// * `purge_all` - If true, delete all manifests/configs first so all layers are collected
+    pub fn garbage_collect(&mut self, dry_run: bool, purge_all: bool) -> Result<u64> {
+        let resp = self.request(&AgentRequest::GarbageCollect { dry_run, purge_all })?;
+
+        match resp {
+            AgentResponse::Ok { data: Some(data) } => {
+                let freed = data["freed_bytes"].as_u64().unwrap_or(0);
+                Ok(freed)
+            }
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("garbage collect", message, code.as_deref()))
+            }
+            _ => Err(Error::agent("garbage collect", "unexpected response type")),
+        }
+    }
+
+    /// Prepare an overlay filesystem for a workload.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - Image reference
+    /// * `workload_id` - Unique workload identifier
+    pub fn prepare_overlay(&mut self, image: &str, workload_id: &str) -> Result<OverlayInfo> {
+        let resp = self.request(&AgentRequest::PrepareOverlay {
+            image: image.to_string(),
+            workload_id: workload_id.to_string(),
+        })?;
+        expect_data(resp, "prepare overlay")
+    }
+
+    /// Make the persistent image filesystem available to file operations
+    /// without executing a command from the image.
+    pub fn prepare_file_access(&mut self, image: &str, workload_id: &str) -> Result<()> {
+        if !self.supports_capability(smolvm_protocol::PREPARE_FILE_ACCESS_CAPABILITY)? {
+            // Older guests do not understand the new request. Preserve their
+            // existing file API behavior until their rootfs is upgraded.
+            self.run_non_interactive(
+                RunConfig::new(image.to_string(), vec!["/bin/true".to_string()])
+                    .with_persistent_overlay(Some(workload_id.to_string())),
+            )?;
+            return Ok(());
+        }
+        let resp = self.request(&AgentRequest::PrepareFileAccess {
+            image: image.to_string(),
+            workload_id: workload_id.to_string(),
+        })?;
+        expect_ok(resp, "prepare file access")
+    }
+
+    /// Clean up an overlay filesystem.
+    pub fn cleanup_overlay(&mut self, workload_id: &str) -> Result<()> {
+        let resp = self.request(&AgentRequest::CleanupOverlay {
+            workload_id: workload_id.to_string(),
+        })?;
+        expect_ok(resp, "cleanup overlay")
+    }
+
+    /// Format the storage disk.
+    pub fn format_storage(&mut self) -> Result<()> {
+        let resp = self.request(&AgentRequest::FormatStorage)?;
+        expect_ok(resp, "format storage")
+    }
+
+    /// Whether this agent speaks the branch protocol.
+    pub fn supports_typed_branchpoint(&mut self) -> Result<bool> {
+        self.supports_capability(smolvm_protocol::forkpoint::TYPED_BRANCHPOINT_CAPABILITY)
+    }
+
+    /// Wait for the workload's branchpoint; `Ok(Ok(contents))` is the ready
+    /// marker's contents.
+    pub fn branchpoint_wait(&mut self, timeout: Duration) -> Result<BranchpointOutcome<String>> {
+        let _timeout_guard = self.set_exec_timeout(Some(timeout + Duration::from_secs(5)))?;
+        let resp = self.request(&AgentRequest::BranchpointWait {
+            timeout_ms: timeout.as_millis() as u64,
+        })?;
+        branchpoint_outcome(resp, |data| {
+            data.and_then(|d| {
+                d.get("contents")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+        })
+    }
+
+    /// Put the helper into its restore-safe loop before capture.
+    pub fn branchpoint_arm(&mut self) -> Result<BranchpointOutcome<()>> {
+        let resp = self.request(&AgentRequest::BranchpointArm)?;
+        branchpoint_outcome(resp, |_| ())
+    }
+
+    /// Return a parked source to its ordinary wait after capture.
+    pub fn branchpoint_park(&mut self) -> Result<BranchpointOutcome<()>> {
+        let resp = self.request(&AgentRequest::BranchpointPark)?;
+        branchpoint_outcome(resp, |_| ())
+    }
+
+    /// Release a restored clone, handing it `env_dotenv` as its identity, and
+    /// wait for its helper to acknowledge.
+    pub fn branchpoint_release(&mut self, env_dotenv: &str) -> Result<BranchpointOutcome<()>> {
+        let _timeout_guard = self.set_exec_timeout(Some(Duration::from_secs(20)))?;
+        let resp = self.request(&AgentRequest::BranchpointRelease {
+            env_dotenv: Some(env_dotenv.to_string()),
+        })?;
+        branchpoint_outcome(resp, |_| ())
+    }
+
+    /// Assign and release a held clone; `Ok(Ok(true))` when an earlier attempt
+    /// with the same token had already done it.
+    pub fn branchpoint_activate(
+        &mut self,
+        activation: BranchpointActivation,
+    ) -> Result<BranchpointOutcome<bool>> {
+        let resp = self.request(&AgentRequest::BranchpointActivate {
+            env_dotenv: activation.env_dotenv,
+            env_sourceable: activation.env_sourceable,
+            env_path: activation.env_path,
+            branch_env_path: activation.branch_env_path,
+            require_dir: activation.require_dir,
+            env_dir: activation.env_dir,
+            activation_token: activation.activation_token,
+        })?;
+        branchpoint_outcome(resp, |data| {
+            data.and_then(|d| d.get("already_done").and_then(|v| v.as_bool()))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Block until the released workload publishes `token` as worker-ready,
+    /// or until `timeout`; `NO_ACK` on timeout, `TOKEN_MISMATCH` on a stale token.
+    pub fn branchpoint_wait_worker_ready(
+        &mut self,
+        token: &str,
+        timeout: Duration,
+    ) -> Result<BranchpointOutcome<()>> {
+        let _timeout_guard = self.set_exec_timeout(Some(timeout + Duration::from_secs(5)))?;
+        let resp = self.request(&AgentRequest::BranchpointWaitWorkerReady {
+            token: token.to_string(),
+            timeout_ms: timeout.as_millis() as u64,
+        })?;
+        branchpoint_outcome(resp, |_| ())
+    }
+
+    /// Merge `lowerdirs` (topmost first — the order the agent stacks them in)
+    /// into a single tar at `output` in the guest.
+    ///
+    /// Missing or empty entries are dropped guest-side, so callers can append a
+    /// container overlay's upper dir without probing it first.
+    pub fn flatten_layers(&mut self, lowerdirs: &[String], output: &str) -> Result<()> {
+        // Merging the lower dirs and tarring the result runs for minutes on a
+        // large base, and the agent sends nothing in between — far past the
+        // default read timeout, which surfaces as a spurious EAGAIN. Widen the
+        // window for the whole flatten, as the file-read paths do for large
+        // transfers. Configurable because pack size is unbounded.
+        let _timeout_guard = self.set_extended_read_timeout(flatten_timeout())?;
+        let resp = self.request(&AgentRequest::FlattenLayers {
+            lowerdirs: lowerdirs.to_vec(),
+            output: Some(output.to_string()),
+        })?;
+        expect_ok(resp, "flatten layers")
+    }
+
+    /// Merge `lowerdirs` (topmost first — the order the agent stacks them in)
+    /// and stream the result straight into `local_path` as a tar archive.
+    ///
+    /// Same merge as [`Self::flatten_layers`], but the archive never lands on the
+    /// guest's disk. Prefer this wherever the merged tree can be large: staging
+    /// the tar guest-side needs room for a second full copy of everything being
+    /// flattened, which is what exhausts an export helper's disk on a big image.
+    pub fn flatten_layers_to_path<F: FnMut(u64)>(
+        &mut self,
+        lowerdirs: &[String],
+        local_path: &std::path::Path,
+        cap: u64,
+        on_progress: F,
+    ) -> Result<u64> {
+        // The agent sends nothing while it mounts the overlay and spawns tar, so
+        // the same widened window the staged form needs applies here too.
+        let _timeout_guard = self.set_extended_read_timeout(flatten_timeout())?;
+        self.send_raw(&AgentRequest::FlattenLayers {
+            lowerdirs: lowerdirs.to_vec(),
+            output: None,
+        })?;
+        self.receive_stream_to_path(local_path, cap, on_progress, "flatten layers")
+    }
+
+    /// Get storage status.
+    ///
+    /// Reports current guest storage usage, independently of configured limits.
+    pub fn storage_status(&mut self) -> Result<StorageStatus> {
+        let resp = self.request(&AgentRequest::StorageStatus)?;
+        expect_data(resp, "storage status")
+    }
+
+    /// List the entries of a guest directory.
+    ///
+    /// Agents older than this request reject it as an unknown variant, so a
+    /// caller should treat an error as "not available" rather than a failure.
+    pub fn list_directory(&mut self, path: &str) -> Result<Vec<smolvm_protocol::DirectoryEntry>> {
+        let resp = self.request(&AgentRequest::ListDirectory {
+            path: path.to_string(),
+            target: self.file_target.clone(),
+        })?;
+        #[derive(serde::Deserialize)]
+        struct Listing {
+            entries: Vec<smolvm_protocol::DirectoryEntry>,
+        }
+        let listing: Listing = expect_data(resp, "list directory")?;
+        Ok(listing.entries)
+    }
+
+    /// Bind a host directory the VMM attached under `share` onto `target`.
+    /// `source` is the host directory, recorded by the agent for listing.
+    pub fn attach_mount(
+        &mut self,
+        share: &str,
+        source: &str,
+        read_only: bool,
+        target: &str,
+    ) -> Result<()> {
+        match self.request(&AgentRequest::AttachMount {
+            share: share.to_string(),
+            source: source.to_string(),
+            read_only,
+            target: target.to_string(),
+        })? {
+            AgentResponse::Ok { .. } => Ok(()),
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("attach mount", message, code.as_deref()))
+            }
+            other => Err(Error::agent(
+                "attach mount",
+                format!("unexpected response: {other:?}"),
+            )),
+        }
+    }
+
+    /// The host directories attached to the running machine.
+    pub fn attached_mounts(&mut self) -> Result<Vec<smolvm_protocol::AttachedMount>> {
+        let resp = self.request(&AgentRequest::ListAttachedMounts)?;
+        expect_data(resp, "list attached mounts")
+    }
+
+    /// Unmount the attached mount at `target`.
+    pub fn detach_mount(&mut self, target: &str) -> Result<()> {
+        match self.request(&AgentRequest::DetachMount {
+            target: target.to_string(),
+        })? {
+            AgentResponse::Ok { .. } => Ok(()),
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("detach mount", message, code.as_deref()))
+            }
+            other => Err(Error::agent(
+                "detach mount",
+                format!("unexpected response: {other:?}"),
+            )),
+        }
+    }
+
+    /// Grow a mounted managed filesystem after its disk capacity was increased.
+    /// Check capability before changing the backing: old running guests must
+    /// not be left with a partially applied resize they cannot complete.
+    pub fn grow_filesystem(
+        &mut self,
+        disk: smolvm_protocol::ManagedDisk,
+        expected_bytes: u64,
+    ) -> Result<()> {
+        if !self.supports_capability(smolvm_protocol::ONLINE_FILESYSTEM_GROWTH_CAPABILITY)? {
+            return Err(Error::agent(
+                "grow filesystem",
+                "running guest agent does not support online filesystem growth",
+            ));
+        }
+        let _timeout_guard = self.set_extended_read_timeout(Duration::from_secs(130))?;
+        match self.request(&AgentRequest::GrowFilesystem {
+            disk,
+            expected_bytes,
+        })? {
+            AgentResponse::Ok { data: Some(data) }
+                if data.get("device_bytes").and_then(serde_json::Value::as_u64)
+                    == Some(expected_bytes)
+                    && data
+                        .get("filesystem_bytes")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some_and(|bytes| bytes > 0 && bytes <= expected_bytes) =>
+            {
+                Ok(())
+            }
+            AgentResponse::Completed {
+                exit_code, stderr, ..
+            } => Err(Error::agent(
+                "grow filesystem",
+                format!(
+                    "online resize exited {exit_code}: {}",
+                    String::from_utf8_lossy(&stderr)
+                ),
+            )),
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("grow filesystem", message, code.as_deref()))
+            }
+            _ => Err(Error::agent("grow filesystem", "unexpected response type")),
+        }
+    }
+
+    /// Online CPUs only after the VMM has created them. Callers must check
+    /// capability before host-side mutation and reconcile partial failures.
+    pub fn online_cpus(&mut self, target_count: u8) -> Result<()> {
+        if !self.supports_capability(smolvm_protocol::ONLINE_CPU_GROWTH_CAPABILITY)? {
+            return Err(Error::agent(
+                "online CPUs",
+                "running guest agent does not support online CPU growth",
+            ));
+        }
+        let _timeout_guard = self.set_extended_read_timeout(Duration::from_secs(130))?;
+        match self.request(&AgentRequest::OnlineCpus { target_count })? {
+            AgentResponse::Ok { data: Some(data) }
+                if data.get("online_cpus").and_then(serde_json::Value::as_u64)
+                    == Some(u64::from(target_count)) =>
+            {
+                Ok(())
+            }
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("online CPUs", message, code.as_deref()))
+            }
+            _ => Err(Error::agent(
+                "online CPUs",
+                "guest did not verify the requested CPU count",
+            )),
+        }
+    }
+
+    /// Offline only trailing CPUs. Runtime capability must be checked by the
+    /// caller before this request; success means the exact guest set was read back.
+    pub fn offline_cpus(&mut self, target_count: u8) -> Result<()> {
+        if !self.supports_capability(smolvm_protocol::OFFLINE_CPU_SHRINK_CAPABILITY)? {
+            return Err(Error::agent(
+                "offline CPUs",
+                "running guest lacks safe CPU shrink support",
+            ));
+        }
+        let _timeout_guard = self.set_extended_read_timeout(Duration::from_secs(130))?;
+        match self.request(&AgentRequest::OfflineCpus { target_count })? {
+            AgentResponse::Ok { data: Some(data) }
+                if data.get("online_cpus").and_then(serde_json::Value::as_u64)
+                    == Some(u64::from(target_count)) =>
+            {
+                Ok(())
+            }
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("offline CPUs", message, code.as_deref()))
+            }
+            _ => Err(Error::agent(
+                "offline CPUs",
+                "guest did not verify the requested CPU count",
+            )),
+        }
+    }
+
+    /// Online only an existing block-aligned RAM range after runtime hot-add.
+    pub fn online_memory(&mut self, start_address: u64, length_bytes: u64) -> Result<()> {
+        if !self.supports_capability(smolvm_protocol::ONLINE_MEMORY_GROWTH_CAPABILITY)? {
+            return Err(Error::agent(
+                "online RAM",
+                "running guest agent does not support RAM growth",
+            ));
+        }
+        let _timeout_guard = self.set_extended_read_timeout(Duration::from_secs(130))?;
+        match self.request(&AgentRequest::OnlineMemory {
+            start_address,
+            length_bytes,
+        })? {
+            AgentResponse::Ok { data: Some(data) }
+                if data
+                    .get("start_address")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(start_address)
+                    && data.get("online_bytes").and_then(serde_json::Value::as_u64)
+                        == Some(length_bytes) =>
+            {
+                Ok(())
+            }
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("online RAM", message, code.as_deref()))
+            }
+            _ => Err(Error::agent(
+                "online RAM",
+                "guest did not verify the requested RAM range",
+            )),
+        }
+    }
+
+    /// The guest's own view of machine memory.
+    ///
+    /// Agents older than this request reject it as an unknown variant, so
+    /// callers should treat an error as "not available" rather than a failure.
+    pub fn memory_status(&mut self) -> Result<MemoryStatus> {
+        let resp = self.request(&AgentRequest::MemoryStatus)?;
+        expect_data(resp, "memory status")
+    }
+
+    /// Report the guest's pressure stall information from
+    /// `/proc/pressure/{cpu,memory,io}`.
+    ///
+    /// Agents older than this request reject it, and so does a guest kernel
+    /// without `CONFIG_PSI`; either is "not available", not a failure.
+    pub fn pressure_status(&mut self) -> Result<smolvm_protocol::PressureStatus> {
+        let resp = self.request(&AgentRequest::PressureStatus)?;
+        expect_data(resp, "pressure status")
+    }
+
+    /// [`Self::pressure_status`] for a periodic sampler, which must tell a
+    /// transport failure (outer `Err`: retry) from the agent's own refusal
+    /// (inner `Err`: it is older than the request, or the guest kernel has
+    /// no PSI, and every later answer would be the same).
+    pub(crate) fn pressure_status_or_refusal(
+        &mut self,
+    ) -> Result<std::result::Result<smolvm_protocol::PressureStatus, String>> {
+        match self.request(&AgentRequest::PressureStatus)? {
+            AgentResponse::Error { message, .. } => Ok(Err(message)),
+            resp => expect_data(resp, "pressure status").map(Ok),
+        }
+    }
+
+    /// Test network connectivity directly from the agent (not via chroot).
+    /// Used to debug TSI networking.
+    pub fn network_test(&mut self, url: &str) -> Result<serde_json::Value> {
+        let resp = self.request(&AgentRequest::NetworkTest {
+            url: url.to_string(),
+        })?;
+
+        match resp {
+            AgentResponse::Ok { data: Some(data) } => Ok(data),
+            AgentResponse::Error { message, code } => {
+                Err(agent_error("network test", message, code.as_deref()))
+            }
+            _ => Err(Error::agent("network test", "unexpected response type")),
+        }
+    }
+
+    /// Request agent shutdown.
+    ///
+    /// Waits for the agent to acknowledge the shutdown request before returning.
+    /// The agent must advertise safe shutdown before receiving a mutating
+    /// request, then confirm internal filesystems are frozen before termination.
+    ///
+    /// The workload is first sent its stop signal and given the stop timeout
+    /// it was launched with to exit; the agent reports progress meanwhile, and
+    /// the overall limit leaves room for the longest timeout a machine may set.
+    pub fn shutdown(&mut self) -> Result<()> {
+        self.shutdown_with_timeouts(
+            Duration::from_secs(SHUTDOWN_ACK_TIMEOUT_SECS),
+            Duration::from_secs(SHUTDOWN_FLUSH_LIMIT_SECS + smolvm_protocol::MAX_STOP_TIMEOUT_SECS),
+            None,
+        )
+    }
+
+    /// [`shutdown`](Self::shutdown) giving the workload `stop_timeout` to exit
+    /// after its stop signal instead of the timeout it was launched with; zero
+    /// kills it at once.
+    pub fn shutdown_with_stop_timeout(&mut self, stop_timeout: Duration) -> Result<()> {
+        let stop_timeout = stop_timeout
+            .as_secs()
+            .min(smolvm_protocol::MAX_STOP_TIMEOUT_SECS);
+        self.shutdown_with_timeouts(
+            Duration::from_secs(SHUTDOWN_ACK_TIMEOUT_SECS),
+            Duration::from_secs(SHUTDOWN_FLUSH_LIMIT_SECS + stop_timeout),
+            Some(stop_timeout),
+        )
+    }
+
+    /// [`shutdown`](Self::shutdown) that gives up after `maximum`, for a caller
+    /// that must exit soon whatever the guest does. The workload gets half of
+    /// it to exit, so the storage flush still fits in the rest.
+    pub fn shutdown_within(&mut self, maximum: Duration) -> Result<()> {
+        self.shutdown_with_timeouts(
+            Duration::from_secs(SHUTDOWN_ACK_TIMEOUT_SECS).min(maximum),
+            maximum,
+            Some((maximum / 2).as_secs()),
+        )
+    }
+
+    #[cfg(test)]
+    fn shutdown_with_deadline(&mut self, timeout: Duration) -> Result<()> {
+        self.shutdown_with_timeouts(timeout, timeout, None)
+    }
+
+    fn shutdown_with_timeouts(
+        &mut self,
+        idle: Duration,
+        maximum: Duration,
+        stop_timeout_secs: Option<u64>,
+    ) -> Result<()> {
+        let started = Instant::now();
+        let mut deadlines = ShutdownDeadlines::new(started, idle, maximum);
+        self.stream.as_socket().set_nonblocking(true)?;
+        let result = (|| -> Result<()> {
+            // Old agents remount storage read-only even when their reply cannot
+            // satisfy this contract. Check capability before changing the guest.
+            self.shutdown_send_until(&AgentRequest::Ping, deadlines.next())?;
+            match self.shutdown_response_until(deadlines.next())? {
+                AgentResponse::Pong { capabilities, .. }
+                    if capabilities.iter().any(|c| c == smolvm_protocol::QUIESCED_SHUTDOWN_CAPABILITY) => {}
+                AgentResponse::Pong { .. } => return Err(Error::agent(
+                    "shutdown capability",
+                    "running guest agent does not support safe shutdown; VM left unchanged; update the guest agent before retrying",
+                )),
+                _ => return Err(Error::agent("shutdown capability", "unexpected ping response")),
+            }
+            let data = self.encode_traced(&AgentRequest::Shutdown {
+                progress: true,
+                stop_timeout_secs,
+            })?;
+            let mut sent = 0;
+            while sent < data.len() {
+                sent += shutdown_io_until(deadlines.next(), || self.stream.write(&data[sent..]))?;
+            }
+            tracing::debug!(
+                send_ms = started.elapsed().as_millis(),
+                "shutdown request sent; waiting for acknowledgment"
+            );
+            loop {
+                // One deadline covers the entire frame; partial bytes never
+                // prolong shutdown. Only a complete progress response does.
+                let deadline = deadlines.next();
+                match self.shutdown_response_until(deadline)? {
+                    AgentResponse::Ok { data }
+                        if data
+                            .as_ref()
+                            .and_then(|value| value.get("filesystems_quiesced"))
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true) =>
+                    {
+                        return Ok(())
+                    }
+                    AgentResponse::Ok { .. } => {
+                        return Err(Error::agent(
+                            "shutdown ack",
+                            "guest did not confirm that its filesystems were quiesced",
+                        ));
+                    }
+                    AgentResponse::Progress { message, .. } => {
+                        tracing::debug!(%message, "shutdown progress");
+                        deadlines.progress(Instant::now());
+                    }
+                    AgentResponse::Error { message, .. } => {
+                        return Err(Error::agent("shutdown ack", message));
+                    }
+                    _ => return Err(Error::agent("shutdown ack", "unexpected acknowledgment")),
+                }
+            }
+        })();
+        let reset = self.stream.as_socket().set_nonblocking(false);
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            acknowledged = result.is_ok(),
+            "shutdown acknowledgment finished"
+        );
+        if let Err(error) = &result {
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+            if is_benign_shutdown_error(&error.to_string()) {
+                tracing::debug!(%error, "shutdown connection closed without acknowledgment");
+            } else {
+                tracing::warn!(%error, "shutdown acknowledgment failed");
+            }
+        }
+        result?;
+        reset?;
+        Ok(())
+    }
+
+    fn shutdown_read_until(&mut self, buf: &mut [u8], deadline: Instant) -> Result<()> {
+        let mut read = 0;
+        while read < buf.len() {
+            read += shutdown_io_until(deadline, || self.stream.read(&mut buf[read..]))?;
+        }
+        Ok(())
+    }
+
+    fn shutdown_send_until(&mut self, request: &AgentRequest, deadline: Instant) -> Result<()> {
+        let data = self.encode_traced(request)?;
+        let mut sent = 0;
+        while sent < data.len() {
+            sent += shutdown_io_until(deadline, || self.stream.write(&data[sent..]))?;
+        }
+        Ok(())
+    }
+
+    fn shutdown_response_until(&mut self, deadline: Instant) -> Result<AgentResponse> {
+        let mut header = [0; 4];
+        self.shutdown_read_until(&mut header, deadline)?;
+        let len = u32::from_be_bytes(header) as usize;
+        if len > MAX_FRAME_SIZE as usize {
+            return Err(Error::agent("shutdown ack", "response frame too large"));
+        }
+        let mut body = vec![0; len];
+        self.shutdown_read_until(&mut body, deadline)?;
+        serde_json::from_slice(&body)
+            .map_err(|error| Error::agent("shutdown ack", error.to_string()))
+    }
+
+    // ========================================================================
+    // VM-Level Exec (Direct Execution in VM)
+    // ========================================================================
+
+    /// Execute a command directly in the VM (not in a container).
+    ///
+    /// Runs the command in the agent's Alpine rootfs without container
+    /// isolation. Returns `(exit_code, stdout_bytes, stderr_bytes)`. Output
+    /// is raw bytes — binary data (image bytes, tarballs) is preserved.
+    /// Callers that need a string can use `String::from_utf8_lossy(&bytes)`.
+    pub fn vm_exec(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        stdin_data: Option<String>,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let _timeout_guard = self.set_exec_timeout(timeout)?;
+        let timeout_ms = timeout.map(|t| t.as_millis() as u64);
+
+        let resp = self.request(&AgentRequest::VmExec {
+            command,
+            env,
+            workdir,
+            timeout_ms,
+            interactive: false,
+            tty: false,
+            background: false,
+            stdin_data,
+        })?;
+
+        expect_completed(resp, "vm exec")
+    }
+
+    /// Execute a command in the background inside the VM.
+    ///
+    /// Spawns the process and returns immediately with the PID.
+    /// The process runs detached — stdout/stderr go to /dev/null.
+    pub fn vm_exec_background(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+    ) -> Result<u32> {
+        let resp = self.request(&AgentRequest::VmExec {
+            command,
+            env,
+            workdir,
+            timeout_ms: None,
+            interactive: false,
+            tty: false,
+            background: true,
+            stdin_data: None,
+        })?;
+
+        let (exit_code, stdout, _stderr) = expect_completed(resp, "vm exec background")?;
+        if exit_code != 0 {
+            return Err(Error::agent("vm exec background", "spawn failed"));
+        }
+        // PID output is always ASCII digits — lossy conversion is safe.
+        let pid: u32 = String::from_utf8_lossy(&stdout)
+            .trim()
+            .parse()
+            .map_err(|_| Error::agent("vm exec background", "invalid PID in response"))?;
+        Ok(pid)
+    }
+
+    /// Raw descriptor of the underlying agent socket, in the portable form the
+    /// terminal poll loop expects. Unix: the socket fd; Windows: the underlying
+    /// WinSock `SOCKET` cast into the portable `Fd`.
+    fn stream_raw_fd(&self) -> crate::agent::terminal::Fd {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            self.stream.as_raw_fd()
+        }
+        #[cfg(not(unix))]
+        {
+            self.stream.raw_socket() as crate::agent::terminal::Fd
+        }
+    }
+
+    /// Run an interactive I/O session.
+    ///
+    /// Sends `request`, waits for `Started`, then runs the poll loop
+    /// streaming stdout/stderr and forwarding stdin until `Exited`.
+    fn interactive_session(&mut self, request: AgentRequest, tty: bool, op: &str) -> Result<i32> {
+        use crate::agent::terminal::{
+            check_sigwinch, flush_retry, get_terminal_size, install_sigwinch_handler, poll_io,
+            stdin_is_tty, write_all_retry, NonBlockingStdin, RawModeGuard,
+        };
+        use std::io::{stderr, stdin, stdout, Read};
+
+        // Disable socket read timeout for interactive sessions — the poll loop
+        // handles readiness checking, and the session runs until the user exits.
+        self.stream
+            .set_read_timeout(None)
+            .map_err(|e| Error::agent("set read timeout", e.to_string()))?;
+
+        self.send(&request)?;
+
+        // Wait for Started response
+        let started = self.receive()?;
+        match started {
+            AgentResponse::Started => {}
+            AgentResponse::Error { message, .. } => {
+                return Err(Error::agent(op, message));
+            }
+            _ => {
+                return Err(Error::agent(op, "expected Started response"));
+            }
+        }
+
+        // Enable raw mode if TTY requested and stdin is a TTY
+        // The guard will restore terminal settings on drop (even on panic)
+        let _raw_mode = if tty && stdin_is_tty() {
+            RawModeGuard::new(stdin_raw_fd())
+        } else {
+            None
+        };
+
+        // Route session writes through the dedicated writer.
+        let writer = FrameWriter::spawn(&self.stream)?;
+        let mut pending: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+
+        // Send initial terminal size so PTY starts at the right dimensions
+        if tty {
+            if let Some((cols, rows)) = get_terminal_size() {
+                pending.push_back(self.encode_traced(&AgentRequest::Resize { cols, rows })?);
+            }
+            install_sigwinch_handler();
+        }
+
+        // Set stdin to non-blocking (guard restores on drop)
+        let _nonblock_stdin = NonBlockingStdin::new()
+            .map_err(|e| Error::agent("set stdin nonblocking", e.to_string()))?;
+
+        // Socket reads remain blocking; poll() determines read readiness.
+        // Outbound frames are handled by FrameWriter.
+        // poll() observes the descriptor, not Rust's stdin read-ahead buffer.
+        // A buffered read can strand the end of a request until another write or
+        // EOF arrives, deadlocking clients that keep stdin open for the reply.
+        #[cfg(unix)]
+        let mut stdin_handle = {
+            use std::os::fd::AsFd;
+            std::fs::File::from(
+                stdin()
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(|e| Error::agent("duplicate stdin", e.to_string()))?,
+            )
+        };
+        #[cfg(not(unix))]
+        let mut stdin_handle = stdin();
+        let stdin_fd = stdin_raw_fd();
+        let socket_fd = self.stream_raw_fd();
+        let mut stdin_buf = [0u8; STDIN_BUF_SIZE];
+        let mut stdin_eof = false;
+
+        let exit_code = loop {
+            if let Some(e) = writer.take_error() {
+                return Err(Error::agent(op, format!("failed to send to agent: {}", e)));
+            }
+            pump_frames(&writer, &mut pending)?;
+
+            // Stop reading stdin while the writer is backed up, bounding memory use.
+            let backpressured = !pending.is_empty();
+            let effective_stdin_fd = if stdin_eof || backpressured {
+                -1
+            } else {
+                stdin_fd
+            };
+            let poll_timeout = if backpressured {
+                BACKPRESSURE_POLL_TIMEOUT_MS
+            } else {
+                POLL_TIMEOUT_MS
+            };
+            let poll_result = poll_io(effective_stdin_fd, socket_fd, poll_timeout)
+                .map_err(|e| Error::agent("poll", e.to_string()))?;
+
+            // Check for terminal resize (SIGWINCH)
+            if tty && check_sigwinch() {
+                if let Some((cols, rows)) = get_terminal_size() {
+                    pending.push_back(self.encode_traced(&AgentRequest::Resize { cols, rows })?);
+                }
+            }
+
+            // Handle socket data FIRST — drain agent output before writing stdin
+            // to prevent deadlock when send buffer is full
+            if poll_result.socket_ready {
+                match self.receive() {
+                    Ok(AgentResponse::Stdout { data }) => {
+                        write_all_retry(&mut stdout(), &data)?;
+                        flush_retry(&mut stdout())?;
+                    }
+                    Ok(AgentResponse::Stderr { data }) => {
+                        write_all_retry(&mut stderr(), &data)?;
+                        flush_retry(&mut stderr())?;
+                    }
+                    Ok(AgentResponse::Exited { exit_code, .. }) => {
+                        break exit_code;
+                    }
+                    Ok(AgentResponse::Error { message, .. }) => {
+                        return Err(Error::agent(op, message));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        // EAGAIN/WouldBlock can occur when poll() reports readiness
+                        // but the data isn't available yet (common with vsock on macOS).
+                        // Retry on next poll iteration instead of crashing.
+                        if e.is_io()
+                            && matches!(
+                                e.source_io_error_kind(),
+                                Some(std::io::ErrorKind::WouldBlock)
+                            )
+                        {
+                            tracing::debug!("socket read returned EAGAIN, retrying");
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+
+            // Socket peer closed without sending Exited — VM crashed or was killed
+            if poll_result.socket_hangup && !poll_result.socket_ready {
+                return Err(Error::agent(op, "connection to VM lost".to_string()));
+            }
+
+            // Handle stdin input — queue it for the writer thread
+            if poll_result.stdin_ready && !stdin_eof {
+                match stdin_handle.read(&mut stdin_buf) {
+                    Ok(0) => {
+                        stdin_eof = true;
+                        pending.push_back(
+                            self.encode_traced(&AgentRequest::Stdin { data: Vec::new() })?,
+                        );
+                    }
+                    Ok(n) => {
+                        pending.push_back(self.encode_traced(&AgentRequest::Stdin {
+                            data: stdin_buf[..n].to_vec(),
+                        })?);
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "stdin read error, treating as EOF");
+                        stdin_eof = true;
+                        pending.push_back(
+                            self.encode_traced(&AgentRequest::Stdin { data: Vec::new() })?,
+                        );
+                    }
+                }
+            }
+        };
+
+        Ok(exit_code)
+    }
+
+    /// Execute a command directly in the VM with interactive I/O.
+    pub fn vm_exec_interactive(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        tty: bool,
+    ) -> Result<i32> {
+        let timeout_ms = timeout.map(|t| t.as_millis() as u64);
+        let env = with_term_default(env, tty);
+        self.interactive_session(
+            AgentRequest::VmExec {
+                command,
+                env,
+                workdir,
+                timeout_ms,
+                interactive: true,
+                tty,
+                background: false,
+                stdin_data: None,
+            },
+            tty,
+            "vm exec interactive",
+        )
+    }
+
+    /// Run a command in an image's rootfs (non-interactive).
+    ///
+    /// This is the non-interactive counterpart to `run_interactive()`.
+    /// Both accept a `RunConfig` for consistency.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (exit_code, stdout, stderr)
+    pub fn run_non_interactive(&mut self, config: RunConfig) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let _timeout_guard = self.set_exec_timeout(config.timeout)?;
+        let timeout_ms = config.timeout.map(|t| t.as_millis() as u64);
+
+        let resp = self.request(&AgentRequest::Run {
+            image: config.image,
+            command: config.command,
+            env: config.env,
+            workdir: config.workdir,
+            user: config.user,
+            mounts: config.mounts,
+            timeout_ms,
+            interactive: false,
+            tty: false,
+            detached: false,
+            unprivileged: config.unprivileged,
+            persistent_overlay_id: config.persistent_overlay_id,
+            stdin_data: config.stdin,
+            background: false,
+            s3_volumes: config.s3_volumes.clone(),
+            stop_vm_on_exit: false,
+            stop_signal: None,
+            stop_timeout_secs: None,
+        })?;
+
+        expect_completed(resp, "run command")
+    }
+
+    /// Run a command in an image's rootfs in the background.
+    ///
+    /// Spawns the container and returns immediately with the crun PID.
+    /// stdout/stderr go to /dev/null inside the guest. Use a persistent
+    /// overlay ID so subsequent `exec` sessions see the same filesystem.
+    pub fn run_background(&mut self, config: RunConfig) -> Result<u32> {
+        let resp = self.request(&AgentRequest::Run {
+            image: config.image,
+            command: config.command,
+            env: config.env,
+            workdir: config.workdir,
+            user: config.user,
+            mounts: config.mounts,
+            timeout_ms: None,
+            interactive: false,
+            tty: false,
+            detached: false,
+            unprivileged: config.unprivileged,
+            persistent_overlay_id: config.persistent_overlay_id,
+            stdin_data: None,
+            background: true,
+            s3_volumes: config.s3_volumes.clone(),
+            stop_vm_on_exit: false,
+            stop_signal: None,
+            stop_timeout_secs: None,
+        })?;
+
+        let (exit_code, stdout, _stderr) = expect_completed(resp, "run background")?;
+        if exit_code != 0 {
+            return Err(Error::agent("run background", "spawn failed"));
+        }
+        let pid: u32 = String::from_utf8_lossy(&stdout)
+            .trim()
+            .parse()
+            .map_err(|_| Error::agent("run background", "invalid PID in response"))?;
+        Ok(pid)
+    }
+
+    /// Run a command in an image's rootfs and handle streamed events as they arrive.
+    ///
+    /// Unlike `run_interactive`, this does not forward stdin. It is the
+    /// image-backed counterpart to `vm_exec_streaming_with`.
+    pub fn run_streaming_with<F>(&mut self, config: RunConfig, on_event: F) -> Result<()>
+    where
+        F: FnMut(ExecEvent),
+    {
+        self.run_streaming_with_stdin(config, None, on_event)
+    }
+
+    /// Stream an image command, optionally writing stdin before closing it.
+    pub fn run_streaming_with_stdin<F>(
+        &mut self,
+        config: RunConfig,
+        stdin_data: Option<Vec<u8>>,
+        on_event: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ExecEvent),
+    {
+        let timeout_ms = config.timeout.map(|t| t.as_millis() as u64);
+        // Keep a host-side deadline whenever the caller requested one. The
+        // guest normally enforces the command timeout, but a wedged restored
+        // VM cannot send its terminal event and must not leave the CLI blocked
+        // forever on an otherwise-open vsock connection.
+        let _timeout_guard = self.set_exec_timeout(config.timeout)?;
+
+        self.send(&AgentRequest::Run {
+            image: config.image,
+            command: config.command,
+            env: config.env,
+            workdir: config.workdir,
+            user: config.user,
+            mounts: config.mounts,
+            timeout_ms,
+            interactive: true,
+            tty: false,
+            detached: false,
+            unprivileged: config.unprivileged,
+            persistent_overlay_id: config.persistent_overlay_id,
+            stdin_data: None,
+            background: false,
+            s3_volumes: config.s3_volumes.clone(),
+            stop_vm_on_exit: false,
+            stop_signal: None,
+            stop_timeout_secs: None,
+        })?;
+
+        self.collect_with_streaming_stdin(stdin_data, "run streaming", on_event)
+    }
+
+    /// Run a command interactively with streaming I/O.
+    ///
+    /// This method streams output directly to stdout/stderr and forwards stdin.
+    /// It blocks until the command exits.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Run configuration including image, command, environment, etc.
+    ///
+    /// # Returns
+    ///
+    /// The exit code of the command
+    pub fn run_interactive(&mut self, config: RunConfig) -> Result<i32> {
+        let timeout_ms = config.timeout.map(|t| t.as_millis() as u64);
+        let tty = config.tty;
+        let env = with_term_default(config.env, tty);
+        self.interactive_session(
+            AgentRequest::Run {
+                image: config.image,
+                command: config.command,
+                env,
+                workdir: config.workdir,
+                user: config.user,
+                mounts: config.mounts,
+                timeout_ms,
+                interactive: true,
+                tty,
+                detached: false,
+                unprivileged: config.unprivileged,
+                persistent_overlay_id: config.persistent_overlay_id,
+                stdin_data: None,
+                background: false,
+                s3_volumes: config.s3_volumes.clone(),
+                stop_vm_on_exit: false,
+                stop_signal: None,
+                stop_timeout_secs: None,
+            },
+            tty,
+            "run interactive",
+        )
+    }
+
+    /// Start a container in detached mode and return its container ID.
+    ///
+    /// Sends a `Run { detached: true }` request to the agent, which starts the
+    /// container in the background via `crun run --detach` and immediately
+    /// returns the container ID. Subsequent `machine exec` calls against the
+    /// same `persistent_overlay_id` will join this container's namespaces via
+    /// `crun exec` instead of creating a new isolated container.
+    ///
+    /// Requires `config.persistent_overlay_id` to be set — detached containers
+    /// only make sense when there is a persistent overlay to associate with.
+    pub fn run_container_detached(&mut self, config: RunConfig) -> Result<String> {
+        // Container startup involves overlay setup, a one-time flatten of a local
+        // image archive into guest storage, and crun init, which can far exceed
+        // the default 30s read timeout on first run (cold overlay, cold image).
+        let _timeout_guard = self.set_extended_read_timeout(detached_start_timeout())?;
+
+        self.send(&AgentRequest::Run {
+            image: config.image,
+            command: config.command,
+            env: config.env,
+            workdir: config.workdir,
+            user: config.user,
+            mounts: config.mounts,
+            timeout_ms: None,
+            interactive: false,
+            tty: false,
+            detached: true,
+            unprivileged: config.unprivileged,
+            persistent_overlay_id: config.persistent_overlay_id,
+            stdin_data: None,
+            background: false,
+            s3_volumes: config.s3_volumes,
+            stop_vm_on_exit: config.stop_vm_on_exit,
+            stop_signal: config.stop_signal.clone(),
+            stop_timeout_secs: config.stop_timeout_secs,
+        })?;
+        let resp = loop {
+            match self.receive()? {
+                AgentResponse::Progress { message, .. } => {
+                    tracing::info!(message = %message, "detached start progress");
+                }
+                terminal @ (AgentResponse::Completed { .. } | AgentResponse::Error { .. }) => {
+                    break terminal;
+                }
+                _ => {
+                    return Err(Error::agent(
+                        "run container detached",
+                        "unexpected response type",
+                    ));
+                }
+            }
+        };
+        let (exit_code, stdout, _) = expect_completed(resp, "run container detached")?;
+        if exit_code != 0 {
+            return Err(Error::agent(
+                "run container detached",
+                format!("agent returned exit code {}", exit_code),
+            ));
+        }
+        String::from_utf8(stdout).map_err(|e| {
+            Error::agent(
+                "run container detached",
+                format!("invalid container ID in response: {}", e),
+            )
+        })
+    }
+
+    /// Send stdin data to a running interactive command.
+    pub fn send_stdin(&mut self, data: &[u8]) -> Result<()> {
+        self.send(&AgentRequest::Stdin {
+            data: data.to_vec(),
+        })
+    }
+
+    /// Send a window resize event to a running interactive command.
+    pub fn send_resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        self.send(&AgentRequest::Resize { cols, rows })
+    }
+
+    /// Run an interactive session driven by channels instead of the process's
+    /// real stdin/stdout. Input events arrive on `input`; output is delivered to
+    /// `on_output`. This is the transport-agnostic counterpart to
+    /// [`Self::interactive_session`] — used to bridge a VM PTY to a remote
+    /// WebSocket terminal without touching the host's terminal.
+    ///
+    /// The loop polls the vsock socket together with the input channel's wake-up
+    /// descriptor, so it forwards input the moment it is sent rather than at the
+    /// next poll timeout (see [`InteractiveInputSender`]), and drains pending
+    /// input each iteration. When every sender is gone (the remote peer hung
+    /// up) it returns at once: this runs on a dedicated connection, and dropping
+    /// it makes the agent kill the command.
+    ///
+    /// `poll_timeout_ms` bounds how long the loop waits when nothing happens;
+    /// production callers pass [`POLL_TIMEOUT_MS`].
+    fn interactive_session_io<F>(
+        &mut self,
+        request: AgentRequest,
+        input: InteractiveInputReceiver,
+        on_output: F,
+        op: &str,
+        poll_timeout_ms: i32,
+    ) -> Result<i32>
+    where
+        F: FnMut(InteractiveOutput),
+    {
+        self.interactive_session_io_started(request, input, || {}, on_output, op, poll_timeout_ms)
+    }
+
+    /// [`Self::interactive_session_io`], calling `on_started` once the agent
+    /// has spawned the command and before any of its output is delivered.
+    fn interactive_session_io_started<S, F>(
+        &mut self,
+        request: AgentRequest,
+        mut input: InteractiveInputReceiver,
+        on_started: S,
+        mut on_output: F,
+        op: &str,
+        poll_timeout_ms: i32,
+    ) -> Result<i32>
+    where
+        S: FnOnce(),
+        F: FnMut(InteractiveOutput),
+    {
+        use crate::agent::terminal::poll_io;
+
+        // No socket read timeout — the poll loop handles readiness and the
+        // session runs until the command exits or the peer hangs up.
+        self.stream
+            .set_read_timeout(None)
+            .map_err(|e| Error::agent("set read timeout", e.to_string()))?;
+
+        self.send(&request)?;
+        match self.receive()? {
+            AgentResponse::Started => {}
+            AgentResponse::Error { message, .. } => return Err(Error::agent(op, message)),
+            _ => return Err(Error::agent(op, "expected Started response")),
+        }
+        on_started();
+
+        let socket_fd = self.stream_raw_fd();
+        let mut wake_fd = input.wake_fd();
+        let mut input_eof_sent = false;
+
+        // Route channel input through the same writer as `interactive_session`.
+        let writer = FrameWriter::spawn(&self.stream)?;
+        let mut pending: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+
+        let exit_code = loop {
+            if let Some(e) = writer.take_error() {
+                return Err(Error::agent(op, format!("failed to send to agent: {}", e)));
+            }
+            pump_frames(&writer, &mut pending)?;
+
+            // The wake-up descriptor stands where a terminal's stdin would: input
+            // arriving on the channel interrupts the wait. -1 is ignored by poll().
+            let poll_timeout = if pending.is_empty() {
+                poll_timeout_ms
+            } else {
+                BACKPRESSURE_POLL_TIMEOUT_MS
+            };
+            let poll_result = poll_io(wake_fd, socket_fd, poll_timeout)
+                .map_err(|e| Error::agent("poll", e.to_string()))?;
+            if poll_result.stdin_ready && !input.drain_wake() {
+                // Every sender is gone; a closed descriptor would report ready
+                // forever. The channel says so below once it has been emptied.
+                wake_fd = -1;
+            }
+
+            // Drain agent output first (prevents deadlock when its send buffer fills).
+            if poll_result.socket_ready {
+                match self.receive() {
+                    Ok(AgentResponse::Stdout { data }) => {
+                        on_output(InteractiveOutput::Stdout(data))
+                    }
+                    Ok(AgentResponse::Stderr { data }) => {
+                        on_output(InteractiveOutput::Stderr(data))
+                    }
+                    Ok(AgentResponse::Exited { exit_code, .. }) => break exit_code,
+                    Ok(AgentResponse::Error { message, .. }) => {
+                        return Err(Error::agent(op, message))
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if e.is_io()
+                            && matches!(
+                                e.source_io_error_kind(),
+                                Some(std::io::ErrorKind::WouldBlock)
+                            )
+                        {
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+
+            if poll_result.socket_hangup && !poll_result.socket_ready {
+                return Err(Error::agent(op, "connection to VM lost".to_string()));
+            }
+
+            // Forward any pending input without blocking the output path. While
+            // the writer queue is backed up the events stay in their source
+            // channel, so backpressure composes instead of buffering here.
+            while pending.is_empty() {
+                match input.try_recv() {
+                    Ok(InteractiveInput::Stdin(data)) => {
+                        pending.push_back(self.encode_traced(&AgentRequest::Stdin { data })?)
+                    }
+                    Ok(InteractiveInput::Resize { cols, rows }) => {
+                        pending.push_back(self.encode_traced(&AgentRequest::Resize { cols, rows })?)
+                    }
+                    Ok(InteractiveInput::Eof) => {
+                        if !input_eof_sent {
+                            pending.push_back(
+                                self.encode_traced(&AgentRequest::Stdin { data: Vec::new() })?,
+                            );
+                            input_eof_sent = true;
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        // Remote peer (WebSocket client) gone. Return immediately
+                        // instead of waiting for the command to exit on its own.
+                        // This method runs on a DEDICATED, disposable connection,
+                        // so returning drops it; the agent's interactive loop then
+                        // sees the closed peer and kills the PTY child. Waiting here
+                        // would pin the connection (and, on the shared client, the
+                        // per-machine lock) until a command that ignores stdin EOF
+                        // — a `sleep`, a daemon — finally exits.
+                        return Ok(DISCONNECT_EXIT_CODE);
+                    }
+                }
+                // Hand the event straight on, so a writer that is keeping up
+                // leaves `pending` empty and this keeps draining the channel.
+                pump_frames(&writer, &mut pending)?;
+            }
+        };
+
+        Ok(exit_code)
+    }
+
+    /// Interactive VM exec driven by channels (remote PTY). Counterpart to
+    /// [`Self::vm_exec_interactive`] that does not bind the host terminal.
+    pub fn vm_exec_interactive_io<F>(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        tty: bool,
+        input: InteractiveInputReceiver,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: FnMut(InteractiveOutput),
+    {
+        let env = with_term_default(env, tty);
+        self.interactive_session_io(
+            AgentRequest::VmExec {
+                command,
+                env,
+                workdir,
+                timeout_ms: None,
+                interactive: true,
+                tty,
+                background: false,
+                stdin_data: None,
+            },
+            input,
+            on_output,
+            "vm exec interactive (io)",
+            POLL_TIMEOUT_MS,
+        )
+    }
+
+    /// Interactive container run driven by channels (remote PTY). Counterpart to
+    /// [`Self::run_interactive`] that does not bind the host terminal.
+    pub fn run_interactive_io<F>(
+        &mut self,
+        config: RunConfig,
+        input: InteractiveInputReceiver,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        F: FnMut(InteractiveOutput),
+    {
+        let tty = config.tty;
+        let env = with_term_default(config.env, tty);
+        self.interactive_session_io(
+            AgentRequest::Run {
+                image: config.image,
+                command: config.command,
+                env,
+                workdir: config.workdir,
+                user: config.user,
+                mounts: config.mounts,
+                timeout_ms: None,
+                interactive: true,
+                tty,
+                detached: false,
+                unprivileged: config.unprivileged,
+                persistent_overlay_id: config.persistent_overlay_id,
+                stdin_data: None,
+                background: false,
+                s3_volumes: config.s3_volumes.clone(),
+                stop_vm_on_exit: false,
+                stop_signal: None,
+                stop_timeout_secs: None,
+            },
+            input,
+            on_output,
+            "run interactive (io)",
+            POLL_TIMEOUT_MS,
+        )
+    }
+
+    /// Run a command in the VM for a node-owned exec session: stdin, resize
+    /// and end of input arrive on `input`, output goes to `on_output`, and
+    /// `on_started` runs once the command is running. Unlike
+    /// [`Self::vm_exec_interactive_io`] it passes the command's timeout to the
+    /// agent, which kills the command and reports exit code 124 when it passes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn vm_exec_session_io<S, F>(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        tty: bool,
+        input: InteractiveInputReceiver,
+        on_started: S,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        S: FnOnce(),
+        F: FnMut(InteractiveOutput),
+    {
+        let env = with_term_default(env, tty);
+        self.interactive_session_io_started(
+            AgentRequest::VmExec {
+                command,
+                env,
+                workdir,
+                timeout_ms: timeout.map(|t| t.as_millis() as u64),
+                interactive: true,
+                tty,
+                background: false,
+                stdin_data: None,
+            },
+            input,
+            on_started,
+            on_output,
+            "vm exec session",
+            POLL_TIMEOUT_MS,
+        )
+    }
+
+    /// [`Self::vm_exec_session_io`] for an image machine: the command runs in
+    /// the machine's container, as the configured user, with its timeout.
+    pub fn run_session_io<S, F>(
+        &mut self,
+        config: RunConfig,
+        input: InteractiveInputReceiver,
+        on_started: S,
+        on_output: F,
+    ) -> Result<i32>
+    where
+        S: FnOnce(),
+        F: FnMut(InteractiveOutput),
+    {
+        let tty = config.tty;
+        let env = with_term_default(config.env, tty);
+        self.interactive_session_io_started(
+            AgentRequest::Run {
+                image: config.image,
+                command: config.command,
+                env,
+                workdir: config.workdir,
+                user: config.user,
+                mounts: config.mounts,
+                timeout_ms: config.timeout.map(|t| t.as_millis() as u64),
+                interactive: true,
+                tty,
+                detached: false,
+                unprivileged: config.unprivileged,
+                persistent_overlay_id: config.persistent_overlay_id,
+                stdin_data: None,
+                background: false,
+                s3_volumes: config.s3_volumes.clone(),
+                stop_vm_on_exit: false,
+                stop_signal: None,
+                stop_timeout_secs: None,
+            },
+            input,
+            on_started,
+            on_output,
+            "run session",
+            POLL_TIMEOUT_MS,
+        )
+    }
+
+    // ========================================================================
+    // File I/O
+    // ========================================================================
+
+    /// Write a file into the VM.
+    ///
+    /// Transparently dispatches between single-shot and streaming
+    /// based on `data.len()`:
+    ///
+    /// - Files ≤ [`FILE_WRITE_SINGLE_SHOT_MAX`] (1 MiB): one
+    ///   [`AgentRequest::FileWrite`] message — the lowest-latency
+    ///   path and what 99% of `cp` calls hit.
+    /// - Files larger than that: a sequence of
+    ///   [`AgentRequest::FileWriteBegin`] +
+    ///   [`AgentRequest::FileWriteChunk`] messages, each under
+    ///   [`MAX_FRAME_SIZE`]. This is the only correct way to upload
+    ///   files whose base64-encoded form would exceed the frame
+    ///   limit — without it the send blocks the socket (EAGAIN
+    ///   after write timeout) and risks OOMing the guest agent.
+    pub fn write_file(&mut self, path: &str, data: &[u8], mode: Option<u32>) -> Result<()> {
+        self.write_file_with_progress(path, data, FileWriteMeta::mode_only(mode), |_| {})
+    }
+
+    /// Write a file into the VM with a progress callback.
+    ///
+    /// `on_progress` is called after each chunk is acked by the
+    /// agent, with the running byte total. Single-shot writes (small
+    /// files) call it once at the end. Callers who don't need
+    /// progress should use [`Self::write_file`] which passes a no-op.
+    pub fn write_file_with_progress<F: FnMut(u64)>(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        meta: FileWriteMeta,
+        mut on_progress: F,
+    ) -> Result<()> {
+        if data.len() <= FILE_WRITE_SINGLE_SHOT_MAX {
+            let resp = self.request_with_write_idle_timeout(
+                &AgentRequest::FileWrite {
+                    path: path.to_string(),
+                    data: data.to_vec(),
+                    mode: meta.mode,
+                    uid: meta.uid,
+                    gid: meta.gid,
+                    target: self.file_target.clone(),
+                },
+                Duration::from_secs(FILE_WRITE_IDLE_TIMEOUT_SECS),
+            )?;
+            expect_ok(resp, "write file")?;
+            on_progress(data.len() as u64);
+            Ok(())
+        } else {
+            self.write_file_streaming(path, data, meta, &mut on_progress)
+        }
+    }
+
+    /// Streaming file upload from a `&[u8]` slice.
+    fn write_file_streaming<F: FnMut(u64)>(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        meta: FileWriteMeta,
+        on_progress: &mut F,
+    ) -> Result<()> {
+        self.write_file_streaming_from_reader(
+            path,
+            &mut std::io::Cursor::new(data),
+            data.len() as u64,
+            meta,
+            on_progress,
+        )
+    }
+
+    /// Stream a file from a [`Read`] source into the VM.
+    ///
+    /// Reads `FILE_WRITE_CHUNK_SIZE` bytes at a time from `reader`,
+    /// sending each chunk over the protocol. Only one chunk is in
+    /// memory at a time — the caller doesn't need to buffer the
+    /// entire file.
+    pub fn write_file_from_reader<R: std::io::Read>(
+        &mut self,
+        path: &str,
+        reader: R,
+        total_size: u64,
+        mode: Option<u32>,
+    ) -> Result<()> {
+        self.write_file_from_reader_with_progress(
+            path,
+            reader,
+            total_size,
+            FileWriteMeta::mode_only(mode),
+            |_| {},
+        )
+    }
+
+    /// Stream a file from a [`Read`] source with progress callback.
+    pub fn write_file_from_reader_with_progress<R: std::io::Read, F: FnMut(u64)>(
+        &mut self,
+        path: &str,
+        reader: R,
+        total_size: u64,
+        meta: FileWriteMeta,
+        mut on_progress: F,
+    ) -> Result<()> {
+        if total_size <= FILE_WRITE_SINGLE_SHOT_MAX as u64 {
+            // Small file: read into memory and use single-shot path.
+            let mut data = Vec::with_capacity(total_size as usize);
+            std::io::Read::read_to_end(&mut std::io::Read::take(reader, total_size), &mut data)
+                .map_err(|e| Error::agent("read source file", e.to_string()))?;
+            if data.len() as u64 != total_size {
+                return Err(Error::agent(
+                    "read source file",
+                    format!("source ended after {} of {} bytes", data.len(), total_size),
+                ));
+            }
+            return self.write_file_with_progress(path, &data, meta, on_progress);
+        }
+        self.write_file_streaming_from_reader(
+            path,
+            &mut { reader },
+            total_size,
+            meta,
+            &mut on_progress,
+        )
+    }
+
+    /// Core streaming upload loop. Reads chunks from `reader` and
+    /// sends them over the protocol. Only one chunk buffer is live
+    /// at a time (~1 MiB).
+    fn write_file_streaming_from_reader<R: std::io::Read, F: FnMut(u64)>(
+        &mut self,
+        path: &str,
+        reader: &mut R,
+        total_size: u64,
+        meta: FileWriteMeta,
+        on_progress: &mut F,
+    ) -> Result<()> {
+        let transfer_write_timeout = Duration::from_secs(FILE_WRITE_IDLE_TIMEOUT_SECS);
+        let resp = self.request_with_write_idle_timeout(
+            &AgentRequest::FileWriteBegin {
+                path: path.to_string(),
+                mode: meta.mode,
+                uid: meta.uid,
+                gid: meta.gid,
+                total_size,
+                target: self.file_target.clone(),
+            },
+            transfer_write_timeout,
+        )?;
+        expect_ok(resp, "begin streaming write")?;
+
+        let mut buf = vec![0u8; FILE_WRITE_CHUNK_SIZE];
+        let mut bytes_sent = 0u64;
+
+        while bytes_sent < total_size {
+            // Never read past the declared size. In particular, the final
+            // chunk can be shorter than the protocol's 1 MiB chunk size.
+            let chunk_len = (total_size - bytes_sent).min(buf.len() as u64) as usize;
+            let mut filled = 0;
+            while filled < chunk_len {
+                match reader.read(&mut buf[filled..chunk_len]) {
+                    Ok(0) => {
+                        return Err(Error::agent(
+                            "read source file",
+                            format!(
+                                "source ended after {} of {} bytes",
+                                bytes_sent + filled as u64,
+                                total_size
+                            ),
+                        ));
+                    }
+                    Ok(n) => filled += n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(Error::agent("read source file", e.to_string())),
+                }
+            }
+
+            bytes_sent += filled as u64;
+            let done = bytes_sent == total_size;
+
+            let mut resp = self.request_with_write_idle_timeout(
+                &AgentRequest::FileWriteChunk {
+                    data: buf[..filled].to_vec(),
+                    done,
+                },
+                transfer_write_timeout,
+            )?;
+            // The last chunk syncs and installs the file, which the agent
+            // reports as progress while it lasts; each frame restarts the
+            // read timeout.
+            while done && matches!(resp, AgentResponse::Progress { .. }) {
+                resp = self.receive()?;
+            }
+            expect_ok(resp, "stream write chunk")?;
+            on_progress(bytes_sent);
+
+            if done {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a file from the VM.
+    ///
+    /// Consumes the streamed `DataChunk` responses the agent emits
+    /// (see `handle_streaming_file_read` in the agent). The agent
+    /// sends one or more chunks, with `done: true` on the final
+    /// frame — possibly empty. This method concatenates chunks and
+    /// returns the full contents.
+    ///
+    /// Two safety bounds:
+    /// - Receive timeout extended to 600 s so large files don't
+    ///   spuriously fail on slow storage; a 200 MB file at 10 MB/s
+    ///   would exceed the default 30 s receive timeout otherwise.
+    /// - Total size capped at [`FILE_TRANSFER_MAX_TOTAL`] (4 GiB) —
+    ///   symmetric with the write path. A misbehaving or compromised
+    ///   guest can't OOM the host by streaming unbounded data.
+    pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        self.read_file_with_progress(path, |_| {})
+    }
+
+    /// Read a file from the VM with a progress callback.
+    ///
+    /// `on_progress` is called with the running byte total after
+    /// each `DataChunk` is received. Use [`Self::read_file`] if you
+    /// don't need progress.
+    pub fn read_file_with_progress<F: FnMut(u64)>(
+        &mut self,
+        path: &str,
+        on_progress: F,
+    ) -> Result<Vec<u8>> {
+        const FILE_READ_TIMEOUT: Duration = Duration::from_secs(600);
+
+        let _timeout_guard = self.set_extended_read_timeout(FILE_READ_TIMEOUT)?;
+        self.send_raw(&AgentRequest::FileRead {
+            path: path.to_string(),
+            target: self.file_target.clone(),
+        })?;
+
+        consume_streamed_read_with_progress(|| self.recv_raw(), on_progress)
+    }
+
+    /// Download a file from the VM directly to a local path.
+    ///
+    /// Unlike [`Self::read_file`] which accumulates the entire file
+    /// in memory, this writes each chunk to disk as it arrives —
+    /// only one 16 MiB chunk is in memory at a time.
+    pub fn read_file_to_path<F: FnMut(u64)>(
+        &mut self,
+        guest_path: &str,
+        local_path: &std::path::Path,
+        on_progress: F,
+    ) -> Result<u64> {
+        self.read_file_to_path_capped(
+            guest_path,
+            local_path,
+            file_transfer_max_total(),
+            on_progress,
+        )
+    }
+
+    /// [`Self::read_file_to_path`] with an explicit byte ceiling.
+    ///
+    /// The pack paths read back a layer smolvm itself asked the guest to
+    /// produce, so they pass [`pack_export_max_total`] instead of the general
+    /// guest-driven transfer bound.
+    pub fn read_file_to_path_capped<F: FnMut(u64)>(
+        &mut self,
+        guest_path: &str,
+        local_path: &std::path::Path,
+        cap: u64,
+        on_progress: F,
+    ) -> Result<u64> {
+        const FILE_READ_TIMEOUT: Duration = Duration::from_secs(600);
+
+        let _timeout_guard = self.set_extended_read_timeout(FILE_READ_TIMEOUT)?;
+        self.send_raw(&AgentRequest::FileRead {
+            path: guest_path.to_string(),
+            target: self.file_target.clone(),
+        })?;
+        self.receive_stream_to_path(local_path, cap, on_progress, "read file")
+    }
+
+    /// Stream a guest directory as a tar archive directly into a host file.
+    /// The archive is generated on demand and never materialized in the guest.
+    pub fn archive_directory_to_path<F: FnMut(u64)>(
+        &mut self,
+        guest_path: &str,
+        local_path: &std::path::Path,
+        on_progress: F,
+    ) -> Result<u64> {
+        const ARCHIVE_READ_TIMEOUT: Duration = Duration::from_secs(600);
+
+        let _timeout_guard = self.set_extended_read_timeout(ARCHIVE_READ_TIMEOUT)?;
+        self.send_raw(&AgentRequest::ArchiveDirectory {
+            path: guest_path.to_string(),
+            target: self.file_target.clone(),
+        })?;
+        self.receive_stream_to_path(
+            local_path,
+            file_transfer_max_total(),
+            on_progress,
+            "archive directory",
+        )
+    }
+
+    fn receive_stream_to_path<F: FnMut(u64)>(
+        &mut self,
+        local_path: &std::path::Path,
+        cap: u64,
+        mut on_progress: F,
+        operation: &str,
+    ) -> Result<u64> {
+        use std::io::Write;
+
+        // An existing destination (including a symlink) must keep its previous
+        // contents if the guest fails mid-stream. Stage those downloads until
+        // the complete stream arrives; new paths still stream straight to disk.
+        let destination_existed = std::fs::symlink_metadata(local_path).is_ok();
+        let mut file = if destination_existed {
+            // Keep large downloads on the destination filesystem when possible;
+            // a writable file in a read-only directory still works via /tmp.
+            let parent = local_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."));
+            tempfile::tempfile_in(parent).or_else(|_| tempfile::tempfile())
+        } else {
+            std::fs::File::create(local_path)
+        }
+        .map_err(|e| {
+            Error::agent(
+                "write local file",
+                format!("{}: {}", local_path.display(), e),
+            )
+        })?;
+
+        // A failed read or write may leave a partial new file behind. Close
+        // the handle before trying to remove it (required on Windows).
+        let result = (|| {
+            let mut total = 0u64;
+            loop {
+                match self.recv_raw()? {
+                    AgentResponse::DataChunk { data, done } => {
+                        let next_total = total.saturating_add(data.len() as u64);
+                        if next_total > cap {
+                            return Err(Error::agent(
+                                operation,
+                                format!(
+                                    "guest streamed {} bytes, exceeding the {} byte cap",
+                                    next_total, cap
+                                ),
+                            ));
+                        }
+                        if !data.is_empty() {
+                            file.write_all(&data)
+                                .map_err(|e| Error::agent("write local file", e.to_string()))?;
+                            total = next_total;
+                            on_progress(total);
+                        }
+                        if done {
+                            file.flush()
+                                .map_err(|e| Error::agent("flush local file", e.to_string()))?;
+                            return Ok(total);
+                        }
+                    }
+                    AgentResponse::Error { message, .. } => {
+                        return Err(Error::agent(operation, message));
+                    }
+                    _ => {
+                        return Err(Error::agent(operation, "unexpected response"));
+                    }
+                }
+            }
+        })();
+        let result = result.and_then(|total| {
+            if destination_existed {
+                use std::io::Seek;
+                file.rewind()
+                    .map_err(|e| Error::agent("read staged file", e.to_string()))?;
+                // Write through existing symlinks and hard links as File::create
+                // did before; only the guest's incomplete stream is staged.
+                let mut destination = std::fs::File::create(local_path).map_err(|e| {
+                    Error::agent(
+                        "write local file",
+                        format!("{}: {}", local_path.display(), e),
+                    )
+                })?;
+                std::io::copy(&mut file, &mut destination)
+                    .map_err(|e| Error::agent("write local file", e.to_string()))?;
+                destination
+                    .flush()
+                    .map_err(|e| Error::agent("flush local file", e.to_string()))?;
+            }
+            Ok(total)
+        });
+        drop(file);
+        if result.is_err() && !destination_existed {
+            let _ = std::fs::remove_file(local_path);
+        }
+        result
+    }
+
+    // ========================================================================
+    // Streaming Exec
+    // ========================================================================
+
+    /// Execute a command with streaming output.
+    ///
+    /// This compatibility wrapper buffers all events before returning. New
+    /// callers that need live output should use `vm_exec_streaming_with`.
+    ///
+    /// Sends a VmExec request with interactive=true, tty=false. Reads
+    /// Stdout/Stderr/Exited responses into a vector and blocks until the
+    /// command finishes — call from a blocking context (e.g.,
+    /// `spawn_blocking`).
+    pub fn vm_exec_streaming(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<ExecEvent>> {
+        let mut events = Vec::new();
+        self.vm_exec_streaming_with(command, env, workdir, timeout, |event| {
+            events.push(event);
+        })?;
+        Ok(events)
+    }
+
+    /// Execute a command with streaming output and handle events as they arrive.
+    ///
+    /// This is the live-output variant of `vm_exec_streaming`.
+    pub fn vm_exec_streaming_with<F>(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        on_event: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ExecEvent),
+    {
+        self.vm_exec_streaming_with_stdin(command, env, workdir, timeout, None, on_event)
+    }
+
+    /// Stream a bare-VM command, optionally writing stdin before closing it.
+    pub fn vm_exec_streaming_with_stdin<F>(
+        &mut self,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        stdin_data: Option<Vec<u8>>,
+        on_event: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ExecEvent),
+    {
+        let timeout_ms = timeout.map(|t| t.as_millis() as u64);
+        let _timeout_guard = self.set_exec_timeout(timeout)?;
+
+        self.send(&AgentRequest::VmExec {
+            command,
+            env,
+            workdir,
+            timeout_ms,
+            interactive: true,
+            tty: false,
+            background: false,
+            stdin_data: None,
+        })?;
+
+        self.collect_with_streaming_stdin(stdin_data, "streaming exec", on_event)
+    }
+
+    fn collect_with_streaming_stdin<F>(
+        &mut self,
+        stdin_data: Option<Vec<u8>>,
+        op: &str,
+        on_event: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ExecEvent),
+    {
+        let Some(data) = stdin_data.filter(|data| !data.is_empty()) else {
+            self.send_streaming_stdin(None)?;
+            return collect_exec_events(self, op, on_event);
+        };
+
+        // Write stdin on a separate handle while draining stdout/stderr on
+        // this one. Commands that echo as they read can otherwise fill both
+        // socket directions and wait on each other indefinitely.
+        let mut writer = AgentClient {
+            stream: self.stream.try_clone()?,
+            trace_id: self.trace_id.clone(),
+            file_target: self.file_target.clone(),
+            capabilities: self.capabilities.clone(),
+            streaming_output_cap: self.streaming_output_cap,
+        };
+        std::thread::scope(|scope| {
+            let sender = scope.spawn(move || {
+                let sent = writer.send_streaming_stdin(Some(data));
+                if sent.is_err() {
+                    // Without the EOF frame, a child waiting for stdin would
+                    // otherwise wait forever after a failed host write.
+                    let _ = writer.stream.shutdown(std::net::Shutdown::Write);
+                }
+                sent
+            });
+            let mut exited = false;
+            let mut on_event = on_event;
+            let result = collect_exec_events(self, op, |event| {
+                if matches!(event, ExecEvent::Exit(_)) {
+                    exited = true;
+                }
+                on_event(event);
+            });
+            if !sender.is_finished() {
+                // A command can exit before consuming its entire stdin. Stop
+                // any blocked socket write so joining the writer is bounded.
+                let _ = self.stream.shutdown(std::net::Shutdown::Write);
+            }
+            let sent = sender
+                .join()
+                .map_err(|_| Error::agent("send stdin", "writer thread panicked"))?;
+            result?;
+            // A command may exit without reading its input (e.g. `true`).
+            // Its valid exit result takes precedence over a broken stdin pipe.
+            if exited {
+                Ok(())
+            } else {
+                sent
+            }
+        })
+    }
+
+    fn send_streaming_stdin(&mut self, stdin_data: Option<Vec<u8>>) -> Result<()> {
+        if let Some(data) = stdin_data {
+            // Stdin frames are JSON/base64 encoded and the guest limits frame
+            // size to 16 MiB. Bound each frame even for large API requests.
+            for chunk in data.chunks(256 * 1024) {
+                self.send(&AgentRequest::Stdin {
+                    data: chunk.to_vec(),
+                })?;
+            }
+        }
+        // The guest reads until EOF; even absent input needs an explicit close.
+        self.send(&AgentRequest::Stdin { data: Vec::new() })
+    }
+
+    /// Low-level send without waiting for response (public).
+    pub fn send_raw(&mut self, request: &AgentRequest) -> Result<()> {
+        self.send(request)
+    }
+
+    /// Low-level receive a single response (public).
+    pub fn recv_raw(&mut self) -> Result<AgentResponse> {
+        self.receive()
+    }
+
+    /// Set a command-execution timeout and return a guard that resets it on drop.
+    ///
+    /// If `timeout` is Some, the socket deadline is `timeout + TIMEOUT_BUFFER_SECS`.
+    /// If None, the socket read timeout is disabled entirely — the command runs
+    /// until completion (or the VM dies, triggering EOF). This matches
+    /// `interactive_session`'s behavior and avoids any implicit ceiling on how
+    /// long a non-interactive command can run. The `ReadTimeoutGuard` restores
+    /// `DEFAULT_READ_TIMEOUT_SECS` on drop so subsequent operations get the
+    /// normal 30-second timeout.
+    fn set_exec_timeout(&self, timeout: Option<Duration>) -> Result<Option<ReadTimeoutGuard>> {
+        match timeout {
+            Some(t) => {
+                self.set_read_timeout(t + Duration::from_secs(TIMEOUT_BUFFER_SECS))?;
+            }
+            None => {
+                self.stream.set_read_timeout(None).map_err(|e| {
+                    Error::agent(
+                        "set read timeout",
+                        format!("failed to clear socket read timeout: {}", e),
+                    )
+                })?;
+            }
+        }
+        Ok(ReadTimeoutGuard::new(&self.stream))
+    }
+
+    /// Set an extended read timeout and return a guard that resets it on drop.
+    ///
+    /// Used for long-running streaming operations (e.g., layer export) where
+    /// individual chunks may take longer than the default 30s timeout.
+    pub fn set_extended_read_timeout(&self, timeout: Duration) -> Result<Option<ReadTimeoutGuard>> {
+        self.set_read_timeout(timeout)?;
+        Ok(ReadTimeoutGuard::new(&self.stream))
+    }
+
+    /// Low-level send without waiting for response.
+    fn send(&mut self, request: &AgentRequest) -> Result<()> {
+        let data = self.encode_traced(request)?;
+        self.stream.write_all(&data)?;
+        self.stream.flush()?;
+        Ok(())
+    }
+
+    /// Read exactly `buf.len()` bytes, retrying on EAGAIN/WouldBlock.
+    ///
+    /// Unlike `read_exact`, this never loses partially-read data on EAGAIN.
+    /// On macOS, vsock sockets can spuriously return WouldBlock even in
+    /// blocking mode, so we must handle it without corrupting the stream.
+    ///
+    /// If `propagate_initial_wouldblock` is true and WouldBlock occurs before
+    /// any bytes are read, the error is propagated (preserves read timeout
+    /// behavior). Once any bytes are consumed, EAGAIN is retried.
+    ///
+    /// # Stall protection
+    ///
+    /// When the socket has a read timeout configured, the retry loop is bounded
+    /// by a wall-clock *idle* deadline. Without it, a peer that writes a valid
+    /// length prefix and then stalls mid-frame (fewer body bytes than declared,
+    /// without closing) would spin this loop at 1ms forever, pinning the host
+    /// thread and the per-machine client lock and defeating every client-level
+    /// timeout. The idle deadline is reset on every byte of progress, so a
+    /// slow-but-steady body is never penalized — only a body that delivers *no*
+    /// bytes for a full read-timeout window fails, with a `TimedOut` error.
+    ///
+    /// When no read timeout is configured (interactive sessions), WouldBlock is
+    /// treated as the spurious macOS vsock EAGAIN it is meant to be, and the loop
+    /// retries indefinitely as before — there is no deadline to enforce.
+    fn read_exact_retry(
+        &mut self,
+        buf: &mut [u8],
+        propagate_initial_wouldblock: bool,
+    ) -> std::io::Result<()> {
+        // Idle window: how long we tolerate zero progress before declaring a
+        // stall. Derived from the socket's configured read timeout so it tracks
+        // the caller's intent; `None` means blocking mode (no deadline).
+        let idle_window = self.stream.read_timeout().ok().flatten();
+        let mut deadline = idle_window.map(|w| std::time::Instant::now() + w);
+
+        let mut pos = 0;
+        while pos < buf.len() {
+            // SO_RCVTIMEO is normally enough to bound a blocking read, but a
+            // restored vsock/UDS bridge can occasionally leave recv() blocked
+            // past that socket timeout while many clones reconnect at once.
+            // Poll the descriptor against the same idle deadline before every
+            // read on Unix so a missing response cannot pin a fork-batch worker
+            // forever. A readable event also covers EOF/error; read() below
+            // preserves the precise result in those cases.
+            #[cfg(unix)]
+            if let Some(d) = deadline {
+                let mut pollfd = libc::pollfd {
+                    fd: std::os::unix::io::AsRawFd::as_raw_fd(&self.stream),
+                    events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+                    revents: 0,
+                };
+                loop {
+                    let now = std::time::Instant::now();
+                    if now >= d {
+                        return Err(stalled_read_error(pos, propagate_initial_wouldblock));
+                    }
+                    let remaining = d.saturating_duration_since(now);
+                    let timeout_ms = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
+                    // SAFETY: `pollfd` points to one initialized entry for the
+                    // duration of the call; poll does not retain the pointer.
+                    let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+                    if ready > 0 {
+                        break;
+                    }
+                    if ready == 0 {
+                        return Err(stalled_read_error(pos, propagate_initial_wouldblock));
+                    }
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+            match self.stream.read(&mut buf[pos..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "connection closed",
+                    ));
+                }
+                Ok(n) => {
+                    pos += n;
+                    // Progress made — extend the idle deadline.
+                    if let Some(w) = idle_window {
+                        deadline = Some(std::time::Instant::now() + w);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if pos == 0 && propagate_initial_wouldblock {
+                        // No data consumed yet and caller wants timeout errors — propagate
+                        return Err(e);
+                    }
+                    // Mid-read (or caller wants full retry). Retry, but bail out
+                    // if the idle deadline has passed so a stalled mid-frame body
+                    // can't busy-spin forever.
+                    if let Some(d) = deadline {
+                        if std::time::Instant::now() >= d {
+                            return Err(stalled_read_error(pos, propagate_initial_wouldblock));
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Low-level receive a single response.
+    fn receive(&mut self) -> Result<AgentResponse> {
+        // Check if a read timeout is set — if so, WouldBlock before any data
+        // means a real timeout and should be propagated. If no timeout (interactive
+        // sessions), WouldBlock is always a spurious macOS vsock EAGAIN.
+        let has_timeout = self.stream.read_timeout().ok().flatten().is_some();
+
+        let mut header = [0u8; 4];
+        self.read_exact_retry(&mut header, has_timeout)?;
+        let len = u32::from_be_bytes(header) as usize;
+
+        // Validate frame size to prevent OOM from malicious/buggy responses
+        if len > MAX_FRAME_SIZE as usize {
+            // Header consumed but body not read — stream is desynchronized.
+            // Shut down the read half so all future reads fail immediately
+            // rather than interpreting body bytes as a frame header.
+            let _ = self.stream.shutdown(std::net::Shutdown::Read);
+            return Err(Error::agent(
+                "validate frame",
+                format!(
+                    "frame too large: {} bytes (max: {} bytes)",
+                    len, MAX_FRAME_SIZE
+                ),
+            ));
+        }
+
+        let mut buf = vec![0u8; len];
+        // Always retry body reads — header is already consumed so we can't
+        // propagate an error without corrupting the stream.
+        if let Err(e) = self.read_exact_retry(&mut buf, false) {
+            // Body read failed — stream is desynchronized. Shut down the
+            // read half so future reads fail cleanly.
+            let _ = self.stream.shutdown(std::net::Shutdown::Read);
+            return Err(e.into());
+        }
+
+        let mut resp: AgentResponse = serde_json::from_slice(&buf)
+            .map_err(|e| Error::agent("deserialize response", e.to_string()))?;
+        // Rewrite a version-skew error as it enters, so every decode site —
+        // the shared match helpers and the many inline `AgentResponse::Error`
+        // matches (branchpoint_*, pod_*, …) — reports the skew the same way.
+        if let AgentResponse::Error { message, .. } = &mut resp {
+            *message = describe_agent_error(std::mem::take(message));
+        }
+        Ok(resp)
+    }
+}
+
+/// Cumulative byte ceiling for the streaming/collect exec path.
+///
+/// The buffered (`Completed`) exec path caps guest output inside the guest at
+/// `smolvm_agent::process::MAX_EXEC_OUTPUT` (11 MiB). The streaming path
+/// relays frames one at a time. Its compatibility wrapper (`vm_exec_streaming`)
+/// buffers events for callers, while the HTTP SSE handler forwards them through
+/// a bounded queue. A chatty or infinite guest command (`yes`, `cat /dev/zero`)
+/// still needs a cumulative cap to bound the compatibility wrapper and stop
+/// endless guest output.
+///
+/// We mirror the buffered path's 11 MiB ceiling: once cumulative stdout+stderr
+/// crosses it, we emit a truncation error event and stop relaying (terminating
+/// the collect loop) instead of growing unbounded.
+///
+/// Semantics: this is a per-exec-session cap on the BUFFERED/relayed output of
+/// the streaming exec path, the default for every connection. The CLI lifts
+/// it (see [`AgentClient::set_streaming_output_cap`]): it writes each frame to
+/// its own stdout and stops when that pipe closes, so nothing accumulates. Interactive PTY sessions are long-lived by design
+/// and do NOT flow through here — they use
+/// [`AgentClient::interactive_session_io`], which streams frame-by-frame to the
+/// WebSocket without accumulating — so a legitimate long interactive session is
+/// unaffected by this cap.
+const MAX_STREAMING_EXEC_OUTPUT: usize = 11 * 1024 * 1024;
+
+fn collect_exec_events<F>(client: &mut AgentClient, op: &str, on_event: F) -> Result<()>
+where
+    F: FnMut(ExecEvent),
+{
+    let cap = client.streaming_output_cap;
+    collect_exec_events_inner(|| client.receive(), op, cap, on_event)
+}
+
+/// Cap-parameterized core of [`collect_exec_events`], pulling responses from a
+/// `next_response` closure so it can be unit-tested against synthetic frame
+/// sequences with a small cap (instead of booting a VM and streaming 11 MiB).
+fn collect_exec_events_inner<N, F>(
+    mut next_response: N,
+    op: &str,
+    cap: Option<usize>,
+    mut on_event: F,
+) -> Result<()>
+where
+    N: FnMut() -> Result<AgentResponse>,
+    F: FnMut(ExecEvent),
+{
+    match next_response()? {
+        AgentResponse::Started => {}
+        AgentResponse::Error { message, .. } => {
+            return Err(Error::agent(op, message));
+        }
+        _ => return Err(Error::agent(op, "expected Started")),
+    }
+
+    // Cumulative stdout+stderr bytes relayed on this session. Bounds the host
+    // buffer so a guest that never sends `Exited` can't OOM the host.
+    let mut total: usize = 0;
+    loop {
+        match next_response() {
+            Ok(AgentResponse::Stdout { data }) => {
+                total = total.saturating_add(data.len());
+                on_event(ExecEvent::Stdout(data));
+            }
+            Ok(AgentResponse::Stderr { data }) => {
+                total = total.saturating_add(data.len());
+                on_event(ExecEvent::Stderr(data));
+            }
+            Ok(AgentResponse::Exited { exit_code, .. }) => {
+                on_event(ExecEvent::Exit(exit_code));
+                break;
+            }
+            Ok(AgentResponse::Error { message, .. }) => {
+                on_event(ExecEvent::Error(message));
+                break;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                on_event(ExecEvent::Error(err.to_string()));
+                break;
+            }
+        }
+
+        // Cap check runs after relaying each frame (matching the buffered
+        // path's "send chunk, then break at the cap" order): we relay at most
+        // `cap` + one frame before terminating with a truncation signal.
+        if let Some(cap) = cap.filter(|cap| total >= *cap) {
+            on_event(ExecEvent::Error(format!(
+                "streaming output exceeded {cap} byte cap; exec terminated (output truncated)"
+            )));
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Consume streamed `DataChunk` responses, enforcing the per-transfer
+/// size cap and returning the concatenated bytes.
+///
+/// Pulled out of `AgentClient::read_file` so it can be unit-tested
+/// against synthetic response sequences without booting a VM, and
+/// against a small cap so the test doesn't have to allocate 4 GiB
+/// just to exercise the cap branch.
+///
+/// Two small variants on the same loop:
+/// - [`consume_streamed_read_with_progress`]: production cap, with
+///   a progress callback (used by [`AgentClient::read_file`] +
+///   [`AgentClient::read_file_with_progress`]).
+/// - [`consume_streamed_read_with_cap`]: parameterized cap, no
+///   progress (used by tests so they can exercise the cap branch
+///   with kilobytes instead of gigabytes).
+///
+/// Both delegate to [`consume_streamed_read_inner`].
+/// The file-transfer size cap, in bytes. Defaults to the protocol's
+/// [`FILE_TRANSFER_MAX_TOTAL`] (4 GiB) and can be raised at runtime with
+/// `SMOLVM_FILE_TRANSFER_MAX_BYTES` (accepts a plain byte count or a suffixed
+/// size like `16GiB`). This lets an operator pack a VM snapshot whose overlay
+/// carries a large dependency tree (e.g. a ~5 GiB torch + CUDA-wheels env)
+/// without lowering the default DoS bound for everyone else.
+pub fn file_transfer_max_total() -> u64 {
+    std::env::var("SMOLVM_FILE_TRANSFER_MAX_BYTES")
+        .ok()
+        .and_then(|s| crate::util::parse_size_bytes(s.trim()).ok())
+        .unwrap_or(FILE_TRANSFER_MAX_TOTAL)
+}
+
+/// Default ceiling for pack-export reads (64 GiB).
+const PACK_EXPORT_MAX_TOTAL: u64 = 64 << 30;
+
+/// The size cap for pack-export reads, in bytes. Defaults to 64 GiB and honors
+/// the same `SMOLVM_FILE_TRANSFER_MAX_BYTES` override as
+/// [`file_transfer_max_total`].
+///
+/// Pack export reads back a layer smolvm itself asked the guest to write, and a
+/// provisioned machine's flattened rootfs is routinely tens of GiB, so the
+/// general transfer bound — sized for `machine cp` against a guest that chooses
+/// its own payload — is the wrong ceiling here. Every pack read shares this one
+/// so the routes of a single export cannot disagree.
+pub fn pack_export_max_total() -> u64 {
+    std::env::var("SMOLVM_FILE_TRANSFER_MAX_BYTES")
+        .ok()
+        .and_then(|s| crate::util::parse_size_bytes(s.trim()).ok())
+        .unwrap_or(PACK_EXPORT_MAX_TOTAL)
+}
+
+fn consume_streamed_read_with_progress<F, P>(next_response: F, on_progress: P) -> Result<Vec<u8>>
+where
+    F: FnMut() -> Result<AgentResponse>,
+    P: FnMut(u64),
+{
+    consume_streamed_read_inner(next_response, file_transfer_max_total(), on_progress)
+}
+
+#[cfg(test)]
+fn consume_streamed_read_with_cap<F>(next_response: F, cap: u64) -> Result<Vec<u8>>
+where
+    F: FnMut() -> Result<AgentResponse>,
+{
+    consume_streamed_read_inner(next_response, cap, |_| {})
+}
+
+fn consume_streamed_read_inner<F, P>(
+    mut next_response: F,
+    cap: u64,
+    mut on_progress: P,
+) -> Result<Vec<u8>>
+where
+    F: FnMut() -> Result<AgentResponse>,
+    P: FnMut(u64),
+{
+    let mut out: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    loop {
+        match next_response()? {
+            AgentResponse::DataChunk { data, done } => {
+                // Cap *before* extending so a single oversized chunk
+                // can't push us past the limit.
+                let next_total = total.saturating_add(data.len() as u64);
+                if next_total > cap {
+                    return Err(Error::agent(
+                        "read file",
+                        format!(
+                            "guest streamed {} bytes, exceeding the {} byte cap; \
+                             use a virtiofs mount for larger files",
+                            next_total, cap
+                        ),
+                    ));
+                }
+                out.extend_from_slice(&data);
+                total = next_total;
+                on_progress(total);
+                if done {
+                    return Ok(out);
+                }
+            }
+            AgentResponse::Error { message, code } => {
+                return Err(
+                    if code.as_deref() == Some(smolvm_protocol::error_codes::NOT_FOUND) {
+                        Error::agent_not_found("read file", message)
+                    } else {
+                        Error::agent("read file", message)
+                    },
+                );
+            }
+            other => {
+                return Err(Error::agent(
+                    "read file",
+                    format!("unexpected response: {:?}", other),
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod read_cap_tests {
+    use super::*;
+
+    /// Build a `DataChunk` response with `n` zero bytes.
+    fn chunk(n: usize, done: bool) -> AgentResponse {
+        AgentResponse::DataChunk {
+            data: vec![0u8; n],
+            done,
+        }
+    }
+
+    /// Drive the consumer over a fixed list of responses with a
+    /// small (1 KiB) cap. Tests only need to exercise the size
+    /// arithmetic; the production cap of 4 GiB would need the test
+    /// to allocate a Vec that big to trip — wasteful and unnecessary.
+    /// The cap is parameterized on the internal helper precisely so
+    /// this test can scale down.
+    const TEST_CAP: u64 = 1024;
+
+    fn drive(responses: Vec<AgentResponse>) -> Result<Vec<u8>> {
+        let mut iter = responses.into_iter();
+        consume_streamed_read_with_cap(
+            || {
+                iter.next()
+                    .ok_or_else(|| Error::agent("test", "no more responses"))
+            },
+            TEST_CAP,
+        )
+    }
+
+    #[test]
+    fn read_cap_terminator_returns_full_buffer() {
+        let out = drive(vec![chunk(100, false), chunk(50, true)]).unwrap();
+        assert_eq!(out.len(), 150);
+    }
+
+    // Pack export reads back a layer smolvm asked the guest to produce, not a
+    // guest-chosen payload, so its ceiling must never be the more restrictive
+    // of the two. Holds with or without the shared override, since both caps
+    // read it.
+    #[test]
+    fn pack_export_cap_is_never_below_the_transfer_cap() {
+        assert!(pack_export_max_total() >= file_transfer_max_total());
+    }
+
+    #[test]
+    fn read_cap_empty_terminator_is_valid_eof() {
+        let out = drive(vec![chunk(100, false), chunk(0, true)]).unwrap();
+        assert_eq!(out.len(), 100);
+    }
+
+    #[test]
+    fn read_cap_rejects_single_chunk_at_or_above_limit() {
+        // Single chunk that on its own pushes past the cap. We're at
+        // 1024-byte cap so this chunk is 1025 bytes — trivial to
+        // allocate in tests, exercises the same arithmetic that
+        // would catch a 4 GiB+ chunk in production.
+        let err = drive(vec![chunk(TEST_CAP as usize + 1, true)]).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("exceeding") && msg.contains("byte cap"),
+            "expected size-cap error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn read_cap_rejects_when_accumulated_chunks_exceed_limit() {
+        // Two chunks under the cap individually but exceeding it
+        // combined. This is the realistic exhaustion vector — a
+        // misbehaving guest streaming "fine-sized" chunks forever.
+        let half = (TEST_CAP / 2) as usize;
+        let err = drive(vec![
+            chunk(half, false),
+            chunk(half, false),
+            chunk(half, false), // would push past the cap
+        ])
+        .unwrap_err();
+        assert!(format!("{}", err).contains("byte cap"));
+    }
+
+    #[test]
+    fn read_cap_chunk_at_exactly_limit_is_accepted() {
+        // Boundary: a chunk that lands the accumulated total at
+        // exactly the cap is fine. Only > cap is rejected.
+        let out = drive(vec![chunk(TEST_CAP as usize, true)]).unwrap();
+        assert_eq!(out.len(), TEST_CAP as usize);
+    }
+
+    #[test]
+    fn read_cap_propagates_agent_error_response() {
+        let err = drive(vec![AgentResponse::Error {
+            message: "no such file".to_string(),
+            code: None,
+        }])
+        .unwrap_err();
+        assert!(format!("{}", err).contains("no such file"));
+    }
+
+    #[test]
+    fn missing_streamed_file_retains_not_found_status() {
+        let err = drive(vec![AgentResponse::Error {
+            message: "missing guest path".to_string(),
+            code: Some(smolvm_protocol::error_codes::NOT_FOUND.to_string()),
+        }])
+        .unwrap_err();
+        assert!(matches!(
+            crate::api::error::ApiError::from(err),
+            crate::api::error::ApiError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn other_stream_errors_remain_server_errors() {
+        let err = drive(vec![AgentResponse::Error {
+            message: "storage failed".to_string(),
+            code: Some(smolvm_protocol::error_codes::FILE_IO_FAILED.to_string()),
+        }])
+        .unwrap_err();
+        assert!(matches!(
+            crate::api::error::ApiError::from(err),
+            crate::api::error::ApiError::Internal(_)
+        ));
+    }
+
+    #[test]
+    fn read_cap_rejects_unexpected_response_type() {
+        let err = drive(vec![AgentResponse::Pong {
+            version: 1,
+            capabilities: vec![],
+        }])
+        .unwrap_err();
+        assert!(format!("{}", err).contains("unexpected response"));
+    }
+}
+
+#[cfg(test)]
+mod collect_exec_cap_tests {
+    //! Regression coverage for the streaming-exec host-OOM guard.
+    //!
+    //! Proves the streaming/collect path (`collect_exec_events_inner`) stops
+    //! and emits a truncation signal once cumulative relayed output crosses the
+    //! cap, instead of buffering unbounded output from a guest that never sends
+    //! `Exited` (the `yes` / `cat /dev/zero` cross-tenant DoS).
+    use super::*;
+
+    fn stdout(n: usize) -> AgentResponse {
+        AgentResponse::Stdout { data: vec![0u8; n] }
+    }
+
+    /// Drive `collect_exec_events_inner` over a fixed response list with a
+    /// small cap, capturing the relayed events and the terminal result.
+    fn drive(cap: usize, responses: Vec<AgentResponse>) -> (Vec<ExecEvent>, Result<()>) {
+        let mut iter = responses.into_iter();
+        let mut events = Vec::new();
+        let res = collect_exec_events_inner(
+            || {
+                iter.next()
+                    .ok_or_else(|| Error::agent("test", "no more responses"))
+            },
+            "test exec",
+            Some(cap),
+            |e| events.push(e),
+        );
+        (events, res)
+    }
+
+    const TEST_CAP: usize = 1024;
+
+    #[test]
+    fn without_a_cap_every_frame_is_relayed_until_exit() {
+        // The CLI's --stream: far past any cap, all of it arrives, then the exit.
+        let mut responses = vec![AgentResponse::Started];
+        for _ in 0..1000 {
+            responses.push(stdout(TEST_CAP));
+        }
+        responses.push(AgentResponse::Exited {
+            exit_code: 0,
+            oom: false,
+        });
+        let mut iter = responses.into_iter();
+        let mut events = Vec::new();
+        collect_exec_events_inner(
+            || {
+                iter.next()
+                    .ok_or_else(|| Error::agent("test", "no more responses"))
+            },
+            "test exec",
+            None,
+            |e| events.push(e),
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1001);
+        assert_eq!(events.last(), Some(&ExecEvent::Exit(0)));
+    }
+
+    #[test]
+    fn stops_at_cumulative_cap_with_truncation_signal() {
+        // An infinite chatty stream: `Started`, then far more stdout than the
+        // cap, and crucially NEVER `Exited`. If the cap did not fire the loop
+        // would drain all 1000 frames (and in production loop forever). Because
+        // it caps, only a handful of frames are consumed before termination.
+        let half = TEST_CAP / 2;
+        let mut responses = vec![AgentResponse::Started];
+        for _ in 0..1000 {
+            responses.push(stdout(half)); // would total 500_000 bytes unbounded
+        }
+        let (events, res) = drive(TEST_CAP, responses);
+        res.expect("collect returns Ok after capping (not the iterator-drained error)");
+
+        // Terminated near the cap, nowhere near draining 1000 frames.
+        assert!(
+            events.len() < 10,
+            "expected termination near the cap, got {} events",
+            events.len()
+        );
+
+        // Final event is the truncation error.
+        match events.last().expect("at least one event") {
+            ExecEvent::Error(msg) => assert!(
+                msg.contains("byte cap") && msg.contains("truncated"),
+                "expected truncation error, got: {msg}"
+            ),
+            other => panic!("expected trailing truncation Error event, got {other:?}"),
+        }
+
+        // Relayed bytes are bounded: at most cap + one frame.
+        let relayed: usize = events
+            .iter()
+            .map(|e| match e {
+                ExecEvent::Stdout(d) | ExecEvent::Stderr(d) => d.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            relayed <= TEST_CAP + half,
+            "relayed {relayed} bytes exceeds the cap+one-frame bound"
+        );
+    }
+
+    #[test]
+    fn single_oversized_frame_trips_the_cap() {
+        // One frame that alone crosses the cap: relayed once, then truncated.
+        let (events, res) = drive(TEST_CAP, vec![AgentResponse::Started, stdout(TEST_CAP + 1)]);
+        res.unwrap();
+        assert!(matches!(events.last().unwrap(), ExecEvent::Error(m) if m.contains("byte cap")));
+    }
+
+    #[test]
+    fn passes_through_under_cap_and_exits_cleanly() {
+        // Normal, well-behaved exec under the cap relays everything and ends on
+        // `Exit` with no truncation error injected.
+        let (events, res) = drive(
+            TEST_CAP,
+            vec![
+                AgentResponse::Started,
+                stdout(100),
+                AgentResponse::Stderr {
+                    data: b"warn".to_vec(),
+                },
+                AgentResponse::Exited {
+                    exit_code: 0,
+                    oom: false,
+                },
+            ],
+        );
+        res.unwrap();
+        assert_eq!(events.last().unwrap(), &ExecEvent::Exit(0));
+        assert!(
+            !events.iter().any(|e| matches!(e, ExecEvent::Error(_))),
+            "clean exec must not inject a truncation error"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod upload_reader_tests {
+    use super::*;
+    use std::io::{Cursor, Read, Write};
+
+    #[test]
+    fn an_uneven_upload_reads_exactly_the_declared_size() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let total = FILE_WRITE_CHUNK_SIZE + 7;
+        let server = std::thread::spawn(move || {
+            let mut received = 0usize;
+            loop {
+                let mut header = [0; 4];
+                server_stream.read_exact(&mut header).unwrap();
+                let mut frame = vec![0; u32::from_be_bytes(header) as usize];
+                server_stream.read_exact(&mut frame).unwrap();
+                let request: Envelope<AgentRequest> = serde_json::from_slice(&frame).unwrap();
+                let done = match request.body {
+                    AgentRequest::FileWriteBegin { total_size, .. } => {
+                        assert_eq!(total_size, total as u64);
+                        false
+                    }
+                    AgentRequest::FileWriteChunk { data, done } => {
+                        received += data.len();
+                        assert!(received <= total, "upload overran the declared size");
+                        if done {
+                            assert_eq!(received, total);
+                            assert_eq!(data.len(), 7);
+                        }
+                        done
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                };
+                server_stream
+                    .write_all(&encode_message(&AgentResponse::Ok { data: None }).unwrap())
+                    .unwrap();
+                if done {
+                    break;
+                }
+            }
+        });
+        // Extra bytes from a generic Read source must not reach the guest.
+        let reader = Cursor::new(vec![42; total + 13]);
+        AgentClient::from_stream(client_stream)
+            .write_file_from_reader("/workspace/file", reader, total as u64, None)
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    // The last chunk's sync and install can outlast the frame timeout; the
+    // agent says so with progress frames, which the upload waits through.
+    #[test]
+    fn progress_while_the_last_chunk_finalizes_does_not_fail_the_upload() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let total = FILE_WRITE_CHUNK_SIZE + 7;
+        let server = std::thread::spawn(move || loop {
+            let mut header = [0; 4];
+            server_stream.read_exact(&mut header).unwrap();
+            let mut frame = vec![0; u32::from_be_bytes(header) as usize];
+            server_stream.read_exact(&mut frame).unwrap();
+            let request: Envelope<AgentRequest> = serde_json::from_slice(&frame).unwrap();
+            let done = matches!(
+                request.body,
+                AgentRequest::FileWriteChunk { done: true, .. }
+            );
+            if done {
+                for _ in 0..3 {
+                    let progress = AgentResponse::Progress {
+                        message: "finalizing file write".into(),
+                        percent: None,
+                        layer: None,
+                    };
+                    server_stream
+                        .write_all(&encode_message(&progress).unwrap())
+                        .unwrap();
+                }
+            }
+            server_stream
+                .write_all(&encode_message(&AgentResponse::Ok { data: None }).unwrap())
+                .unwrap();
+            if done {
+                break;
+            }
+        });
+        AgentClient::from_stream(client_stream)
+            .write_file_from_reader(
+                "/workspace/file",
+                Cursor::new(vec![7; total]),
+                total as u64,
+                None,
+            )
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_short_single_shot_reader_does_not_upload_partial_contents() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let mut client = AgentClient::from_stream(client_stream);
+        let error = client
+            .write_file_from_reader("/workspace/file", Cursor::new(b"hi"), 5, None)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("source ended after 2 of 5 bytes"));
+        server_stream.as_socket().set_nonblocking(true).unwrap();
+        let mut header = [0; 4];
+        assert!(
+            server_stream.read(&mut header).is_err(),
+            "must not write to guest"
+        );
+    }
+
+    #[test]
+    fn an_early_eof_never_finalizes_a_short_upload() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let total = FILE_WRITE_CHUNK_SIZE + 7;
+        let server = std::thread::spawn(move || {
+            let mut chunks = 0;
+            loop {
+                let mut header = [0; 4];
+                if server_stream.read_exact(&mut header).is_err() {
+                    break;
+                }
+                let mut frame = vec![0; u32::from_be_bytes(header) as usize];
+                server_stream.read_exact(&mut frame).unwrap();
+                let request: Envelope<AgentRequest> = serde_json::from_slice(&frame).unwrap();
+                if let AgentRequest::FileWriteChunk { done, .. } = request.body {
+                    assert!(!done, "truncated source must not finalize");
+                    chunks += 1;
+                }
+                server_stream
+                    .write_all(&encode_message(&AgentResponse::Ok { data: None }).unwrap())
+                    .unwrap();
+            }
+            assert_eq!(chunks, 1);
+        });
+        let mut client = AgentClient::from_stream(client_stream);
+        let error = client
+            .write_file_from_reader(
+                "/workspace/file",
+                Cursor::new(vec![42; FILE_WRITE_CHUNK_SIZE + 3]),
+                total as u64,
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("source ended"));
+        drop(client);
+        server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod run_background_tests {
+    //! Regression test for image-backed `machine run -d`.
+    //!
+    //! The original bug: the CLI's image + `--detach` path pulled the image
+    //! and persisted the VM record but silently dropped the command. The
+    //! fix wires in `AgentClient::run_background`, which must send a
+    //! `Run { background: true }` over the wire and parse the returned PID.
+    //!
+    //! If this test fails, the detach path either lost its `background`
+    //! plumbing or stopped parsing the PID response — either way, the
+    //! original "command never runs" regression is back.
+    use super::*;
+    use smolvm_protocol::{encode_message, AgentRequest, AgentResponse, Envelope};
+    use std::io::{Read, Write};
+    use std::thread;
+
+    #[test]
+    fn run_background_sends_background_true_and_returns_pid() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+
+        // Fake agent: read one request, assert it's a background Run, respond
+        // with a Completed PID. Mirrors what the real agent does in
+        // `handle_run_background`.
+        let server = thread::spawn(move || {
+            let mut len_buf = [0u8; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+
+            let mut payload = vec![0u8; len];
+            server_stream.read_exact(&mut payload).unwrap();
+
+            let envelope: Envelope<AgentRequest> =
+                serde_json::from_slice(&payload).expect("valid Envelope<AgentRequest>");
+
+            match envelope.body {
+                AgentRequest::Run {
+                    image,
+                    command,
+                    persistent_overlay_id,
+                    background,
+                    interactive,
+                    tty,
+                    ..
+                } => {
+                    assert!(
+                        background,
+                        "run_background must send background: true — the image+detach CLI path \
+                         depends on this field to dispatch the command inside the container"
+                    );
+                    assert!(!interactive, "background runs are never interactive");
+                    assert!(!tty, "background runs never allocate a TTY");
+                    assert_eq!(image, "docker.io/library/alpine:3.19");
+                    assert_eq!(command, vec!["sh", "-c", "echo hi"]);
+                    assert_eq!(
+                        persistent_overlay_id,
+                        Some("default".to_string()),
+                        "background runs must use a persistent overlay so subsequent execs \
+                         see the same filesystem"
+                    );
+                }
+                other => panic!("expected AgentRequest::Run, got {:?}", other),
+            }
+
+            let resp = AgentResponse::Completed {
+                exit_code: 0,
+                stdout: b"12345".to_vec(),
+                stderr: Vec::new(),
+            };
+            let encoded = encode_message(&resp).expect("encode response");
+            server_stream.write_all(&encoded).expect("write response");
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+        let config = RunConfig::new(
+            "alpine:3.19",
+            vec!["sh".to_string(), "-c".to_string(), "echo hi".to_string()],
+        )
+        .with_persistent_overlay(Some("default".to_string()));
+
+        let pid = client
+            .run_background(config)
+            .expect("run_background should succeed on a Completed response");
+
+        assert_eq!(pid, 12345, "client must parse the PID from stdout");
+        server.join().expect("server thread joined cleanly");
+    }
+
+    #[test]
+    fn run_background_rejects_nonzero_exit_code() {
+        // If the agent fails to spawn the container, it returns a non-zero
+        // exit_code. The client must turn that into an error rather than
+        // silently returning a bogus PID.
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+
+        let server = thread::spawn(move || {
+            let mut len_buf = [0u8; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            server_stream.read_exact(&mut payload).unwrap();
+
+            let resp = AgentResponse::Completed {
+                exit_code: 1,
+                stdout: Vec::new(),
+                stderr: b"spawn failed".to_vec(),
+            };
+            let encoded = encode_message(&resp).unwrap();
+            server_stream.write_all(&encoded).unwrap();
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+        let config = RunConfig::new("alpine:3.19", vec!["true".to_string()])
+            .with_persistent_overlay(Some("default".to_string()));
+
+        let err = client
+            .run_background(config)
+            .expect_err("non-zero exit must surface as an error");
+        assert!(
+            format!("{}", err).contains("spawn failed")
+                || format!("{}", err).contains("run background"),
+            "unexpected error: {}",
+            err
+        );
+        server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod run_container_detached_tests {
+    use super::*;
+    use smolvm_protocol::{decode_message, encode_message, AgentRequest, AgentResponse, Envelope};
+    use std::io::{Read, Write};
+    use std::thread;
+
+    #[test]
+    fn accepts_progress_before_detached_container_completion() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+
+        let server = thread::spawn(move || {
+            let mut len_buf = [0u8; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            server_stream.read_exact(&mut payload).unwrap();
+            let envelope: Envelope<AgentRequest> =
+                decode_message(&[&len_buf[..], &payload[..]].concat()).unwrap();
+            assert!(matches!(
+                envelope.body,
+                AgentRequest::Run { detached: true, .. }
+            ));
+
+            for response in [
+                AgentResponse::Progress {
+                    message: "extracting flattened rootfs (64 MiB)".to_string(),
+                    percent: None,
+                    layer: None,
+                },
+                AgentResponse::Completed {
+                    exit_code: 0,
+                    stdout: b"container-123".to_vec(),
+                    stderr: Vec::new(),
+                },
+            ] {
+                server_stream
+                    .write_all(&encode_message(&response).unwrap())
+                    .unwrap();
+            }
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+        let config = RunConfig::new("local-archive", Vec::new())
+            .with_persistent_overlay(Some("default".to_string()));
+        let id = client.run_container_detached(config).unwrap();
+
+        assert_eq!(id, "container-123");
+        server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod run_streaming_tests {
+    //! Regression coverage for image-backed streaming exec.
+    //!
+    //! `machine exec --stream` must preserve the same execution target as
+    //! buffered `machine exec`. For image-backed machines that means sending a
+    //! `Run { interactive: true }` request to the agent, not `VmExec` against
+    //! the bare agent rootfs.
+    use super::*;
+    use smolvm_protocol::{encode_message, AgentRequest, AgentResponse, Envelope};
+    use std::io::{Read, Write};
+    use std::thread;
+
+    #[test]
+    fn streamed_stdin_is_chunked_and_closed_for_bare_and_image_commands() {
+        for image in [false, true] {
+            let input = "snowman ☃".repeat(40_000).into_bytes();
+            let expected = input.clone();
+            let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+            server_stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let server = thread::spawn(move || {
+                let mut received = Vec::new();
+                let mut frames = 0;
+                loop {
+                    let mut header = [0u8; 4];
+                    server_stream.read_exact(&mut header).unwrap();
+                    let mut payload = vec![0; u32::from_be_bytes(header) as usize];
+                    server_stream.read_exact(&mut payload).unwrap();
+                    let envelope: Envelope<AgentRequest> =
+                        serde_json::from_slice(&payload).unwrap();
+                    match envelope.body {
+                        AgentRequest::Run {
+                            interactive: true, ..
+                        } if image && frames == 0 => {}
+                        AgentRequest::VmExec {
+                            interactive: true, ..
+                        } if !image && frames == 0 => {}
+                        AgentRequest::Stdin { data } if data.is_empty() => break,
+                        AgentRequest::Stdin { data } => {
+                            assert!(data.len() <= 256 * 1024);
+                            received.extend(data);
+                        }
+                        other => panic!("unexpected streamed exec request: {other:?}"),
+                    }
+                    frames += 1;
+                }
+                assert!(frames > 2, "large stdin must use multiple frames");
+                assert_eq!(received, expected);
+                for response in [
+                    AgentResponse::Started,
+                    AgentResponse::Exited {
+                        exit_code: 0,
+                        oom: false,
+                    },
+                ] {
+                    server_stream
+                        .write_all(&encode_message(&response).unwrap())
+                        .unwrap();
+                }
+            });
+
+            let mut client = AgentClient::from_stream(client_stream);
+            let mut events = Vec::new();
+            if image {
+                client
+                    .run_streaming_with_stdin(
+                        RunConfig::new("alpine", vec!["cat".into()]),
+                        Some(input),
+                        |event| events.push(event),
+                    )
+                    .unwrap();
+            } else {
+                client
+                    .vm_exec_streaming_with_stdin(
+                        vec!["cat".into()],
+                        vec![],
+                        None,
+                        None,
+                        Some(input),
+                        |event| events.push(event),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(events, vec![ExecEvent::Exit(0)]);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn vm_exec_streaming_closes_guest_stdin_before_waiting_for_exit() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        server_stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let server = thread::spawn(move || {
+            for expected_eof in [false, true] {
+                let mut len_buf = [0u8; 4];
+                server_stream.read_exact(&mut len_buf).unwrap();
+                let mut payload = vec![0u8; u32::from_be_bytes(len_buf) as usize];
+                server_stream.read_exact(&mut payload).unwrap();
+                let envelope: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+                if expected_eof {
+                    assert!(
+                        matches!(envelope.body, AgentRequest::Stdin { data } if data.is_empty())
+                    );
+                } else {
+                    assert!(matches!(
+                        envelope.body,
+                        AgentRequest::VmExec {
+                            interactive: true,
+                            tty: false,
+                            ..
+                        }
+                    ));
+                }
+            }
+            for response in [
+                AgentResponse::Started,
+                AgentResponse::Exited {
+                    exit_code: 0,
+                    oom: false,
+                },
+            ] {
+                server_stream
+                    .write_all(&encode_message(&response).unwrap())
+                    .unwrap();
+            }
+        });
+        let mut client = AgentClient::from_stream(client_stream);
+        let mut events = Vec::new();
+        client
+            .vm_exec_streaming_with(vec!["cat".into()], vec![], None, None, |event| {
+                events.push(event)
+            })
+            .unwrap();
+        assert_eq!(events, vec![ExecEvent::Exit(0)]);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn choosing_container_files_on_pre_target_agent_does_not_execute_image() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            let image_info = serde_json::json!({
+                "reference": "alpine:3.20", "digest": "sha256:test", "size": 0,
+                "created": null, "architecture": "amd64", "os": "linux",
+                "layer_count": 0, "layers": []
+            });
+            for response in [
+                AgentResponse::Ok {
+                    data: Some(image_info),
+                },
+                AgentResponse::Pong {
+                    version: smolvm_protocol::PROTOCOL_VERSION,
+                    capabilities: vec![smolvm_protocol::PREPARE_FILE_ACCESS_CAPABILITY.into()],
+                },
+                AgentResponse::Ok { data: None },
+            ] {
+                let mut len = [0; 4];
+                server_stream.read_exact(&mut len).unwrap();
+                let mut payload = vec![0; u32::from_be_bytes(len) as usize];
+                server_stream.read_exact(&mut payload).unwrap();
+                let request: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+                match response {
+                    AgentResponse::Ok { data: Some(_) } => assert!(matches!(
+                        request.body, AgentRequest::Query { image } if image == "alpine:3.20"
+                    )),
+                    AgentResponse::Pong { .. } => {
+                        assert!(matches!(request.body, AgentRequest::Ping))
+                    }
+                    AgentResponse::Ok { data: None } => assert!(matches!(
+                        request.body,
+                        AgentRequest::PrepareFileAccess { image, workload_id }
+                            if image == "alpine:3.20" && workload_id == "owner"
+                    )),
+                    _ => unreachable!(),
+                }
+                server_stream
+                    .write_all(&encode_message(&response).unwrap())
+                    .unwrap();
+            }
+        });
+        let mut client = AgentClient::from_stream(client_stream);
+        client
+            .use_target(WorkloadTarget::Container {
+                image: "alpine:3.20".into(),
+                overlay_id: "owner".into(),
+            })
+            .unwrap();
+        assert!(client.file_target.is_none());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn preparing_file_access_sends_no_guest_command() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            let mut len_buf = [0; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(len_buf) as usize];
+            server_stream.read_exact(&mut payload).unwrap();
+            let request: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+            assert!(matches!(request.body, AgentRequest::Ping));
+            server_stream
+                .write_all(
+                    &encode_message(&AgentResponse::Pong {
+                        version: smolvm_protocol::PROTOCOL_VERSION,
+                        capabilities: vec![smolvm_protocol::PREPARE_FILE_ACCESS_CAPABILITY.into()],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(len_buf) as usize];
+            server_stream.read_exact(&mut payload).unwrap();
+            let request: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+            assert!(matches!(
+                request.body,
+                AgentRequest::PrepareFileAccess { image, workload_id }
+                    if image == "alpine:3.20" && workload_id == "fork-overlay-owner"
+            ));
+            server_stream
+                .write_all(&encode_message(&AgentResponse::Ok { data: None }).unwrap())
+                .unwrap();
+        });
+        AgentClient::from_stream(client_stream)
+            .prepare_file_access("alpine:3.20", "fork-overlay-owner")
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn preparing_file_access_keeps_old_guests_working() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            let mut len_buf = [0; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(len_buf) as usize];
+            server_stream.read_exact(&mut payload).unwrap();
+            let request: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+            assert!(matches!(request.body, AgentRequest::Ping));
+            server_stream
+                .write_all(
+                    &encode_message(&AgentResponse::Pong {
+                        version: smolvm_protocol::PROTOCOL_VERSION,
+                        capabilities: vec![],
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(len_buf) as usize];
+            server_stream.read_exact(&mut payload).unwrap();
+            let request: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+            assert!(matches!(
+                request.body,
+                AgentRequest::Run { image, command, persistent_overlay_id, .. }
+                    if image == "docker.io/library/alpine:3.20"
+                    && command == ["/bin/true"]
+                    && persistent_overlay_id.as_deref() == Some("fork-overlay-owner")
+            ));
+            server_stream
+                .write_all(
+                    &encode_message(&AgentResponse::Completed {
+                        exit_code: 0,
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+        });
+        AgentClient::from_stream(client_stream)
+            .prepare_file_access("alpine:3.20", "fork-overlay-owner")
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn run_streaming_sends_interactive_run_and_collects_events() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+
+        let server = thread::spawn(move || {
+            let mut len_buf = [0u8; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            server_stream.read_exact(&mut payload).unwrap();
+
+            let envelope: Envelope<AgentRequest> =
+                serde_json::from_slice(&payload).expect("valid Envelope<AgentRequest>");
+            match envelope.body {
+                AgentRequest::Run {
+                    image,
+                    command,
+                    mounts,
+                    interactive,
+                    tty,
+                    detached,
+                    background,
+                    persistent_overlay_id,
+                    ..
+                } => {
+                    assert_eq!(image, "docker.io/library/ubuntu:24.04");
+                    assert_eq!(command, vec!["/bin/bash", "-lc", "echo hi"]);
+                    assert_eq!(
+                        mounts,
+                        vec![("work".to_string(), "/work".to_string(), false)]
+                    );
+                    assert!(interactive, "streaming image exec must use interactive Run");
+                    assert!(!tty, "plain --stream must not allocate a TTY");
+                    assert!(!detached, "streaming exec must not detach");
+                    assert!(!background, "streaming exec must not run in background");
+                    assert_eq!(persistent_overlay_id, Some("dev".to_string()));
+                }
+                other => panic!("expected AgentRequest::Run, got {:?}", other),
+            }
+
+            let mut len_buf = [0u8; 4];
+            server_stream.read_exact(&mut len_buf).unwrap();
+            let mut payload = vec![0u8; u32::from_be_bytes(len_buf) as usize];
+            server_stream.read_exact(&mut payload).unwrap();
+            let envelope: Envelope<AgentRequest> = serde_json::from_slice(&payload).unwrap();
+            assert!(
+                matches!(envelope.body, AgentRequest::Stdin { data } if data.is_empty()),
+                "non-interactive stream must close guest stdin"
+            );
+
+            for response in [
+                AgentResponse::Started,
+                AgentResponse::Stdout {
+                    data: b"hi\n".to_vec(),
+                },
+                AgentResponse::Stderr {
+                    data: b"warn\n".to_vec(),
+                },
+                AgentResponse::Exited {
+                    exit_code: 7,
+                    oom: false,
+                },
+            ] {
+                let encoded = encode_message(&response).expect("encode response");
+                server_stream.write_all(&encoded).expect("write response");
+            }
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+        let config = RunConfig::new(
+            "ubuntu:24.04",
+            vec![
+                "/bin/bash".to_string(),
+                "-lc".to_string(),
+                "echo hi".to_string(),
+            ],
+        )
+        .with_mounts(vec![("work".to_string(), "/work".to_string(), false)])
+        .with_persistent_overlay(Some("dev".to_string()));
+
+        let mut events = Vec::new();
+        client
+            .run_streaming_with(config, |event| events.push(event))
+            .expect("run_streaming_with should handle streamed events");
+
+        assert_eq!(
+            events,
+            vec![
+                ExecEvent::Stdout(b"hi\n".to_vec()),
+                ExecEvent::Stderr(b"warn\n".to_vec()),
+                ExecEvent::Exit(7),
+            ]
+        );
+        server.join().expect("server thread joined cleanly");
+    }
+}
+
+#[cfg(test)]
+mod writer_thread_tests {
+    //! Regression tests for issue #926.
+    //!
+    //! They verify nonblocking enqueueing, retry after write timeout, frame
+    //! ordering, error propagation, and bounded teardown.
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    const FRAME_LEN: usize = 4096;
+
+    /// Frames whose byte pattern encodes their index, so a reordered or spliced
+    /// stream is detectable.
+    fn make_frames(count: usize) -> Vec<Vec<u8>> {
+        (0..count).map(|i| vec![i as u8; FRAME_LEN]).collect()
+    }
+
+    /// Shrink both socket buffers so a peer that stops reading wedges the writer
+    /// after a few frames instead of hundreds of KiB.
+    fn shrink_buffers(a: &UdsStream, b: &UdsStream) {
+        for s in [a, b] {
+            let _ = s.as_socket().set_send_buffer_size(FRAME_LEN);
+            let _ = s.as_socket().set_recv_buffer_size(FRAME_LEN);
+        }
+    }
+
+    #[test]
+    fn stalled_peer_does_not_abort_or_reorder_the_stream() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        shrink_buffers(&client_stream, &peer);
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set peer read timeout");
+
+        let frames = make_frames(WRITER_QUEUE_FRAMES + 16);
+        let total: usize = frames.iter().map(|f| f.len()).sum();
+
+        // Peer wedges past a full WRITER_WRITE_TIMEOUT tick before draining, so
+        // the writer must survive at least one expired write mid-frame.
+        let peer_thread = std::thread::spawn(move || {
+            std::thread::sleep(WRITER_WRITE_TIMEOUT + Duration::from_millis(200));
+            let mut received = vec![0u8; total];
+            peer.read_exact(&mut received)
+                .expect("peer reads all bytes");
+            received
+        });
+
+        let writer = FrameWriter::spawn(&client_stream).expect("spawn writer");
+
+        // Queue with the session loop's discipline: one held frame, retried until
+        // it fits. The first WRITER_QUEUE_FRAMES sends must not block.
+        let start = Instant::now();
+        let mut pending: VecDeque<Vec<u8>> = frames.iter().cloned().collect();
+        let mut queued = 0;
+        while queued < WRITER_QUEUE_FRAMES {
+            let frame = pending.pop_front().expect("frames remain");
+            assert!(
+                writer.try_send(frame).expect("writer alive").is_none(),
+                "the first {WRITER_QUEUE_FRAMES} frames must fit in the queue"
+            );
+            queued += 1;
+        }
+        let enqueue_time = start.elapsed();
+        assert!(
+            enqueue_time < Duration::from_millis(500),
+            "enqueueing must not block on a stalled peer (took {enqueue_time:?})"
+        );
+
+        // Remainder: exactly the held-frame retry the session loop performs.
+        while let Some(frame) = pending.pop_front() {
+            let mut held = Some(frame);
+            while let Some(frame) = held.take() {
+                held = writer.try_send(frame).expect("writer alive");
+                if held.is_some() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+
+        let received = peer_thread.join().expect("peer thread joined");
+        assert_eq!(
+            received,
+            frames.concat(),
+            "every frame must arrive whole and in order"
+        );
+        assert!(
+            writer.take_error().is_none(),
+            "a slow peer is not a write error"
+        );
+        drop(writer);
+    }
+
+    #[test]
+    fn teardown_does_not_hang_on_a_wedged_peer() {
+        let (client_stream, peer) = UdsStream::pair().unwrap();
+        shrink_buffers(&client_stream, &peer);
+
+        let writer = FrameWriter::spawn(&client_stream).expect("spawn writer");
+        // Push until the queue backs up, which means the socket buffers are full
+        // and the writer thread is parked inside write() — the wedged-guest state.
+        let mut wedged = false;
+        for frame in make_frames(4 * WRITER_QUEUE_FRAMES) {
+            if writer.try_send(frame).expect("writer alive").is_some() {
+                wedged = true;
+                break;
+            }
+        }
+        assert!(
+            wedged,
+            "peer never applied backpressure; test is not exercising a parked writer"
+        );
+
+        let start = Instant::now();
+        drop(writer);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < WRITER_WRITE_TIMEOUT * 3,
+            "dropping the writer must not wait on the peer (took {elapsed:?})"
+        );
+        drop(peer);
+    }
+
+    #[test]
+    fn write_error_is_published_instead_of_lost() {
+        let (client_stream, peer) = UdsStream::pair().unwrap();
+        shrink_buffers(&client_stream, &peer);
+
+        let writer = FrameWriter::spawn(&client_stream).expect("spawn writer");
+        drop(peer); // Connection dies mid-session: broken pipe on the next write.
+
+        // The session loop learns of the failure one iteration late, either from
+        // the error slot or from a send onto the now-dead channel.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut reported = false;
+        while Instant::now() < deadline {
+            if writer.take_error().is_some() {
+                reported = true;
+                break;
+            }
+            match writer.try_send(vec![0u8; FRAME_LEN]) {
+                Ok(_) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => {
+                    assert!(
+                        e.to_string().contains("send message"),
+                        "writer failure must surface as a send error, got: {e}"
+                    );
+                    reported = true;
+                    break;
+                }
+            }
+        }
+        assert!(reported, "a dead socket must surface as an error");
+    }
+}
+
+#[cfg(test)]
+mod stalled_body_tests {
+    //! Regression for the busy-spin-forever on a stalled mid-frame body.
+    //!
+    //! A peer that writes a valid 4-byte length prefix and then delivers fewer
+    //! body bytes than declared (without closing the socket) used to pin the
+    //! host thread in a 1ms retry loop with no wall-clock bound, defeating every
+    //! client-level timeout. `read_exact_retry` now honors a wall-clock idle
+    //! deadline derived from the socket read timeout, so `receive()` must return
+    //! a timeout error promptly instead of hanging.
+    use super::*;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    fn advertise_safe_shutdown(peer: &mut UdsStream) {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let mut body = vec![0; u32::from_be_bytes(header) as usize];
+        peer.read_exact(&mut body).unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("ping"));
+        let response = AgentResponse::Pong {
+            version: smolvm_protocol::PROTOCOL_VERSION,
+            capabilities: vec![smolvm_protocol::QUIESCED_SHUTDOWN_CAPABILITY.into()],
+        };
+        let body = serde_json::to_vec(&response).unwrap();
+        peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+        peer.write_all(&body).unwrap();
+    }
+
+    #[test]
+    fn shutdown_never_mutates_a_legacy_guest() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut header = [0; 4];
+            peer.read_exact(&mut header).unwrap();
+            let mut request = vec![0; u32::from_be_bytes(header) as usize];
+            peer.read_exact(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request).contains("ping"));
+            let body = serde_json::to_vec(&AgentResponse::Pong {
+                version: smolvm_protocol::PROTOCOL_VERSION,
+                capabilities: vec![],
+            })
+            .unwrap();
+            peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+            peer.write_all(&body).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            assert_eq!(
+                peer.read(&mut header).unwrap(),
+                0,
+                "must close without sending shutdown"
+            );
+        });
+        let error = AgentClient::from_stream(client_stream)
+            .shutdown()
+            .unwrap_err();
+        assert!(error.to_string().contains("VM left unchanged"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_progress_extends_idle_but_not_hard_deadline() {
+        let start = Instant::now();
+        let mut d = ShutdownDeadlines::new(start, Duration::from_secs(5), Duration::from_secs(12));
+        assert_eq!(d.next(), start + Duration::from_secs(5));
+        d.progress(start + Duration::from_secs(4));
+        assert_eq!(d.next(), start + Duration::from_secs(9));
+        d.progress(start + Duration::from_secs(8));
+        assert_eq!(d.next(), start + Duration::from_secs(12));
+        d.progress(start + Duration::from_secs(11));
+        assert_eq!(d.next(), start + Duration::from_secs(12));
+    }
+
+    #[test]
+    fn shutdown_accepts_progress_then_final_ack() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            advertise_safe_shutdown(&mut peer);
+            let mut request = [0; 1024];
+            assert!(peer.read(&mut request).unwrap() > 0);
+            for response in [
+                AgentResponse::Progress {
+                    message: "syncing".into(),
+                    percent: None,
+                    layer: None,
+                },
+                AgentResponse::Ok {
+                    data: Some(serde_json::json!({
+                        "shutdown": true,
+                        "filesystems_quiesced": true,
+                    })),
+                },
+            ] {
+                let body = serde_json::to_vec(&response).unwrap();
+                peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+                peer.write_all(&body).unwrap();
+            }
+        });
+        AgentClient::from_stream(client_stream)
+            .shutdown_with_timeouts(Duration::from_secs(1), Duration::from_secs(2), None)
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_rejects_legacy_ack_without_quiesce_confirmation() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            advertise_safe_shutdown(&mut peer);
+            let mut request = [0; 1024];
+            assert!(peer.read(&mut request).unwrap() > 0);
+            let response = AgentResponse::Ok {
+                data: Some(serde_json::json!({"shutdown": true})),
+            };
+            let body = serde_json::to_vec(&response).unwrap();
+            peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+            peer.write_all(&body).unwrap();
+        });
+        let error = AgentClient::from_stream(client_stream)
+            .shutdown_with_timeouts(Duration::from_secs(1), Duration::from_secs(2), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("filesystems were quiesced"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_returns_flush_error() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            advertise_safe_shutdown(&mut peer);
+            let mut request = [0; 1024];
+            assert!(peer.read(&mut request).unwrap() > 0);
+            let body =
+                serde_json::to_vec(&AgentResponse::error("flush failed", "IO_ERROR")).unwrap();
+            peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+            peer.write_all(&body).unwrap();
+        });
+        let error = AgentClient::from_stream(client_stream)
+            .shutdown()
+            .unwrap_err();
+        assert!(error.to_string().contains("flush failed"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_progress_stream_cannot_extend_absolute_limit() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            advertise_safe_shutdown(&mut peer);
+            let mut request = [0; 1024];
+            assert!(peer.read(&mut request).unwrap() > 0);
+            let body = serde_json::to_vec(&AgentResponse::Progress {
+                message: "syncing".into(),
+                percent: None,
+                layer: None,
+            })
+            .unwrap();
+            let bytes = [(body.len() as u32).to_be_bytes().as_slice(), &body].concat();
+            while peer.write_all(&bytes).is_ok() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let start = Instant::now();
+        let error = AgentClient::from_stream(client_stream)
+            .shutdown_with_timeouts(Duration::from_millis(80), Duration::from_millis(160), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("deadline exceeded"));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_deadline_is_not_extended_by_partial_frames() {
+        for slow_header in [true, false] {
+            let (client_stream, mut peer) = UdsStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                advertise_safe_shutdown(&mut peer);
+                let mut request = [0; 1024];
+                assert!(peer.read(&mut request).unwrap() > 0);
+                let body = serde_json::to_vec(&AgentResponse::Ok { data: None }).unwrap();
+                let header = (body.len() as u32).to_be_bytes();
+                let bytes = if slow_header {
+                    [header.as_slice(), body.as_slice()].concat()
+                } else {
+                    peer.write_all(&header).unwrap();
+                    body
+                };
+                // One byte per 100 ms: the whole frame takes seconds, so a client that
+                // waited for it would miss the bound below by a wide margin, while a
+                // client that honours its deadline has seconds of scheduling slack on a
+                // loaded CI machine (a 30 ms/byte, 500 ms bound version failed there).
+                for byte in bytes {
+                    if peer.write_all(&[byte]).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            });
+            let mut client = AgentClient::from_stream(client_stream);
+            let start = Instant::now();
+            let error = client
+                .shutdown_with_deadline(Duration::from_millis(100))
+                .unwrap_err();
+            assert!(error.to_string().contains("deadline exceeded"), "{error}");
+            assert!(
+                start.elapsed() < Duration::from_millis(1500),
+                "the deadline must not be extended by partial frames: took {:?}",
+                start.elapsed()
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn receive_times_out_when_peer_never_starts_a_frame() {
+        let (client_stream, server_stream) = UdsStream::pair().unwrap();
+        client_stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("set read timeout");
+
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            drop(server_stream);
+        });
+        let mut client = AgentClient::from_stream(client_stream);
+
+        let start = Instant::now();
+        let error = client
+            .receive()
+            .expect_err("an idle peer must not block receive forever");
+        let elapsed = start.elapsed();
+
+        assert!(error.to_string().contains("timed out waiting"));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "an idle response must honor the socket deadline (got {elapsed:?})"
+        );
+        server.join().expect("server thread joined");
+    }
+
+    #[test]
+    fn receive_times_out_on_stalled_mid_frame_body() {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+
+        // Short read timeout so the test is fast: the idle deadline tracks this.
+        let read_timeout = Duration::from_millis(150);
+        client_stream
+            .set_read_timeout(Some(read_timeout))
+            .expect("set client read timeout");
+
+        // Server: declare a 64-byte body, then send only 3 bytes and STALL —
+        // hold the socket open (never drop it) so the client never sees EOF.
+        let server = std::thread::spawn(move || {
+            let declared_len: u32 = 64;
+            server_stream
+                .write_all(&declared_len.to_be_bytes())
+                .expect("write length prefix");
+            server_stream
+                .write_all(&[1u8, 2, 3])
+                .expect("write partial body");
+            server_stream.flush().expect("flush");
+            // Stall: keep the connection open well past the client's deadline so
+            // the client cannot rely on EOF to unblock.
+            std::thread::sleep(Duration::from_secs(3));
+            drop(server_stream);
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+
+        let start = Instant::now();
+        let result = client.receive();
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "receive() must error on a stalled mid-frame body, not return Ok"
+        );
+        // Must return within a small multiple of the read timeout — nowhere near
+        // the server's 3s hold, proving it did not busy-spin until EOF.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "receive() should time out promptly (got {elapsed:?}); it must not \
+             spin until the peer closes"
+        );
+
+        server.join().expect("server thread joined");
+    }
+
+    #[test]
+    fn read_exact_retry_bounds_stalled_read_without_eof() {
+        // Drive read_exact_retry directly: header-style non-propagating read of a
+        // buffer larger than what the peer sends, with the peer stalling.
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        client_stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("set read timeout");
+
+        let server = std::thread::spawn(move || {
+            server_stream.write_all(&[0xAAu8]).expect("write one byte");
+            server_stream.flush().expect("flush");
+            std::thread::sleep(Duration::from_secs(3));
+            drop(server_stream);
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+
+        let start = Instant::now();
+        // Ask for 8 bytes but only 1 will ever arrive; propagate=false forces the
+        // retry path (the same path receive() uses for the body).
+        let mut buf = [0u8; 8];
+        let err = client
+            .read_exact_retry(&mut buf, false)
+            .expect_err("stalled read must return a bounded error");
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::TimedOut,
+            "stalled mid-buffer read must surface a TimedOut error"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "read_exact_retry must not busy-spin until EOF (got {elapsed:?})"
+        );
+
+        server.join().expect("server thread joined");
+    }
+}
+
+#[cfg(test)]
+mod term_default_tests {
+    use super::with_term_default;
+
+    fn term_of(env: &[(String, String)]) -> Option<&str> {
+        env.iter()
+            .find(|(k, _)| k == "TERM")
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn pty_session_gets_a_term() {
+        // Without this the guest shell's line editor cannot redraw, and backspace
+        // appears to advance the cursor instead of deleting.
+        let env = with_term_default(vec![], true);
+        assert_eq!(term_of(&env), Some("xterm-256color"));
+    }
+
+    #[test]
+    fn caller_supplied_term_is_kept() {
+        let env = with_term_default(
+            vec![("TERM".to_string(), "screen-256color".to_string())],
+            true,
+        );
+        assert_eq!(term_of(&env), Some("screen-256color"));
+        assert_eq!(env.len(), 1, "must not append a second TERM");
+    }
+
+    #[test]
+    fn non_tty_exec_is_untouched() {
+        // A piped exec has no terminal to describe; adding TERM there would make
+        // programs emit escape sequences into what is usually captured output.
+        let env = with_term_default(vec![("A".to_string(), "b".to_string())], false);
+        assert_eq!(term_of(&env), None);
+        assert_eq!(env.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod flatten_version_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn mock_flatten_response(response: AgentResponse) -> String {
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut header = [0u8; 4];
+            server_stream.read_exact(&mut header).unwrap();
+            let mut request = vec![0u8; u32::from_be_bytes(header) as usize];
+            server_stream.read_exact(&mut request).unwrap();
+            let envelope: Envelope<AgentRequest> = serde_json::from_slice(&request).unwrap();
+            assert!(matches!(
+                envelope.body,
+                AgentRequest::FlattenLayers { output: None, .. }
+            ));
+            server_stream
+                .write_all(&encode_message(&response).unwrap())
+                .unwrap();
+        });
+        let output = tempfile::tempdir().unwrap();
+        let error = AgentClient::from_stream(client_stream)
+            .flatten_layers_to_path(
+                &["/storage/layers".into()],
+                &output.path().join("out.tar"),
+                1024,
+                |_| {},
+            )
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(!output.path().join("out.tar").exists());
+        error.to_string()
+    }
+
+    #[test]
+    fn old_guest_agent_explains_how_to_resolve_version_skew() {
+        let error = mock_flatten_response(AgentResponse::Error {
+            message: "invalid request: unknown variant `flatten_layers`, expected `ping`".into(),
+            code: None,
+        });
+        assert!(error.contains("matching rootfs"), "{error}");
+        assert!(error.contains("SMOLVM_AGENT_ROOTFS"), "{error}");
+        assert!(!error.contains("unknown variant"), "{error}");
+    }
+
+    #[test]
+    fn other_guest_errors_are_not_misidentified_as_version_skew() {
+        let error = mock_flatten_response(AgentResponse::Error {
+            message: "storage disk is full".into(),
+            code: None,
+        });
+        assert!(error.contains("storage disk is full"), "{error}");
+        assert!(!error.contains("matching rootfs"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod agent_error_skew_tests {
+    use super::describe_agent_error;
+
+    #[test]
+    fn unknown_variant_becomes_a_version_mismatch_message() {
+        // The verbatim reply a 1.7.7 agent sends for a newer CLI's
+        // flatten_layers request (#951). The raw serde text told the user
+        // nothing about the actual problem or the fix.
+        let raw = "invalid request: unknown variant `flatten_layers`, expected one of \
+                   `ping`, `fs_notify`, `pull` at line 1 column 26";
+        let described = describe_agent_error(raw.to_string());
+        assert!(described.contains("older than this CLI"), "{described}");
+        assert!(described.contains("flatten_layers"), "{described}");
+        assert!(described.contains("agent rootfs"), "{described}");
+        assert!(!described.contains("expected one of"), "{described}");
+    }
+
+    #[test]
+    fn ordinary_agent_errors_pass_through_unchanged() {
+        for msg in [
+            "flatten failed: no space left on device",
+            "invalid request: missing field `path` at line 1 column 40",
+            "invalid request: unknown variant with no backtick",
+        ] {
+            assert_eq!(describe_agent_error(msg.to_string()), msg);
+        }
+    }
+
+    #[test]
+    fn receive_rewrites_the_error_as_it_enters() {
+        // The rewrite lives in `receive`, not the match helpers, so the many
+        // call sites that match `AgentResponse::Error` themselves (the
+        // branchpoint and pod families included) get the translation too.
+        use super::{AgentClient, AgentResponse, UdsStream};
+        use std::io::Write;
+
+        let (client_stream, mut server_stream) = UdsStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let resp = AgentResponse::error(
+                "invalid request: unknown variant `pod_create`, expected one of `ping` \
+                 at line 1 column 22",
+                "invalid_request",
+            );
+            let body = serde_json::to_vec(&resp).unwrap();
+            server_stream
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .unwrap();
+            server_stream.write_all(&body).unwrap();
+        });
+
+        let mut client = AgentClient::from_stream(client_stream);
+        let resp = client.receive().expect("frame decodes");
+        server.join().unwrap();
+
+        let AgentResponse::Error { message, .. } = resp else {
+            panic!("expected an error response");
+        };
+        assert!(message.contains("older than this CLI"), "{message}");
+        assert!(message.contains("pod_create"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod flatten_timeout_tests {
+
+    #[test]
+    fn a_connect_the_guest_hangs_up_is_retried() {
+        assert!(super::is_transient_connect_error(
+            "connect to agent: no error set after POLLHUP"
+        ));
+        assert!(super::is_transient_connect_error(
+            "Connection refused (os error 111)"
+        ));
+        assert!(!super::is_transient_connect_error(
+            "Permission denied (os error 13)"
+        ));
+    }
+
+    use super::*;
+
+    // `set_var`/`remove_var` are process-global and the tests run in parallel
+    // threads; serialize them so one test's override can't bleed into another.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env(value: Option<&str>, f: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        match value {
+            Some(v) => std::env::set_var("SMOLVM_FLATTEN_TIMEOUT_SECS", v),
+            None => std::env::remove_var("SMOLVM_FLATTEN_TIMEOUT_SECS"),
+        }
+        f();
+        std::env::remove_var("SMOLVM_FLATTEN_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn defaults_to_900_seconds_without_env() {
+        with_env(None, || {
+            assert_eq!(
+                flatten_timeout(),
+                Duration::from_secs(FLATTEN_TIMEOUT_DEFAULT_SECS)
+            );
+        });
+    }
+
+    #[test]
+    fn honors_a_valid_override() {
+        with_env(Some("3600"), || {
+            assert_eq!(flatten_timeout(), Duration::from_secs(3600));
+        });
+    }
+
+    #[test]
+    fn rejects_zero_unparsable_and_empty_values() {
+        for bad in ["0", "-5", "abc", "", "  "] {
+            with_env(Some(bad), || {
+                assert_eq!(
+                    flatten_timeout(),
+                    Duration::from_secs(FLATTEN_TIMEOUT_DEFAULT_SECS),
+                    "value {bad:?} must fall back to the default"
+                );
+            });
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod interactive_input_tests {
+    //! The channel-driven interactive session must forward input as soon as it is
+    //! sent, not when the poll loop next times out, and must carry a stream of
+    //! input through to the command without losing a byte.
+    use super::*;
+    use crate::agent::test_guest::FakeGuest;
+    use std::sync::mpsc;
+
+    /// Longer than any test waits: a session that only noticed input when this
+    /// timeout expired would fail every deadline below.
+    const NEVER_MS: i32 = 60_000;
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    fn request(command: &[&str]) -> AgentRequest {
+        AgentRequest::VmExec {
+            command: command.iter().map(|s| s.to_string()).collect(),
+            env: Vec::new(),
+            workdir: None,
+            timeout_ms: None,
+            interactive: true,
+            tty: false,
+            background: false,
+            stdin_data: None,
+        }
+    }
+
+    /// A session running `command` in the fake guest. Output arrives on the
+    /// returned channel; the session's result on the returned handle.
+    fn session(
+        command: &[&str],
+        capacity: usize,
+    ) -> (
+        InteractiveInputSender,
+        mpsc::Receiver<InteractiveOutput>,
+        std::thread::JoinHandle<Result<i32>>,
+        FakeGuest,
+    ) {
+        let (client_stream, guest_stream) = UdsStream::pair().unwrap();
+        let guest = FakeGuest::spawn(guest_stream);
+        let (input_tx, input_rx) = interactive_input(capacity).unwrap();
+        let (output_tx, output_rx) = mpsc::channel();
+        let request = request(command);
+        let handle = std::thread::spawn(move || {
+            AgentClient::from_stream(client_stream).interactive_session_io(
+                request,
+                input_rx,
+                move |output| {
+                    let _ = output_tx.send(output);
+                },
+                "test",
+                NEVER_MS,
+            )
+        });
+        (input_tx, output_rx, handle, guest)
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn input_reaches_the_command_without_waiting_for_the_poll_timeout() {
+        let (input, output, session, guest) = session(&["cat"], 8);
+        let runtime = runtime();
+        for round in 0..5u8 {
+            runtime
+                .block_on(input.send(InteractiveInput::Stdin(vec![round; 100])))
+                .unwrap();
+            let mut echoed = Vec::new();
+            while echoed.len() < 100 {
+                match output.recv_timeout(DEADLINE).expect("the echo arrives") {
+                    InteractiveOutput::Stdout(data) => echoed.extend(data),
+                    other => panic!("unexpected output {other:?}"),
+                }
+            }
+            assert_eq!(echoed, vec![round; 100]);
+        }
+        runtime.block_on(input.send(InteractiveInput::Eof)).unwrap();
+        assert_eq!(session.join().unwrap().unwrap(), 0);
+        guest.finish();
+    }
+
+    #[test]
+    fn a_vanished_peer_ends_the_session_without_waiting_for_the_poll_timeout() {
+        let (input, _output, session, guest) = session(&["cat"], 8);
+        drop(input);
+        assert_eq!(session.join().unwrap().unwrap(), DISCONNECT_EXIT_CODE);
+        // The guest sees its connection close and kills the command.
+        guest.finish();
+    }
+
+    #[test]
+    fn a_long_stream_of_input_arrives_intact_under_backpressure() {
+        // Far more than the input queue and the writer queue hold, so the sender
+        // has to wait for the session, and the session for the command.
+        let total = 3 * 1024 * 1024;
+        let (input, output, session, guest) = session(&["cat"], 4);
+        let sender = std::thread::spawn(move || {
+            let runtime = runtime();
+            let mut sent = 0usize;
+            while sent < total {
+                let chunk: Vec<u8> = (0..60 * 1024).map(|i| ((sent + i) % 251) as u8).collect();
+                sent += chunk.len();
+                runtime
+                    .block_on(input.send(InteractiveInput::Stdin(chunk)))
+                    .unwrap();
+            }
+            runtime.block_on(input.send(InteractiveInput::Eof)).unwrap();
+            // A peer that hangs up ends the session at once, so this one stays
+            // until the command has finished and said so.
+            (sent, input)
+        });
+        let mut received = Vec::new();
+        loop {
+            match output.recv_timeout(DEADLINE) {
+                Ok(InteractiveOutput::Stdout(data)) => received.extend(data),
+                Ok(other) => panic!("unexpected output {other:?}"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("the stream stalled"),
+            }
+        }
+        let (sent, input) = sender.join().unwrap();
+        assert_eq!(session.join().unwrap().unwrap(), 0);
+        drop(input);
+        guest.finish();
+        assert_eq!(received.len(), sent);
+        assert!(
+            received
+                .iter()
+                .enumerate()
+                .all(|(i, byte)| *byte == (i % 251) as u8),
+            "bytes arrived out of order or changed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod streamed_path_cleanup_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn send_response(peer: &mut UdsStream, response: AgentResponse) {
+        let data = serde_json::to_vec(&response).unwrap();
+        peer.write_all(&(data.len() as u32).to_be_bytes()).unwrap();
+        peer.write_all(&data).unwrap();
+    }
+
+    #[test]
+    fn disconnect_mid_transfer_removes_the_partial_file() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        send_response(
+            &mut peer,
+            AgentResponse::DataChunk {
+                data: b"partial archive".to_vec(),
+                done: false,
+            },
+        );
+        drop(peer);
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("flat-export.tmp");
+        let mut client = AgentClient::from_stream(client_stream);
+        assert!(client
+            .receive_stream_to_path(&output, 1024, |_| {}, "flatten layers")
+            .is_err());
+        assert!(!output.exists(), "failed transfer left a partial archive");
+    }
+
+    #[test]
+    fn disconnect_does_not_unlink_an_existing_destination() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        send_response(
+            &mut peer,
+            AgentResponse::DataChunk {
+                data: b"partial archive".to_vec(),
+                done: false,
+            },
+        );
+        drop(peer);
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("existing.txt");
+        std::fs::write(&output, b"original").unwrap();
+        let mut client = AgentClient::from_stream(client_stream);
+        assert!(client
+            .receive_stream_to_path(&output, 1024, |_| {}, "read file")
+            .is_err());
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            b"original",
+            "failed download must not truncate an existing destination"
+        );
+    }
+
+    #[test]
+    fn guest_error_does_not_truncate_an_existing_destination() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        send_response(
+            &mut peer,
+            AgentResponse::Error {
+                message: "missing guest file".into(),
+                code: None,
+            },
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("existing.txt");
+        std::fs::write(&output, b"original").unwrap();
+        let mut client = AgentClient::from_stream(client_stream);
+        assert!(client
+            .receive_stream_to_path(&output, 1024, |_| {}, "read file")
+            .is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"original");
+    }
+
+    #[test]
+    fn successful_transfer_overwrites_existing_destination() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        send_response(
+            &mut peer,
+            AgentResponse::DataChunk {
+                data: b"new content".to_vec(),
+                done: true,
+            },
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("existing.txt");
+        std::fs::write(&output, b"original").unwrap();
+        let alias = dir.path().join("alias.txt");
+        std::fs::hard_link(&output, &alias).unwrap();
+        let mut client = AgentClient::from_stream(client_stream);
+        assert_eq!(
+            client
+                .receive_stream_to_path(&output, 1024, |_| {}, "read file")
+                .unwrap(),
+            b"new content".len() as u64
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"new content");
+        assert_eq!(std::fs::read(&alias).unwrap(), b"new content");
+    }
+
+    #[test]
+    fn successful_transfer_keeps_the_file() {
+        let (client_stream, mut peer) = UdsStream::pair().unwrap();
+        send_response(
+            &mut peer,
+            AgentResponse::DataChunk {
+                data: b"complete archive".to_vec(),
+                done: true,
+            },
+        );
+        drop(peer);
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("flat-export.tmp");
+        let mut client = AgentClient::from_stream(client_stream);
+        assert_eq!(
+            client
+                .receive_stream_to_path(&output, 1024, |_| {}, "flatten layers")
+                .unwrap(),
+            b"complete archive".len() as u64
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"complete archive");
+    }
+}
+
+#[cfg(test)]
+mod mirror_auth_tests {
+    use super::*;
+
+    #[test]
+    fn mirror_uses_its_own_credentials_instead_of_upstream_credentials() {
+        let config: RegistryConfig = toml::from_str(
+            r#"
+[registries."origin.example.invalid"]
+username = "origin"
+password = "upstream-secret"
+mirror = "mirror.example.invalid"
+
+[registries."mirror.example.invalid"]
+username = "mirror"
+password = "mirror-secret"
+"#,
+        )
+        .unwrap();
+        let image = rewrite_image_registry(
+            "origin.example.invalid/app:latest",
+            "mirror.example.invalid",
+        );
+        let auth = registry_pull_credentials(&config, &image, None).unwrap();
+        assert_eq!(auth.username, "mirror");
+        assert_eq!(auth.password, "mirror-secret");
+        let original =
+            registry_pull_credentials(&config, "origin.example.invalid/app:latest", None).unwrap();
+        assert_eq!(original.username, "origin");
+        assert_eq!(original.password, "upstream-secret");
+    }
+
+    #[test]
+    fn local_images_never_look_up_registry_credentials() {
+        let config = RegistryConfig::default();
+        let explicit = || {
+            Some(RegistryAuth {
+                username: "explicit".into(),
+                password: "secret".into(),
+            })
+        };
+        assert!(registry_pull_credentials(&config, "local:7fc08832", explicit()).is_none());
+        assert!(registry_pull_credentials(&config, "local-dir:/tmp/rootfs", explicit()).is_none());
+    }
+
+    #[test]
+    fn explicit_credentials_remain_available_for_private_mirrors() {
+        let config = RegistryConfig::default();
+        let auth = registry_pull_credentials(
+            &config,
+            "mirror.example.invalid/app:latest",
+            Some(RegistryAuth {
+                username: "explicit".into(),
+                password: "secret".into(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(auth.username, "explicit");
+        assert_eq!(auth.password, "secret");
+    }
+}

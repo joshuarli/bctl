@@ -1,0 +1,20 @@
+[package]
+name = "smolvm-cudart-shim"
+version = "1.34.0"
+edition = "2021"
+description = "Guest-side libcudart.so drop-in: CUDA Runtime API lowered to smolvm's Driver-API vsock RPC"
+license = "Apache-2.0"
+
+[lib]
+name = "cudart"
+crate-type = ["cdylib"]
+
+[dependencies]
+smolvm-cuda = { path = "../smolvm-cuda", default-features = false }
+# libc is POSIX-portable here (clock_gettime/mmap/recv/…), so keep it un-gated so
+# the crate also type-checks on a macOS dev host; the guest .so still only ships
+# on Linux. Matches smolvm-cuda-shim.
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vsock = "0.5"

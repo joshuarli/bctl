@@ -1,0 +1,2398 @@
+//! Process-local runtime registry for embedded machines.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
+use std::time::Duration;
+
+use crate::agent::fork::ForkSourcePolicy;
+use crate::agent::{AgentClient, ExecEvent, RunConfig, WorkloadTarget};
+use crate::config::RecordState;
+use crate::db::SmolvmDb;
+use crate::embedded::control::{self, MachineSpec};
+use crate::embedded::exec::{ExecCancel, ExecOptions};
+use crate::embedded::handle::VmHandle;
+use crate::{Error, Result};
+use smolvm_protocol::ImageInfo;
+
+type SharedHandle = Arc<Mutex<VmHandle>>;
+
+/// How a machine restored from a checkpoint starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RestoreOptions {
+    /// Restore the machine as itself going back in time rather than as a clone:
+    /// its first start keeps the saved hostname and machine ID, skipping about
+    /// a second of identity reset. Do not run two machines from one checkpoint
+    /// with this set.
+    pub keep_identity: bool,
+}
+
+/// Absolute resource targets for a running machine, never increments.
+/// CPU, RAM and disk growth currently require separate requests; both disks
+/// may grow in one request. Shrinking is rejected by the runtime.
+#[derive(Clone, Debug, Default)]
+pub struct ResizeSpec {
+    /// Total online virtual CPUs requested.
+    pub cpus: Option<u8>,
+    /// Total guest RAM requested, in MiB.
+    pub memory_mib: Option<u32>,
+    /// Total managed storage disk capacity requested, in GiB.
+    pub storage_gib: Option<u64>,
+    /// Total writable root overlay capacity requested, in GiB.
+    pub overlay_gib: Option<u64>,
+}
+
+impl ResizeSpec {
+    fn validate(&self) -> Result<()> {
+        let kinds = usize::from(self.cpus.is_some())
+            + usize::from(self.memory_mib.is_some())
+            + usize::from(self.storage_gib.is_some() || self.overlay_gib.is_some());
+        if kinds != 1 {
+            return Err(Error::config(
+                "live resize",
+                "specify exactly one resource kind: CPUs, RAM, or disks",
+            ));
+        }
+        if self.cpus == Some(0)
+            || self.memory_mib == Some(0)
+            || self.storage_gib == Some(0)
+            || self.overlay_gib == Some(0)
+        {
+            return Err(Error::config(
+                "live resize",
+                "resource targets must be positive",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// How [`EmbeddedRuntime::stop_machine_with`] and
+/// [`EmbeddedRuntime::delete_machine_with`] treat work still running on the
+/// machine.
+#[derive(Debug, Clone, Default)]
+pub struct StopOptions {
+    /// Wait up to this long for running commands and file transfers to finish
+    /// before stopping. Whatever is still running then is cut off and fails
+    /// with [`Error::Interrupted`]. `None` stops at once.
+    pub drain: Option<Duration>,
+    /// Seconds the workload gets to exit after its stop signal, instead of
+    /// the timeout it was launched with. Ignored by delete, which kills it.
+    pub stop_timeout: Option<Duration>,
+}
+
+/// Stateful runtime shared by all embedded machine objects in this process.
+pub struct EmbeddedRuntime {
+    db: SmolvmDb,
+    registry: RwLock<HashMap<String, SharedHandle>>,
+    name_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
+    inflight: super::inflight::Inflight,
+}
+
+/// Everything a fork can vary. [`Default`] is a plain copy-on-write child:
+/// not a checkpoint source, no CUDA weight sharing, cached in this runtime and
+/// gone with this process, a fresh identity, and a source that resumes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ForkOptions {
+    /// Make the clone a checkpoint source in turn (one eager guest-memory copy
+    /// at clone boot).
+    pub checkpointable: bool,
+    /// Share the golden's loaded CUDA weights with the clone instead of copying
+    /// them. Only correct while the base weights stay frozen.
+    pub share_weights: bool,
+    /// Let the clone outlive this process instead of caching its handle here.
+    pub detached: bool,
+    /// Keep the golden's `/etc/machine-id` (and dbus id) in the clone. Hostname
+    /// and SSH host keys are still re-minted. For same-tenant fan-out whose
+    /// tools key a per-machine cache by machine id (Nx names its cache
+    /// database after it), so a warm golden's cache stays visible in the clone.
+    pub keep_machine_id: bool,
+    /// Whether `golden` resumes afterwards or stays paused as a branch base.
+    pub source_policy: ForkSourcePolicy,
+}
+
+impl EmbeddedRuntime {
+    /// Create a runtime backed by the default smolvm database.
+    pub fn new() -> Result<Self> {
+        Ok(Self::with_db(SmolvmDb::open()?))
+    }
+
+    /// Create a runtime backed by an explicit database handle.
+    pub fn with_db(db: SmolvmDb) -> Self {
+        Self {
+            db,
+            registry: RwLock::new(HashMap::new()),
+            name_locks: RwLock::new(HashMap::new()),
+            inflight: Default::default(),
+        }
+    }
+
+    /// Create a persisted machine record.
+    pub fn create_machine(&self, spec: MachineSpec) -> Result<()> {
+        self.with_name_lock(&spec.name, || control::create_vm(&self.db, &spec))
+    }
+
+    /// Grow a running machine without restarting it, returning verified state.
+    ///
+    /// Uses the same durable intent, admission checks and cross-process source
+    /// lock as the CLI/API. After an interrupted call, retry the same absolute
+    /// targets; a different pending target is refused rather than overwritten.
+    /// This does not start a stopped machine implicitly.
+    pub fn resize_machine(&self, name: &str, spec: ResizeSpec) -> Result<crate::config::VmRecord> {
+        spec.validate()?;
+        self.with_name_lock(name, || {
+            if let Some(cpus) = spec.cpus {
+                crate::agent::live_resize::grow_cpus(&self.db, name, cpus)
+            } else if let Some(memory) = spec.memory_mib {
+                crate::agent::live_resize::grow_memory(&self.db, name, memory)
+            } else {
+                crate::agent::live_resize::grow_disks(
+                    &self.db,
+                    name,
+                    spec.storage_gib,
+                    spec.overlay_gib,
+                )
+            }
+        })
+    }
+
+    /// Create a persisted image machine with its launch-time environment,
+    /// working directory and user.
+    pub fn create_machine_with_workload(
+        &self,
+        spec: MachineSpec,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        user: Option<String>,
+    ) -> Result<()> {
+        self.with_name_lock(&spec.name, || {
+            control::create_vm_with_workload(&self.db, &spec, env, workdir, user, None)
+        })
+    }
+
+    /// Replace a stopped machine's outbound network policy, for example to
+    /// give a machine restored from a shared checkpoint its own allow list
+    /// before it first boots. See [`crate::config::VmRecord::apply_egress_policy`].
+    pub fn set_egress_policy(
+        &self,
+        name: &str,
+        policy: &crate::data::network::EgressPolicy,
+    ) -> Result<()> {
+        self.with_name_lock(name, || control::set_egress_policy(&self.db, name, policy))
+    }
+
+    /// [`Self::create_machine_with_workload`], plus credential bindings: HTTPS
+    /// requests to each binding's hosts carry a value the host holds and the
+    /// guest never sees (see `docs/credential-substitution.md`). The policy
+    /// holds no values; supply them with [`Self::supply_credential_values`].
+    pub fn create_machine_with_credentials(
+        &self,
+        spec: MachineSpec,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        user: Option<String>,
+        credentials: crate::credentials::CredentialPolicy,
+    ) -> Result<()> {
+        self.with_name_lock(&spec.name, || {
+            control::create_vm_with_workload(
+                &self.db,
+                &spec,
+                env,
+                workdir,
+                user,
+                Some(&credentials),
+            )
+        })
+    }
+
+    /// Create a persisted machine from `spec`: an image machine from `image`,
+    /// or a bare VM without one. Every option in `spec` is applied, or refused
+    /// by name, by the rules every creation path uses
+    /// ([`crate::machine_spec`]); [`Self::create_machine_from_pack_with`] takes
+    /// the same spec for a `.smolmachine`.
+    pub fn create_machine_with_spec(
+        &self,
+        name: &str,
+        image: Option<&str>,
+        spec: &crate::machine_spec::CreateSpec,
+    ) -> Result<()> {
+        self.with_name_lock(name, || {
+            control::create_vm_from_spec(&self.db, name, image, spec.clone())
+        })
+    }
+
+    /// Capture a running checkpointable machine into a portable artifact.
+    ///
+    /// The source resumes as soon as its consistent RAM/disk boundary is
+    /// staged; compression continues without holding the source pause.
+    pub fn checkpoint_machine(
+        &self,
+        name: &str,
+        output: &std::path::Path,
+        options: &crate::portable_checkpoint::CaptureOptions,
+    ) -> Result<crate::portable_checkpoint::CaptureResult> {
+        self.with_name_lock(name, || {
+            crate::portable_checkpoint::capture_to_path(name, output, options)
+        })
+    }
+
+    /// Save execution durably and stop at that exact boundary.
+    pub fn pause_machine(&self, name: &str) -> Result<()> {
+        self.pause_machine_inner(name, None)
+    }
+
+    /// Retry a durable pause without ever pausing a later resumed execution.
+    pub fn pause_machine_with_operation(&self, name: &str, operation: &str) -> Result<()> {
+        if operation.is_empty()
+            || operation.len() > 128
+            || !operation
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(Error::agent_conflict(
+                "pause machine",
+                "invalid pause operation identifier",
+            ));
+        }
+        self.pause_machine_inner(name, Some(operation))
+    }
+
+    fn pause_machine_inner(&self, name: &str, operation: Option<&str>) -> Result<()> {
+        self.with_name_lock(name, || {
+            let _operation_lock = crate::agent::fork::lock_saved_execution(name)?;
+            let mut record = control::get_record(&self.db, name)?;
+            if let Some(operation) = operation {
+                self.db.claim_pause_operation(
+                    name,
+                    operation,
+                    record.paused_checkpoint.is_none(),
+                )?;
+                // The previous capture process may have died while holding the
+                // source frozen. No other capture can own it once this lock is held.
+                if record.state == RecordState::Pausing && record.is_process_alive() {
+                    let _source = crate::agent::fork::lock_fork_source(name)?;
+                    let socket = crate::agent::fork::control_socket_path(name);
+                    let status = crate::agent::fork::control_socket_cmd(&socket, "STATUS")?;
+                    if status.trim() == "OK paused" {
+                        let reply = crate::agent::fork::control_socket_cmd(&socket, "RESUME")?;
+                        if !reply.starts_with("OK") {
+                            return Err(Error::agent("recover interrupted pause", reply));
+                        }
+                    } else if status.trim() != "OK running" {
+                        return Err(Error::agent("recover interrupted pause", status));
+                    }
+                    record = self
+                        .db
+                        .update_vm_durable(name, |r| {
+                            r.paused_checkpoint = None;
+                            r.state = RecordState::Running;
+                        })?
+                        .ok_or_else(|| Error::vm_not_found(name))?;
+                }
+                if record.state == RecordState::Paused && record.is_process_alive() {
+                    let _source = crate::agent::fork::lock_fork_source(name)?;
+                    let path = record.paused_checkpoint.as_ref().ok_or_else(|| {
+                        Error::agent("pause machine", "saved execution is missing")
+                    })?;
+                    crate::portable_checkpoint::verified_sidecar_footer(path)?;
+                    let status = crate::agent::fork::control_socket_cmd(
+                        &crate::agent::fork::control_socket_path(name),
+                        "STATUS",
+                    )?;
+                    if status.trim() != "OK paused" {
+                        return Err(Error::agent_conflict(
+                            "pause machine",
+                            "source is still running; refusing to stop newer execution",
+                        ));
+                    }
+                    crate::agent::AgentManager::for_vm_with_sizes(
+                        name,
+                        record.storage_gb,
+                        record.overlay_gb,
+                    )?
+                    .stop_paused()?;
+                    self.remove_cached_handle(name)?;
+                }
+            }
+            if record.state == RecordState::Paused && !record.is_process_alive() {
+                let path = record.paused_checkpoint.as_ref().ok_or_else(|| {
+                    Error::agent("pause machine", "paused machine has no checkpoint")
+                })?;
+                crate::portable_checkpoint::verified_sidecar_footer(path)?;
+                return Ok(());
+            }
+            if record.paused_checkpoint.is_some() {
+                return Err(Error::agent_conflict(
+                    "pause machine",
+                    "a previous pause needs recovery; use resume",
+                ));
+            }
+            let output = crate::agent::vm_data_dir(name).join(format!(
+                "pause-{}.smolcheckpoint",
+                crate::db::SmolvmDb::create_reservation_token()
+            ));
+            // A paused machine resumes on this host, so its host mounts come along.
+            let pause_options = crate::portable_checkpoint::CaptureOptions {
+                host_mounts: true,
+                ..Default::default()
+            };
+            let result = crate::portable_checkpoint::capture_and_stop_to_path(
+                name,
+                &output,
+                &pause_options,
+                |stage| {
+                    self.db
+                        .update_vm_durable(name, |record| {
+                            record.paused_checkpoint = Some(output.clone());
+                            record.state = match stage {
+                                crate::portable_checkpoint::PauseCaptureStage::Capturing => {
+                                    RecordState::Pausing
+                                }
+                                crate::portable_checkpoint::PauseCaptureStage::Durable => {
+                                    RecordState::Paused
+                                }
+                            };
+                        })?
+                        .ok_or_else(|| Error::vm_not_found(name))?;
+                    Ok(())
+                },
+            );
+            if let Err(error) = result {
+                // Capture's guard has resumed the original on failure. Never
+                // erase the durable recovery point if the process is gone.
+                let running = record.is_process_alive()
+                    && crate::agent::fork::control_socket_cmd(
+                        &crate::agent::fork::control_socket_path(name),
+                        "STATUS",
+                    )
+                    .is_ok_and(|status| status.trim() == "OK running");
+                if running {
+                    self.db.update_vm_durable(name, |record| {
+                        if record.paused_checkpoint.as_ref() == Some(&output) {
+                            record.paused_checkpoint = None;
+                            record.state = RecordState::Running;
+                        }
+                    })?;
+                    if output.exists() {
+                        if let Err(cleanup) = std::fs::remove_file(&output) {
+                            tracing::warn!(%cleanup, "could not remove failed pause artifact");
+                        }
+                    }
+                }
+                return Err(error);
+            }
+            self.remove_cached_handle(name)?;
+            self.db.update_vm(name, |record| {
+                record.state = RecordState::Paused;
+                record.pid = None;
+                record.pid_start_time = None;
+            })?;
+            Ok(())
+        })
+    }
+
+    /// Restore the saved execution under the original machine name.
+    pub fn resume_machine(&self, name: &str) -> Result<()> {
+        self.resume_machine_inner(name, false, None)
+    }
+
+    /// Resume execution without tying its lifetime to this runtime handle.
+    pub fn resume_machine_detached(&self, name: &str) -> Result<()> {
+        self.resume_machine_inner(name, true, None)
+    }
+
+    /// Resume only the pause identified by this retry key.
+    pub fn resume_machine_detached_with_operation(
+        &self,
+        name: &str,
+        operation: &str,
+    ) -> Result<()> {
+        self.resume_machine_inner(name, true, Some(operation))
+    }
+
+    fn resume_machine_inner(
+        &self,
+        name: &str,
+        detached: bool,
+        operation: Option<&str>,
+    ) -> Result<()> {
+        self.with_name_lock(name, || {
+            let _operation_lock = crate::agent::fork::lock_saved_execution(name)?;
+            let _source = crate::agent::fork::lock_fork_source(name)?;
+            let record = control::get_record(&self.db, name)?;
+            if let Some(operation) = operation {
+                if !self.db.pause_operation_is_active(name, operation)? {
+                    if self.db.pause_operation_was_consumed(name, operation)? && record.paused_checkpoint.is_none() && record.is_process_alive() {
+                        return Ok(());
+                    }
+                    return Err(Error::agent_conflict("resume machine", "this is not the machine's active pause operation"));
+                }
+            }
+            if record.paused_checkpoint.is_none() {
+                if record.state == RecordState::Running && record.is_process_alive() {
+                    self.db.finish_saved_execution(name, |_| {})?;
+                    return Ok(());
+                }
+                return Err(Error::agent_conflict("resume machine", "machine is not paused; use start for a fresh boot"));
+            }
+            if record.is_process_alive() {
+                let control_socket = crate::agent::fork::control_socket_path(name);
+                let status = crate::agent::fork::control_socket_cmd(&control_socket, "STATUS")?;
+                if record.state == RecordState::Pausing {
+                    // The capture owner exited before committing durability.
+                    // Recover the original rather than replaying an uncertain artifact.
+                    if status.trim() == "OK paused" {
+                        let reply = crate::agent::fork::control_socket_cmd(&control_socket, "RESUME")?;
+                        if !reply.starts_with("OK") { return Err(Error::agent("resume interrupted pause", reply)); }
+                    } else if status.trim() != "OK running" {
+                        return Err(Error::agent("resume interrupted pause", status));
+                    }
+                    self.db.finish_saved_execution(name, |record| {
+                        record.paused_checkpoint = None;
+                        record.state = RecordState::Running;
+                    })?;
+                    return Ok(());
+                }
+                if status.trim() != "OK paused" {
+                    return Err(Error::agent_conflict("resume machine", "source is still running; refusing to replace its execution"));
+                }
+                crate::agent::AgentManager::for_vm_with_sizes(name, record.storage_gb, record.overlay_gb)?.stop_paused()?;
+            }
+            self.remove_cached_handle(name)?;
+            crate::portable_checkpoint::prepare_paused_restore(&record)?;
+            let started = control::resume_vm(&self.db, name, detached)?;
+            if detached {
+                started.handle.detach();
+            } else {
+                self.insert_handle(name, started.handle)?;
+            }
+            // A successfully resumed VM owns its installed RAM/disk backing;
+            // the transport artifact is no longer its recovery authority.
+            if let Some(path) = record.paused_checkpoint {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    tracing::warn!(%error, path = %path.display(), "could not remove consumed pause artifact");
+                }
+            }
+            let vm_data = crate::agent::vm_data_dir(name);
+            if let Err(error) = crate::portable_checkpoint::remove_paused_layers(&vm_data) {
+                tracing::warn!(%error, "could not remove consumed pause's pinned layers");
+            }
+            Ok(())
+        })
+    }
+
+    /// Create a stopped machine from a portable live checkpoint artifact.
+    ///
+    /// Its first start resumes the captured execution state. The restored
+    /// machine is also a fork/checkpoint source, which makes it suitable as a
+    /// durable rollback root.
+    pub fn restore_checkpoint_machine(&self, name: &str, artifact: &std::path::Path) -> Result<()> {
+        self.restore_checkpoint_machine_with(name, artifact, RestoreOptions::default())
+    }
+
+    /// [`Self::restore_checkpoint_machine`] with options for how the restored
+    /// machine starts.
+    pub fn restore_checkpoint_machine_with(
+        &self,
+        name: &str,
+        artifact: &std::path::Path,
+        options: RestoreOptions,
+    ) -> Result<()> {
+        self.restore_checkpoint_machine_with_spec(
+            name,
+            artifact,
+            options,
+            &crate::machine_spec::CreateSpec::default(),
+        )
+    }
+
+    /// [`Self::restore_checkpoint_machine_with`] with options for the restored
+    /// machine, resolved against what the checkpoint fixes by the rules every
+    /// creation path uses ([`crate::machine_spec`]). An option a live restore
+    /// cannot apply (a device, a resource size, the workload command) is
+    /// refused by name; host-side settings such as the egress policy, labels
+    /// or the stop signal replace the captured ones.
+    pub fn restore_checkpoint_machine_with_spec(
+        &self,
+        name: &str,
+        artifact: &std::path::Path,
+        options: RestoreOptions,
+        spec: &crate::machine_spec::CreateSpec,
+    ) -> Result<()> {
+        let RestoreOptions { keep_identity } = options;
+        let mut spec = spec.clone();
+        spec.keep_identity |= keep_identity;
+        self.with_name_lock(name, || {
+            crate::portable_checkpoint::restore_from_path_with(&self.db, name, artifact, None, spec)
+        })
+    }
+
+    /// Restore and start a checkpoint for a detached CLI operation.
+    ///
+    /// The VMM outlives the caller, unlike the process-owned SDK handle.
+    pub fn restore_checkpoint_machine_detached(
+        &self,
+        name: &str,
+        artifact: &std::path::Path,
+    ) -> Result<()> {
+        self.restore_checkpoint_machine_detached_with_spec(
+            name,
+            artifact,
+            &crate::machine_spec::CreateSpec::default(),
+        )
+    }
+
+    /// [`Self::restore_checkpoint_machine_detached`] with options for the
+    /// restored machine, as [`Self::restore_checkpoint_machine_with_spec`].
+    pub fn restore_checkpoint_machine_detached_with_spec(
+        &self,
+        name: &str,
+        artifact: &std::path::Path,
+        spec: &crate::machine_spec::CreateSpec,
+    ) -> Result<()> {
+        self.with_name_lock(name, || {
+            crate::portable_checkpoint::restore_from_path_with(
+                &self.db,
+                name,
+                artifact,
+                None,
+                spec.clone(),
+            )?;
+            let start = (|| -> Result<VmHandle> {
+                let started = control::start_vm(&self.db, name)?;
+                let mut handle = started.handle;
+                if started.freshly_started {
+                    self.launch_image_workload(name, &mut handle)?;
+                }
+                Ok(handle)
+            })();
+            match start {
+                Ok(handle) => {
+                    handle.detach();
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = control::delete_vm(&self.db, name);
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    /// Reclaim shim-managed sandbox VMs whose process is gone (node reboot or a
+    /// shim crash left the record + disks behind). See
+    /// [`control::reconcile_runtime_machines`]. Returns the count reclaimed.
+    pub fn reconcile_runtime_machines(&self) -> Result<usize> {
+        control::reconcile_runtime_machines(&self.db)
+    }
+
+    /// Start or reconnect to a persisted machine and cache its handle.
+    pub fn start_machine(&self, name: &str) -> Result<()> {
+        self.start_machine_with_interceptor(name, None)
+    }
+
+    /// Start with a trusted local egress interceptor binding for this boot.
+    /// Callers must supply the binding again after a process restart.
+    pub fn start_machine_with_interceptor(
+        &self,
+        name: &str,
+        interceptor: Option<smolvm_protocol::InterceptEndpoint>,
+    ) -> Result<()> {
+        self.with_name_lock(name, || {
+            if control::get_record(&self.db, name)?
+                .paused_checkpoint
+                .is_some()
+            {
+                return Err(Error::agent_conflict(
+                    "start machine",
+                    "machine is paused; use resume",
+                ));
+            }
+            if let Some(handle) = self.cached_handle(name)? {
+                let alive = lock_handle(&handle)?.is_process_alive();
+                if alive {
+                    return Ok(());
+                }
+                self.remove_cached_handle(name)?;
+            }
+
+            let started = control::start_vm_with_interceptor(&self.db, name, interceptor)?;
+            let mut handle = started.handle;
+            if started.freshly_started {
+                if let Err(error) = self.launch_image_workload(name, &mut handle) {
+                    let _ = handle.stop();
+                    let _ = control::mark_stopped(&self.db, name);
+                    return Err(error);
+                }
+            }
+            self.insert_handle(name, handle)?;
+            Ok(())
+        })
+    }
+
+    /// Attach to an existing machine, starting it only when it is not already
+    /// available. A frozen fork base is intentionally not agent-reachable: its
+    /// vCPUs are paused while its retained checkpoint backs future clones.
+    /// Treating that state as a stopped VM launches a second VMM over the same
+    /// disks and replaces its control socket, destroying the fork source.
+    pub fn connect_or_start_machine(&self, name: &str) -> Result<()> {
+        self.connect_or_start_machine_with_interceptor(name, None)
+    }
+
+    /// Attach to a live machine or start it with a fresh interceptor binding.
+    pub fn connect_or_start_machine_with_interceptor(
+        &self,
+        name: &str,
+        interceptor: Option<smolvm_protocol::InterceptEndpoint>,
+    ) -> Result<()> {
+        self.with_name_lock(name, || {
+            if control::get_record(&self.db, name)?
+                .paused_checkpoint
+                .is_some()
+            {
+                return Err(Error::agent_conflict(
+                    "start machine",
+                    "machine has saved execution; use resume",
+                ));
+            }
+            if let Some(handle) = self.cached_handle(name)? {
+                if lock_handle(&handle)?.is_process_alive() {
+                    return Ok(());
+                }
+                self.remove_cached_handle(name)?;
+            }
+
+            let record = control::get_record(&self.db, name)?;
+            // The DB remains `Running` while a retained live-RAM checkpoint is
+            // paused; the shared state probe resolves its control-socket state
+            // to `Frozen`. Looking only at the stored enum misses the normal
+            // retained-snapshot case and starts a second VMM over the golden.
+            if crate::agent::state_probe::resolve_state(name, &record)
+                == crate::config::RecordState::Frozen
+            {
+                return Ok(());
+            }
+
+            if let Ok(handle) = control::connect_vm(&self.db, name) {
+                self.insert_handle(name, handle)?;
+                return Ok(());
+            }
+
+            let started = control::start_vm_with_interceptor(&self.db, name, interceptor)?;
+            let mut handle = started.handle;
+            if started.freshly_started {
+                if let Err(error) = self.launch_image_workload(name, &mut handle) {
+                    let _ = handle.stop();
+                    let _ = control::mark_stopped(&self.db, name);
+                    return Err(error);
+                }
+            }
+            self.insert_handle(name, handle)?;
+            Ok(())
+        })
+    }
+
+    /// Start a persisted machine attached to a Kubernetes pod network namespace.
+    /// The launcher bridges the guest virtio-net NIC to a tap inside `netns` so
+    /// the pod carries its CNI-assigned IP (see [`control::start_vm_with_netns`]).
+    /// Used by the containerd shim for pod sandboxes; requires the machine to use
+    /// the virtio-net backend.
+    pub fn start_machine_with_netns(&self, name: &str, netns: std::path::PathBuf) -> Result<()> {
+        self.with_name_lock(name, || {
+            if let Some(handle) = self.cached_handle(name)? {
+                if lock_handle(&handle)?.is_process_alive() {
+                    return Ok(());
+                }
+                self.remove_cached_handle(name)?;
+            }
+            let handle = control::start_vm_with_netns(&self.db, name, netns)?;
+            self.insert_handle(name, handle)?;
+            Ok(())
+        })
+    }
+
+    /// Start (or reconnect to) a persisted machine as a FORKABLE fork base and
+    /// cache its handle. Like [`start_machine`](Self::start_machine) but boots
+    /// with memfd-backed guest RAM + a control socket so it can later be forked
+    /// with [`fork_machine`](Self::fork_machine) — the basis for local RL rollout
+    /// branching.
+    pub fn start_forkable_machine(&self, name: &str) -> Result<()> {
+        self.with_name_lock(name, || {
+            if let Some(handle) = self.cached_handle(name)? {
+                if lock_handle(&handle)?.is_process_alive() {
+                    return Ok(());
+                }
+                self.remove_cached_handle(name)?;
+            }
+
+            let started = control::start_forkable_vm(&self.db, name)?;
+            let mut handle = started.handle;
+            if started.freshly_started {
+                if let Err(error) = self.launch_image_workload(name, &mut handle) {
+                    let _ = handle.stop();
+                    let _ = control::mark_stopped(&self.db, name);
+                    return Err(error);
+                }
+            }
+            self.insert_handle(name, handle)?;
+            Ok(())
+        })
+    }
+
+    /// Fork a running, forkable `golden` into a new `clone` (copy-on-write guest
+    /// RAM + disks, same host) and cache the clone's handle so it can be exec'd
+    /// by name. `ports` are `(host, guest)` inbound forwards for the clone; empty
+    /// remaps the golden's forwards to fresh host ports. Supported hosts resume
+    /// the source after publishing a consistent fork generation.
+    pub fn fork_machine(&self, golden: &str, clone: &str, ports: &[(u16, u16)]) -> Result<()> {
+        self.fork_machine_opts(golden, clone, ports, ForkOptions::default())
+    }
+
+    /// Fork a machine, choosing whether the clone becomes a checkpoint source
+    /// in turn and whether `golden` resumes afterwards or stays paused as a
+    /// reusable branch base ([`ForkSourcePolicy::Freeze`]).
+    pub fn fork_machine_with(
+        &self,
+        golden: &str,
+        clone: &str,
+        ports: &[(u16, u16)],
+        checkpointable: bool,
+        source_policy: ForkSourcePolicy,
+    ) -> Result<()> {
+        self.fork_machine_opts(
+            golden,
+            clone,
+            ports,
+            ForkOptions {
+                checkpointable,
+                source_policy,
+                ..ForkOptions::default()
+            },
+        )
+    }
+
+    /// Fork one clone with every option a front-end can vary. A detached clone
+    /// outlives this process instead of being cached in the runtime; all
+    /// preparation, retained snapshot reuse and fail-closed identity
+    /// rejuvenation are shared with the attached path.
+    pub fn fork_machine_opts(
+        &self,
+        golden: &str,
+        clone: &str,
+        ports: &[(u16, u16)],
+        options: ForkOptions,
+    ) -> Result<()> {
+        self.with_name_locks(&[golden, clone], || {
+            let handle = control::fork_vm_with_options(
+                &self.db,
+                golden,
+                clone,
+                ports,
+                options.checkpointable,
+                options.share_weights,
+                if options.detached { Some(false) } else { None },
+                options.source_policy,
+                options.keep_machine_id,
+            )?;
+            if options.detached {
+                handle.detach();
+            } else {
+                self.insert_handle(clone, handle)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Fork a machine and make the restored clone a new checkpoint source.
+    /// This pays one eager guest-memory copy during clone boot; later forks of
+    /// `clone` use the normal copy-on-write path.
+    pub fn fork_checkpointable_machine(
+        &self,
+        source: &str,
+        clone: &str,
+        ports: &[(u16, u16)],
+    ) -> Result<()> {
+        self.fork_machine_with(
+            source,
+            clone,
+            ports,
+            true,
+            ForkSourcePolicy::PlatformDefault,
+        )
+    }
+
+    /// Fork several clones from one retained snapshot and boot them with
+    /// bounded parallelism. All names are locked together so overlapping SDK
+    /// calls cannot race the golden freeze or claim the same clone name.
+    pub fn fork_machines(
+        &self,
+        golden: &str,
+        clones: &[String],
+        ports: &[(u16, u16)],
+        parallel: usize,
+    ) -> Result<()> {
+        self.fork_machines_opts(golden, clones, ports, parallel, ForkOptions::default())
+    }
+
+    /// [`Self::fork_machines`], choosing whether `golden` resumes afterwards
+    /// or stays paused as a reusable branch base.
+    pub fn fork_machines_with(
+        &self,
+        golden: &str,
+        clones: &[String],
+        ports: &[(u16, u16)],
+        parallel: usize,
+        source_policy: ForkSourcePolicy,
+    ) -> Result<()> {
+        self.fork_machines_opts(
+            golden,
+            clones,
+            ports,
+            parallel,
+            ForkOptions {
+                source_policy,
+                ..ForkOptions::default()
+            },
+        )
+    }
+
+    /// [`Self::fork_machines`] with every option. The group is prepared
+    /// transactionally from one generation. Batch children are plain leaves:
+    /// `checkpointable` and `share_weights` do not apply to them. Detached
+    /// children outlive this process instead of being cached in the runtime.
+    pub fn fork_machines_opts(
+        &self,
+        golden: &str,
+        clones: &[String],
+        ports: &[(u16, u16)],
+        parallel: usize,
+        options: ForkOptions,
+    ) -> Result<()> {
+        let mut lock_names = Vec::with_capacity(clones.len() + 1);
+        lock_names.push(golden);
+        lock_names.extend(clones.iter().map(String::as_str));
+        self.with_name_locks(&lock_names, || {
+            let requests: Vec<_> = clones
+                .iter()
+                .map(|name| (name.clone(), ports.to_vec()))
+                .collect();
+            let mut started = control::fork_vm_batch(
+                &self.db,
+                golden,
+                &requests,
+                parallel,
+                options.source_policy,
+                options.keep_machine_id,
+            )?;
+            if options.detached {
+                for (_, handle) in started {
+                    handle.detach();
+                }
+                return Ok(());
+            }
+            let mut registry = match self.registry.write() {
+                Ok(registry) => registry,
+                Err(error) => {
+                    for (name, handle) in &mut started {
+                        let _ = handle.stop();
+                        let _ = control::delete_vm(&self.db, name);
+                    }
+                    return Err(Error::agent("runtime registry", error.to_string()));
+                }
+            };
+            for (name, handle) in started {
+                registry.insert(name, Arc::new(Mutex::new(handle)));
+            }
+            Ok(())
+        })
+    }
+
+    /// Fork several machines for a detached CLI operation. The group is
+    /// prepared transactionally from one generation and every successful clone
+    /// outlives this process.
+    pub fn fork_machines_detached(
+        &self,
+        golden: &str,
+        clones: &[String],
+        ports: &[(u16, u16)],
+        parallel: usize,
+    ) -> Result<()> {
+        self.fork_machines_opts(
+            golden,
+            clones,
+            ports,
+            parallel,
+            ForkOptions {
+                detached: true,
+                ..ForkOptions::default()
+            },
+        )
+    }
+
+    /// Fork a machine for a detached CLI operation. Unlike the SDK path, the
+    /// clone intentionally outlives this process; all preparation, retained
+    /// snapshot reuse, and fail-closed identity rejuvenation remain shared.
+    pub fn fork_machine_detached(
+        &self,
+        golden: &str,
+        clone: &str,
+        ports: &[(u16, u16)],
+        share_weights: bool,
+    ) -> Result<()> {
+        self.fork_machine_opts(
+            golden,
+            clone,
+            ports,
+            ForkOptions {
+                share_weights,
+                detached: true,
+                ..ForkOptions::default()
+            },
+        )
+    }
+
+    /// Fork a checkpointable child for a detached CLI operation. The child
+    /// outlives this process and can become the source of another fork.
+    pub fn fork_checkpointable_machine_detached(
+        &self,
+        source: &str,
+        clone: &str,
+        ports: &[(u16, u16)],
+    ) -> Result<()> {
+        self.fork_machine_opts(
+            source,
+            clone,
+            ports,
+            ForkOptions {
+                checkpointable: true,
+                detached: true,
+                ..ForkOptions::default()
+            },
+        )
+    }
+
+    /// Connect to an already-running machine and cache its handle.
+    pub fn connect_machine(&self, name: &str) -> Result<()> {
+        self.with_name_lock(name, || {
+            if let Some(handle) = self.cached_handle(name)? {
+                if lock_handle(&handle)?.is_process_alive() {
+                    return Ok(());
+                }
+                self.remove_cached_handle(name)?;
+            }
+
+            let handle = control::connect_vm(&self.db, name)?;
+            self.insert_handle(name, handle)?;
+            Ok(())
+        })
+    }
+
+    /// Stop a machine and persist stopped state. A command or file transfer
+    /// still running on it is cut off and fails with [`Error::Interrupted`].
+    pub fn stop_machine(&self, name: &str) -> Result<()> {
+        self.stop_machine_with(name, &StopOptions::default())
+    }
+
+    /// [`stop_machine`](Self::stop_machine), optionally letting running
+    /// commands and transfers finish first and overriding the workload's stop
+    /// timeout. New commands are refused while the stop runs.
+    pub fn stop_machine_with(&self, name: &str, options: &StopOptions) -> Result<()> {
+        let _fence = self.inflight.fence(name, "stopped", options.drain);
+        self.with_name_lock(name, || {
+            let _source_lock = crate::agent::fork::lock_fork_source(name)?;
+            let record = control::get_record(&self.db, name)?;
+            if record.paused_checkpoint.is_some() {
+                return Err(Error::agent_conflict(
+                    "stop machine",
+                    "machine has saved execution; use resume or delete",
+                ));
+            }
+            let dependents = self.db.dependent_clones(name)?;
+            if !dependents.is_empty() {
+                return Err(Error::agent(
+                    "stop machine",
+                    format!(
+                        "machine '{name}' has dependent fork(s) ({}); delete descendants first",
+                        dependents.join(", ")
+                    ),
+                ));
+            }
+            if let Some(handle) = self.remove_cached_handle(name)? {
+                let mut handle = lock_handle(&handle)?;
+                if !record.staged_mounts.is_empty() {
+                    handle.sync_staged_mounts(&record)?;
+                }
+                handle.stop_with_timeout(options.stop_timeout)?;
+                control::mark_stopped(&self.db, name)?;
+                return Ok(());
+            }
+
+            control::stop_vm_with_timeout(&self.db, name, options.stop_timeout)
+        })
+    }
+
+    /// Stop best-effort, remove from the registry and DB, and delete storage.
+    /// Works on a stopped machine without booting it. A command or file
+    /// transfer still running on it fails with [`Error::Interrupted`].
+    pub fn delete_machine(&self, name: &str) -> Result<()> {
+        self.delete_machine_with(name, &StopOptions::default())
+    }
+
+    /// [`delete_machine`](Self::delete_machine), optionally letting running
+    /// commands and transfers finish first.
+    pub fn delete_machine_with(&self, name: &str, options: &StopOptions) -> Result<()> {
+        let _fence = self.inflight.fence(name, "deleted", options.drain);
+        let result = self.delete_machine_inner(name);
+        if result.is_ok() {
+            crate::credentials::forget_values(name);
+        }
+        result
+    }
+
+    fn delete_machine_inner(&self, name: &str) -> Result<()> {
+        self.with_name_lock(name, || {
+            let _source_lock = crate::agent::fork::lock_fork_source(name)?;
+            let Some(record) = self.db.get_vm(name)? else {
+                self.remove_name_lock(name)?;
+                return Ok(());
+            };
+
+            // A parent's RAM and disks back every direct child. Check before
+            // stopping it: discovering the dependency after teardown would
+            // leave live descendants dangling.
+            let dependents = self.db.dependent_clones(name)?;
+            if !dependents.is_empty() {
+                return Err(Error::agent(
+                    "delete machine",
+                    format!(
+                        "machine '{name}' has dependent fork(s) ({}); delete descendants first",
+                        dependents.join(", ")
+                    ),
+                ));
+            }
+
+            let state = crate::agent::state_probe::resolve_state(name, &record);
+            if matches!(
+                state,
+                crate::config::RecordState::Frozen | crate::config::RecordState::Unreachable
+            ) {
+                // Paused vCPUs cannot acknowledge the normal guest shutdown.
+                // Reap the verified VMM directly instead of waiting for a
+                // response that cannot arrive.
+                self.remove_cached_handle(name)?;
+                crate::agent::state_probe::recover_unreachable_machine_in_db(&record, &self.db)?;
+            } else if matches!(
+                state,
+                crate::config::RecordState::Stopped
+                    | crate::config::RecordState::Created
+                    | crate::config::RecordState::Paused
+            ) {
+                // A graceful stop already synchronized staged mounts. Do not
+                // reconnect to the now-absent agent and fail a subsequent delete.
+                self.remove_cached_handle(name)?;
+            } else if let Some(handle) = self.remove_cached_handle(name)? {
+                let mut handle = lock_handle(&handle)?;
+                if !record.staged_mounts.is_empty() {
+                    handle.sync_staged_mounts(&record)?;
+                }
+                // The machine is going away: its workload has nothing to save.
+                handle.stop_with_timeout(Some(Duration::ZERO))?;
+            } else {
+                control::stop_vm_with_timeout(&self.db, name, Some(Duration::ZERO))?;
+            }
+
+            // Idempotent: deleting an already-deleted machine is a no-op success
+            // (the desired end state — gone — already holds). Lets SDK callers
+            // call delete() more than once without an error.
+            match control::delete_vm_locked(&self.db, name) {
+                Ok(()) | Err(crate::Error::VmNotFound { .. }) => {}
+                Err(e) => return Err(e),
+            }
+            self.remove_name_lock(name)?;
+            Ok(())
+        })
+    }
+
+    /// Copy guest-local staged mounts back to their host sources without
+    /// stopping the machine.
+    pub fn sync_machine(&self, name: &str) -> Result<()> {
+        self.with_name_lock(name, || {
+            let _source_lock = crate::agent::fork::lock_fork_source(name)?;
+            let record = control::get_record(&self.db, name)?;
+            if record.staged_mounts.is_empty() {
+                return Ok(());
+            }
+            let handle = self.started_handle(name)?;
+            let result = lock_handle(&handle)?.sync_staged_mounts(&record);
+            result
+        })
+    }
+
+    /// Execute a command directly in the VM.
+    pub fn exec(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let options = ExecOptions {
+            env,
+            workdir,
+            timeout,
+            user: None,
+            stdin: None,
+        };
+        self.exec_with_options(name, command, options)
+    }
+
+    /// Execute a command and return `(exit_code, stdout, stderr)`.
+    ///
+    /// The command runs over its own agent connection, so it never holds the
+    /// machine for its duration: other commands, file transfers and state
+    /// queries on the same machine proceed while it runs.
+    pub fn exec_with_options(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        options: ExecOptions,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let op = self.inflight.begin(name, "exec")?;
+        let result = (|| {
+            let options = self.with_machine_context(name, options)?;
+            let target = self.machine_target(name)?;
+            let config = self.command_run_config(name, target, &command, &options)?;
+            let mut client = self.command_client(name)?;
+            match config {
+                Some(config) => client.run_non_interactive(config),
+                None => client.vm_exec(
+                    command,
+                    options.env,
+                    options.workdir,
+                    options.timeout,
+                    options.stdin,
+                ),
+            }
+        })();
+        op.finish(result)
+    }
+
+    /// Start a command and return its guest pid without waiting for it to
+    /// finish: a server, a watcher or another long-lived process. It runs in
+    /// the same filesystem as [`Self::exec_with_options`] and keeps running
+    /// after this returns. A background command has no stdin and no timeout.
+    pub fn exec_background(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        options: ExecOptions,
+    ) -> Result<u32> {
+        if options.stdin.is_some() || options.timeout.is_some() {
+            return Err(Error::config(
+                "background exec",
+                "a background command takes no stdin and no timeout",
+            ));
+        }
+        let op = self.inflight.begin(name, "exec")?;
+        let result = (|| {
+            let options = self.with_machine_context(name, options)?;
+            let target = self.machine_target(name)?;
+            let config = self.command_run_config(name, target, &command, &options)?;
+            let mut client = self.command_client(name)?;
+            match config {
+                Some(config) => client.run_background(config),
+                None => client.vm_exec_background(command, options.env, options.workdir),
+            }
+        })();
+        op.finish(result)
+    }
+
+    /// The [`RunConfig`] for a command on an image machine, or `None` for a
+    /// bare VM (which rejects a per-command user it cannot honor).
+    ///
+    /// An image machine runs commands inside its persistent container overlay,
+    /// exactly as the CLI and the cloud transport do. Without this a command
+    /// lands in the bare VM's own rootfs, so the caller silently gets a
+    /// different filesystem than the image they asked for.
+    fn command_run_config(
+        &self,
+        name: &str,
+        target: WorkloadTarget,
+        command: &[String],
+        options: &ExecOptions,
+    ) -> Result<Option<RunConfig>> {
+        let WorkloadTarget::Container { image, overlay_id } = target else {
+            if options.user.is_some() {
+                return Err(Error::config(
+                    "exec user",
+                    "running a command as a specific user needs an image machine; \
+                     a bare VM runs every command as root",
+                ));
+            }
+            return Ok(None);
+        };
+        Ok(Some(
+            RunConfig::new(image, command.to_vec())
+                .with_env(options.env.clone())
+                .with_workdir(options.workdir.clone())
+                .with_timeout(options.timeout)
+                .with_user(options.user.clone())
+                .with_stdin(options.stdin.clone())
+                .with_mounts(self.mount_bindings_for(name)?)
+                .with_s3_volumes(self.s3_volumes_for(name)?)
+                .with_persistent_overlay(Some(overlay_id)),
+        ))
+    }
+
+    /// A dedicated agent connection for one command.
+    ///
+    /// The machine's handle lock is held only to confirm it is started and to
+    /// read where its agent listens — never for the command itself. Commands
+    /// used to run over the handle's single cached connection with the lock
+    /// held throughout, so one long command (a dev server, a streamed build)
+    /// stalled every other call on the machine until it exited. The guest
+    /// agent serves each connection on its own thread.
+    fn command_client(&self, name: &str) -> Result<AgentClient> {
+        let handle = self.started_handle(name)?;
+        let socket = lock_handle(&handle)?.agent_socket();
+        AgentClient::connect_with_retry(&socket)
+    }
+
+    /// Pull an OCI image and run a command inside it.
+    ///
+    /// The container keeps a persistent overlay so one run's changes are there
+    /// for the next run of the same image, and repeat runs reuse it instead of
+    /// rebuilding (about 12ms against 2.1s). The overlay is the machine's own
+    /// workload overlay for its own image, and one per machine and image
+    /// otherwise; see [`crate::workload::run_target`].
+    pub fn run(
+        &self,
+        name: &str,
+        image: &str,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let record = control::get_record(&self.db, name)?;
+        let mut env_with_credentials = control::credential_env(&record);
+        env_with_credentials.extend(env);
+        let env = env_with_credentials;
+        let WorkloadTarget::Container { overlay_id, .. } =
+            crate::workload::run_target(&record, image)
+        else {
+            unreachable!("run always targets a container");
+        };
+        let mount_bindings = self.mount_bindings_for(name)?;
+        let s3_volumes = self.s3_volumes_for(name)?;
+        let handle = self.started_handle(name)?;
+        let mut handle = lock_handle(&handle)?;
+        handle.pull_image(image)?;
+        handle.run_config(
+            RunConfig::new(image, command)
+                .with_env(env)
+                .with_workdir(workdir)
+                .with_timeout(timeout)
+                .with_mounts(mount_bindings)
+                .with_s3_volumes(s3_volumes)
+                .with_persistent_overlay(Some(overlay_id)),
+        )
+    }
+
+    /// Pull an OCI image into the machine's storage.
+    pub fn pull_image(&self, name: &str, image: &str) -> Result<ImageInfo> {
+        let handle = self.started_handle(name)?;
+        let mut handle = lock_handle(&handle)?;
+        handle.pull_image(image)
+    }
+
+    /// Every machine in this host's shared DB, in name order. The DB is shared
+    /// with the CLI and every other embedder, so machines other processes own
+    /// are listed too — that is the point for a process reclaiming its own
+    /// after a restart, which tells them apart by `labels`. Resolve a live
+    /// state with [`state`](Self::state); the record's own is what was last
+    /// persisted.
+    pub fn list_machines(&self) -> Result<Vec<crate::config::VmRecord>> {
+        Ok(self
+            .db
+            .list_vms()?
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect())
+    }
+
+    /// List cached OCI images in the machine's storage.
+    pub fn list_images(&self, name: &str) -> Result<Vec<ImageInfo>> {
+        let handle = self.started_handle(name)?;
+        let mut handle = lock_handle(&handle)?;
+        handle.list_images()
+    }
+
+    /// Write a file into the machine.
+    pub fn write_file(
+        &self,
+        name: &str,
+        path: &str,
+        data: Vec<u8>,
+        mode: Option<u32>,
+    ) -> Result<()> {
+        let op = self.inflight.begin(name, "write file")?;
+        let result = (|| {
+            let target = self.machine_target(name)?;
+            let handle = self.started_handle(name)?;
+            let mut handle = lock_handle(&handle)?;
+            handle.use_target(target)?;
+            handle.write_file(path, &data, mode)
+        })();
+        op.finish(result)
+    }
+
+    /// Read a file from the machine.
+    pub fn read_file(&self, name: &str, path: &str) -> Result<Vec<u8>> {
+        let op = self.inflight.begin(name, "read file")?;
+        let result = (|| {
+            let target = self.machine_target(name)?;
+            let handle = self.started_handle(name)?;
+            let mut handle = lock_handle(&handle)?;
+            handle.use_target(target)?;
+            handle.read_file(path)
+        })();
+        op.finish(result)
+    }
+
+    /// Return the host port currently forwarding to `guest_port`.
+    ///
+    /// Forks with unpinned ports receive fresh host ports, so SDK callers must
+    /// read the clone's persisted mapping instead of assuming the golden's.
+    pub fn host_port(&self, name: &str, guest_port: u16) -> Result<Option<u16>> {
+        Ok(control::get_record(&self.db, name)?
+            .ports
+            .into_iter()
+            .find_map(|(host, guest)| (guest == guest_port).then_some(host)))
+    }
+
+    /// Return all published guest ports for readiness checks.
+    pub fn guest_ports(&self, name: &str) -> Result<Vec<u16>> {
+        Ok(control::get_record(&self.db, name)?
+            .ports
+            .into_iter()
+            .map(|(_, guest)| guest)
+            .collect())
+    }
+
+    fn launch_image_workload(&self, name: &str, handle: &mut VmHandle) -> Result<()> {
+        let record = control::get_record(&self.db, name)?;
+        handle.launch_image_workload(name, &record)
+    }
+
+    /// The machine's remote volumes, resolved against its own recorded env.
+    ///
+    /// An exec is often what establishes the workload container — the machine's
+    /// command exited, or the image's own default was short-lived — and that
+    /// container is where the mount lives. Carrying the volumes on every exec
+    /// means the bucket is present in whichever container ends up serving the
+    /// session, instead of only when a long-running workload happens to survive.
+    fn s3_volumes_for(&self, name: &str) -> Result<Vec<smolvm_protocol::S3Volume>> {
+        let record = control::get_record(&self.db, name)?;
+        Ok(crate::remote_volume::to_s3_volumes(
+            &record.remote_volumes,
+            &record.env,
+        ))
+    }
+
+    /// `options` completed from the machine: its env, then its credential
+    /// placeholders, then the caller's env, so a command sees the machine's
+    /// variables unless it sets them itself; and the machine's workdir unless
+    /// the caller gave one.
+    fn with_machine_context(&self, name: &str, mut options: ExecOptions) -> Result<ExecOptions> {
+        let record = control::get_record(&self.db, name)?;
+        // The machine's own env is the baseline, as for every other way a
+        // command starts in it; credential placeholders and then the caller's
+        // env layer on top.
+        let mut env = record.env.clone();
+        crate::util::layer_env(&mut env, control::credential_env(&record));
+        crate::util::layer_env(&mut env, std::mem::take(&mut options.env));
+        options.env = env;
+        if options.workdir.is_none() {
+            options.workdir = record.workdir.clone();
+        }
+        Ok(options)
+    }
+
+    /// Hold credential values for `name`'s next boots, by binding name, in
+    /// this process's memory only: never on disk, in a boot config or in a
+    /// checkpoint. A binding without one resolves from this process's own
+    /// variable of the binding's name, except on a machine made with
+    /// [`Self::create_machine_with_credentials`], which uses only what is
+    /// supplied. A branch uses its golden's values until it is given its own.
+    ///
+    /// A running machine also gets them at once: its next request to a bound
+    /// host carries the new value, with no restart. A value naming no binding
+    /// of the machine fails the call and holds nothing. When the running
+    /// machine cannot take them (one started before live values were
+    /// supported), the call fails, and the values still apply from its next
+    /// boot.
+    pub fn supply_credential_values(
+        &self,
+        name: &str,
+        values: std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        self.with_name_lock(name, || {
+            let record = control::get_record(&self.db, name)?;
+            let bindings: Vec<&str> = record
+                .credential_policy
+                .iter()
+                .flat_map(|policy| policy.credentials.iter().map(|b| b.name.as_str()))
+                .collect();
+            if let Some(unknown) = values.keys().find(|k| !bindings.contains(&k.as_str())) {
+                return Err(Error::config(
+                    "credentials",
+                    format!("machine '{name}' has no credential binding '{unknown}'"),
+                ));
+            }
+            let values: std::collections::BTreeMap<String, zeroize::Zeroizing<String>> = values
+                .into_iter()
+                .map(|(binding, value)| (binding, zeroize::Zeroizing::new(value)))
+                .collect();
+            // A running machine resolves from the values its boot was handed,
+            // so it gets the new ones directly; the held copy covers its next boot.
+            let running =
+                crate::agent::state_probe::resolve_state(name, &record) == RecordState::Running;
+            let live = running.then(|| values.clone());
+            crate::credentials::supply_values(name, values);
+            match live {
+                Some(values) => crate::agent::apply_live_credential_values(name, &values),
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn mount_bindings_for(&self, name: &str) -> Result<Vec<(String, String, bool)>> {
+        let record = control::get_record(&self.db, name)?;
+        Ok(crate::workload::record_mounts_to_bindings(&record))
+    }
+
+    /// The filesystem the machine's commands and files act on; see
+    /// [`crate::workload::machine_target`].
+    fn machine_target(&self, name: &str) -> Result<WorkloadTarget> {
+        let record = control::get_record(&self.db, name)?;
+        Ok(crate::workload::machine_target(&record))
+    }
+
+    /// Execute a command and collect streaming output events.
+    pub fn exec_streaming(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<ExecEvent>> {
+        let mut events = Vec::new();
+        self.exec_streaming_with(name, command, env, workdir, timeout, |e| events.push(e))?;
+        Ok(events)
+    }
+
+    /// Execute a command, delivering streaming output events LIVE via the
+    /// callback as they arrive (no buffering). The live counterpart of
+    /// `exec_streaming`; SDKs bridge the callback to a native iterator.
+    pub fn exec_streaming_with<F: FnMut(ExecEvent)>(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        env: Vec<(String, String)>,
+        workdir: Option<String>,
+        timeout: Option<Duration>,
+        on_event: F,
+    ) -> Result<()> {
+        let options = ExecOptions {
+            env,
+            workdir,
+            timeout,
+            user: None,
+            stdin: None,
+        };
+        self.exec_streaming_with_options(name, command, options, &ExecCancel::new(), on_event)
+    }
+
+    /// Execute a command, delivering output events live via the callback, over
+    /// its own agent connection (see [`Self::exec_with_options`]).
+    ///
+    /// `cancel` stops the command from another thread: the connection closes,
+    /// the agent kills the command, and this returns `Ok(())` without further
+    /// events. An image machine streams inside its persistent container overlay
+    /// so streamed installs and writes persist like non-streaming ones.
+    pub fn exec_streaming_with_options<F: FnMut(ExecEvent)>(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        options: ExecOptions,
+        cancel: &ExecCancel,
+        on_event: F,
+    ) -> Result<()> {
+        let op = self.inflight.begin(name, "exec")?;
+        let result = self.exec_streaming_inner(name, command, options, cancel, on_event);
+        op.finish(result)
+    }
+
+    fn exec_streaming_inner<F: FnMut(ExecEvent)>(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        options: ExecOptions,
+        cancel: &ExecCancel,
+        on_event: F,
+    ) -> Result<()> {
+        let options = self.with_machine_context(name, options)?;
+        let target = self.machine_target(name)?;
+        let config = self.command_run_config(name, target, &command, &options)?;
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        let mut client = self.command_client(name)?;
+        let connection = client
+            .clone_stream()
+            .map_err(|e| Error::agent("exec connection", e.to_string()))?;
+        if !cancel.attach(connection) {
+            return Ok(());
+        }
+        // Once cancelled, the caller has no use for the tail of the stream —
+        // in particular not the "connection closed" error the teardown itself
+        // produces — so stop delivering events.
+        let mut on_event = on_event;
+        let on_event = |event: ExecEvent| {
+            if !cancel.is_cancelled() {
+                on_event(event);
+            }
+        };
+        let result = match config {
+            Some(config) => client.run_streaming_with(config, on_event),
+            None => client.vm_exec_streaming_with(
+                command,
+                options.env,
+                options.workdir,
+                options.timeout,
+                on_event,
+            ),
+        };
+        cancel.detach();
+        match result {
+            // The caller asked for this: the closed connection surfaces as a
+            // read error, which is not a failure of the command.
+            Err(_) if cancel.is_cancelled() => Ok(()),
+            other => other,
+        }
+    }
+
+    /// Get the child PID if the machine is running.
+    ///
+    /// Like [`Self::is_running`] and [`Self::state`] this never waits on the
+    /// machine: a file transfer holds its handle for the whole copy, so a busy
+    /// handle is skipped and the persisted record answers instead.
+    pub fn pid(&self, name: &str) -> Option<i32> {
+        if let Ok(Some(handle)) = self.cached_handle(name) {
+            if let Ok(handle) = handle.try_lock() {
+                if let Some(pid) = handle.child_pid() {
+                    return Some(pid);
+                }
+            }
+        }
+
+        self.db
+            .get_vm(name)
+            .ok()
+            .flatten()
+            .and_then(|record| record.pid)
+    }
+
+    /// Return whether the machine process is currently running.
+    pub fn is_running(&self, name: &str) -> bool {
+        if self
+            .db
+            .get_vm(name)
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.paused_checkpoint.is_some())
+        {
+            return false;
+        }
+        if let Ok(Some(handle)) = self.cached_handle(name) {
+            if let Ok(handle) = handle.try_lock() {
+                return handle.is_process_alive();
+            }
+        }
+
+        self.db
+            .get_vm(name)
+            .ok()
+            .flatten()
+            .is_some_and(|record| record.actual_state() == RecordState::Running)
+    }
+
+    /// Make `ports` the machine's published ports, the whole set.
+    ///
+    /// A stopped machine gets them at its next start. A running one changes
+    /// its TCP ports now: new host ports start accepting, removed ones stop
+    /// (connections they already accepted carry on). Its UDP ports are bound
+    /// for the life of the VM, so a running machine refuses a UDP change, and
+    /// only a machine on virtio-net networking can change ports while running.
+    /// A host port already taken fails the call and changes nothing.
+    pub fn set_ports(&self, name: &str, ports: &[crate::data::network::PortMapping]) -> Result<()> {
+        self.with_name_lock(name, || {
+            let record = control::get_record(&self.db, name)?;
+            let running =
+                crate::agent::state_probe::resolve_state(name, &record) == RecordState::Running;
+            crate::agent::live_ports::set_published_ports(&self.db, &record, running, ports)
+                .map(|_| ())
+        })
+    }
+
+    /// Pack the stopped machine `name` into a `.smolmachine` at `output`
+    /// (a `.smolmachine` extension is added when missing): its disks and
+    /// configuration flattened into an artifact new machines boot from with
+    /// [`Self::create_machine_from_pack`]. The same export `smolvm pack create
+    /// --from-vm` runs, done by the smolvm binary the embedder bundles.
+    pub fn pack_machine(&self, name: &str, output: &std::path::Path) -> Result<std::path::PathBuf> {
+        control::get_record(&self.db, name)?;
+        let sidecar = if output.extension().is_some_and(|e| e == "smolmachine") {
+            output.to_path_buf()
+        } else {
+            let mut path = output.as_os_str().to_owned();
+            path.push(".smolmachine");
+            std::path::PathBuf::from(path)
+        };
+        // `pack create -o X` writes the runnable binary X beside X.smolmachine.
+        let stub = sidecar.with_extension("");
+        self.with_name_lock(name, || {
+            run_bundled_cli(&[
+                "pack".as_ref(),
+                "create".as_ref(),
+                "--from-vm".as_ref(),
+                name.as_ref(),
+                "-o".as_ref(),
+                stub.as_os_str(),
+            ])
+        })?;
+        Ok(sidecar)
+    }
+
+    /// Create the stopped machine `name` from a `.smolmachine` artifact, as
+    /// `smolvm machine create --from` does. Start it with
+    /// [`Self::start_machine`].
+    pub fn create_machine_from_pack(&self, name: &str, pack: &std::path::Path) -> Result<()> {
+        self.create_machine_from_pack_with(name, pack, &crate::machine_spec::CreateSpec::default())
+    }
+
+    /// [`Self::create_machine_from_pack`] with options for the machine. The
+    /// pack supplies defaults (resources, command, environment, ...) and
+    /// `spec` overrides them by the rules every creation path uses
+    /// ([`crate::machine_spec`]); a pack that is a live checkpoint fixes its
+    /// topology, and an option asking to change it is refused by name. A
+    /// branchable spec (`forkable`) starts the machine branchable every time.
+    pub fn create_machine_from_pack_with(
+        &self,
+        name: &str,
+        pack: &std::path::Path,
+        spec: &crate::machine_spec::CreateSpec,
+    ) -> Result<()> {
+        let spec = serde_json::to_vec(spec)
+            .map_err(|e| Error::config("create from pack", e.to_string()))?;
+        self.with_name_lock(name, || {
+            run_bundled_cli_with_stdin(
+                &[
+                    "machine".as_ref(),
+                    "create".as_ref(),
+                    "--name".as_ref(),
+                    name.as_ref(),
+                    "--from".as_ref(),
+                    pack.as_os_str(),
+                    "--spec-stdin".as_ref(),
+                ],
+                &spec,
+            )
+        })
+    }
+
+    /// The persisted record of `name`, without starting or connecting to it,
+    /// or `None` when no such machine exists. SDKs open a handle to a stopped
+    /// machine from this (to read its state, resize or delete it) without the
+    /// boot `connect` performs.
+    pub fn machine_record(&self, name: &str) -> Result<Option<crate::config::VmRecord>> {
+        self.db.get_vm(name)
+    }
+
+    /// Get the current machine state as a string.
+    pub fn state(&self, name: &str) -> String {
+        if let Ok(Some(record)) = self.db.get_vm(name) {
+            if record.paused_checkpoint.is_some() {
+                return record.state.to_string();
+            }
+        }
+        if let Ok(Some(handle)) = self.cached_handle(name) {
+            if let Ok(handle) = handle.try_lock() {
+                return handle.state();
+            }
+        }
+
+        match self.db.get_vm(name).ok().flatten() {
+            Some(record) if record.actual_state() == RecordState::Running => "running".into(),
+            Some(record) if record.actual_state() == RecordState::Failed => "failed".into(),
+            _ => "stopped".into(),
+        }
+    }
+
+    fn started_handle(&self, name: &str) -> Result<SharedHandle> {
+        if control::get_record(&self.db, name)?
+            .paused_checkpoint
+            .is_some()
+        {
+            return Err(Error::agent_conflict(
+                "access machine",
+                "machine is pausing or paused; use resume",
+            ));
+        }
+        self.cached_handle(name)?
+            .ok_or_else(|| Error::InvalidState {
+                expected: "started".into(),
+                actual: "not started".into(),
+            })
+    }
+
+    fn cached_handle(&self, name: &str) -> Result<Option<SharedHandle>> {
+        let registry = self
+            .registry
+            .read()
+            .map_err(|e| Error::agent("runtime registry", e.to_string()))?;
+        Ok(registry.get(name).cloned())
+    }
+
+    fn insert_handle(&self, name: &str, handle: VmHandle) -> Result<()> {
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|e| Error::agent("runtime registry", e.to_string()))?;
+        registry.insert(name.to_string(), Arc::new(Mutex::new(handle)));
+        Ok(())
+    }
+
+    fn remove_cached_handle(&self, name: &str) -> Result<Option<SharedHandle>> {
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|e| Error::agent("runtime registry", e.to_string()))?;
+        Ok(registry.remove(name))
+    }
+
+    fn with_name_lock<T, F>(&self, name: &str, op: F) -> Result<T>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        self.with_name_locks(&[name], op)
+    }
+
+    fn with_name_locks<T, F>(&self, names: &[&str], op: F) -> Result<T>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        let mut names = names.to_vec();
+        names.sort_unstable();
+        names.dedup();
+        let locks = names
+            .into_iter()
+            .map(|name| self.lock_for_name(name))
+            .collect::<Result<Vec<_>>>()?;
+        let _guards = locks.iter().map(lock_name).collect::<Result<Vec<_>>>()?;
+        op()
+    }
+
+    fn lock_for_name(&self, name: &str) -> Result<Arc<Mutex<()>>> {
+        if let Some(lock) = self
+            .name_locks
+            .read()
+            .map_err(|e| Error::agent("runtime name locks", e.to_string()))?
+            .get(name)
+            .cloned()
+        {
+            return Ok(lock);
+        }
+
+        let mut locks = self
+            .name_locks
+            .write()
+            .map_err(|e| Error::agent("runtime name locks", e.to_string()))?;
+        Ok(locks
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone())
+    }
+
+    fn remove_name_lock(&self, name: &str) -> Result<()> {
+        let mut locks = self
+            .name_locks
+            .write()
+            .map_err(|e| Error::agent("runtime name locks", e.to_string()))?;
+        locks.remove(name);
+        Ok(())
+    }
+}
+
+fn lock_name(lock: &Arc<Mutex<()>>) -> Result<MutexGuard<'_, ()>> {
+    lock.lock()
+        .map_err(|e| Error::agent("runtime name lock", e.to_string()))
+}
+
+/// Run the smolvm binary the embedder bundles (see
+/// [`crate::embedded::bundle::boot_binary`]) with `args`, for the operations
+/// that live in the CLI. Fails, with the CLI's own message, when it does.
+fn run_bundled_cli(args: &[&std::ffi::OsStr]) -> Result<()> {
+    run_bundled_cli_with_stdin(args, &[])
+}
+
+/// Run the bundled CLI with `input` on its stdin (none when empty).
+fn run_bundled_cli_with_stdin(args: &[&std::ffi::OsStr], input: &[u8]) -> Result<()> {
+    let exe = super::bundle::boot_binary().ok_or_else(|| {
+        Error::config(
+            "smolvm binary",
+            "this needs the smolvm binary; the SDK bundles it, or set SMOLVM_BOOT_BINARY",
+        )
+    })?;
+    let mut command = std::process::Command::new(&exe);
+    command
+        .args(args)
+        .stdin(if input.is_empty() {
+            std::process::Stdio::null()
+        } else {
+            std::process::Stdio::piped()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(lib_dir) = super::bundle::lib_dir() {
+        command.env(crate::data::consts::ENV_SMOLVM_LIB_DIR, lib_dir);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| Error::agent("run smolvm", format!("{}: {e}", exe.display())))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        // A CLI that exits before reading reports why on stderr below.
+        let _ = stdin.write_all(input);
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| Error::agent("run smolvm", format!("{}: {e}", exe.display())))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("exited without a message")
+        .trim()
+        .trim_start_matches("Error: ")
+        .to_string();
+    let operation = args
+        .iter()
+        .take(2)
+        .map(|a| a.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Err(Error::agent(operation, reason))
+}
+
+fn lock_handle(handle: &SharedHandle) -> Result<MutexGuard<'_, VmHandle>> {
+    handle
+        .lock()
+        .map_err(|e| Error::agent("runtime handle", e.to_string()))
+}
+
+/// Return the process-local embedded runtime singleton.
+pub fn runtime() -> Result<Arc<EmbeddedRuntime>> {
+    static RUNTIME: OnceLock<Arc<EmbeddedRuntime>> = OnceLock::new();
+
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime.clone());
+    }
+
+    let runtime = Arc::new(EmbeddedRuntime::new()?);
+    match RUNTIME.set(runtime.clone()) {
+        Ok(()) => Ok(runtime),
+        Err(_) => Ok(RUNTIME
+            .get()
+            .expect("runtime initialized by competing thread")
+            .clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_resize_validates_targets_before_machine_access() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        for spec in [
+            ResizeSpec::default(),
+            ResizeSpec {
+                cpus: Some(0),
+                ..Default::default()
+            },
+            ResizeSpec {
+                memory_mib: Some(0),
+                ..Default::default()
+            },
+            ResizeSpec {
+                storage_gib: Some(0),
+                ..Default::default()
+            },
+            ResizeSpec {
+                overlay_gib: Some(0),
+                ..Default::default()
+            },
+            ResizeSpec {
+                cpus: Some(4),
+                memory_mib: Some(2048),
+                ..Default::default()
+            },
+            ResizeSpec {
+                cpus: Some(4),
+                storage_gib: Some(8),
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                runtime.resize_machine("absent", spec),
+                Err(Error::Config { .. })
+            ));
+        }
+        assert!(ResizeSpec {
+            storage_gib: Some(8),
+            overlay_gib: Some(4),
+            ..Default::default()
+        }
+        .validate()
+        .is_ok());
+        assert!(runtime.db.pending_resize_names().unwrap().is_empty());
+        assert!(runtime.name_locks.read().unwrap().is_empty());
+    }
+
+    fn test_db() -> SmolvmDb {
+        static NEXT_DB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_DB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "smolvm-embedded-runtime-{}-{unique}-{sequence}.db",
+            std::process::id(),
+        ));
+        SmolvmDb::open_at(&path).unwrap()
+    }
+
+    fn test_spec(name: &str, persistent: bool) -> MachineSpec {
+        MachineSpec {
+            name: name.to_string(),
+            mounts: Vec::new(),
+            ports: Vec::new(),
+            resources: crate::agent::VmResources::default(),
+            image: None,
+            persistent,
+            // Spread the rest so a new spec field does not break the fixtures.
+            ..MachineSpec::default()
+        }
+    }
+
+    #[test]
+    fn credential_values_must_name_a_binding_of_an_existing_machine() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        let one = |binding: &str| {
+            std::collections::BTreeMap::from([(binding.to_string(), "secret".to_string())])
+        };
+        assert!(runtime
+            .supply_credential_values("absent", one("github"))
+            .is_err());
+        let mut spec = test_spec("bound", true);
+        spec.allowed_hosts = vec!["github.com".into()];
+        runtime
+            .create_machine_with_credentials(
+                spec,
+                Vec::new(),
+                None,
+                None,
+                crate::credentials::CredentialPolicy {
+                    credentials: vec![crate::credentials::parse_credential_flag(
+                        "github=GH_TOKEN@github.com",
+                    )
+                    .unwrap()],
+                },
+            )
+            .unwrap();
+        let refused = runtime
+            .supply_credential_values("bound", one("notion"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("no credential binding 'notion'"),
+            "{refused}"
+        );
+        // A stopped machine holds the value for its next boot.
+        runtime
+            .supply_credential_values("bound", one("github"))
+            .unwrap();
+        crate::credentials::forget_values("bound");
+    }
+
+    #[test]
+    fn saved_execution_cannot_be_started_or_accessed_as_a_fresh_machine() {
+        let db = test_db();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+        runtime.create_machine(test_spec("saved", true)).unwrap();
+        db.update_vm_durable("saved", |r| {
+            r.state = RecordState::Paused;
+            r.paused_checkpoint = Some("missing.smolcheckpoint".into());
+        })
+        .unwrap();
+        assert_eq!(runtime.state("saved"), "paused");
+        assert!(!runtime.is_running("saved"));
+        assert!(runtime.start_machine("saved").is_err());
+        assert!(runtime.connect_or_start_machine("saved").is_err());
+        assert!(runtime.started_handle("saved").is_err());
+        assert!(runtime.pause_machine("saved").is_err());
+        assert!(db
+            .get_vm("saved")
+            .unwrap()
+            .unwrap()
+            .paused_checkpoint
+            .is_some());
+    }
+
+    // A command started through the embedded runtime sees what an exec through
+    // the CLI or the API sees: the machine's env and workdir, with the caller's
+    // own settings winning.
+    #[test]
+    fn an_exec_gets_the_machine_env_and_workdir_under_the_callers() {
+        let db = test_db();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+        runtime.create_machine(test_spec("ctx", true)).unwrap();
+        db.update_vm_durable("ctx", |r| {
+            r.env = vec![("A".into(), "1".into()), ("B".into(), "machine".into())];
+            r.workdir = Some("/srv".into());
+        })
+        .unwrap();
+
+        let options = runtime
+            .with_machine_context(
+                "ctx",
+                ExecOptions {
+                    env: vec![("B".into(), "caller".into())],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            options.env.contains(&("A".into(), "1".into())),
+            "{:?}",
+            options.env
+        );
+        assert_eq!(
+            options
+                .env
+                .iter()
+                .filter(|(name, _)| name == "B")
+                .collect::<Vec<_>>(),
+            vec![&("B".to_string(), "caller".to_string())],
+            "the caller's value wins and appears once"
+        );
+        assert_eq!(options.workdir.as_deref(), Some("/srv"));
+
+        let options = runtime
+            .with_machine_context(
+                "ctx",
+                ExecOptions {
+                    workdir: Some("/tmp".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(options.workdir.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn set_ports_on_a_stopped_machine_saves_tcp_and_udp_and_refuses_duplicates() {
+        use crate::data::network::{PortMapping, PortProtocol};
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        let record =
+            crate::config::VmRecord::new("ports-stopped".into(), 1, 512, vec![], vec![], false);
+        runtime.db.insert_vm("ports-stopped", &record).unwrap();
+        runtime
+            .set_ports(
+                "ports-stopped",
+                &[
+                    PortMapping::new(18080, 3000),
+                    PortMapping::with_protocol(17777, 7777, PortProtocol::Udp),
+                ],
+            )
+            .unwrap();
+        let saved = runtime.machine_record("ports-stopped").unwrap().unwrap();
+        assert_eq!(saved.ports, vec![(18080, 3000)]);
+        assert_eq!(saved.udp_ports, vec![(17777, 7777)]);
+
+        let err = runtime
+            .set_ports(
+                "ports-stopped",
+                &[PortMapping::new(18080, 3000), PortMapping::new(18080, 3001)],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("18080"), "{err}");
+        let unchanged = runtime.machine_record("ports-stopped").unwrap().unwrap();
+        assert_eq!(
+            unchanged.ports,
+            vec![(18080, 3000)],
+            "a refused set changes nothing"
+        );
+
+        runtime.set_ports("ports-stopped", &[]).unwrap();
+        let cleared = runtime.machine_record("ports-stopped").unwrap().unwrap();
+        assert!(cleared.ports.is_empty() && cleared.udp_ports.is_empty());
+        assert!(runtime.set_ports("no-such-machine", &[]).is_err());
+    }
+
+    #[test]
+    fn remove_name_lock_removes_entry() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        runtime.lock_for_name("runtime-remove-lock").unwrap();
+
+        runtime.remove_name_lock("runtime-remove-lock").unwrap();
+
+        assert!(runtime
+            .name_locks
+            .read()
+            .expect("name locks should not be poisoned")
+            .is_empty());
+    }
+
+    #[test]
+    fn remove_name_lock_ignores_missing_entry() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        runtime.remove_name_lock("runtime-missing-lock").unwrap();
+
+        assert!(runtime
+            .name_locks
+            .read()
+            .expect("name locks should not be poisoned")
+            .is_empty());
+    }
+
+    #[test]
+    fn runtime_rejects_duplicate_create() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        runtime
+            .create_machine(test_spec("runtime-duplicate", false))
+            .unwrap();
+
+        let err = runtime
+            .create_machine(test_spec("runtime-duplicate", false))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Agent {
+                kind: crate::error::AgentErrorKind::Conflict,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_state_defaults_to_stopped_for_created_record() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        runtime
+            .create_machine(test_spec("runtime-state", true))
+            .unwrap();
+
+        assert_eq!(runtime.state("runtime-state"), "stopped");
+        assert!(!runtime.is_running("runtime-state"));
+        assert_eq!(runtime.pid("runtime-state"), None);
+    }
+
+    #[test]
+    fn list_machines_returns_every_record_by_name_with_its_labels() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        let mut mine = test_spec("list-b", true);
+        mine.labels.insert("owner".into(), "hostd".into());
+        mine.detached = true;
+        runtime.create_machine(mine).unwrap();
+        runtime.create_machine(test_spec("list-a", false)).unwrap();
+
+        let listed = runtime.list_machines().unwrap();
+        assert_eq!(
+            listed.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["list-a", "list-b"]
+        );
+        let (a, b) = (&listed[0], &listed[1]);
+        assert!(a.ephemeral && a.labels.is_empty() && !a.detached);
+        assert!(!b.ephemeral && b.detached);
+        assert_eq!(b.labels.get("owner").map(String::as_str), Some("hostd"));
+        assert_eq!(runtime.state("list-b"), "stopped");
+    }
+
+    #[test]
+    fn reconnect_never_restarts_a_frozen_fork_base() {
+        let db = test_db();
+        let mut record = test_spec("frozen-checkpoint", true).to_record().unwrap();
+        record.state = crate::config::RecordState::Frozen;
+        db.insert_vm_if_not_exists("frozen-checkpoint", &record)
+            .unwrap();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+
+        runtime
+            .connect_or_start_machine("frozen-checkpoint")
+            .unwrap();
+
+        assert_eq!(
+            db.get_vm("frozen-checkpoint").unwrap().unwrap().state,
+            crate::config::RecordState::Frozen
+        );
+        assert!(runtime.registry.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_image_machine_targets_its_own_overlay() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        let mut spec = test_spec("runtime-image", true);
+        spec.image = Some("example/image:latest".to_string());
+        runtime.create_machine(spec).unwrap();
+
+        assert_eq!(
+            runtime.machine_target("runtime-image").unwrap(),
+            WorkloadTarget::Container {
+                image: "example/image:latest".to_string(),
+                overlay_id: "runtime-image".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_clone_targets_its_golden_overlay() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        let mut record = test_spec("runtime-clone", true).to_record().unwrap();
+        record.image = Some("example/image:latest".to_string());
+        record.golden = Some("runtime-golden".to_string());
+        runtime.db.insert_vm("runtime-clone", &record).unwrap();
+
+        assert_eq!(
+            runtime.machine_target("runtime-clone").unwrap(),
+            WorkloadTarget::Container {
+                image: "example/image:latest".to_string(),
+                overlay_id: "runtime-golden".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn machine_target_fails_closed_for_missing_records() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        assert!(matches!(
+            runtime.machine_target("missing"),
+            Err(crate::Error::VmNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn host_port_reads_the_persisted_mapping() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        let mut spec = test_spec("runtime-ports", true);
+        spec.ports = vec![crate::data::network::PortMapping::new(49152, 3000)];
+        runtime.create_machine(spec).unwrap();
+
+        assert_eq!(
+            runtime.host_port("runtime-ports", 3000).unwrap(),
+            Some(49152)
+        );
+        assert_eq!(runtime.host_port("runtime-ports", 9222).unwrap(), None);
+    }
+
+    #[test]
+    fn delete_machine_removes_name_lock_entry() {
+        let runtime = EmbeddedRuntime::with_db(test_db());
+        runtime
+            .create_machine(test_spec("runtime-delete-lock", true))
+            .unwrap();
+
+        assert!(runtime
+            .name_locks
+            .read()
+            .expect("name locks should not be poisoned")
+            .contains_key("runtime-delete-lock"));
+
+        runtime.delete_machine("runtime-delete-lock").unwrap();
+
+        assert!(!runtime
+            .name_locks
+            .read()
+            .expect("name locks should not be poisoned")
+            .contains_key("runtime-delete-lock"));
+    }
+
+    #[test]
+    fn delete_already_stopped_staged_machine_does_not_reconnect() {
+        let db = test_db();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+        let mut record = test_spec("delete-stopped-staged", true)
+            .to_record()
+            .unwrap();
+        record.state = crate::config::RecordState::Stopped;
+        record.staged_mounts = vec![(0, "/host/work".into(), "/work".into())];
+        db.insert_vm("delete-stopped-staged", &record).unwrap();
+
+        runtime.delete_machine("delete-stopped-staged").unwrap();
+        assert!(db.get_vm("delete-stopped-staged").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_machine_refuses_a_live_fork_parent_before_teardown() {
+        let db = test_db();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+        runtime
+            .create_machine(test_spec("delete-parent", true))
+            .unwrap();
+        let mut child = test_spec("delete-child", true).to_record().unwrap();
+        child.golden = Some("delete-parent".to_string());
+        db.insert_vm("delete-child", &child).unwrap();
+
+        let error = runtime.delete_machine("delete-parent").unwrap_err();
+        assert!(error.to_string().contains("dependent fork"));
+        assert!(db.get_vm("delete-parent").unwrap().is_some());
+        assert!(db.get_vm("delete-child").unwrap().is_some());
+    }
+
+    #[test]
+    fn stop_machine_refuses_a_live_fork_parent_before_teardown() {
+        let db = test_db();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+        runtime
+            .create_machine(test_spec("stop-parent", true))
+            .unwrap();
+        let mut child = test_spec("stop-child", true).to_record().unwrap();
+        child.golden = Some("stop-parent".to_string());
+        db.insert_vm("stop-child", &child).unwrap();
+
+        let error = runtime.stop_machine("stop-parent").unwrap_err();
+        assert!(error.to_string().contains("dependent fork"));
+        assert!(db.get_vm("stop-parent").unwrap().is_some());
+        assert!(db.get_vm("stop-child").unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_machine_reaps_a_frozen_checkpoint_without_guest_shutdown() {
+        let db = test_db();
+        let runtime = EmbeddedRuntime::with_db(db.clone());
+        let mut record = test_spec("delete-frozen", true).to_record().unwrap();
+        record.state = crate::config::RecordState::Frozen;
+        db.insert_vm("delete-frozen", &record).unwrap();
+
+        runtime.delete_machine("delete-frozen").unwrap();
+        assert!(db.get_vm("delete-frozen").unwrap().is_none());
+    }
+}

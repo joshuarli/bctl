@@ -18,8 +18,10 @@ then has:
   support has neither device, and the image must still come up view-only.
 
 The compositor must scan out from classic 2D (dumb) buffers or blob
-resources. bctl's runtime accepts 2D resources; the stock SmolVM macOS
-build does not.
+resources. bctl's runtime accepts 2D resources through bctl's libkrun patch;
+upstream libkrun with macOS's Venus-only virglrenderer rejects
+`RESOURCE_CREATE_2D` with `EINVAL`. [`runtime.md`](runtime.md) describes that
+patch and the source build.
 
 ## Entrypoint
 

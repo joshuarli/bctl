@@ -1,0 +1,1057 @@
+//! Internal boot subprocess for the API server.
+//!
+//! This command is NOT for direct user invocation. It's spawned by the API
+//! server to launch a VM in a fresh single-threaded process, avoiding the
+//! macOS fork-in-multithreaded-process issue.
+//!
+//! Usage: smolvm _boot-vm <config-path>
+
+use crate::agent::boot_config::BootConfig;
+use crate::agent::{launch_agent_vm, FsNotifyWatcher, LaunchConfig, VmDisks};
+use crate::data::disk::{DiskFormat, DiskType};
+use crate::storage::VmDisk;
+use std::path::{Path, PathBuf};
+
+#[cfg(target_os = "linux")]
+const GUARDIAN_MANIFEST_MAGIC: u64 = 0x534d4f4c4752444e;
+#[cfg(target_os = "linux")]
+const PREOPENED_USERFAULTFD_FD: libc::c_int = 198;
+
+#[cfg(target_os = "linux")]
+fn preopen_guardian_userfaultfd() -> crate::Result<()> {
+    let Some(snapshot_dir) = std::env::var_os("SMOLVM_SNAPSHOT_DIR") else {
+        return Ok(());
+    };
+    let manifest_path = PathBuf::from(snapshot_dir).join("manifest.bin");
+    let manifest = std::fs::read(&manifest_path)
+        .map_err(|error| crate::Error::agent("read fork manifest", error.to_string()))?;
+    let magic = manifest
+        .get(..8)
+        .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
+        .ok_or_else(|| crate::Error::agent("read fork manifest", "manifest is truncated"))?;
+    if magic != GUARDIAN_MANIFEST_MAGIC {
+        return Ok(());
+    }
+
+    use std::os::fd::{AsRawFd, IntoRawFd};
+
+    let fd = crate::process::open_kernel_userfaultfd().map_err(|error| {
+        crate::Error::agent(
+            "prepare demand-paged clone RAM",
+            format!(
+                "kernel-fault-capable userfaultfd is unavailable: {error}; run a privileged SmolVM service or grant it read/write access to /dev/userfaultfd"
+            ),
+        )
+    })?;
+    if fd.as_raw_fd() != PREOPENED_USERFAULTFD_FD {
+        if unsafe { libc::dup3(fd.as_raw_fd(), PREOPENED_USERFAULTFD_FD, libc::O_CLOEXEC) } < 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(crate::Error::agent(
+                "prepare demand-paged clone RAM",
+                format!("reserve userfaultfd descriptor: {error}"),
+            ));
+        }
+    } else {
+        // Inherited descriptors were closed immediately before this call, so
+        // this is unlikely; transfer ownership if the kernel reused slot 198.
+        let _ = fd.into_raw_fd();
+    }
+    Ok(())
+}
+
+/// Open a boot disk honoring its on-disk format. A fork clone's disk path ends
+/// in `.qcow2` (a copy-on-write overlay, opened as-is over its backing image);
+/// every other disk is a raw image that may need creating/formatting. The path
+/// is the single source of truth for the format — see `agent::resolve_disk_image`.
+fn open_boot_disk<K: DiskType>(path: &Path, size_gb: u64) -> crate::Result<VmDisk<K>> {
+    if path.extension().and_then(|e| e.to_str()) == Some("qcow2") {
+        VmDisk::<K>::open_existing_with_format(path, DiskFormat::Qcow2)
+    } else {
+        VmDisk::<K>::open_or_create_at(path, size_gb)
+    }
+}
+
+/// Run the boot subprocess.
+///
+/// Reads the boot config from the given path, sets up libkrun, and calls
+/// `krun_start_enter` which blocks forever (or until the VM exits).
+pub fn run(config_path: PathBuf) -> crate::Result<()> {
+    let t_proc = std::time::Instant::now();
+
+    // --- Parent-death watchdog ---------------------------------------------
+    // This VMM (`smol-vmm _boot-vm`) is always spawned by an embedding parent:
+    // the API server, a fleet node, or — for the SDKs — the Node/Python
+    // in-process runtime. If that parent dies *abnormally* (panic, uncaught
+    // exception, `process.exit`/`os._exit`, crash, or SIGKILL) it never runs
+    // teardown, so without this watchdog the VMM would be reparented to init and
+    // keep running forever, holding the VM's full RAM — an orphaned-process leak.
+    //
+    // Detection is by reparenting: when the real parent dies the kernel reparents
+    // this process (to init/launchd, or a subreaper), so `getppid()` changes from
+    // the value captured here at startup. The watcher polls for that change and
+    // exits; the OS then tears the VM down with us. Polling (rather than an
+    // inherited-pipe EOF) needs no fd plumbing, survives the
+    // `close_inherited_fds_from(3)` call below, and uses only syscalls already in
+    // the seccomp allowlist (`getppid`, `nanosleep`). Catches every death mode,
+    // including SIGKILL, which no parent-side exit handler can. Started first so
+    // it also covers a parent dying mid-boot.
+    //
+    // Armed only when an in-process embedder (the SDK) owns the VM's lifetime —
+    // the manager signals this via SMOLVM_BOOT_WATCH_PARENT=1. The CLI detaches
+    // its VM on purpose and `serve` reconnects to surviving VMs, so for those the
+    // parent exiting is normal and the watchdog stays off.
+    // The getppid()-based reparenting check is POSIX-specific; on Windows the
+    // parent-death watchdog is not wired up (the SDK in-process embedder path is
+    // a Unix concern here).
+    //
+    // Before exiting it shuts the guest down cleanly once it knows how to reach
+    // the agent, as `machine stop` does: otherwise writes the guest had not
+    // flushed are lost, which a persistent machine booted again later shows
+    // as files that are simply gone.
+    #[cfg(unix)]
+    if std::env::var_os("SMOLVM_BOOT_WATCH_PARENT").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        crate::process::exit_when_parent_is_not_with(unsafe { libc::getppid() }, || {
+            if let Some(socket) = AGENT_SOCKET.get() {
+                flush_guest_before_exit(socket);
+            }
+        });
+    }
+
+    // Read boot config
+    let config_data = std::fs::read(&config_path)
+        .map_err(|e| crate::Error::agent("read boot config", e.to_string()))?;
+    let config: BootConfig = serde_json::from_slice(&config_data)
+        .map_err(|e| crate::Error::agent("parse boot config", e.to_string()))?;
+
+    // Clean up the config file — it's no longer needed
+    let _ = std::fs::remove_file(&config_path);
+    #[cfg(unix)]
+    let _ = AGENT_SOCKET.set(config.vsock_socket.clone());
+
+    // Redirect stdio. When SMOLVM_GPU_DEBUG=1, keep stderr pointed at a
+    // debug log file so virglrenderer/MoltenVK errors are captured.
+    // The GPU-debug stdio redirection uses POSIX fd dup2 and is part of the
+    // (Unix-only) GPU path; on Windows it falls through to the portable stderr
+    // log redirection below.
+    #[cfg(unix)]
+    let gpu_debug = std::env::var_os("SMOLVM_GPU_DEBUG").is_some();
+    #[cfg(not(unix))]
+    let gpu_debug = false;
+    if gpu_debug {
+        #[cfg(unix)]
+        {
+            if let Some(ref log) = config.console_log {
+                let debug_path = log.with_file_name("gpu-debug.log");
+                if let Ok(cpath) = std::ffi::CString::new(debug_path.to_string_lossy().as_bytes()) {
+                    unsafe {
+                        let fd = libc::open(
+                            cpath.as_ptr(),
+                            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                            0o644,
+                        );
+                        if fd >= 0 {
+                            libc::dup2(fd, 2);
+                            libc::close(fd);
+                        }
+                    }
+                }
+            }
+            // Detach stdin/stdout only — keep stderr for GPU debug output
+            unsafe {
+                let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+                if devnull >= 0 {
+                    libc::dup2(devnull, 0);
+                    libc::dup2(devnull, 1);
+                    libc::close(devnull);
+                }
+            }
+        }
+    } else if let Err(e) = crate::process::detach_stdio_to_stderr_file(&config.startup_error_log) {
+        let _ = std::fs::write(
+            &config.startup_error_log,
+            format!("failed to redirect stdio: {}", e),
+        );
+        crate::process::exit_child(1);
+    }
+
+    // Close inherited file descriptors from the parent (server).
+    // Without this, the subprocess holds database locks, network sockets, etc.
+    // that can interfere with libkrun's operation. Keep stdin/stdout/stderr (0-2)
+    // which now point to /dev/null.
+    crate::process::close_inherited_fds_from(3);
+
+    // Never accept an inherited descriptor number from the launching environment.
+    std::env::remove_var("SMOLVM_READONLY_RESTORE_FD");
+    #[cfg(target_os = "linux")]
+    if let Some(snapshot) = std::env::var_os("SMOLVM_SNAPSHOT_DIR").map(PathBuf::from) {
+        if crate::portable_checkpoint::has_readonly_memory(&snapshot) {
+            use std::os::fd::IntoRawFd;
+            if std::env::var_os("SMOLVM_FORKABLE").is_none_or(|value| value != "1") {
+                return Err(crate::Error::agent(
+                    "prepare restore RAM",
+                    "read-only input requires branchable restore",
+                ));
+            }
+            let vm_dir = config.storage_disk_path.parent().ok_or_else(|| {
+                crate::Error::agent("prepare restore RAM", "missing VM directory")
+            })?;
+            let input = crate::portable_checkpoint::open_readonly_memory(vm_dir)?;
+            // The launcher consumes this descriptor; all error paths exit this
+            // dedicated boot process, and libkrun keeps its own duplicate.
+            std::env::set_var(
+                "SMOLVM_READONLY_RESTORE_FD",
+                input.into_raw_fd().to_string(),
+            );
+        }
+    }
+
+    // Once hardened, this process's own page map is root-owned. libkrun reads
+    // it to save a paused fork clone's RAM without touching never-written
+    // pages, so open it now and hand libkrun the descriptor.
+    std::env::remove_var("KRUN_PAGEMAP_FD");
+    #[cfg(target_os = "linux")]
+    if let Ok(pagemap) = std::fs::File::open("/proc/self/pagemap") {
+        use std::os::fd::IntoRawFd;
+        std::env::set_var("KRUN_PAGEMAP_FD", pagemap.into_raw_fd().to_string());
+    }
+
+    // Defense-in-depth before this process becomes the VMM host for an untrusted
+    // guest: block setuid privilege escalation and core dumps (which would leak
+    // guest RAM). See docs/runtime-isolation-hardening.md for the full roadmap.
+    // When the HOST runs out of memory the kernel should take a branch child
+    // before a plain machine, and a branch source last (its death takes every
+    // child with it). Set before hardening: once this process is non-dumpable its own
+    // /proc/self files are root-owned and even raising the score is refused;
+    // lowering it also needs the privileges still held here.
+    #[cfg(target_os = "linux")]
+    {
+        let clone = std::env::var_os("SMOLVM_SNAPSHOT_DIR").is_some();
+        let source = !clone && std::env::var_os("SMOLVM_FORKABLE").is_some();
+        let adj = crate::process::oom_score_adj_for(source, clone);
+        if adj != 0 {
+            if let Err(e) = crate::process::set_own_oom_score_adj(adj) {
+                eprintln!("[oom] could not set oom_score_adj={adj}: {e}");
+            }
+        }
+
+        crate::process::harden_self();
+
+        // A guardian-backed clone needs userfaultfd to resolve faults originating
+        // inside KVM. Open it while this dedicated boot process still has the host
+        // service's privileges; libkrun takes ownership after the uid drop.
+        #[cfg(target_os = "linux")]
+        preopen_guardian_userfaultfd()?;
+
+        // If the supervisor delegated a cgroup v2 root (via SMOLVM_CGROUP_ROOT),
+        // place this VMM in a per-VM cgroup with cpu/pids/memory caps so an untrusted
+        // guest can't peg host CPU, fork-bomb the host, or balloon VMM memory. Inert
+        // when the env var is unset (no delegation) — never blocks boot.
+        #[cfg(target_os = "linux")]
+        if let Some(cgroup_root) = std::env::var_os("SMOLVM_CGROUP_ROOT") {
+            // A CPU limit set on the machine holds for every VMM it launches.
+            let vm_dir = config.vsock_socket.parent();
+            let (cpu_limit, cpu_quota) = vm_dir.map_or(
+                (
+                    None,
+                    crate::agent::cpu_limit::effective_quota_usec(config.resources.cpus, None),
+                ),
+                |dir| crate::agent::cpu_limit::launch_limit(dir, config.resources.cpus),
+            );
+            let placed = crate::process::place_in_cgroup(
+                std::path::Path::new(&cgroup_root),
+                cpu_quota,
+                config.resources.memory_mib,
+                config.cuda,
+                // Match scope-mode accounting for both sources and restored clones.
+                std::env::var_os("SMOLVM_FORKABLE").is_some()
+                    || std::env::var_os("SMOLVM_SNAPSHOT_DIR").is_some(),
+            );
+            if let (true, Some(dir)) = (placed, vm_dir) {
+                crate::agent::cpu_limit::record_launch_limit(
+                    dir,
+                    std::process::id() as i32,
+                    cpu_limit,
+                );
+            }
+        }
+    }
+
+    // Present private backing stores through idmapped mounts in this VMM's own
+    // mount namespace before dropping its uid. A seed stays root-only on the
+    // host; only the VMM using its overlay sees the mapped, read-only copy.
+    #[cfg(target_os = "linux")]
+    {
+        // The seed belongs to the launcher uid. A mount is needed only when
+        // this VMM will drop to a different, per-VM uid.
+        let seed_dirs = if std::env::var_os("SMOLVM_VM_UID").is_some() {
+            boot_seed_dirs(&config)
+        } else {
+            Vec::new()
+        };
+        let pack = config.pack_idmap_source.as_ref().map(|shared| {
+            let target = config.packed_layers_dir.as_ref().unwrap_or_else(|| {
+                eprintln!("[pack-idmap] idmap source set without a mountpoint; refusing to boot");
+                crate::process::exit_child(1);
+            });
+            (shared.as_path(), target.as_path())
+        });
+        if pack.is_none() && seed_dirs.is_empty() {
+            // No private mount needed for this boot.
+        } else {
+            let uid: u32 = std::env::var("SMOLVM_VM_UID")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "[pack-idmap] idmap source set without SMOLVM_VM_UID; refusing to boot"
+                    );
+                    crate::process::exit_child(1);
+                });
+            let gid: u32 = std::env::var("SMOLVM_VM_GID")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(uid);
+            if let Err(e) = crate::process::setup_private_idmap_mounts(pack, &seed_dirs, uid, gid) {
+                eprintln!("[idmap] failed to mount private backing store, refusing to boot: {e}");
+                if e.raw_os_error() == Some(libc::EINVAL) {
+                    eprintln!(
+                        "[idmap] the filesystem holding smolvm's data cannot back idmapped mounts (overlayfs, for one); keep it on ext4 or xfs with SMOLVM_DATA_DIR. Inside a smol machine smolvm already uses /workspace unless XDG_CACHE_HOME or XDG_DATA_HOME points elsewhere"
+                    );
+                }
+                crate::process::exit_child(1);
+            }
+        }
+    }
+
+    // Kubernetes pod networking: while still privileged (needs CAP_NET_ADMIN +
+    // CAP_SYS_ADMIN, and BEFORE the uid drop and Landlock/seccomp), attach this
+    // sandbox to its CNI netns — open a tap there, tc-redirect it against the CNI
+    // interface, and discover the pod's L3 config. The tap fd + config flow to the
+    // launcher, which bridges the guest NIC to the tap. The attachment is held for
+    // the VM's lifetime (owns the tap fd); dropping it tears the datapath down.
+    #[cfg(target_os = "linux")]
+    let pod_net_attachment = match config.pod_netns.as_deref() {
+        Some(netns) => {
+            let ns = netns.to_string_lossy();
+            match crate::agent::pod_net::attach_pod_netns(&ns) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    eprintln!(
+                        "[pod-net] failed to attach pod netns {}: {e}",
+                        netns.display()
+                    );
+                    crate::process::exit_child(1);
+                }
+            }
+        }
+        None => None,
+    };
+    #[cfg(target_os = "linux")]
+    let pod_net_launch = pod_net_attachment.as_ref().map(|a| a.launch());
+    #[cfg(not(target_os = "linux"))]
+    let pod_net_launch: Option<crate::agent::pod_net::PodNetLaunch> = None;
+
+    // Encoded video uses an external ffmpeg process so smolvm neither links
+    // nor bundles codec libraries. Start its broker before the parent's uid
+    // drop and Landlock/seccomp; the broker independently drops to the same
+    // per-VM uid; hardware modes retain only render/video device groups while
+    // software mode retains none. Any failure leaves Raw VNC intact.
+    if crate::agent::video::is_configured()
+        && std::env::var_os("SMOLVM_DISPLAY").is_some()
+        && std::env::var_os("SMOLVM_VNC").is_some()
+    {
+        if let Err(e) = crate::agent::video::prestart_helper() {
+            eprintln!("[video] encoder unavailable; using Raw VNC: {e}");
+        }
+    }
+
+    // Drop to an unprivileged uid before touching the guest, so a guest→VMM
+    // escape can't signal/ptrace the supervisor or neighbor VMs nor reach
+    // root-owned host files. Gated by SMOLVM_VM_UID (+ optional SMOLVM_VM_GID,
+    // default = uid). Requires a privileged supervisor and this VM's data
+    // dir/disks owned by the uid (see docs/runtime-isolation-hardening.md).
+    // Fails closed. Placed AFTER cgroup placement (needs privilege), BEFORE
+    // Landlock/seccomp (work unprivileged once no_new_privs is set).
+    #[cfg(target_os = "linux")]
+    if let Some(uid_str) = std::env::var_os("SMOLVM_VM_UID") {
+        let uid: u32 = match uid_str.to_str().and_then(|s| s.parse().ok()) {
+            Some(u) => u,
+            None => {
+                eprintln!("[uid-drop] invalid SMOLVM_VM_UID; refusing to boot");
+                crate::process::exit_child(1);
+            }
+        };
+        let gid: u32 = std::env::var("SMOLVM_VM_GID")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(uid);
+        if let Err(e) = crate::process::drop_privileges(uid, gid) {
+            eprintln!("[uid-drop] failed, refusing to boot over-privileged: {e}");
+            crate::process::exit_child(1);
+        }
+        // The setuid above clears the dumpable flag. A forkable golden's clones
+        // map its guest-RAM memfd via /proc/<golden>/fd, which ptrace_may_access
+        // denies on a non-dumpable target even at a uid match — so re-assert
+        // dumpable here (after the drop) for a forkable VM, or fork breaks under
+        // per-VM uid isolation. See process::set_dumpable.
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("SMOLVM_FORKABLE").is_some() {
+            crate::process::set_dumpable(true);
+        }
+    }
+
+    // A fork clone restores by mapping the golden's guest-RAM memfd, opened via
+    // /proc/<golden_pid>/fd/<N> — an anonymous inode with no filesystem path.
+    // Landlock is path-based and cannot grant access to a pathless object, so a
+    // Landlock-confined clone can never open the memfd (EACCES → can't boot).
+    // Clones therefore skip Landlock; they stay confined by seccomp, the per-VM
+    // uid drop, and the cgroup. Goldens and normal VMs are unaffected.
+    #[cfg(target_os = "linux")]
+    let is_fork_clone = std::env::var_os("SMOLVM_SNAPSHOT_DIR").is_some();
+
+    // Confine the VMM's filesystem view via Landlock — BEFORE seccomp (whose
+    // allowlist omits the landlock_* syscalls) and before libkrun loads. Granted:
+    // read+exec on rootfs/libs/system dirs, read-write on this VM's own data dir
+    // and the device nodes a VMM needs; the rest of the host fs is denied so a
+    // guest→VMM escape can't read other tenants' data or host secrets. Paths are
+    // derived per-VM from the boot config. Gated by SMOLVM_LANDLOCK=enforce
+    // (unset = off); fails closed. See docs/runtime-isolation-hardening.md.
+    #[cfg(target_os = "linux")]
+    if std::env::var("SMOLVM_LANDLOCK").as_deref() == Ok("enforce") && is_fork_clone {
+        eprintln!(
+            "[landlock] fork clone skips Landlock (must map the golden's pathless \
+             memfd); still confined by seccomp + uid drop + cgroup"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if std::env::var("SMOLVM_LANDLOCK").as_deref() == Ok("enforce") && !is_fork_clone {
+        let mut read_exec: Vec<std::path::PathBuf> = [
+            "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/proc", "/sys",
+        ]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+        read_exec.push(config.rootfs_path.clone());
+        if let Some(ref d) = config.packed_layers_dir {
+            read_exec.push(d.clone());
+        }
+        // Grant read+exec on the directory libkrun/libkrunfw are actually
+        // dlopen'd from, resolved EXACTLY like the loader (`find_lib_dir`):
+        // `SMOLVM_LIB_DIR` if it holds the libs, else exe-relative bundle paths
+        // (`lib/`, `../../lib/linux-<arch>`, …). Consulting only `SMOLVM_LIB_DIR`
+        // denied the bundled/dev layout — where the libs live in an exe-relative
+        // `lib/` dir and the env var is unset — making `libkrunfw.so` fail to
+        // load under enforce ("cannot open shared object file: Permission denied").
+        if let Some(lib_dir) = crate::agent::find_lib_dir() {
+            read_exec.push(lib_dir);
+        }
+        if let Some(libdir) = std::env::var_os("SMOLVM_LIB_DIR") {
+            read_exec.push(std::path::PathBuf::from(libdir));
+        }
+        // A fresh VM's storage/overlay disk may be a qcow2 copy-on-write overlay
+        // backed by a read-only disk template in ~/.smolvm; the confined VMM must
+        // be able to open that backing file. Grant the template directory
+        // read-only — it is the install dir (same trust level as SMOLVM_LIB_DIR,
+        // which lives under it) and holds no secrets. A no-op for the copy path.
+        if let Some(home) = dirs::home_dir() {
+            read_exec.push(home.join(".smolvm"));
+        }
+
+        let mut read_write: Vec<std::path::PathBuf> = [
+            "/dev/kvm",
+            "/dev/null",
+            "/dev/zero",
+            "/dev/full",
+            "/dev/urandom",
+            "/dev/random",
+            "/dev/dri",
+            "/dev/ptmx",
+            "/tmp",
+        ]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+        for p in [
+            &config.storage_disk_path,
+            &config.overlay_disk_path,
+            &config.vsock_socket,
+            &config.startup_error_log,
+        ] {
+            if let Some(parent) = p.parent() {
+                read_write.push(parent.to_path_buf());
+            }
+        }
+        if let Some(parent) = config.console_log.as_ref().and_then(|c| c.parent()) {
+            read_write.push(parent.to_path_buf());
+        }
+        // A store capture may ask the VMM to save its RAM image into a private
+        // directory under the service's tmpfs capture root.
+        if let Some(root) = crate::portable_checkpoint::capture_tmpfs_grant() {
+            read_write.push(root);
+        }
+        if let Some(parent) = config.ssh_agent_socket.as_ref().and_then(|s| s.parent()) {
+            read_write.push(parent.to_path_buf());
+        }
+        for (path, read_only, _format) in &config.extra_disks {
+            if *read_only {
+                read_exec.push(path.clone());
+            } else {
+                read_write.push(path.clone());
+            }
+        }
+        // A fork clone's disks are qcow2 copy-on-write overlays whose backing
+        // files live in the GOLDEN's data dir (and may chain further, e.g.
+        // golden qcow2 -> shared disk template). libkrun resolves the whole
+        // chain inside this confined process, so every backing file must be
+        // readable or the cold (re)start of a clone dies with "Error
+        // configuring virtio-blk". Walk each disk's backing chain and grant
+        // the files read-only. (The fork-restore boot path skips Landlock
+        // entirely; this covers the plain stop -> start path.)
+        read_exec.extend(boot_disk_backing_paths(
+            &config.storage_disk_path,
+            &config.overlay_disk_path,
+            &config.extra_disks,
+            cache_disk_layer(&config).as_deref(),
+        ));
+        for m in &config.mounts {
+            if m.read_only {
+                read_exec.push(m.source.clone());
+            } else {
+                read_write.push(m.source.clone());
+            }
+        }
+
+        // The guest agent signals boot-readiness by writing a marker file into
+        // the virtiofs rootfs, which the host polls. The rootfs is granted
+        // read-exec above, so that FUSE write would be denied here. Carve out
+        // write on JUST that one marker file — never the rootfs dir, which
+        // holds the shared agent binary/init/libs a guest→VMM escape must not
+        // be able to tamper with. Landlock needs an existing path to build the
+        // rule, so pre-create it empty; the guest overwrites it with content
+        // and the host treats non-empty as ready (see manager.rs wait loop).
+        // The marker name is per-VM (the host passes it via SMOLVM_READY_MARKER so
+        // concurrent boots don't share one file); fall back to the shared constant
+        // if unset. Granting/pre-creating the WRONG name would leave the agent's
+        // real (per-VM) write Landlock-denied → readiness limps to the vsock grace.
+        let marker_name = std::env::var(smolvm_protocol::guest_env::READY_MARKER)
+            .unwrap_or_else(|_| smolvm_protocol::AGENT_READY_MARKER.to_string());
+        let ready_marker = config.rootfs_path.join(marker_name);
+        let _ = std::fs::File::create(&ready_marker);
+        read_write.push(ready_marker);
+
+        if let Err(e) = crate::process::restrict_filesystem(&read_exec, &read_write) {
+            eprintln!("[landlock] restriction failed, refusing to boot unconfined: {e}");
+            crate::process::exit_child(1);
+        }
+    }
+
+    // Prepare services that need to exec before the VMM is confined.  The
+    // seccomp filter itself is installed by the launcher after libkrun has
+    // configured all devices but immediately before krun_start_enter.  That
+    // ordering lets an explicitly asynchronous block device create and
+    // permanently restrict its io_uring first; TSYNC then confines every
+    // launcher thread while still denying creation of any new ring.
+    //
+    // The call site is gated for BOTH x86_64 and aarch64 (AWS Graviton / GCP
+    // Axion). The allowlist is arch-neutral (`libc::SYS_*` names resolve per
+    // arch) with the x86_64-only legacy syscalls cfg-gated in build_seccomp_program;
+    // `enforce` is validated to boot cleanly on aarch64 — bare VM, image-based
+    // container (crun), and networked image pull all run under enforce with zero
+    // SIGSYS on a Graviton-class host.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    match std::env::var("SMOLVM_SECCOMP").as_deref() {
+        Ok("enforce") => {
+            // CUDA + enforce: the shared CUDA daemon is spawned (fork+exec) on
+            // first use, but exec is — rightly — not in the sandbox allowlist,
+            // so a CUDA boot was SIGSYS-killed the moment cuda_host started.
+            // Ensure the daemon BEFORE the filter goes on; the confined VMM
+            // then only ever connect()s to its socket. Fail loud if it can't
+            // start: an enforced CUDA boot without it would die anyway, later
+            // and less legibly.
+            #[cfg(unix)]
+            if config.cuda
+                && std::env::var_os("SMOLVM_CUDA_DAEMON").is_none()
+                && std::env::var_os("SMOLVM_CUDA_SOCK").is_none()
+            {
+                match crate::cuda_daemon::ensure_running() {
+                    Ok(sock) => {
+                        // Still single-threaded here, so set_var is race-free.
+                        std::env::set_var("SMOLVM_CUDA_DAEMON", &sock);
+                        tracing::info!(socket = %sock.display(),
+                            "CUDA daemon pre-started for the sandboxed boot");
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[seccomp] CUDA daemon pre-start failed ({e}); refusing to boot a \
+                             CUDA machine that would be SIGSYS-killed under enforce"
+                        );
+                        crate::process::exit_child(1);
+                    }
+                }
+            }
+        }
+        Ok("audit") => {}
+        _ => {}
+    }
+
+    // The boot subprocess owns the VM for its full lifetime, including
+    // persistent machines whose initiating CLI has exited. Keep host→guest
+    // filesystem notifications here so the watcher cannot disappear early.
+    // The launcher applies the final filter to this watcher with TSYNC before
+    // entering the guest.
+    let _fsnotify_watcher = FsNotifyWatcher::start(config.vsock_socket.clone(), &config.mounts);
+
+    // Emit subprocess startup timing to the startup error log (stderr after
+    // the stdio redirect above). These lines decompose the dark window between
+    // parent's spawn() returning and launch_agent_vm() being called.
+    // Emit when RUST_LOG contains "info" — check env var directly since the
+    // tracing dispatch may be unusable after close_inherited_fds_from invalidates
+    // macOS framework file descriptors held by the parent process.
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_default();
+    let proc_timing_on = rust_log.contains("info");
+    macro_rules! proc_timing {
+        ($label:expr) => {
+            if proc_timing_on {
+                eprintln!("[proc] {:25} {}ms", $label, t_proc.elapsed().as_millis());
+            }
+        };
+    }
+    proc_timing!("fds closed");
+
+    // Open storage and overlay disks, honoring qcow2 fork-clone overlays.
+    let storage_disk = match open_boot_disk::<crate::storage::Storage>(
+        &config.storage_disk_path,
+        config.storage_size_gb,
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = std::fs::write(
+                &config.startup_error_log,
+                format!("failed to open storage disk: {}", e),
+            );
+            crate::process::exit_child(1);
+        }
+    };
+    proc_timing!("storage opened");
+
+    let overlay_disk = match open_boot_disk::<crate::storage::Overlay>(
+        &config.overlay_disk_path,
+        config.overlay_size_gb,
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = std::fs::write(
+                &config.startup_error_log,
+                format!("failed to open overlay disk: {}", e),
+            );
+            crate::process::exit_child(1);
+        }
+    };
+    proc_timing!("overlay opened");
+
+    // Launch the VM (never returns on success)
+    let disks = VmDisks {
+        storage: &storage_disk,
+        overlay: Some(&overlay_disk),
+    };
+
+    // CUDA-over-vsock opt-in, resolved once here at the boot-config boundary so
+    // the launcher receives a typed socket path (it never reads the environment).
+    // Two ways in, both inherited by this boot subprocess from the manager:
+    //   * SMOLVM_CUDA_SOCK=<path> — attach to an externally-managed host server
+    //     at that AF_UNIX path (smolvm does not spawn one).
+    //   * the machine's `cuda` flag (--cuda at create) — smolvm owns the
+    //     lifecycle: derive a per-VM socket in this machine's dir and start the
+    //     in-tree host server on it.
+    let cuda_socket: Option<std::path::PathBuf> = if let Some(p) = std::env::var("SMOLVM_CUDA_SOCK")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(std::path::PathBuf::from(p))
+    } else if config.cuda {
+        // Before booting: if the CUDA guest shims baked into this rootfs were
+        // built from different wire source than this host binary, say so now with
+        // the exact fix — otherwise the skew only surfaces as an opaque cuInit
+        // failure deep inside the guest's first real CUDA call. The connect
+        // handshake still hard-rejects a mismatch; this is the early, legible heads-up.
+        fn warn_if_stale_cuda_shim(rootfs: &std::path::Path) {
+            let stamp = rootfs.join("usr/local/lib/smolvm-cuda/proto-hash");
+            let Ok(text) = std::fs::read_to_string(&stamp) else {
+                return; // pre-stamp rootfs (no marker) — handshake still guards it
+            };
+            let Ok(shim) = u64::from_str_radix(text.trim(), 16) else {
+                return; // unrecognized marker — don't second-guess it
+            };
+            if shim != crate::cuda_host::PROTO_HASH {
+                let msg = format!(
+                    "CUDA guest shim in the agent rootfs is STALE: rootfs wire hash {:016x} != \
+                     this host {:016x}. The guest's CUDA calls will fail at cuInit. Rebuild the \
+                     rootfs from the same source: scripts/build-agent-rootfs.sh --install",
+                    shim,
+                    crate::cuda_host::PROTO_HASH
+                );
+                tracing::warn!("{msg}");
+                eprintln!("[smolvm] WARNING: {msg}");
+            }
+        }
+        warn_if_stale_cuda_shim(&config.rootfs_path);
+
+        let path = config
+            .vsock_socket
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/tmp"))
+            .join("cuda.sock");
+        match crate::cuda_host::start_with_clone_mode(
+            &path,
+            std::env::var_os("SMOLVM_SNAPSHOT_DIR").is_some(),
+        ) {
+            Ok(()) => {
+                tracing::info!(path = %path.display(), "CUDA host server started");
+                Some(path)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to start CUDA host server — CUDA disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Docker socket bridge: expose the guest's dockerd socket to the host as a
+    // Unix socket in the per-VM dir. libkrun listens on this path (listen=true),
+    // so we only need to hand it the path and clear any stale socket first.
+    let docker_socket: Option<std::path::PathBuf> = if config.expose_docker {
+        config.vsock_socket.parent().map(|dir| {
+            let path = dir.join("docker.sock");
+            let _ = std::fs::remove_file(&path);
+            path
+        })
+    } else {
+        None
+    };
+
+    // Workload logs: the guest streams a detached workload's stdout and
+    // stderr here for the machine's whole life, and this process appends them
+    // to the machine's workload.log.
+    let workload_log_socket: Option<std::path::PathBuf> =
+        config.workload_log.as_ref().and_then(|log| {
+            let socket = config.vsock_socket.with_extension("logs");
+            match crate::workload_log::start(&socket, log) {
+                Ok(()) => Some(socket),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to start the workload log listener");
+                    None
+                }
+            }
+        });
+
+    proc_timing!("ready to launch");
+
+    // Egress telemetry lands in the per-VM dir (the vsock socket's parent), the
+    // same dir serve resolves from the machine name — so no name needs threading
+    // across the process boundary.
+    let egress_telemetry_path = config
+        .vsock_socket
+        .parent()
+        .map(|dir| dir.join(crate::agent::EGRESS_TELEMETRY_FILE));
+
+    let cache_layer = cache_disk_layer(&config);
+    let result = launch_agent_vm(&LaunchConfig {
+        rootfs_path: &config.rootfs_path,
+        disks: &disks,
+        vsock_socket: &config.vsock_socket,
+        console_log: config.console_log.as_deref(),
+        egress_telemetry: egress_telemetry_path.as_deref(),
+        mounts: &config.mounts,
+        port_mappings: &config.ports,
+        resources: config.resources,
+        ssh_agent_socket: config.ssh_agent_socket.as_deref(),
+        dns_filter_socket: None,
+        cuda_socket: cuda_socket.as_deref(),
+        docker_socket: docker_socket.as_deref(),
+        workload_log_socket: workload_log_socket.as_deref(),
+        published_sockets: &config.published_sockets,
+        packed_layers_dir: config.packed_layers_dir.as_deref(),
+        packed_layers_dax_window: config.packed_layers_dax_window,
+        extra_disks: &config.extra_disks,
+        cache_disk_layer: cache_layer.as_deref(),
+        dns_filter_enabled: config
+            .dns_filter_hosts
+            .as_ref()
+            .is_some_and(|hosts| !hosts.is_empty()),
+        egress_refresh_hosts: config.dns_filter_hosts.clone(),
+        pod_net: pod_net_launch,
+        credentials: config.credentials.as_ref(),
+        external_interceptor: config.external_interceptor,
+        mediated_egress: config.mediated_egress,
+        mediated_parent_id: config.mediated_parent_id,
+    });
+
+    // If we get here, launch_agent_vm returned (should only happen on error)
+    if let Err(ref e) = result {
+        // Stderr was opened before the UID drop. Reopening its root-owned
+        // path here can fail, silently losing the actual startup error.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr().lock(), "Error: {e}");
+    }
+
+    crate::process::exit_child(1);
+}
+
+/// Grant backing-file reads for every attached disk, including export helpers
+/// and the cache disk's shared base under the machine's own layer.
+#[cfg(target_os = "linux")]
+fn boot_disk_backing_paths(
+    storage: &Path,
+    overlay: &Path,
+    extra_disks: &[(PathBuf, bool, DiskFormat)],
+    cache_layer: Option<&Path>,
+) -> Vec<PathBuf> {
+    [storage, overlay]
+        .into_iter()
+        // An attached disk is opened in the format it was attached in: only a
+        // qcow2 one has a backing chain to grant, and a raw one whose bytes the
+        // guest made look like qcow2 must not widen what the VMM may read.
+        .chain(
+            extra_disks
+                .iter()
+                .filter(|(_, _, format)| *format == DiskFormat::Qcow2)
+                .map(|(path, _, _)| path.as_path()),
+        )
+        .chain(cache_layer)
+        .flat_map(qcow2_backing_chain)
+        .collect()
+}
+
+/// The machine's own layer over its cache disk's base, beside its storage disk.
+fn cache_disk_layer(config: &crate::agent::boot_config::BootConfig) -> Option<PathBuf> {
+    config.resources.cache_disk.as_ref()?;
+    let dir = config.storage_disk_path.parent()?;
+    Some(dir.join(Path::new(crate::data::storage::CACHE_DISK_FILENAME).with_extension("qcow2")))
+}
+
+/// The seeds behind every disk this boot attaches. An export helper boots on a
+/// fresh disk of its own and attaches the source machine's seeded storage as an
+/// extra disk, so looking only at the boot's own storage left that seed
+/// root-only and the dropped VMM could not open the source.
+#[cfg(target_os = "linux")]
+fn boot_seed_dirs(config: &crate::agent::boot_config::BootConfig) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let disks = [&config.storage_disk_path, &config.overlay_disk_path]
+        .into_iter()
+        .chain(config.extra_disks.iter().map(|(path, _, _)| path));
+    for dir in disks.filter_map(|disk| seed_dir_for_disk(disk)) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// Find a seed in the storage backing chain, including a fork's intermediate
+/// overlays. Only an exact cache path with a hex key is eligible for a mount.
+#[cfg(target_os = "linux")]
+fn seed_dir_for_disk(path: &Path) -> Option<PathBuf> {
+    let root = crate::image_seed::seed_root().canonicalize().ok()?;
+    qcow2_backing_chain(path).into_iter().find_map(|backing| {
+        let backing = backing.canonicalize().ok()?;
+        let key_dir = backing.parent()?;
+        let key = key_dir.file_name()?.to_str()?;
+        if backing.file_name()? != "storage.qcow2"
+            || key.len() != 64
+            || !key.bytes().all(|c| c.is_ascii_hexdigit())
+            || key_dir.parent()? != root
+        {
+            return None;
+        }
+        Some(key_dir.to_path_buf())
+    })
+}
+
+/// Resolve a bounded qcow2 backing chain; raw and backing-less files add nothing.
+#[cfg(target_os = "linux")]
+fn qcow2_backing_chain(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut chain = Vec::new();
+    let mut current = path.to_path_buf();
+    // Live fork-and-continue intentionally adds one immutable layer per fresh
+    // checkpoint. Fork creation caps the supported chain at 32; leave headroom
+    // here for imported and nested chains while still bounding corrupt cycles.
+    for _ in 0..64 {
+        let Ok(mut f) = std::fs::File::open(&current) else {
+            break;
+        };
+        let mut header = [0u8; 20];
+        if f.read_exact(&mut header).is_err() {
+            break;
+        }
+        // qcow2: magic "QFI\xfb", then version; backing offset at 8, size at 16.
+        if header[0..4] != [0x51, 0x46, 0x49, 0xfb] {
+            break;
+        }
+        let offset = u64::from_be_bytes(header[8..16].try_into().unwrap());
+        let size = u32::from_be_bytes(header[16..20].try_into().unwrap());
+        if offset == 0 || size == 0 || size > 4096 {
+            break;
+        }
+        let mut name = vec![0u8; size as usize];
+        if f.seek(SeekFrom::Start(offset)).is_err() || f.read_exact(&mut name).is_err() {
+            break;
+        }
+        let Ok(backing) = String::from_utf8(name) else {
+            break;
+        };
+        let backing = std::path::PathBuf::from(backing);
+        let backing = if backing.is_absolute() {
+            backing
+        } else {
+            current
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(backing)
+        };
+        if chain.contains(&backing) {
+            break;
+        }
+        chain.push(backing.clone());
+        current = backing;
+    }
+    chain
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod backing_chain_tests {
+    use super::{boot_disk_backing_paths, qcow2_backing_chain, DiskFormat};
+    use std::io::Write;
+
+    fn fake_qcow2(
+        dir: &std::path::Path,
+        name: &str,
+        backing: Option<&std::path::Path>,
+    ) -> std::path::PathBuf {
+        let p = dir.join(name);
+        let mut h = vec![0u8; 128];
+        h[0..4].copy_from_slice(&[0x51, 0x46, 0x49, 0xfb]);
+        h[4..8].copy_from_slice(&3u32.to_be_bytes());
+        if let Some(b) = backing {
+            let bs = b.as_os_str().to_str().unwrap().as_bytes();
+            h[8..16].copy_from_slice(&128u64.to_be_bytes());
+            h[16..20].copy_from_slice(&(bs.len() as u32).to_be_bytes());
+            h.extend_from_slice(bs);
+        }
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(&h).unwrap();
+        p
+    }
+
+    // A clone's disk chains through its golden's qcow2 to the shared raw
+    // template; the Landlock grant must surface every link so the confined
+    // VMM can open the whole chain on a cold restart.
+    #[test]
+    fn resolves_two_level_chain_and_stops_at_raw() {
+        let dir = std::env::temp_dir().join(format!("smolvm-bc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = dir.join("template.raw");
+        std::fs::write(&raw, b"not a qcow2").unwrap();
+        let golden = fake_qcow2(&dir, "golden.qcow2", Some(&raw));
+        let clone = fake_qcow2(&dir, "clone.qcow2", Some(&golden));
+        assert_eq!(
+            qcow2_backing_chain(&clone),
+            vec![golden.clone(), raw.clone()]
+        );
+        // Non-qcow2 and backing-less files yield nothing.
+        assert!(qcow2_backing_chain(&raw).is_empty());
+        let solo = fake_qcow2(&dir, "solo.qcow2", None);
+        assert!(qcow2_backing_chain(&solo).is_empty());
+        let relative = fake_qcow2(
+            &dir,
+            "relative.qcow2",
+            Some(std::path::Path::new("template.raw")),
+        );
+        assert_eq!(qcow2_backing_chain(&relative), vec![raw.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extra_disk_backings_are_granted_without_unrelated_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("source.raw");
+        std::fs::write(&raw, b"raw source").unwrap();
+        let golden = fake_qcow2(dir.path(), "golden.qcow2", Some(&raw));
+        let child = fake_qcow2(dir.path(), "child.qcow2", Some(&golden));
+        let primary = fake_qcow2(dir.path(), "primary.qcow2", None);
+        let _unrelated = fake_qcow2(dir.path(), "unrelated.qcow2", Some(&raw));
+        for read_only in [false, true] {
+            assert_eq!(
+                boot_disk_backing_paths(
+                    &primary,
+                    &primary,
+                    &[(child.clone(), read_only, DiskFormat::Qcow2)],
+                    None,
+                ),
+                vec![golden.clone(), raw.clone()]
+            );
+        }
+    }
+}
+
+/// The guest agent's socket, known once the boot config is read, for the
+/// parent-death watchdog's clean shutdown.
+#[cfg(unix)]
+static AGENT_SOCKET: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Longest the parent-death watchdog waits for the guest to shut down before
+/// exiting regardless.
+#[cfg(unix)]
+const PARENT_DEATH_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Ask the guest to freeze and flush its filesystems and power off, as `machine
+/// stop` does, so a VM whose owner exited keeps what it wrote. Best-effort: an
+/// agent that cannot be reached, or does not answer in time, is left to the
+/// exit that follows.
+#[cfg(unix)]
+fn flush_guest_before_exit(socket: &std::path::Path) {
+    let shutdown = crate::agent::AgentClient::connect(socket)
+        .and_then(|mut client| client.shutdown_within(PARENT_DEATH_SHUTDOWN));
+    if let Err(error) = shutdown {
+        tracing::warn!(%error, "owner exited; could not shut the guest down cleanly before exiting");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod parent_death_tests {
+    /// A guest that never answers must not keep a VM whose owner is gone
+    /// alive: the clean shutdown gives up and the exit goes ahead.
+    #[test]
+    fn an_unresponsive_agent_does_not_hold_up_the_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        // Accept and hold the connection without ever replying.
+        let _held = std::thread::spawn(move || {
+            let connection = listener.accept();
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            drop(connection);
+        });
+        let started = std::time::Instant::now();
+        super::flush_guest_before_exit(&socket);
+        assert!(
+            started.elapsed() < super::PARENT_DEATH_SHUTDOWN,
+            "gave up after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// No agent listening at all (a guest still booting) fails at once.
+    #[test]
+    fn a_missing_agent_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        super::flush_guest_before_exit(&dir.path().join("absent.sock"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+}

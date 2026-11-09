@@ -1,0 +1,851 @@
+//! Classifying the `--image` value into an image *source*.
+//!
+//! smolvm is a microVM runtime, not a container runtime: it delegates producing
+//! a root filesystem to container-specific tooling (the guest's bundled `crane`
+//! for registries and local image archives, or the user for an already-
+//! unpacked directory). This module's only job is to decide *which* kind of
+//! source the user gave, so the right delegation runs.
+//!
+//! Detection is intentionally conservative so a bare registry reference is never
+//! mistaken for a local path:
+//! - `-` → an archive streamed on stdin (`docker save img | smolvm … --image -`).
+//! - an explicit path (`/…`, `./…`, `../…`) or an archive-extensioned name
+//!   (`*.tar`, `*.tar.gz`, `*.tgz`) → a local source. A directory is used as a
+//!   ready-made rootfs; anything else is treated as a local image archive.
+//! - everything else (`alpine`, `repo:tag`, `ghcr.io/owner/repo@sha256:…`) → a
+//!   registry reference, even if a same-named file happens to sit in the cwd.
+
+use crate::{Error, Result};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+/// Where a machine's root filesystem comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageSource {
+    /// An OCI registry reference (`alpine`, `repo:tag`, `repo@sha256:…`).
+    /// Resolved by the guest agent pulling with `crane` — the existing path.
+    Registry(String),
+    /// A `docker save`, `podman save`, or OCI tar archive (optionally gzipped), read
+    /// from a file or stdin. Flattened into a rootfs by `crane export`.
+    Archive(ArchiveInput),
+    /// An already-unpacked root filesystem directory (apptainer-style). Used
+    /// as-is — no extraction.
+    Directory(PathBuf),
+    /// A value that is recognisably meant as a local source but in a form
+    /// smolvm does not read. Carries the exact syntax to use instead, so the
+    /// error names the fix rather than a registry-parser failure.
+    Unsupported {
+        /// The value exactly as the user wrote it.
+        given: String,
+        /// The syntax to use instead.
+        hint: String,
+    },
+}
+
+/// Where an [`ImageSource::Archive`]'s bytes come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchiveInput {
+    /// Read the archive from this file path.
+    File(PathBuf),
+    /// Read the archive from stdin (`--image -`).
+    Stdin,
+}
+
+/// Known archive filename suffixes that mark a bare name as a local archive
+/// even without an explicit path prefix (e.g. `image.tar` in the cwd).
+const ARCHIVE_SUFFIXES: [&str; 3] = [".tar", ".tar.gz", ".tgz"];
+
+/// Classify a `--image` value into its [`ImageSource`].
+///
+/// This decides *intent* only; whether the path actually exists (and is a valid
+/// archive) is validated when the source is resolved, so a missing `./foo.tar`
+/// produces a clear "no such file" rather than a confusing registry error.
+pub fn classify(image: &str) -> ImageSource {
+    if image == "-" {
+        return ImageSource::Archive(ArchiveInput::Stdin);
+    }
+    // `file://` is not a scheme smolvm reads; left alone it either fell through
+    // to the registry parser or was handed to the filesystem with the prefix
+    // still attached. Name it so the caller can reject it with the real syntax.
+    if let Some(rest) = image.strip_prefix("file://") {
+        return ImageSource::Unsupported {
+            given: image.to_string(),
+            hint: format!(
+                "`file://` is not a supported prefix; give the path directly: `{}`",
+                rest
+            ),
+        };
+    }
+    if looks_local(image) {
+        let path = Path::new(image);
+        // Only an existing directory is treated as a ready-made rootfs; a
+        // missing path or a regular file is treated as an archive (resolve
+        // surfaces a clear error if it's absent).
+        if path.is_dir() {
+            return ImageSource::Directory(path.to_path_buf());
+        }
+        return ImageSource::Archive(ArchiveInput::File(path.to_path_buf()));
+    }
+    ImageSource::Registry(image.to_string())
+}
+
+/// Whether a value should be treated as a local path rather than a registry
+/// reference: an explicit path prefix or a known archive suffix.
+fn looks_local(image: &str) -> bool {
+    image.starts_with('/')
+        || image.starts_with("./")
+        || image.starts_with("../")
+        || has_windows_drive_prefix(image)
+        || ARCHIVE_SUFFIXES
+            .iter()
+            .any(|suffix| image.ends_with(suffix))
+}
+
+/// `C:\…` or `C:/…` — a Windows absolute path. A registry reference can carry
+/// a `:` (`repo:tag`, `host:port/repo`) but never a single letter followed by
+/// `:` and a path separator, so this cannot mistake a reference for a path.
+fn has_windows_drive_prefix(image: &str) -> bool {
+    let bytes = image.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+/// Whether a local path is a Dockerfile rather than an image archive — so we can
+/// reject it with a build-first hint instead of a confusing flatten failure.
+/// Detected by the conventional name (`Dockerfile`/`Containerfile`, or a
+/// `*.Dockerfile`/`*.Containerfile` suffix) or a first meaningful line of `FROM`.
+fn looks_like_dockerfile(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower = name.to_ascii_lowercase();
+        if lower == "dockerfile"
+            || lower == "containerfile"
+            || lower.ends_with(".dockerfile")
+            || lower.ends_with(".containerfile")
+        {
+            return true;
+        }
+    }
+    // Content sniff over the first few KB only (never slurp a multi-GB archive):
+    // skip blank/comment lines; a Dockerfile opens with FROM (or an ARG before
+    // it). A tar archive's header is binary, so the UTF-8 read simply fails.
+    let mut head = [0u8; 4096];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(n) = std::io::Read::read(&mut file, &mut head) else {
+        return false;
+    };
+    let Ok(text) = std::str::from_utf8(&head[..n]) else {
+        return false;
+    };
+    for line in text.lines().take(50) {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let word = line.split_whitespace().next().unwrap_or("");
+        return word.eq_ignore_ascii_case("FROM") || word.eq_ignore_ascii_case("ARG");
+    }
+    false
+}
+
+/// A classified source resolved into something launchable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedImage {
+    /// Pulled from a registry by the guest agent — the existing path.
+    Registry(String),
+    /// A local source materialized on the host. `reference` is the stable ref
+    /// persisted on the machine record; `packed_layers_dir` is mounted into the
+    /// guest via virtiofs (the same path `.smolmachine` layers use).
+    Local {
+        /// Stable `local:<hash>` / `local-dir:<path>` reference to persist on
+        /// the machine record so later starts re-resolve to the same source.
+        reference: String,
+        /// Host directory mounted into the guest via virtiofs — the staged
+        /// archive's cache dir, or the rootfs directory itself.
+        packed_layers_dir: PathBuf,
+    },
+}
+
+/// Largest archive accepted. The staged copy plus the guest's flattened rootfs
+/// both consume disk, so the default guards against runaway/hostile inputs while
+/// still covering very large dev images.
+///
+/// Override with `SMOLVM_MAX_IMAGE_BYTES` (in bytes), or per-invocation with the
+/// `--max-image-size` flag on `machine run`/`machine create` (which sets that
+/// env var). A legitimate large image is a valid reason to raise it; the cap
+/// only exists to bound disk use for untrusted inputs.
+pub fn max_archive_bytes() -> u64 {
+    const DEFAULT: u64 = 8 * 1024 * 1024 * 1024;
+    std::env::var("SMOLVM_MAX_IMAGE_BYTES")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT)
+}
+/// Streaming hash/copy buffer.
+const COPY_CHUNK: usize = 1 << 20;
+/// Filename the staged archive is stored under inside its cache dir.
+const ARCHIVE_FILE: &str = "archive.tar";
+
+/// Resolve a classified [`ImageSource`] into a [`ResolvedImage`].
+///
+/// Registry refs pass straight through (the guest pulls them). Archives are
+/// content-hashed and staged into a shared cache, so identical inputs dedupe
+/// and re-runs skip the staging; directories are validated and used in place.
+/// Both local kinds yield a `packed_layers_dir` to mount and a `local:…`
+/// reference to persist on the machine record.
+pub fn resolve(source: ImageSource) -> Result<ResolvedImage> {
+    match source {
+        ImageSource::Registry(reference) => Ok(ResolvedImage::Registry(reference)),
+        ImageSource::Directory(path) => resolve_directory(&path),
+        ImageSource::Archive(input) => resolve_archive(input),
+        ImageSource::Unsupported { given, hint } => Err(Error::config(
+            "image source",
+            format!("unsupported image reference '{given}': {hint}"),
+        )),
+    }
+}
+
+fn resolve_directory(path: &Path) -> Result<ResolvedImage> {
+    let canonical = path.canonicalize().map_err(|e| {
+        Error::config(
+            "--image",
+            format!("cannot use rootfs directory {}: {}", path.display(), e),
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(Error::config(
+            "--image",
+            format!("{} is not a directory", canonical.display()),
+        ));
+    }
+    Ok(ResolvedImage::Local {
+        reference: format!("{LOCAL_DIR_PREFIX}{}", canonical.display()),
+        packed_layers_dir: canonical,
+    })
+}
+
+fn resolve_archive(input: ArchiveInput) -> Result<ResolvedImage> {
+    let cache_base = archive_cache_base()?;
+    std::fs::create_dir_all(&cache_base)?;
+    let hash = match input {
+        ArchiveInput::File(path) => stage_from_file(&path, &cache_base)?,
+        ArchiveInput::Stdin => stage_from_stdin(&cache_base)?,
+    };
+    Ok(ResolvedImage::Local {
+        reference: format!("{LOCAL_ARCHIVE_PREFIX}{hash}"),
+        packed_layers_dir: cache_base.join(hash),
+    })
+}
+
+/// Hash an on-disk archive and hardlink (or copy) it into `cache/<hash>/`.
+fn stage_from_file(path: &Path, cache_base: &Path) -> Result<String> {
+    let meta = std::fs::metadata(path).map_err(|e| {
+        Error::config(
+            "--image",
+            format!("cannot read archive {}: {}", path.display(), e),
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(Error::config(
+            "--image",
+            format!("{} is not a file", path.display()),
+        ));
+    }
+    if looks_like_dockerfile(path) {
+        return Err(Error::config(
+            "--image",
+            format!(
+                "{} looks like a Dockerfile, not an image.\n\
+                 smolvm boots images, it does not build them — build first, then \
+                 pass the result:\n  \
+                 docker build -t myapp . && docker save myapp | smolvm machine run --image - -- ...",
+                path.display()
+            ),
+        ));
+    }
+    if meta.len() > max_archive_bytes() {
+        return Err(too_large(meta.len()));
+    }
+    // Stage the file a symlink points at, not the link: a hardlink to a
+    // symlink is itself a symlink to a host path, which the guest cannot
+    // follow through the share.
+    let path = &path.canonicalize()?;
+    let hash = hash_file(path)?;
+    let archive_path = cache_base.join(&hash).join(ARCHIVE_FILE);
+    // A cache hit is trusted only if the staged file is still the size we just
+    // hashed. `link_or_copy` HARDLINKS the caller's archive when it can, so the
+    // cache entry and their file share an inode: a later in-place rewrite of
+    // that path — `docker save -o the-same-file.tar` truncates rather than
+    // replaces — mutates the cache too. The entry is keyed by content hash, so
+    // the damaged copy is then reused forever for that content, and every boot
+    // fails in the guest with a `manifest.json not found in tar` that points at
+    // the user's (valid) archive rather than at the cache. Re-stage instead.
+    let staged_len = std::fs::metadata(&archive_path).ok().map(|m| m.len());
+    if staged_len != Some(meta.len()) {
+        std::fs::create_dir_all(archive_path.parent().expect("hash dir has a parent"))?;
+        // Remove first: the stale entry may be a hardlink to the caller's file,
+        // and linking onto an existing path fails.
+        let _ = std::fs::remove_file(&archive_path);
+        link_or_copy(path, &archive_path)?;
+    }
+    Ok(hash)
+}
+
+/// Stream stdin to a temp file (hashing as we go), then place it at
+/// `cache/<hash>/`. Single-pass, so one write is unavoidable.
+fn stage_from_stdin(cache_base: &Path) -> Result<String> {
+    let mut tmp = tempfile::NamedTempFile::new_in(cache_base)?;
+    let mut hasher = Sha256::new();
+    let mut stdin = std::io::stdin().lock();
+    let mut buf = vec![0u8; COPY_CHUNK];
+    let mut total: u64 = 0;
+    loop {
+        let n = stdin.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > max_archive_bytes() {
+            return Err(too_large(total));
+        }
+        hasher.update(&buf[..n]);
+        tmp.write_all(&buf[..n])?;
+    }
+    tmp.flush()?;
+    let hash = hex::encode(hasher.finalize());
+    let archive_path = cache_base.join(&hash).join(ARCHIVE_FILE);
+    // Same validation as the file path: an entry staged earlier may have been
+    // truncated through a hardlink to the original archive, and reusing it
+    // would fail the boot with a misleading "manifest.json not found in tar".
+    if std::fs::metadata(&archive_path).is_ok_and(|m| m.len() == total) {
+        return Ok(hash); // already staged; the temp file is dropped/removed
+    }
+    let _ = std::fs::remove_file(&archive_path);
+    std::fs::create_dir_all(archive_path.parent().expect("hash dir has a parent"))?;
+    tmp.persist(&archive_path)
+        .map_err(|e| Error::storage("stage stdin archive", e.to_string()))?;
+    Ok(hash)
+}
+
+fn hash_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; COPY_CHUNK];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// Hardlink `src` into the cache, copying as a fallback across filesystems.
+fn link_or_copy(src: &Path, dst: &Path) -> Result<()> {
+    if std::fs::hard_link(src, dst).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(src, dst)?;
+    Ok(())
+}
+
+/// Reference prefixes produced by [`resolve`] for the two local-source kinds.
+const LOCAL_ARCHIVE_PREFIX: &str = "local:";
+const LOCAL_DIR_PREFIX: &str = "local-dir:";
+
+/// Whether a persisted image reference points at a local source (produced by
+/// [`resolve`]) rather than a registry.
+pub fn is_local_ref(reference: &str) -> bool {
+    reference.starts_with(LOCAL_ARCHIVE_PREFIX) || reference.starts_with(LOCAL_DIR_PREFIX)
+}
+
+/// Map a persisted `local:…`/`local-dir:…` reference back to the host directory
+/// to mount into the guest via virtiofs, so a later `start` re-resolves to the
+/// same source without re-staging. Returns `None` for a registry reference. The
+/// directory may be gone if the archive cache was pruned — `start` then fails
+/// with a clear "no such directory" rather than silently pulling.
+pub fn packed_layers_dir_for_ref(reference: &str) -> Option<PathBuf> {
+    if let Some(hash) = reference.strip_prefix(LOCAL_ARCHIVE_PREFIX) {
+        return archive_cache_base().ok().map(|base| base.join(hash));
+    }
+    reference.strip_prefix(LOCAL_DIR_PREFIX).map(PathBuf::from)
+}
+
+/// A scratch directory inside the archive cache, so an archive built there is
+/// staged by hardlink rather than copied.
+pub fn archive_staging_dir() -> Result<tempfile::TempDir> {
+    let base = archive_cache_base()?;
+    std::fs::create_dir_all(&base)?;
+    Ok(tempfile::TempDir::new_in(base)?)
+}
+
+/// The `local:` reference a host fetch keyed by `key` staged earlier, if its
+/// archive is still in the cache.
+pub fn fetched_archive(key: &str) -> Option<String> {
+    let reference = std::fs::read_to_string(archive_cache_base().ok()?.join(FETCHED_DIR).join(key))
+        .ok()?
+        .trim()
+        .to_string();
+    let dir = packed_layers_dir_for_ref(&reference)?;
+    dir.join(ARCHIVE_FILE).is_file().then_some(reference)
+}
+
+/// Remember that a host fetch keyed by `key` staged `reference`.
+pub fn record_fetched_archive(key: &str, reference: &str) -> Result<()> {
+    let dir = archive_cache_base()?.join(FETCHED_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let mut staged = tempfile::NamedTempFile::new_in(&dir)?;
+    staged.write_all(reference.as_bytes())?;
+    staged
+        .persist(dir.join(key))
+        .map_err(|e| Error::storage("image archive cache", e.to_string()))?;
+    Ok(())
+}
+
+/// Where [`record_fetched_archive`] keeps its index, beside the archives.
+const FETCHED_DIR: &str = "fetched";
+
+/// The cache key of a `local:` archive reference, or `None` for anything else
+/// (a `local-dir:` rootfs directory or a registry reference).
+pub fn local_archive_hash(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix(LOCAL_ARCHIVE_PREFIX)
+        .filter(|key| !key.is_empty() && !key.contains('/') && *key != "." && *key != "..")
+}
+
+/// The staged archive file a `local:` reference boots from.
+pub fn archive_file_for_ref(reference: &str) -> Option<PathBuf> {
+    local_archive_hash(reference)?;
+    packed_layers_dir_for_ref(reference).map(|dir| dir.join(ARCHIVE_FILE))
+}
+
+/// Size in bytes and modification time (whole seconds since the epoch) of a
+/// staged archive: what the guest keys its flattened copy of the image on.
+pub fn archive_signature(archive: &Path) -> Result<(u64, u64)> {
+    let meta = std::fs::metadata(archive)?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok((meta.len(), mtime))
+}
+
+/// Set a staged archive's modification time to `mtime` seconds since the epoch.
+pub fn set_archive_mtime(archive: &Path, mtime: u64) -> Result<()> {
+    std::fs::File::options()
+        .write(true)
+        .open(archive)?
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime))?;
+    Ok(())
+}
+
+/// A `local:` reference serving the same bytes as `reference` with
+/// modification time `mtime`.
+///
+/// The guest keys its flattened copy of an archive on size and modification
+/// time, so a restored guest must be served an archive with the times it read
+/// at capture or it flattens the image again under its running workload. When
+/// this host's copy has another time, a copy with the captured time is staged
+/// beside it (cache entries are shared, so the original is never touched).
+pub fn archive_with_mtime(reference: &str, mtime: u64) -> Result<String> {
+    archive_with_mtime_in(&archive_cache_base()?, reference, mtime)
+}
+
+fn archive_with_mtime_in(base: &Path, reference: &str, mtime: u64) -> Result<String> {
+    let key = local_archive_hash(reference).ok_or_else(|| {
+        Error::config(
+            "image archive cache",
+            format!("{reference} is not a staged image archive"),
+        )
+    })?;
+    let source = base.join(key).join(ARCHIVE_FILE);
+    let (size, current) = archive_signature(&source)?;
+    if current == mtime {
+        return Ok(reference.to_string());
+    }
+    let variant = format!("{key}-m{mtime}");
+    let dir = base.join(&variant);
+    let target = dir.join(ARCHIVE_FILE);
+    if archive_signature(&target).ok() == Some((size, mtime)) {
+        return Ok(format!("{LOCAL_ARCHIVE_PREFIX}{variant}"));
+    }
+    std::fs::create_dir_all(&dir)?;
+    let mut staged = tempfile::NamedTempFile::new_in(&dir)?;
+    std::io::copy(&mut std::fs::File::open(&source)?, staged.as_file_mut())?;
+    staged.as_file().sync_all()?;
+    staged
+        .as_file()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime))?;
+    // Readable by the per-machine uid that serves it, like any staged archive.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    }
+    staged
+        .persist(&target)
+        .map_err(|e| Error::storage("image archive cache", e.to_string()))?;
+    Ok(format!("{LOCAL_ARCHIVE_PREFIX}{variant}"))
+}
+
+fn archive_cache_base() -> Result<PathBuf> {
+    let base = dirs::cache_dir()
+        .ok_or_else(|| Error::storage("image archive cache", "no cache directory available"))?;
+    Ok(base.join("smolvm-image-archives"))
+}
+
+fn too_large(bytes: u64) -> Error {
+    let limit = max_archive_bytes();
+    Error::config(
+        "--image",
+        format!(
+            "image archive is {bytes} bytes, over the {limit}-byte limit. \
+             Raise it with --max-image-size (e.g. --max-image-size 16GiB) or the \
+             SMOLVM_MAX_IMAGE_BYTES env var if this is a legitimate large image."
+        ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_staged_archive_reference_has_an_archive_key() {
+        assert_eq!(local_archive_hash("local:abc"), Some("abc"));
+        assert_eq!(local_archive_hash("local-dir:/srv/rootfs"), None);
+        assert_eq!(local_archive_hash("alpine:3.20"), None);
+        assert_eq!(local_archive_hash("local:"), None);
+        assert_eq!(local_archive_hash("local:../escape"), None);
+    }
+
+    #[test]
+    fn an_archive_is_served_with_the_time_the_guest_read() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let dir = base.path().join("abc");
+        std::fs::create_dir_all(&dir).expect("archive dir");
+        let archive = dir.join(ARCHIVE_FILE);
+        std::fs::write(&archive, b"image bytes").expect("write archive");
+        set_archive_mtime(&archive, 1_000).expect("set mtime");
+
+        // The same time: the shared entry itself.
+        assert_eq!(
+            archive_with_mtime_in(base.path(), "local:abc", 1_000).unwrap(),
+            "local:abc"
+        );
+        // Another time: a copy beside it with that time, the original untouched.
+        let variant = archive_with_mtime_in(base.path(), "local:abc", 2_000).unwrap();
+        assert_eq!(variant, "local:abc-m2000");
+        let copy = base.path().join("abc-m2000").join(ARCHIVE_FILE);
+        assert_eq!(archive_signature(&copy).unwrap(), (11, 2_000));
+        assert_eq!(std::fs::read(&copy).unwrap(), b"image bytes");
+        assert_eq!(archive_signature(&archive).unwrap(), (11, 1_000));
+        // A second restore reuses the copy.
+        assert_eq!(
+            archive_with_mtime_in(base.path(), "local:abc", 2_000).unwrap(),
+            variant
+        );
+        assert!(archive_with_mtime_in(base.path(), "local-dir:/x", 1).is_err());
+    }
+
+    /// The staged copy is hardlinked to the caller's archive when the cache is
+    /// on the same filesystem, so truncating that file through its own path —
+    /// what `docker save -o same-file.tar` does — empties the cache entry too.
+    /// Keyed by content hash, the damaged entry would otherwise be reused for
+    /// that content forever, failing every boot with a `manifest.json not found
+    /// in tar` that blames the user's perfectly valid archive.
+    #[test]
+    fn a_truncated_cache_entry_is_restaged_rather_than_reused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&cache).expect("cache dir");
+        let archive = dir.path().join("image.tar");
+        std::fs::write(&archive, b"a valid archive's bytes").expect("write archive");
+
+        let hash = stage_from_file(&archive, &cache).expect("first stage");
+        let staged = cache.join(&hash).join(ARCHIVE_FILE);
+        assert_eq!(
+            std::fs::read(&staged).expect("staged"),
+            b"a valid archive's bytes"
+        );
+
+        // Truncate through the ORIGINAL path; the hardlinked cache entry follows.
+        std::fs::write(&archive, b"").expect("truncate");
+        std::fs::write(&archive, b"a valid archive's bytes").expect("rewrite");
+
+        let again = stage_from_file(&archive, &cache).expect("second stage");
+        assert_eq!(again, hash, "same content still hashes the same");
+        assert_eq!(
+            std::fs::read(cache.join(&again).join(ARCHIVE_FILE)).expect("restaged"),
+            b"a valid archive's bytes",
+            "a stale/short entry must be replaced, not trusted"
+        );
+    }
+
+    #[test]
+    fn an_intact_cache_entry_is_reused_without_recopying() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&cache).expect("cache dir");
+        let archive = dir.path().join("image.tar");
+        std::fs::write(&archive, b"stable bytes").expect("write archive");
+
+        let hash = stage_from_file(&archive, &cache).expect("first stage");
+        let staged = cache.join(&hash).join(ARCHIVE_FILE);
+        let before = std::fs::metadata(&staged)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        let again = stage_from_file(&archive, &cache).expect("second stage");
+        assert_eq!(again, hash);
+        let after = std::fs::metadata(&staged)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        assert_eq!(before, after, "an intact entry must not be re-staged");
+    }
+
+    #[test]
+    fn registry_refs_are_not_treated_as_local() {
+        for r in [
+            "alpine",
+            "alpine:3.20",
+            "ghcr.io/owner/repo",
+            "ghcr.io/owner/repo:v1",
+            "repo@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "localhost:5000/myimage:dev",
+        ] {
+            assert_eq!(classify(r), ImageSource::Registry(r.to_string()), "{r}");
+        }
+    }
+
+    #[test]
+    fn stdin_dash_is_an_archive() {
+        assert_eq!(classify("-"), ImageSource::Archive(ArchiveInput::Stdin));
+    }
+
+    #[test]
+    fn archive_extensions_and_paths_are_local_archives() {
+        // Suffix-based (bare name in cwd) — file need not exist to classify.
+        for a in ["image.tar", "image.tar.gz", "image.tgz"] {
+            assert_eq!(
+                classify(a),
+                ImageSource::Archive(ArchiveInput::File(PathBuf::from(a))),
+                "{a}"
+            );
+        }
+        // Explicit path prefixes, even without an archive extension.
+        for a in ["./img", "/abs/img.tar", "../up/img"] {
+            assert_eq!(
+                classify(a),
+                ImageSource::Archive(ArchiveInput::File(PathBuf::from(a))),
+                "{a}"
+            );
+        }
+    }
+
+    #[test]
+    fn dockerfiles_are_rejected_with_a_build_hint() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // By name: `Dockerfile` (any case) and `*.Dockerfile`.
+        for name in [
+            "Dockerfile",
+            "dockerfile",
+            "Containerfile",
+            "app.Dockerfile",
+        ] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"unreadable as a name test").unwrap();
+            assert!(looks_like_dockerfile(&p), "{name}");
+        }
+
+        // By content: a file not named Dockerfile but opening with FROM.
+        let by_content = dir.path().join("build-recipe");
+        std::fs::write(
+            &by_content,
+            b"# build\nFROM alpine:3.20\nRUN apk add curl\n",
+        )
+        .unwrap();
+        assert!(looks_like_dockerfile(&by_content));
+
+        // A binary archive must not be mistaken for a Dockerfile.
+        let archive = dir.path().join("image.bin");
+        std::fs::write(&archive, [0u8, 1, 2, 0xff, b'F', b'R', b'O', b'M']).unwrap();
+        assert!(!looks_like_dockerfile(&archive));
+
+        // And resolve surfaces the build-first hint, not a flatten failure.
+        let err = stage_from_file(&dir.path().join("Dockerfile"), dir.path()).unwrap_err();
+        assert!(err.to_string().contains("build"), "{err}");
+    }
+
+    #[test]
+    fn existing_directory_is_a_directory_source() {
+        let dir = tempfile::tempdir().unwrap();
+        // Reference it with an explicit path prefix so it reads as local.
+        let as_path = format!("{}/.", dir.path().display());
+        match classify(&as_path) {
+            ImageSource::Directory(p) => assert!(p.is_dir()),
+            other => panic!("expected Directory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_name_matching_a_cwd_file_still_resolves_to_registry() {
+        // A registry ref like `alpine` must not be hijacked by a same-named
+        // file: it isn't an explicit path and has no archive suffix.
+        assert_eq!(
+            classify("alpine"),
+            ImageSource::Registry("alpine".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_registry_passes_through() {
+        assert_eq!(
+            resolve(ImageSource::Registry("alpine".into())).unwrap(),
+            ResolvedImage::Registry("alpine".into())
+        );
+    }
+
+    #[test]
+    fn stage_from_file_hashes_and_dedupes() {
+        let cache = tempfile::tempdir().unwrap();
+        let src = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(src.path(), b"fake docker save archive").unwrap();
+
+        let h1 = stage_from_file(src.path(), cache.path()).unwrap();
+        let staged = cache.path().join(&h1).join(ARCHIVE_FILE);
+        assert!(staged.exists(), "archive staged at {}", staged.display());
+        assert_eq!(std::fs::read(&staged).unwrap(), b"fake docker save archive");
+
+        // Identical content → identical hash, idempotent (no error, reused).
+        let h2 = stage_from_file(src.path(), cache.path()).unwrap();
+        assert_eq!(h1, h2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_from_file_stages_the_file_behind_a_symlink() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("image.tar");
+        std::fs::write(&real, b"fake docker save archive").unwrap();
+        let link = dir.path().join("link.tar");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let hash = stage_from_file(&link, cache.path()).unwrap();
+        let staged = cache.path().join(&hash).join(ARCHIVE_FILE);
+        assert!(
+            std::fs::symlink_metadata(&staged).unwrap().is_file(),
+            "staged archive must be a regular file, not a link to the host path"
+        );
+        assert_eq!(std::fs::read(&staged).unwrap(), b"fake docker save archive");
+    }
+
+    #[test]
+    fn local_refs_round_trip_to_a_packed_layers_dir() {
+        assert!(is_local_ref("local:abc123"));
+        assert!(is_local_ref("local-dir:/srv/rootfs"));
+        assert!(!is_local_ref("alpine"));
+        assert!(!is_local_ref("ghcr.io/o/r:v1"));
+
+        // A dir ref maps straight back to the directory.
+        assert_eq!(
+            packed_layers_dir_for_ref("local-dir:/srv/rootfs"),
+            Some(PathBuf::from("/srv/rootfs"))
+        );
+        // An archive ref maps under the shared cache base, keyed by hash.
+        let dir = packed_layers_dir_for_ref("local:deadbeef").unwrap();
+        assert!(dir.ends_with("smolvm-image-archives/deadbeef"));
+        // Registry refs have no packed-layers dir.
+        assert_eq!(packed_layers_dir_for_ref("alpine"), None);
+    }
+
+    #[test]
+    fn resolve_directory_yields_local_with_the_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        match resolve_directory(dir.path()).unwrap() {
+            ResolvedImage::Local {
+                reference,
+                packed_layers_dir,
+            } => {
+                assert!(reference.starts_with("local-dir:"));
+                assert_eq!(packed_layers_dir, dir.path().canonicalize().unwrap());
+            }
+            other => panic!("expected Local, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    /// `file://` is not a scheme smolvm reads. It used to fall through to the
+    /// registry parser, which appended `:latest` to a `.tar` path and failed
+    /// with an unparseable-reference error that named neither the cause nor
+    /// the fix.
+    #[test]
+    fn a_file_scheme_is_rejected_with_the_real_syntax() {
+        match classify("file://D:/images/debian.tar") {
+            ImageSource::Unsupported { given, hint } => {
+                assert_eq!(given, "file://D:/images/debian.tar");
+                assert!(
+                    hint.contains("D:/images/debian.tar"),
+                    "hint names the bare path: {hint}"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+
+        let err = resolve(classify("file:///srv/x.tar")).expect_err("must not resolve");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file://") && msg.contains("/srv/x.tar"),
+            "{msg}"
+        );
+    }
+
+    /// A Windows absolute path is a local source whether or not it carries an
+    /// archive suffix; a registry reference never has a one-letter drive
+    /// prefix, so `repo:tag` and `host:5000/repo` are untouched.
+    #[test]
+    fn windows_drive_paths_are_local_and_references_are_not() {
+        for local in [
+            "D:/images/rootfs",
+            "C:\\Users\\me\\rootfs",
+            "D:/images/debian.tar",
+        ] {
+            assert!(
+                !matches!(classify(local), ImageSource::Registry(_)),
+                "{local} must be local"
+            );
+        }
+
+        // `ab:/x` has a two-letter "drive", `a:x` has no separator: neither is
+        // a Windows path, and both fall through as references as before.
+        for reference in [
+            "alpine",
+            "python:3.12",
+            "localhost:5000/repo:tag",
+            "ab:/x",
+            "a:x",
+        ] {
+            assert!(
+                matches!(classify(reference), ImageSource::Registry(_)),
+                "{reference} must be a registry reference"
+            );
+        }
+    }
+}

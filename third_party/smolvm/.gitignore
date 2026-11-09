@@ -1,0 +1,48 @@
+# Rust
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.so
+*.a
+# ...except the vendored runtime libs (else base libkrun.so/libkrunfw.so get
+# dropped, leaving dangling symlinks that break `hashFiles` in release CI).
+!lib/linux-x86_64/*.so
+!lib/linux-aarch64/*.so
+
+# Distribution build output
+/dist/smolvm-*/
+/dist/*.tar.gz
+
+# Nix/devshell artifacts
+/.direnv/
+/result
+/result-*
+
+# Bundled libraries are in the /lib (large binaries - download or build locally)
+# These are bundled into release tarballs by build-dist.sh
+
+# Agent rootfs is generated in target/ by build-agent-rootfs.sh
+
+# Local config
+.env
+.env.local
+
+# Test artifacts
+/tmp/
+*.log
+
+# smol machines artifacts
+*.smolmachine
+
+# Registry infrastructure (separate git repo)
+/smolmachines-registry/

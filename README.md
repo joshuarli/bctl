@@ -8,17 +8,28 @@ what an appliance image provides.
 
 ## Build
 
-Requirements: macOS on Apple Silicon, Xcode Command Line Tools, rustup,
-Node 26 with pnpm, Docker (OrbStack works), Homebrew's
-`libkrun/krun/virglrenderer-krun`, and `rustup target add --toolchain
+Requirements: macOS on Apple Silicon, Xcode Command Line Tools, rustup with the
+`nightly-2026-09-15` and `stable` toolchains, Node 26 with pnpm, Docker
+(OrbStack works), Homebrew's `libkrun/krun/virglrenderer-krun` with `libepoxy`
+and `molten-vk`, and `rustup target add --toolchain
 nightly-2026-09-15 aarch64-unknown-linux-musl`.
 
 ```sh
-runtime/build.sh                       # SmolVM with bctl's libkrun, into .work/runtime/smolvm
+runtime/build.sh                       # SmolVM, libkrun, libkrunfw and the guest agent, from source
 images/build.sh ref-alpine-chromium    # the reference appliance, into .work/images
 pnpm --dir web install && pnpm --dir web build   # the dashboard, embedded by the next step
 cargo build -p bctl
 ```
+
+The runtime is built from the SmolVM source vendored in `third_party/smolvm`,
+at the upstream default-branch tip pinned by `third_party/UPSTREAM.lock`, rather
+than from a release bundle. bctl patches and fixes that source, so it lives
+in-tree. [`docs/runtime.md`](docs/runtime.md) describes what is vendored, how
+the build is pinned, what it verifies, and how to refresh it
+(`scripts/update-smolvm.sh`).
+
+The kernel and the guest agent are built in a pinned Debian container, because
+this host is macOS.
 
 `bctl` keeps its state in `~/Library/Application Support/bctl` (or
 `$BCTL_HOME`). Put the runtime and images there:

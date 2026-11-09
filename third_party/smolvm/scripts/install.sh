@@ -1,0 +1,908 @@
+#!/usr/bin/env bash
+# smolvm installer
+#
+# CANONICAL SOURCE: scripts/install.sh in the smolvm repo
+# The website copy at smolmachines/static/install.sh (served at
+# https://smolmachines.com/install.sh) must be kept in sync.
+# After editing this file, copy it verbatim to smolmachines/static/install.sh.
+#
+# Usage:
+#   curl -sSL https://smolmachines.com/install.sh | bash
+#   curl -sSL https://smolmachines.com/install.sh | bash -s -- --version 0.1.1
+#   curl -sSL https://smolmachines.com/install.sh | bash -s -- --prefix /opt/smolvm
+#
+# Options:
+#   --version VERSION   Install specific version (default: latest)
+#   --prefix DIR        Install to DIR (default: ~/.smolvm, or /opt/smolvm as root on Linux)
+#   --no-modify-path    Don't modify shell profile
+#   --uninstall         Remove smolvm installation
+#   --help              Show this help message
+
+set -e
+
+# Configuration
+GITHUB_REPO="smol-machines/smolvm"
+INSTALL_PREFIX="${HOME}/.smolvm"
+BIN_DIR="${HOME}/.local/bin"
+MODIFY_PATH=true
+VERSION=""
+UNINSTALL=false
+PREFIX_SET=false
+# Root on Linux installs system-wide. `smolvm serve` run as root gives every VM
+# its own unprivileged uid, and those uids cannot read anything under /root
+# (mode 0700), so an install there boots no VM at all.
+SYSTEM_INSTALL=false
+
+# Colors (disabled if not a terminal)
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    BOLD='\033[1m'
+    NC='\033[0m' # No Color
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    BOLD=''
+    NC=''
+fi
+
+# Print functions
+info() {
+    echo -e "${BLUE}info:${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}success:${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}warning:${NC} $1"
+}
+
+error() {
+    echo -e "${RED}error:${NC} $1" >&2
+}
+
+# Detect platform
+detect_platform() {
+    local os arch
+
+    # Detect OS
+    case "$(uname -s)" in
+        Darwin)
+            os="darwin"
+            ;;
+        Linux)
+            os="linux"
+            ;;
+        *)
+            error "Unsupported operating system: $(uname -s)"
+            error "smolvm supports macOS and Linux only."
+            exit 1
+            ;;
+    esac
+
+    # Detect architecture
+    case "$(uname -m)" in
+        x86_64|amd64)
+            arch="x86_64"
+            ;;
+        aarch64|arm64)
+            arch="aarch64"
+            ;;
+        *)
+            error "Unsupported architecture: $(uname -m)"
+            error "smolvm supports x86_64 and arm64 only."
+            exit 1
+            ;;
+    esac
+
+    echo "${os}-${arch}"
+}
+
+# Check system requirements
+check_requirements() {
+    local platform="$1"
+
+    # Check for curl or wget
+    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        error "curl or wget is required to download smolvm."
+        exit 1
+    fi
+
+    # Check for tar
+    if ! command -v tar &> /dev/null; then
+        error "tar is required to extract smolvm."
+        exit 1
+    fi
+
+    # macOS-specific checks
+    if [[ "$platform" == darwin-* ]]; then
+        # Check macOS version (need 11.0+)
+        local macos_version
+        macos_version=$(sw_vers -productVersion 2>/dev/null || echo "0.0")
+        local major_version
+        major_version=$(echo "$macos_version" | cut -d. -f1)
+
+        if [[ "$major_version" -lt 11 ]]; then
+            error "smolvm requires macOS 11.0 or later (you have $macos_version)"
+            exit 1
+        fi
+    fi
+
+    # Linux-specific checks
+    if [[ "$platform" == linux-* ]]; then
+        # Check for KVM support
+        if [[ ! -e /dev/kvm ]]; then
+            warn "/dev/kvm not found. smolvm requires KVM support."
+            warn ""
+            warn "To enable KVM:"
+            warn "  1. Ensure virtualization is enabled in your BIOS/UEFI"
+            warn "  2. Load the KVM kernel module:"
+            warn "     sudo modprobe kvm"
+            warn "     sudo modprobe kvm_intel  # For Intel CPUs"
+            warn "     sudo modprobe kvm_amd    # For AMD CPUs"
+            warn ""
+            warn "For persistent loading, add to /etc/modules-load.d/kvm.conf:"
+            warn "     kvm"
+            warn "     kvm_intel  # or kvm_amd"
+        elif [[ ! -r /dev/kvm ]] || [[ ! -w /dev/kvm ]]; then
+            warn "Cannot access /dev/kvm (permission denied)."
+            warn ""
+            warn "Add your user to the 'kvm' group:"
+            warn "  sudo usermod -aG kvm $USER"
+            warn ""
+            warn "Then log out and log back in for the change to take effect."
+        else
+            info "KVM access verified"
+        fi
+    fi
+}
+
+# Get latest version from GitHub
+get_latest_version() {
+    local url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+    local body version
+
+    # Keep the body rather than piping straight into grep: on a rate-limit the
+    # API answers 200-or-403 with a JSON error object, and that object is the
+    # only thing that says which failure this is. `|| body=""` because `set -e`
+    # would otherwise kill the subshell before the diagnosis below can run.
+    if command -v curl &> /dev/null; then
+        body=$(curl -sSL "$url" 2>/dev/null) || body=""
+    else
+        body=$(wget -qO- "$url" 2>/dev/null) || body=""
+    fi
+
+    version=$(printf '%s' "$body" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/')
+
+    if [[ -n "$version" ]]; then
+        echo "$version"
+        return 0
+    fi
+
+    # No tag_name means the API did not hand us a release. Never guess one: the
+    # hardcoded fallback that used to live here published no Linux asset, so it
+    # 404'd there, and on macOS it silently installed *older* than what was
+    # already on the machine. Failing loudly is the only safe answer.
+    error "Could not determine the latest smolvm version from the GitHub API."
+    if printf '%s' "$body" | grep -q "rate limit exceeded"; then
+        error "GitHub is rate-limiting this machine, so the release lookup was refused."
+        error "Wait for the limit to reset, or install a specific version:"
+    else
+        error "No release information came back from $url"
+        error "Check network access to api.github.com, or install a specific version:"
+    fi
+    error "  curl -sSL https://smolmachines.com/install.sh | bash -s -- --version VERSION"
+    error "Released versions: https://github.com/${GITHUB_REPO}/releases"
+    exit 1
+}
+
+# Download file
+download() {
+    local url="$1"
+    local output="$2"
+
+    info "Downloading $url"
+
+    if command -v curl &> /dev/null; then
+        curl -fSL --progress-bar "$url" -o "$output"
+    else
+        wget --show-progress -q "$url" -O "$output"
+    fi
+}
+
+# Get download URL for a version and platform
+get_download_url() {
+    local version="$1"
+    local platform="$2"
+
+    # Convert platform format (darwin-aarch64 -> darwin-arm64 for compatibility)
+    local download_platform="$platform"
+    if [[ "$platform" == *-aarch64 ]]; then
+        download_platform="${platform/aarch64/arm64}"
+    fi
+
+    echo "https://github.com/${GITHUB_REPO}/releases/download/v${version}/smolvm-${version}-${download_platform}.tar.gz"
+}
+
+# Get checksum URL for a version and platform
+get_checksum_url() {
+    local version="$1"
+    echo "https://github.com/${GITHUB_REPO}/releases/download/v${version}/checksums.sha256"
+}
+
+# Verify file checksum
+verify_checksum() {
+    local file="$1"
+    local checksums_file="$2"
+    local filename
+    filename=$(basename "$file")
+
+    # Extract expected checksum for this file
+    local expected
+    expected=$(grep "$filename" "$checksums_file" 2>/dev/null | awk '{print $1}')
+
+    if [[ -z "$expected" ]]; then
+        warn "Checksum not found for $filename, skipping verification"
+        return 0
+    fi
+
+    # Calculate actual checksum
+    local actual
+    if command -v sha256sum &> /dev/null; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum &> /dev/null; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        warn "sha256sum/shasum not found, skipping checksum verification"
+        return 0
+    fi
+
+    if [[ "$expected" != "$actual" ]]; then
+        error "Checksum verification failed!"
+        error "  Expected: $expected"
+        error "  Actual:   $actual"
+        return 1
+    fi
+
+    info "Checksum verified"
+    return 0
+}
+
+# Decompressed size a zstd frame declares, without decompressing it and without
+# needing a zstd binary (macOS ships none). Reads the frame header: the
+# descriptor byte selects the width of the content-size field and whether a
+# window byte and a dictionary id sit in front of it.
+zstd_declared_size() {
+    local file="$1"
+    local -a b
+    read -r -a b <<< "$(od -A n -t u1 -N 18 -v "$file" | tr -s ' \n' ' ')"
+    [[ "${b[0]}" == 40 && "${b[1]}" == 181 && "${b[2]}" == 47 && "${b[3]}" == 253 ]] || return 1
+
+    local desc=${b[4]}
+    local fcs_flag=$(( (desc >> 6) & 3 ))
+    local single_segment=$(( (desc >> 5) & 1 ))
+    local did_flag=$(( desc & 3 ))
+
+    local fcs_size did_size
+    case "$fcs_flag" in
+        0) fcs_size=$(( single_segment == 1 ? 1 : 0 )) ;;
+        1) fcs_size=2 ;;
+        2) fcs_size=4 ;;
+        3) fcs_size=8 ;;
+    esac
+    case "$did_flag" in
+        0) did_size=0 ;; 1) did_size=1 ;; 2) did_size=2 ;; 3) did_size=4 ;;
+    esac
+    [[ "$fcs_size" -eq 0 ]] && return 1
+
+    local offset=$(( 5 + (single_segment == 1 ? 0 : 1) + did_size ))
+    local value=0 i
+    for (( i = fcs_size - 1; i >= 0; i-- )); do
+        value=$(( value * 256 + b[offset + i] ))
+    done
+    # A 2-byte field is stored biased by 256.
+    [[ "$fcs_size" -eq 2 ]] && value=$(( value + 256 ))
+    echo "$value"
+}
+
+# Fail the install unless the templates the runtime will look for are present
+# and will present their full virtual size.
+#
+# The runtime resolves `<name>` before `<name>.zst`, under ~/.smolvm and beside
+# the binary, and takes the instant copy-on-write boot path only when the
+# resolved template is at least the disk type's default size. `$prefix` is both
+# of those roots for an install: it is the default prefix, and it is the
+# directory the installed binary runs from. A compressed template is measured by
+# the size its frame declares, which is what expanding it produces.
+verify_disk_templates() {
+    local prefix="$1"
+    local spec name min_bytes resolved size
+    local failed=0
+
+    for spec in "storage-template.ext4:21474836480" "overlay-template.ext4:10737418240"; do
+        name="${spec%%:*}"
+        min_bytes="${spec##*:}"
+
+        if [[ -f "$prefix/$name" ]]; then
+            resolved="$prefix/$name"
+            size=$(wc -c < "$resolved" | tr -d ' ')
+        elif [[ -f "$prefix/$name.zst" ]]; then
+            resolved="$prefix/$name.zst"
+            if ! size=$(zstd_declared_size "$prefix/$name.zst"); then
+                error "$name.zst is not a readable zstd template"
+                failed=1
+                continue
+            fi
+        else
+            error "$name is missing from $prefix after install"
+            failed=1
+            continue
+        fi
+
+        if [[ "$size" -lt "$min_bytes" ]]; then
+            error "$(basename "$resolved") gives $size bytes, need at least $min_bytes"
+            failed=1
+        fi
+    done
+
+    if [[ "$failed" -ne 0 ]]; then
+        error "This release cannot serve 'pack create' or 'machine checkpoint' without a"
+        error "host mkfs.ext4, and fresh Linux boots would lose the fast disk path."
+        error "Please report this against the release; the install is incomplete."
+        return 1
+    fi
+}
+
+# Install smolvm
+install_smolvm() {
+    local version="$1"
+    local platform="$2"
+    local prefix="$3"
+
+    local url
+    url=$(get_download_url "$version" "$platform")
+    local checksums_url
+    checksums_url=$(get_checksum_url "$version")
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local archive_name
+    archive_name=$(basename "$url")
+    local archive="${tmp_dir}/${archive_name}"
+    local checksums="${tmp_dir}/checksums.sha256"
+
+    # Download archive
+    download "$url" "$archive" || {
+        error "Failed to download smolvm from $url"
+        error "Please check if version $version exists for platform $platform"
+        rm -rf "$tmp_dir"
+        exit 1
+    }
+
+    # Download and verify checksums (optional - don't fail if checksums unavailable)
+    if download "$checksums_url" "$checksums" 2>/dev/null; then
+        verify_checksum "$archive" "$checksums" || {
+            error "Archive failed checksum verification - aborting for security"
+            rm -rf "$tmp_dir"
+            exit 1
+        }
+    else
+        warn "Checksums not available for this release, skipping verification"
+    fi
+
+    # Extract
+    info "Extracting archive..."
+    # --no-same-owner: as root, tar would otherwise give every file the uid/gid
+    # stored in the archive (the release builder's), and `cp -a` below carries
+    # that owner into the installed agent-rootfs.
+    tar --no-same-owner -xzf "$archive" -C "$tmp_dir" || {
+        error "Failed to extract archive"
+        rm -rf "$tmp_dir"
+        exit 1
+    }
+
+    # Find extracted directory
+    local extracted_dir
+    extracted_dir=$(find "$tmp_dir" -maxdepth 1 -type d -name "smolvm-*" | head -1)
+
+    if [[ -z "$extracted_dir" ]]; then
+        error "Could not find extracted smolvm directory"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    # Safety: refuse to install to system directories
+    case "$prefix" in
+        /|/usr|/usr/*|/bin|/sbin|/lib|/lib64|/etc|/var|/opt|/tmp|/System|/System/*|/Library|/Library/*)
+            error "Refusing to install to system directory: $prefix"
+            error "Use a user-writable directory like ~/.smolvm (the default)"
+            rm -rf "$tmp_dir"
+            exit 1
+            ;;
+    esac
+
+    # Safety: warn if installing outside home directory. The system install
+    # chose /opt/smolvm itself, a directory only smolvm uses.
+    if [[ "$SYSTEM_INSTALL" != true ]] && [[ "$prefix" != "$HOME"* ]] && [[ "$prefix" != /tmp/* ]]; then
+        warn "Installing outside of home directory: $prefix"
+        warn "This will remove $prefix/lib/ and $prefix/smolvm if they exist."
+        if [ -t 0 ]; then
+            printf "Continue? [y/N] "
+            read -r REPLY
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                error "Aborted."
+                rm -rf "$tmp_dir"
+                exit 1
+            fi
+        else
+            error "Non-interactive install to non-home path. Aborting for safety."
+            error "Use --prefix with a path under \$HOME, or run interactively."
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+    fi
+
+    # Create installation directory
+    info "Installing to $prefix..."
+    mkdir -p "$prefix"
+
+    # Remove old smolvm installation files only (not arbitrary lib/ directories)
+    if [[ -d "$prefix/lib" ]] && [[ -f "$prefix/.version" ]]; then
+        # Only remove lib/ if this looks like an existing smolvm installation
+        rm -rf "$prefix/lib"
+    elif [[ -d "$prefix/lib" ]]; then
+        warn "$prefix/lib exists but no .version file found — skipping lib/ removal"
+        warn "If this is a previous smolvm install, remove it manually first"
+    fi
+    # An older layout bundled agent-rootfs next to the binary, and the wrapper
+    # prefers that copy over the one in the data directory. Upgrades refresh the
+    # data-dir copy but left this one in place, so a new binary kept booting a
+    # stale agent — which silently ignores request fields it does not know (a
+    # remote volume, say) rather than failing. Remove it so the wrapper falls
+    # through to the rootfs this install actually wrote.
+    if [[ -d "$prefix/agent-rootfs" ]] && [[ -f "$prefix/.version" ]]; then
+        rm -rf "$prefix/agent-rootfs"
+    elif [[ -d "$prefix/agent-rootfs" ]]; then
+        warn "$prefix/agent-rootfs exists but no .version file found — skipping removal"
+        warn "If this is a previous smolvm install, remove it manually first"
+    fi
+    if [[ -f "$prefix/smolvm" ]]; then
+        rm -f "$prefix/smolvm"
+    fi
+    if [[ -f "$prefix/smolvm-bin" ]]; then
+        rm -f "$prefix/smolvm-bin"
+    fi
+    if [[ -f "$prefix/smol" ]]; then
+        rm -f "$prefix/smol"
+    fi
+    if [[ -f "$prefix/smol-bin" ]]; then
+        rm -f "$prefix/smol-bin"
+    fi
+    if [[ -f "$prefix/smolvm-stub" ]]; then
+        rm -f "$prefix/smolvm-stub"
+    fi
+    if [[ -f "$prefix/storage-template.ext4" ]]; then
+        rm -f "$prefix/storage-template.ext4"
+    fi
+    if [[ -f "$prefix/storage-template.ext4.zst" ]]; then
+        rm -f "$prefix/storage-template.ext4.zst"
+    fi
+    if [[ -f "$prefix/overlay-template.ext4" ]]; then
+        rm -f "$prefix/overlay-template.ext4"
+    fi
+    if [[ -f "$prefix/overlay-template.ext4.zst" ]]; then
+        rm -f "$prefix/overlay-template.ext4.zst"
+    fi
+
+    # Copy files
+    cp -r "$extracted_dir/lib" "$prefix/"
+    cp "$extracted_dir/smolvm" "$prefix/"
+    cp "$extracted_dir/smolvm-bin" "$prefix/"
+    chmod +x "$prefix/smolvm"
+    chmod +x "$prefix/smolvm-bin"
+
+    # Copy the unified `smol` CLI if the distribution includes it. Older
+    # engine-only tarballs won't have it; newer ones ship both.
+    local has_smol=false
+    if [[ -f "$extracted_dir/smol" ]] && [[ -f "$extracted_dir/smol-bin" ]]; then
+        cp "$extracted_dir/smol" "$prefix/"
+        cp "$extracted_dir/smol-bin" "$prefix/"
+        chmod +x "$prefix/smol"
+        chmod +x "$prefix/smol-bin"
+        has_smol=true
+    fi
+
+    # Copy the Kubernetes runtime if the distribution includes it (Linux
+    # tarballs only; older ones won't have it). Without this the shim ships in
+    # the release but never reaches disk, so `runtimeClassName: smolvm` stays
+    # out of reach for anyone who installed with this script.
+    if [[ -f "$extracted_dir/containerd-shim-smolvm-v2" ]]; then
+        cp "$extracted_dir/containerd-shim-smolvm-v2" "$prefix/"
+        chmod +x "$prefix/containerd-shim-smolvm-v2"
+        if [[ -d "$extracted_dir/kubernetes" ]]; then
+            rm -rf "$prefix/kubernetes"
+            cp -r "$extracted_dir/kubernetes" "$prefix/"
+            chmod +x "$prefix/kubernetes/install-k8s-runtime.sh" 2>/dev/null || true
+        fi
+    fi
+
+    # Copy disk templates if present. Releases ship them zstd-compressed, and
+    # the runtime expands a `.zst` next to itself on first use, so either form
+    # is usable; prefer the compressed one the tarball actually carries.
+    if [[ -f "$extracted_dir/storage-template.ext4.zst" ]]; then
+        cp "$extracted_dir/storage-template.ext4.zst" "$prefix/"
+    elif [[ -f "$extracted_dir/storage-template.ext4" ]]; then
+        cp "$extracted_dir/storage-template.ext4" "$prefix/"
+    fi
+    if [[ -f "$extracted_dir/overlay-template.ext4.zst" ]]; then
+        cp "$extracted_dir/overlay-template.ext4.zst" "$prefix/"
+    elif [[ -f "$extracted_dir/overlay-template.ext4" ]]; then
+        cp "$extracted_dir/overlay-template.ext4" "$prefix/"
+    fi
+
+    # Size the disk templates to their default virtual size at install time, so
+    # the runtime boots fresh VMs from an instant qcow2 copy-on-write overlay
+    # (no per-boot template copy) instead of mutating a shared template lazily.
+    # The ext4 inside stays 512 MiB; the guest grows it with resize2fs at boot.
+    # Sparse, so it costs no real disk. Linux-only (the overlay path is gated to
+    # Linux) and needs `truncate` (GNU coreutils); skipped otherwise, in which
+    # case the runtime safely falls back to the copy path. The sizes mirror
+    # DEFAULT_STORAGE_SIZE_GIB (20) and DEFAULT_OVERLAY_SIZE_GIB (10).
+    if [[ "$(uname -s)" == "Linux" ]] && command -v truncate >/dev/null 2>&1; then
+        [[ -f "$prefix/storage-template.ext4" ]] && truncate -s 20G "$prefix/storage-template.ext4"
+        [[ -f "$prefix/overlay-template.ext4" ]] && truncate -s 10G "$prefix/overlay-template.ext4"
+    fi
+
+    # Templates are final here; nothing installed later touches them.
+    if ! verify_disk_templates "$prefix"; then
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    # Install agent-rootfs to data directory. A system install keeps it beside
+    # the binary, where the launcher script finds it, so it stays readable.
+    local data_dir
+    if [[ "$SYSTEM_INSTALL" == true ]]; then
+        data_dir="$prefix"
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
+        data_dir="$HOME/Library/Application Support/smolvm"
+    else
+        data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/smolvm"
+    fi
+
+    if [[ -d "$extracted_dir/agent-rootfs" ]]; then
+        info "Installing agent-rootfs to $data_dir..."
+        mkdir -p "$data_dir"
+        rm -rf "$data_dir/agent-rootfs"
+        # Use cp -a to preserve symlinks (busybox creates many symlinks)
+        cp -a "$extracted_dir/agent-rootfs" "$data_dir/"
+    else
+        warn "agent-rootfs not found in distribution - some features may not work"
+    fi
+
+    # Copy init.krun if present (Linux only, required by libkrunfw kernel)
+    if [[ -f "$extracted_dir/init.krun" ]]; then
+        info "Installing init.krun to $data_dir..."
+        cp "$extracted_dir/init.krun" "$data_dir/init.krun"
+        chmod +x "$data_dir/init.krun"
+    fi
+
+    # Store version info
+    echo "$version" > "$prefix/.version"
+
+    # Cleanup
+    rm -rf "$tmp_dir"
+
+    # macOS: files downloaded via curl carry a com.apple.quarantine attribute,
+    # and Gatekeeper will refuse to run the binaries (which call the hypervisor)
+    # until it's cleared. Strip it from the whole install tree, then check the
+    # code signature so we can warn clearly instead of failing cryptically.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        if command -v xattr &> /dev/null; then
+            xattr -dr com.apple.quarantine "$prefix" 2>/dev/null || true
+        fi
+        if command -v codesign &> /dev/null; then
+            local _sig_bin="$prefix/smolvm-bin"
+            [[ "$has_smol" == true ]] && _sig_bin="$prefix/smol-bin"
+            if ! codesign --verify --deep "$_sig_bin" 2>/dev/null; then
+                warn "The installed binary is not validly code-signed."
+                warn "It needs the com.apple.security.hypervisor entitlement to start VMs."
+            elif command -v spctl &> /dev/null && ! spctl --assess --type execute "$_sig_bin" &> /dev/null; then
+                warn "Binary is signed but not notarized by Apple."
+                warn "It will run (quarantine was cleared), but Gatekeeper may warn on first launch."
+            fi
+        fi
+    fi
+
+    # Everything a dropped VM uid loads must be readable and traversable by it.
+    # Only root may change it: the agent-rootfs holds the init every VM boots.
+    if [[ "$SYSTEM_INSTALL" == true ]]; then
+        chown -R 0:0 "$prefix"
+        chmod -R a+rX "$prefix"
+        # An earlier install under root's home would otherwise shadow this one
+        # through its ~/.local/bin symlink.
+        local old_link
+        for old_link in "$HOME/.local/bin/smolvm" "$HOME/.local/bin/smol"; do
+            if [[ -L "$old_link" && "$(readlink "$old_link")" == "$HOME/.smolvm/"* ]]; then
+                ln -sf "$prefix/$(basename "$old_link")" "$old_link"
+                info "Pointed $old_link at the system install"
+            fi
+        done
+    fi
+
+    # Create symlinks in bin directory. `smol` is the primary, user-facing CLI;
+    # `smolvm` remains available as the lower-level engine command.
+    mkdir -p "$BIN_DIR"
+    ln -sf "$prefix/smolvm" "$BIN_DIR/smolvm"
+    if [[ "$has_smol" == true ]]; then
+        ln -sf "$prefix/smol" "$BIN_DIR/smol"
+        success "smol $version installed to $prefix (also installed: smolvm)"
+    else
+        success "smolvm $version installed to $prefix"
+    fi
+}
+
+# Modify shell profile to add to PATH
+modify_path() {
+    local bin_dir="$1"
+    local profile=""
+    local export_line="export PATH=\"$bin_dir:\$PATH\""
+
+    # Determine shell profile
+    case "$SHELL" in
+        */zsh)
+            profile="$HOME/.zshrc"
+            ;;
+        */bash)
+            if [[ -f "$HOME/.bash_profile" ]]; then
+                profile="$HOME/.bash_profile"
+            else
+                profile="$HOME/.bashrc"
+            fi
+            ;;
+        */fish)
+            profile="$HOME/.config/fish/config.fish"
+            export_line="set -gx PATH $bin_dir \$PATH"
+            ;;
+        *)
+            profile="$HOME/.profile"
+            ;;
+    esac
+
+    # Check if already in PATH
+    if echo "$PATH" | grep -q "$bin_dir"; then
+        info "$bin_dir is already in PATH"
+        return
+    fi
+
+    # Check if already in profile
+    if [[ -f "$profile" ]] && grep -q "$bin_dir" "$profile" 2>/dev/null; then
+        info "PATH already configured in $profile"
+        return
+    fi
+
+    # Add to profile
+    info "Adding $bin_dir to PATH in $profile"
+    echo "" >> "$profile"
+    echo "# smolvm" >> "$profile"
+    echo "$export_line" >> "$profile"
+
+    warn "PATH updated. Run 'source $profile' or open a new terminal."
+}
+
+# Uninstall smolvm
+uninstall_smolvm() {
+    local prefix="$1"
+
+    info "Uninstalling smolvm..."
+
+    # Remove installation directory
+    if [[ -d "$prefix" ]]; then
+        rm -rf "$prefix"
+        success "Removed $prefix"
+    else
+        warn "Installation directory not found: $prefix"
+    fi
+
+    # Remove symlink
+    if [[ -L "$BIN_DIR/smolvm" ]]; then
+        rm -f "$BIN_DIR/smolvm"
+        success "Removed symlink $BIN_DIR/smolvm"
+    fi
+
+    # Remove data directory (agent-rootfs, storage)
+    local data_dir
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        data_dir="$HOME/Library/Application Support/smolvm"
+    else
+        data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/smolvm"
+    fi
+    if [[ -d "$data_dir" ]]; then
+        rm -rf "$data_dir"
+        success "Removed data directory $data_dir"
+    fi
+
+    # Remove cache directories
+    local cache_dir cache_pack_dir
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        cache_dir="$HOME/Library/Caches/smolvm"
+        cache_pack_dir="$HOME/Library/Caches/smolvm-pack"
+    else
+        cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/smolvm"
+        cache_pack_dir="${XDG_CACHE_HOME:-$HOME/.cache}/smolvm-pack"
+    fi
+    if [[ -d "$cache_dir" ]]; then
+        rm -rf "$cache_dir"
+        success "Removed cache directory $cache_dir"
+    fi
+    if [[ -d "$cache_pack_dir" ]]; then
+        # On macOS, detach any hdiutil-mounted case-sensitive volumes
+        # (layers-cs) before removing the directory. Without this, rm
+        # fails with "Resource busy" on active mount points.
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            find "$cache_pack_dir" -name layers-cs -type d -exec hdiutil detach {} -force \; 2>/dev/null || true
+        fi
+        rm -rf "$cache_pack_dir"
+        success "Removed pack cache directory $cache_pack_dir"
+    fi
+
+    # Remove libs extraction cache (from packed binary SMOLLIBS)
+    local cache_libs_dir
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        cache_libs_dir="$HOME/Library/Caches/smolvm-libs"
+    else
+        cache_libs_dir="${XDG_CACHE_HOME:-$HOME/.cache}/smolvm-libs"
+    fi
+    if [[ -d "$cache_libs_dir" ]]; then
+        rm -rf "$cache_libs_dir"
+        success "Removed libs cache directory $cache_libs_dir"
+    fi
+
+    # Note about remaining files
+    warn "You may want to remove the PATH entry from your shell profile."
+    local config_dir="$HOME/.config/smolvm"
+    if [[ -d "$config_dir" ]]; then
+        warn "Registry credentials preserved at $config_dir"
+        warn "Remove manually if no longer needed: rm -rf $config_dir"
+    fi
+
+    success "smolvm has been uninstalled"
+}
+
+# Print usage
+usage() {
+    cat << EOF
+smolvm installer
+
+Usage:
+    install.sh [OPTIONS]
+
+Options:
+    --version VERSION   Install specific version (default: latest)
+    --prefix DIR        Install to DIR (default: ~/.smolvm)
+    --no-modify-path    Don't modify shell profile
+    --uninstall         Remove smolvm installation
+    --help              Show this help message
+
+Examples:
+    # Install latest version
+    curl -sSL https://smolmachines.com/install.sh | bash
+
+    # Install specific version
+    curl -sSL https://smolmachines.com/install.sh | bash -s -- --version 0.1.1
+
+    # Install to custom directory
+    curl -sSL https://smolmachines.com/install.sh | bash -s -- --prefix /opt/smolvm
+
+    # Uninstall
+    curl -sSL https://smolmachines.com/install.sh | bash -s -- --uninstall
+EOF
+}
+
+# Parse arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)
+                VERSION="$2"
+                shift 2
+                ;;
+            --prefix)
+                INSTALL_PREFIX="$2"
+                PREFIX_SET=true
+                shift 2
+                ;;
+            --no-modify-path)
+                MODIFY_PATH=false
+                shift
+                ;;
+            --uninstall)
+                UNINSTALL=true
+                shift
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# Main
+main() {
+    parse_args "$@"
+
+    if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" && "$PREFIX_SET" == false ]]; then
+        SYSTEM_INSTALL=true
+        INSTALL_PREFIX="/opt/smolvm"
+        BIN_DIR="/usr/local/bin"
+        MODIFY_PATH=false
+    fi
+
+    echo ""
+    echo -e "${BOLD}smolvm installer${NC}"
+    echo ""
+
+    # Handle uninstall
+    if [[ "$UNINSTALL" == true ]]; then
+        uninstall_smolvm "$INSTALL_PREFIX"
+        exit 0
+    fi
+
+    # Detect platform
+    local platform
+    platform=$(detect_platform)
+    info "Detected platform: $platform"
+
+    # Check requirements
+    check_requirements "$platform"
+
+    # Get version
+    if [[ -z "$VERSION" ]]; then
+        info "Fetching latest version..."
+        VERSION=$(get_latest_version)
+    fi
+    info "Installing version: $VERSION"
+
+    # Check for existing installation
+    if [[ -f "$INSTALL_PREFIX/.version" ]]; then
+        local current_version
+        current_version=$(cat "$INSTALL_PREFIX/.version")
+        if [[ "$current_version" == "$VERSION" ]]; then
+            info "Reinstalling smolvm $VERSION..."
+        else
+            info "Upgrading from $current_version to $VERSION"
+        fi
+    fi
+
+    # Install
+    install_smolvm "$VERSION" "$platform" "$INSTALL_PREFIX"
+
+    # Modify PATH
+    if [[ "$MODIFY_PATH" == true ]]; then
+        modify_path "$BIN_DIR"
+    fi
+
+    echo ""
+    echo -e "${GREEN}Installation complete!${NC}"
+    echo ""
+    echo "To get started, run:"
+    echo ""
+    if ! echo "$PATH" | grep -q "$BIN_DIR"; then
+        echo "    export PATH=\"$BIN_DIR:\$PATH\""
+    fi
+    echo "    smolvm --help"
+    echo ""
+}
+
+main "$@"

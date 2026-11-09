@@ -1,0 +1,2804 @@
+//! OCI Distribution Spec HTTP client.
+//!
+//! Implements the subset of the OCI Distribution Spec needed for
+//! single-blob artifact push and pull:
+//! - Blob existence check (HEAD)
+//! - Monolithic blob upload (POST + PUT)
+//! - Blob download (GET)
+//! - Manifest put/get (PUT/GET)
+
+use crate::{OciIndex, OciPlatform, RegistryError, Result, INDEX_MEDIA_TYPE, MANIFEST_MEDIA_TYPE};
+use reqwest::header::{
+    ACCEPT, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, LINK, LOCATION, RANGE, WWW_AUTHENTICATE,
+};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::token_store;
+
+/// Every manifest type an image pull understands, OCI and Docker. A registry
+/// matches its answer to this list, and `distribution` (the stock self-hosted
+/// registry) given only the OCI types downgrades a Docker-pushed image to the
+/// legacy schema 1 manifest, which has no config and cannot be pulled.
+const IMAGE_MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
+     application/vnd.oci.image.manifest.v1+json, \
+     application/vnd.docker.distribution.manifest.list.v2+json, \
+     application/vnd.docker.distribution.manifest.v2+json";
+
+/// Maximum bytes buffered in memory for a manifest / image-index document.
+/// A hostile or MITM'd registry could otherwise stream a multi-GB (or endless)
+/// body that the client buffers entirely BEFORE the digest is checked, OOMing
+/// the host. 32 MiB is far above any real OCI manifest (a few KB).
+const MAX_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum bytes buffered in memory for a `pull_blob` response. `pull_blob` is
+/// used only for small blobs (the OCI image config, a few KB); large layers use
+/// [`RegistryClient::pull_blob_stream`], which streams to disk. 64 MiB is a
+/// generous ceiling that still bounds the in-memory buffer.
+const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
+
+/// How long to wait for a connection to the registry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a response may go without delivering any bytes.
+///
+/// This is a gap-between-reads deadline, NOT a deadline on the whole transfer,
+/// which is the distinction that matters for a multi-hundred-megabyte layer: a
+/// slow-but-progressing download runs as long as it needs, while a registry that
+/// accepts the connection and then goes silent fails in seconds. A whole-request
+/// `timeout()` cannot be used here — it would abort large healthy pulls. Without
+/// either one, a half-open connection parks the caller forever: the request task
+/// never wakes, and enough of them turn a node into one that accepts creates and
+/// completes none.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Floor for the whole-request deadline on upload steps, covering the server's
+/// post-body work (committing a blob to backing storage can take a minute).
+const UPLOAD_TIMEOUT_FLOOR: Duration = Duration::from_secs(300);
+
+/// Minimum sustained upload rate assumed when sizing an upload deadline.
+///
+/// Anything slower than this on a multi-gigabyte blob is indistinguishable from
+/// a stalled connection; the deadline exists as a runaway bound, not a pace car.
+const UPLOAD_MIN_RATE: u64 = 256 * 1024;
+
+/// Chunk size for the chunked-upload fallback (see
+/// [`RegistryClient::push_blob_file`]).
+///
+/// Small enough that one chunk transmits well inside a registry's ~60 s
+/// body-read deadline even at [`UPLOAD_MIN_RATE`] (8 MiB / 256 KiB/s = 32 s),
+/// uniform per chunk with only the final one short — the shape S3-compatible
+/// multipart backends require.
+const FALLBACK_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Use the host's installed roots alongside the bundled public roots. When a
+/// caller explicitly supplies the same bundle used by `--trust-host-certs`,
+/// add its certificates to both registry and auth-service requests as well.
+fn registry_tls(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let path = std::env::var_os("SMOLVM_HOST_CA_BUNDLE");
+    registry_tls_with_bundle(builder, path.as_deref().map(std::path::Path::new))
+}
+
+fn registry_tls_with_bundle(
+    mut builder: reqwest::ClientBuilder,
+    bundle: Option<&std::path::Path>,
+) -> reqwest::ClientBuilder {
+    let roots = native_roots();
+    if !roots.is_empty() {
+        builder = builder.tls_built_in_native_certs(false);
+        for cert in roots {
+            builder = builder.add_root_certificate(cert.clone());
+        }
+    }
+    if let Some(path) = bundle {
+        match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|pem| reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| e.to_string()))
+        {
+            Ok(certs) if !certs.is_empty() => {
+                for cert in certs {
+                    builder = builder.add_root_certificate(cert);
+                }
+            }
+            result => tracing::warn!(
+                path = %path.display(),
+                error = ?result.err(),
+                "cannot load explicit host CA bundle for registry requests"
+            ),
+        }
+    }
+    builder
+}
+
+/// The host's native root certificates, loaded once per process.
+///
+/// reqwest reloads the native store for every client it builds, and on macOS
+/// that goes through the keychain and takes 120 to 150 ms. A `RegistryClient`
+/// builds two clients, so every run that talks to a registry paid for two
+/// loads. Certificates rustls cannot parse are dropped, as reqwest's own loader
+/// does. An empty result leaves reqwest to load the store itself.
+fn native_roots() -> &'static [reqwest::Certificate] {
+    static ROOTS: OnceLock<Vec<reqwest::Certificate>> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        let mut store = rustls::RootCertStore::empty();
+        rustls_native_certs::load_native_certs()
+            .certs
+            .into_iter()
+            .filter(|cert| store.add(cert.clone()).is_ok())
+            .filter_map(|cert| reqwest::Certificate::from_der(cert.as_ref()).ok())
+            .collect()
+    })
+}
+
+/// The shared HTTP client for every registry request, with the deadlines above.
+fn http_client() -> reqwest::Client {
+    registry_tls(reqwest::Client::builder())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        // A builder failure here means no TLS backend; the default client at
+        // least keeps the caller working (timeouts are the thing lost).
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// The client for requests that UPLOAD a body: no `read_timeout`.
+///
+/// `read_timeout` is a gap-between-reads deadline, and an upload produces no
+/// readable bytes until the server has consumed the whole body AND finished
+/// committing it — for a multi-gigabyte blob that silence easily exceeds any
+/// sane read gap, so the shared client kills every large push mid-body ("error
+/// sending request"). Uploads instead get a whole-request deadline scaled to
+/// the body size (see [`RegistryClient::upload_request`]), which bounds a
+/// stalled transfer without capping a slow-but-progressing one.
+fn upload_http_client() -> reqwest::Client {
+    registry_tls(reqwest::Client::builder())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Buffer a response body into memory, refusing to read more than `cap` bytes.
+///
+/// Guards against an unbounded body: it rejects on a too-large `Content-Length`
+/// up front (cheap), then streams chunk-by-chunk and errors the moment the
+/// accumulated size would exceed `cap` — so a lying or absent `Content-Length`
+/// can't get past the cap either. This runs BEFORE any digest computation, so
+/// the host never buffers an unbounded body first.
+async fn read_body_capped(mut resp: reqwest::Response, cap: usize, what: &str) -> Result<Vec<u8>> {
+    if let Some(len) = resp.content_length() {
+        if len > cap as u64 {
+            return Err(RegistryError::ResponseTooLarge {
+                what: what.to_string(),
+                limit: cap,
+            });
+        }
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len().saturating_add(chunk.len()) > cap {
+            return Err(RegistryError::ResponseTooLarge {
+                what: what.to_string(),
+                limit: cap,
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// Validate that a digest string matches the expected `sha256:<64 hex chars>` format.
+///
+/// Public so callers that build a filesystem path (e.g. the serve-side P2P blob
+/// handler) can reject a malformed, path-traversing digest at their boundary,
+/// exactly as `pull` does before touching the cache.
+pub fn validate_digest(digest: &str) -> Result<()> {
+    if let Some(hex_part) = digest.strip_prefix("sha256:") {
+        if hex_part.len() == 64 && hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(());
+        }
+    }
+    Err(RegistryError::InvalidManifest(format!(
+        "invalid digest format: {digest}"
+    )))
+}
+
+/// HTTP client for an OCI Distribution registry.
+pub struct RegistryClient {
+    http: reqwest::Client,
+    /// Separate client for body-bearing upload steps (no read timeout — see
+    /// [`upload_http_client`]).
+    upload_http: reqwest::Client,
+    /// Base URL including scheme (e.g., "http://localhost:5000" or "https://registry.smolmachines.com").
+    base_url: String,
+    /// Optional Bearer token sent directly to the registry for authenticated requests.
+    auth_token: Option<String>,
+    /// Optional identity token exchanged with a registry token service after
+    /// a `WWW-Authenticate: Bearer ...` challenge.
+    /// Used for smolmachines registries (Auth0 JWT → token service → OCI bearer).
+    identity_token: Option<String>,
+    /// Optional Basic credentials (username, password) exchanged with the registry's
+    /// own auth service after a `WWW-Authenticate: Bearer ...` challenge.
+    /// Used for Docker Hub, GHCR, ECR, GCR, and any standard OCI registry.
+    basic_credentials: Option<(String, String)>,
+    token_cache: Mutex<HashMap<TokenCacheKey, CachedToken>>,
+    /// The most recent Bearer challenge received from this registry.
+    ///
+    /// Stored after each successful challenge exchange so that subsequent
+    /// requests can attach a preemptive bearer token (cache hit → no 401 round
+    /// trip). This is especially important for non-replayable streaming uploads,
+    /// where a 401 on the PUT body cannot be retried.
+    last_challenge: Mutex<Option<BearerChallenge>>,
+}
+
+impl RegistryClient {
+    /// Create a new client for the given registry base URL.
+    pub fn new(base_url: String) -> Self {
+        Self {
+            http: http_client(),
+            upload_http: upload_http_client(),
+            base_url,
+            auth_token: None,
+            identity_token: None,
+            basic_credentials: None,
+            token_cache: Mutex::new(HashMap::new()),
+            last_challenge: Mutex::new(None),
+        }
+    }
+
+    /// Return the base URL this client is configured for.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Return the identity token, if one was configured via [`Self::with_identity_token`].
+    ///
+    /// Useful for inspecting whether the client is in upstream token-exchange mode
+    /// (identity token path) vs direct bearer mode.
+    pub fn identity_token(&self) -> Option<&str> {
+        self.identity_token.as_deref()
+    }
+
+    /// Set a Bearer token for authenticated requests.
+    pub fn with_token(mut self, token: String) -> Self {
+        self.auth_token = Some(token);
+        self
+    }
+
+    /// Set an identity token used only to fetch OCI bearer tokens from a
+    /// registry token service. This token is not sent directly to the registry.
+    pub fn with_identity_token(mut self, token: String) -> Self {
+        self.identity_token = Some(token);
+        self
+    }
+
+    /// Set Basic credentials for standard Docker/OCI registry Bearer challenge auth.
+    ///
+    /// These credentials are sent to the registry's own token endpoint when the
+    /// registry returns `WWW-Authenticate: Bearer ...`. The resulting short-lived
+    /// OCI bearer token is then used for the actual registry request.
+    ///
+    /// This is the standard path for Docker Hub, GHCR, ECR, GCR/Artifact Registry,
+    /// ACR, Harbor, Quay, and any OCI-compliant registry.
+    pub fn with_basic_credentials(mut self, username: String, password: String) -> Self {
+        self.basic_credentials = Some((username, password));
+        self
+    }
+
+    /// Return the Basic credentials, if configured via [`Self::with_basic_credentials`].
+    pub fn basic_credentials(&self) -> Option<(&str, &str)> {
+        self.basic_credentials
+            .as_ref()
+            .map(|(u, p)| (u.as_str(), p.as_str()))
+    }
+
+    /// Check connectivity: `GET /v2/` must return 200.
+    pub async fn ping(&self) -> Result<()> {
+        let url = format!("{}/v2/", self.base_url);
+        let resp = self
+            .send_replayable(self.request(reqwest::Method::GET, &url))
+            .await?;
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Check if a blob exists. Returns true if HEAD returns 200.
+    pub async fn blob_exists(&self, repo: &str, digest: &str) -> Result<bool> {
+        validate_digest(digest)?;
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repo, digest);
+        let resp = self
+            .send_replayable(self.request(reqwest::Method::HEAD, &url))
+            .await?;
+        Ok(resp.status() == reqwest::StatusCode::OK)
+    }
+
+    /// Upload a blob using monolithic upload (POST + PUT).
+    ///
+    /// Returns the sha256 digest of the uploaded blob.
+    pub async fn push_blob(&self, repo: &str, data: &[u8]) -> Result<String> {
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(data)));
+
+        // Check if already present (skip upload).
+        if self.blob_exists(repo, &digest).await? {
+            tracing::debug!(digest = %digest, "blob already exists, skipping upload");
+            return Ok(digest);
+        }
+
+        // Step 1: POST to initiate upload.
+        let post_url = format!("{}/v2/{}/blobs/uploads/", self.base_url, repo);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::POST, &post_url)
+                    .header(CONTENT_LENGTH, 0),
+            )
+            .await?;
+
+        if resp.status() != reqwest::StatusCode::ACCEPTED {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        // Get the upload URL from Location header.
+        let location = resp
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| RegistryError::ApiError {
+                status: 202,
+                body: "upload accepted but missing Location header".into(),
+            })?
+            .to_string();
+
+        // Resolve Location — validates same-origin for absolute URLs.
+        let put_url = self.resolve_location(&location)?;
+
+        // Step 2: PUT the blob data with digest.
+        let separator = if put_url.contains('?') { "&" } else { "?" };
+        let put_url = format!("{}{}digest={}", put_url, separator, digest);
+
+        let resp = self
+            .send_replayable(
+                self.upload_request(reqwest::Method::PUT, &put_url, data.len() as u64)
+                    .header(CONTENT_TYPE, "application/octet-stream")
+                    .header(CONTENT_LENGTH, data.len())
+                    .body(data.to_vec()),
+            )
+            .await?;
+
+        if resp.status() != reqwest::StatusCode::CREATED {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        Ok(digest)
+    }
+
+    /// Download a blob by digest. Returns the raw bytes.
+    ///
+    /// NOTE: buffers entire blob in memory. For large artifacts, switch to
+    /// streaming to disk with digest verification via `AsyncRead`.
+    pub async fn pull_blob(&self, repo: &str, digest: &str) -> Result<Vec<u8>> {
+        validate_digest(digest)?;
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repo, digest);
+        let resp = self
+            .send_replayable(self.request(reqwest::Method::GET, &url))
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(digest.to_string()));
+        }
+
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        // Cap the in-memory buffer BEFORE hashing so a hostile registry can't
+        // OOM the host by streaming an unbounded body ahead of the digest check.
+        let data = read_body_capped(resp, MAX_BLOB_BYTES, "blob").await?;
+
+        // Verify digest.
+        let actual = format!("sha256:{}", hex::encode(Sha256::digest(&data)));
+        if actual != digest {
+            return Err(RegistryError::DigestMismatch {
+                expected: digest.to_string(),
+                actual,
+            });
+        }
+
+        Ok(data)
+    }
+
+    /// Upload a blob from a streamed body with a pre-computed digest.
+    ///
+    /// Unlike `push_blob`, this does not buffer the entire blob in memory.
+    /// The caller pre-computes the digest and provides a **body factory** that
+    /// can produce a fresh `reqwest::Body` on each call. The factory may be
+    /// called up to 3 times (initial attempt + 2 auth retries), so it must be
+    /// able to reopen or rewind the source (e.g., reopen the file).
+    ///
+    /// The PUT request is routed through [`send_nonreplayable`], which guarantees
+    /// that a 401 challenge is always handled correctly: the factory produces a
+    /// fresh body for each retry, so no data is lost regardless of whether the
+    /// preemptive token cache held the right scope.
+    pub async fn push_blob_stream<F>(
+        &self,
+        repo: &str,
+        digest: &str,
+        size: u64,
+        make_body: F,
+    ) -> Result<()>
+    where
+        F: Fn() -> Result<reqwest::Body>,
+    {
+        validate_digest(digest)?;
+
+        // Skip if already present.
+        if self.blob_exists(repo, digest).await? {
+            tracing::debug!(digest = %digest, "blob already exists, skipping upload");
+            return Ok(());
+        }
+
+        // Step 1: POST to initiate upload (empty body — always replayable).
+        let post_url = format!("{}/v2/{}/blobs/uploads/", self.base_url, repo);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::POST, &post_url)
+                    .header(CONTENT_LENGTH, 0),
+            )
+            .await?;
+
+        if resp.status() != reqwest::StatusCode::ACCEPTED {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let location = resp
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| RegistryError::ApiError {
+                status: 202,
+                body: "upload accepted but missing Location header".into(),
+            })?
+            .to_string();
+
+        // Resolve Location — validates same origin for absolute URLs.
+        let put_url = self.resolve_location(&location)?;
+        let separator = if put_url.contains('?') { "&" } else { "?" };
+        let put_url = format!("{}{}digest={}", put_url, separator, digest);
+
+        // Step 2: PUT with streaming body via factory.
+        // Content-Length is set explicitly — reqwest defaults to chunked transfer
+        // encoding for streamed bodies, which some registries reject.
+        // The factory is called once per attempt (preemptive + up to 2 retries).
+        let base_req = self
+            .upload_request(reqwest::Method::PUT, &put_url, size)
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .header(CONTENT_LENGTH, size);
+
+        let resp = self.send_nonreplayable(base_req, make_body).await?;
+
+        if resp.status() != reqwest::StatusCode::CREATED {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Upload a blob from a file, monolithically first, falling back to OCI
+    /// **chunked** mode when the single-request upload is rejected.
+    ///
+    /// The monolithic PUT is one request carrying the whole blob, which some
+    /// registry stacks cannot accept for large blobs: a proxy may cap the body
+    /// (413), and a registry may enforce a deadline on receiving the request
+    /// body — zot cuts the connection ~60 s in, so any blob that takes longer
+    /// than that to transmit can NEVER go through in one request, regardless of
+    /// client patience. Chunked mode keeps every request small enough to finish
+    /// well inside any such window.
+    ///
+    /// The fallback triggers on transport errors and 5xx/413 — responses that
+    /// say "this request couldn't be carried", not "you may not do this"
+    /// (auth and 4xx client errors fail fast; retrying those differently
+    /// cannot help).
+    pub async fn push_blob_file(
+        &self,
+        repo: &str,
+        digest: &str,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let size = tokio::fs::metadata(path).await?.len();
+        let stream_path = path.to_path_buf();
+        let attempt = self
+            .push_blob_stream(repo, digest, size, move || {
+                let file = std::fs::File::open(&stream_path).map_err(RegistryError::from)?;
+                let async_file = tokio::fs::File::from_std(file);
+                let stream = tokio_util::io::ReaderStream::with_capacity(async_file, 256 * 1024);
+                Ok(reqwest::Body::wrap_stream(stream))
+            })
+            .await;
+
+        match attempt {
+            Ok(()) => Ok(()),
+            Err(
+                e @ (RegistryError::Http(_)
+                | RegistryError::ApiError {
+                    status: 500..=599 | 413,
+                    ..
+                }),
+            ) => {
+                tracing::warn!(
+                    digest = %digest,
+                    size,
+                    error = %e,
+                    "monolithic blob upload rejected; retrying as a chunked upload"
+                );
+                self.push_blob_chunked(repo, digest, path, FALLBACK_CHUNK_SIZE)
+                    .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Upload a blob in OCI **chunked** mode: POST to open a session, one PATCH
+    /// per chunk (`Content-Range: <start>-<end>`), then a final PUT carrying the
+    /// whole-blob digest.
+    ///
+    /// Why this exists: a monolithic PUT sends the entire blob as one request
+    /// body, which a proxy in front of the registry can reject — Cloudflare 413s
+    /// a multi-hundred-MB upload. Chunking keeps every request under that cap.
+    ///
+    /// Each chunk is read into a buffered `Vec<u8>` (≤ `chunk_size`) and sent via
+    /// [`send_replayable`], so every PATCH goes through the full auth path. That
+    /// matters for large blobs: the OCI access token is short-lived (~5 min), and
+    /// a multi-chunk upload can outlive it — per-chunk auth lets each request
+    /// refresh the token instead of failing partway through.
+    ///
+    /// Reads from `path` rather than a body factory because chunking requires
+    /// positioned reads, and reopening the file per attempt would not compose
+    /// with the per-chunk retry.
+    pub async fn push_blob_chunked(
+        &self,
+        repo: &str,
+        digest: &str,
+        path: &std::path::Path,
+        chunk_size: usize,
+    ) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        validate_digest(digest)?;
+
+        if self.blob_exists(repo, digest).await? {
+            tracing::debug!(digest = %digest, "blob already exists, skipping upload");
+            return Ok(());
+        }
+
+        // Step 1: POST to open an upload session (empty body — replayable).
+        let post_url = format!("{}/v2/{}/blobs/uploads/", self.base_url, repo);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::POST, &post_url)
+                    .header(CONTENT_LENGTH, 0),
+            )
+            .await?;
+        if resp.status() != reqwest::StatusCode::ACCEPTED {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+        let mut location = self.upload_location(&resp)?;
+
+        // Step 2: PATCH contiguous chunks. The registry hands back a fresh upload
+        // URL after each chunk; the next PATCH must target it.
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut buf = vec![0u8; chunk_size.max(1)];
+        let mut offset: u64 = 0;
+        loop {
+            // read() may return short — fill the chunk so all but the last are full.
+            let mut filled = 0;
+            while filled < buf.len() {
+                let n = file.read(&mut buf[filled..]).await?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            if filled == 0 {
+                break;
+            }
+            let start = offset;
+            let end = offset + filled as u64 - 1;
+            let resp = self
+                .send_replayable(
+                    self.upload_request(reqwest::Method::PATCH, &location, filled as u64)
+                        .header(CONTENT_TYPE, "application/octet-stream")
+                        .header(CONTENT_RANGE, format!("{start}-{end}"))
+                        .header(CONTENT_LENGTH, filled)
+                        .body(buf[..filled].to_vec()),
+                )
+                .await?;
+            if resp.status() != reqwest::StatusCode::ACCEPTED {
+                return Err(RegistryError::ApiError {
+                    status: resp.status().as_u16(),
+                    body: resp.text().await.unwrap_or_default(),
+                });
+            }
+            location = self.upload_location(&resp)?;
+            offset += filled as u64;
+        }
+
+        // Step 3: PUT (empty body) to close the session, carrying the digest.
+        // The body is empty but the server commits the WHOLE blob before
+        // responding, so the deadline is sized to the full blob, not the body.
+        let separator = if location.contains('?') { "&" } else { "?" };
+        let put_url = format!("{location}{separator}digest={digest}");
+        let resp = self
+            .send_replayable(
+                self.upload_request(reqwest::Method::PUT, &put_url, offset)
+                    .header(CONTENT_LENGTH, 0),
+            )
+            .await?;
+        if resp.status() != reqwest::StatusCode::CREATED {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Extract and resolve the `Location` (next upload URL) from an upload-step
+    /// response, enforcing same-origin.
+    fn upload_location(&self, resp: &reqwest::Response) -> Result<String> {
+        let loc = resp
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| RegistryError::ApiError {
+                status: 202,
+                body: "upload step accepted but missing Location header".into(),
+            })?;
+        self.resolve_location(loc)
+    }
+
+    /// Download a blob as a byte stream, optionally resuming at `offset`.
+    ///
+    /// Returns the stream and the byte offset the body actually begins at: the
+    /// requested `offset` when the registry honored the range (206), or 0 when it
+    /// ignored the header and restarted the whole blob (200). A caller resuming a
+    /// partial file MUST truncate it when 0 comes back, or it would concatenate a
+    /// second copy onto the first and fail the digest check.
+    ///
+    /// Resuming matters for large layers: without it, a transfer that breaks near
+    /// the end restarts from byte zero, so a registry dropping connections at a
+    /// consistent point means the download never converges no matter how many
+    /// times it is retried.
+    ///
+    /// Returns the stream after verifying the response status. The caller is
+    /// responsible for digest verification (hash while writing to disk).
+    pub async fn pull_blob_stream_from(
+        &self,
+        repo: &str,
+        digest: &str,
+        offset: u64,
+    ) -> Result<(
+        impl futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>,
+        u64,
+    )> {
+        validate_digest(digest)?;
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repo, digest);
+        let mut req = self.request(reqwest::Method::GET, &url);
+        if offset > 0 {
+            req = req.header(RANGE, format!("bytes={offset}-"));
+        }
+        let resp = self.send_replayable(req).await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(digest.to_string()));
+        }
+
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let resumed_at = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            offset
+        } else {
+            0
+        };
+        Ok((resp.bytes_stream(), resumed_at))
+    }
+
+    /// Download bytes `start..=end` of a blob.
+    ///
+    /// Returns `None` when the registry ignored the range and answered with the
+    /// whole blob (200), so the caller can fall back to one stream instead of
+    /// reading gigabytes it did not ask for. A 206 whose `Content-Range` starts
+    /// anywhere but `start`, or whose body is not exactly the requested length,
+    /// is an error: writing it at `start` would corrupt the file.
+    pub async fn pull_blob_range(
+        &self,
+        repo: &str,
+        digest: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Option<bytes::Bytes>> {
+        validate_digest(digest)?;
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repo, digest);
+        let req = self
+            .request(reqwest::Method::GET, &url)
+            .header(RANGE, format!("bytes={start}-{end}"));
+        let resp = self.send_replayable(req).await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(digest.to_string()));
+        }
+        if resp.status() == reqwest::StatusCode::OK {
+            return Ok(None);
+        }
+        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let served_start = resp
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("bytes "))
+            .and_then(|v| v.split('-').next())
+            .and_then(|v| v.parse::<u64>().ok());
+        if served_start != Some(start) {
+            return Err(RegistryError::ApiError {
+                status: 206,
+                body: format!("asked for bytes from {start}, registry served {served_start:?}"),
+            });
+        }
+        let body = resp.bytes().await?;
+        if body.len() as u64 != end - start + 1 {
+            return Err(RegistryError::DownloadStalled {
+                digest: digest.to_string(),
+                received: body.len() as u64,
+                total: end - start + 1,
+            });
+        }
+        Ok(Some(body))
+    }
+
+    /// Download a blob as a byte stream from the beginning.
+    ///
+    /// Returns the stream after verifying the response status. The caller is
+    /// responsible for digest verification (hash while writing to disk).
+    pub async fn pull_blob_stream(
+        &self,
+        repo: &str,
+        digest: &str,
+    ) -> Result<impl futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>> {
+        validate_digest(digest)?;
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repo, digest);
+        let resp = self
+            .send_replayable(self.request(reqwest::Method::GET, &url))
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(digest.to_string()));
+        }
+
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        Ok(resp.bytes_stream())
+    }
+
+    /// Upload a manifest for the given reference (tag or digest).
+    pub async fn put_manifest(&self, repo: &str, reference: &str, manifest: &[u8]) -> Result<()> {
+        // Honor the document's own `mediaType` so this also PUTs an image index
+        // (the registry validates the Content-Type against the body's mediaType).
+        let media_type = serde_json::from_slice::<serde_json::Value>(manifest)
+            .ok()
+            .and_then(|v| {
+                v.get("mediaType")
+                    .and_then(|m| m.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| MANIFEST_MEDIA_TYPE.to_string());
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repo, reference);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::PUT, &url)
+                    .header(CONTENT_TYPE, media_type)
+                    .body(manifest.to_vec()),
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Fetch a manifest by reference (tag or digest).
+    pub async fn get_manifest(&self, repo: &str, reference: &str) -> Result<Vec<u8>> {
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repo, reference);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::GET, &url)
+                    .header(ACCEPT, MANIFEST_MEDIA_TYPE),
+            )
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(format!(
+                "{}:{}",
+                repo, reference
+            )));
+        }
+
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        // Detect OCI image indexes and Docker manifest lists — smolvm artifacts are
+        // always single-manifest; an index means the caller referenced a multi-arch
+        // Docker image rather than a .smolmachine artifact.
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if content_type.contains("application/vnd.oci.image.index.v1+json")
+            || content_type.contains("application/vnd.docker.distribution.manifest.list.v2+json")
+        {
+            return Err(RegistryError::InvalidManifest(
+                "OCI image indexes (multi-arch manifests) are not supported; \
+                 this reference points to a Docker image, not a .smolmachine artifact"
+                    .into(),
+            ));
+        }
+
+        read_body_capped(resp, MAX_MANIFEST_BYTES, "manifest").await
+    }
+
+    /// The content digest the registry reports for `reference` (a tag or
+    /// digest), from a HEAD request: one authorized round-trip, no body, and on
+    /// Docker Hub not counted against the pull rate limit. The digest is of the
+    /// document the tag points to, an image index for a multi-arch image.
+    pub async fn head_manifest_digest(&self, repo: &str, reference: &str) -> Result<String> {
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repo, reference);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::HEAD, &url)
+                    .header(ACCEPT, IMAGE_MANIFEST_ACCEPT),
+            )
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(format!("{repo}:{reference}")));
+        }
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: String::new(),
+            });
+        }
+        let digest = resp
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                RegistryError::InvalidManifest(format!(
+                    "{repo}:{reference}: no Docker-Content-Digest in the manifest HEAD response"
+                ))
+            })?;
+        validate_digest(&digest)?;
+        // A digest reference must come back as itself.
+        if reference.starts_with("sha256:") && digest != reference {
+            return Err(RegistryError::DigestMismatch {
+                expected: reference.to_string(),
+                actual: digest,
+            });
+        }
+        Ok(digest)
+    }
+
+    /// Fetch a manifest OR image index by reference, returning the raw bytes and
+    /// the document's media type. Unlike [`get_manifest`], this accepts (and does
+    /// not reject) an image index — the caller decides whether to resolve it to a
+    /// platform manifest. Used by `pull` for multi-arch fan-out.
+    pub async fn get_manifest_raw(&self, repo: &str, reference: &str) -> Result<(Vec<u8>, String)> {
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repo, reference);
+        let resp = self
+            .send_replayable(
+                self.request(reqwest::Method::GET, &url)
+                    // Advertise the index types so the registry hands back an
+                    // index as an index (not a server-side-selected manifest),
+                    // and the Docker types so a Docker-pushed image is not
+                    // downgraded to schema 1.
+                    .header(ACCEPT, IMAGE_MANIFEST_ACCEPT),
+            )
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(format!(
+                "{}:{}",
+                repo, reference
+            )));
+        }
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        // Cap the buffered manifest/index BEFORE the digest check below.
+        let data = read_body_capped(resp, MAX_MANIFEST_BYTES, "manifest").await?;
+
+        // When the reference is a content digest (e.g. an image-index entry being
+        // resolved to its platform manifest), the bytes MUST hash to it — else a
+        // malicious or MITM'd registry could swap manifest content while keeping
+        // the digest the caller trusted. Tags are mutable and carry no such
+        // guarantee, so only digest references are verifiable here. Mirrors the
+        // check `pull_blob` already performs for blobs.
+        if reference.starts_with("sha256:") {
+            let actual = format!("sha256:{}", hex::encode(Sha256::digest(&data)));
+            if actual != reference {
+                return Err(RegistryError::DigestMismatch {
+                    expected: reference.to_string(),
+                    actual,
+                });
+            }
+        }
+
+        Ok((data, content_type))
+    }
+
+    /// Fetch the manifest at `reference`, resolving an OCI image index to THIS
+    /// machine's host-platform entry (Docker-style fan-out), and return the
+    /// single-platform manifest bytes. Shared by `pull` and `inspect` so both
+    /// resolve a multi-arch tag identically (a plain manifest passes through).
+    pub async fn get_manifest_resolved(&self, repo: &str, reference: &str) -> Result<Vec<u8>> {
+        // The guest is always Linux; only the architecture varies by host.
+        let platform = OciPlatform {
+            os: "linux".to_string(),
+            architecture: OciPlatform::current().architecture,
+            variant: None,
+        };
+        self.get_manifest_resolved_platform(repo, reference, &platform)
+            .await
+    }
+
+    /// Like [`get_manifest_resolved`], but resolves an OCI image index to the
+    /// CALLER's `platform` instead of this host's. Needed when the consumer is
+    /// not the local machine — e.g. `pack create --oci-platform linux/amd64`
+    /// sizing a build VM on an arm64 host.
+    pub async fn get_manifest_resolved_platform(
+        &self,
+        repo: &str,
+        reference: &str,
+        platform: &OciPlatform,
+    ) -> Result<Vec<u8>> {
+        let (doc_bytes, content_type) = self.get_manifest_raw(repo, reference).await?;
+
+        let is_index = content_type.contains(INDEX_MEDIA_TYPE)
+            || serde_json::from_slice::<serde_json::Value>(&doc_bytes)
+                .ok()
+                .map(|v| {
+                    v.get("manifests").is_some()
+                        || v.get("mediaType").and_then(|m| m.as_str()) == Some(INDEX_MEDIA_TYPE)
+                })
+                .unwrap_or(false);
+        if !is_index {
+            return Ok(doc_bytes);
+        }
+
+        let index: OciIndex = serde_json::from_slice(&doc_bytes)?;
+        // Match the requested platform strictly on os+architecture. A
+        // wrong/missing `os` is bad index data and must fail loudly (the error
+        // below lists what was published) rather than be silently tolerated.
+        // Variants (e.g. arm/v7) are not distinguished, matching the guest's
+        // own platform selection.
+        let want = platform.label();
+        let entry = index
+            .manifests
+            .iter()
+            .find(|m| {
+                m.platform
+                    .as_ref()
+                    .is_some_and(|p| p.os == platform.os && p.architecture == platform.architecture)
+            })
+            .ok_or_else(|| {
+                let available: Vec<String> = index
+                    .manifests
+                    .iter()
+                    .filter_map(|m| m.platform.as_ref().map(|p| p.label()))
+                    .collect();
+                RegistryError::InvalidManifest(format!(
+                    "no {want} build available for this machine; the registry has: {}",
+                    if available.is_empty() {
+                        "(none)".into()
+                    } else {
+                        available.join(", ")
+                    }
+                ))
+            })?;
+        tracing::info!(platform = %want, digest = %entry.digest, "selected index entry");
+        Ok(self.get_manifest_raw(repo, &entry.digest).await?.0)
+    }
+
+    /// List the repositories in this registry via the OCI catalog endpoint
+    /// (`GET /v2/_catalog`), following `Link: rel="next"` pagination.
+    ///
+    /// Note: `_catalog` is OPTIONAL in the distribution spec and is commonly
+    /// disabled or access-restricted (Docker Hub does not expose a registry-wide
+    /// catalog at all). Such registries answer `404`/`401`, surfaced here as an
+    /// [`RegistryError::ApiError`] the caller can translate into a hint that this
+    /// registry doesn't support catalog listing.
+    pub async fn list_repositories(&self) -> Result<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct Catalog {
+            #[serde(default)]
+            repositories: Vec<String>,
+        }
+
+        // First page is the plain endpoint; subsequent pages come from the
+        // registry-supplied `Link` header (already query-encoded), so we resolve
+        // each against the base and stop when no `rel="next"` is offered.
+        let mut next = Some(format!("{}/v2/_catalog", self.base_url));
+        let mut repos = Vec::new();
+        // Bound the walk so a misbehaving registry can't loop us forever.
+        for _ in 0..1000 {
+            let Some(url) = next.take() else { break };
+            let resp = self
+                .send_replayable(self.request(reqwest::Method::GET, &url))
+                .await?;
+            if !resp.status().is_success() {
+                return Err(RegistryError::ApiError {
+                    status: resp.status().as_u16(),
+                    body: resp.text().await.unwrap_or_default(),
+                });
+            }
+            next = resp
+                .headers()
+                .get(LINK)
+                .and_then(|v| v.to_str().ok())
+                .and_then(Self::parse_next_link)
+                .map(|rel| self.resolve_location(&rel))
+                .transpose()?;
+            let page: Catalog = serde_json::from_slice(&resp.bytes().await?)?;
+            repos.extend(page.repositories);
+        }
+        Ok(repos)
+    }
+
+    /// List the tags for a repository (`GET /v2/<repo>/tags/list`).
+    ///
+    /// Unlike the catalog endpoint this is near-universally supported, since it
+    /// only requires `repository:<repo>:pull` scope.
+    pub async fn list_tags(&self, repo: &str) -> Result<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct TagList {
+            #[serde(default)]
+            tags: Vec<String>,
+        }
+
+        let url = format!("{}/v2/{}/tags/list", self.base_url, repo);
+        let resp = self
+            .send_replayable(self.request(reqwest::Method::GET, &url))
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RegistryError::BlobNotFound(repo.to_string()));
+        }
+        if !resp.status().is_success() {
+            return Err(RegistryError::ApiError {
+                status: resp.status().as_u16(),
+                body: resp.text().await.unwrap_or_default(),
+            });
+        }
+
+        let list: TagList = serde_json::from_slice(&resp.bytes().await?)?;
+        Ok(list.tags)
+    }
+
+    /// Extract the `rel="next"` URL reference from an RFC 5988 `Link` header.
+    ///
+    /// The distribution spec formats pagination as `<url>; rel="next"`; we return
+    /// the bracketed URL (which may be relative and query-encoded) for the caller
+    /// to resolve against the registry base.
+    fn parse_next_link(header: &str) -> Option<String> {
+        // A Link header may hold several comma-separated entries; pick the one
+        // whose params mark it rel="next".
+        for entry in header.split(',') {
+            let mut parts = entry.split(';');
+            let Some(url_part) = parts.next() else {
+                continue;
+            };
+            let is_next = parts.any(|p| {
+                let p = p.trim().to_ascii_lowercase();
+                p == "rel=\"next\"" || p == "rel=next"
+            });
+            if !is_next {
+                continue;
+            }
+            let url = url_part
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>');
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
+        }
+        None
+    }
+
+    /// Resolve a Location header value against the registry base URL.
+    ///
+    /// Relative paths (with or without a leading `/`) are resolved via
+    /// `Url::join`. Absolute `http(s)://` URLs are parsed and checked against
+    /// the base origin (scheme + host + port).
+    ///
+    /// Cross-origin upload locations are rejected. Registries that return signed
+    /// storage URLs (S3, GCS) would need an explicit policy allowance here.
+    fn resolve_location(&self, location: &str) -> Result<String> {
+        let base = reqwest::Url::parse(&self.base_url).map_err(|e| RegistryError::ApiError {
+            status: 202,
+            body: format!("client base URL is not valid: {e}"),
+        })?;
+
+        let resolved = if location.starts_with("http://") || location.starts_with("https://") {
+            reqwest::Url::parse(location).map_err(|e| RegistryError::ApiError {
+                status: 202,
+                body: format!("Location is not a valid URL '{location}': {e}"),
+            })?
+        } else {
+            // Relative path (with or without leading slash): join against base.
+            base.join(location).map_err(|e| RegistryError::ApiError {
+                status: 202,
+                body: format!("Location is not a valid relative path '{location}': {e}"),
+            })?
+        };
+
+        // Enforce same-origin (scheme + host + port).
+        if resolved.origin() != base.origin() {
+            return Err(RegistryError::ApiError {
+                status: 202,
+                body: format!(
+                    "Location points to a different origin ('{}'), expected '{}'",
+                    resolved.origin().unicode_serialization(),
+                    base.origin().unicode_serialization(),
+                ),
+            });
+        }
+
+        Ok(resolved.to_string())
+    }
+
+    /// Extract the registry hostname from `base_url` (strips scheme).
+    ///
+    /// `"https://registry-1.docker.io"` → `"registry-1.docker.io"`
+    fn registry_host(&self) -> &str {
+        self.base_url.split("//").nth(1).unwrap_or(&self.base_url)
+    }
+
+    /// Build a request with optional auth header.
+    fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let mut req = self.http.request(method, url);
+        if let Some(ref token) = self.auth_token {
+            req = req.bearer_auth(token);
+        }
+        req
+    }
+
+    /// Build an upload-step request: no read timeout (an upload's socket is
+    /// silent until the server commits the body), bounded instead by a
+    /// whole-request deadline sized to `body_len` so a stalled transfer still
+    /// fails while a slow-but-progressing one runs to completion.
+    fn upload_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body_len: u64,
+    ) -> reqwest::RequestBuilder {
+        let deadline = UPLOAD_TIMEOUT_FLOOR + Duration::from_secs(body_len / UPLOAD_MIN_RATE);
+        let mut req = self.upload_http.request(method, url).timeout(deadline);
+        if let Some(ref token) = self.auth_token {
+            req = req.bearer_auth(token);
+        }
+        req
+    }
+
+    /// Send a cloneable (replayable) request through the full OCI auth protocol.
+    ///
+    /// Use this for requests whose body can be replayed (GET, HEAD, POST with
+    /// empty body, PUT with a buffered `Vec<u8>`). For streaming bodies that
+    /// cannot be cloned, use [`send_nonreplayable`] with a body factory instead.
+    ///
+    /// Protocol steps:
+    ///  1. Attach a preemptive bearer from the `last_challenge` cache if available
+    ///     (optimization — skips the 401 round trip for warm-cache requests).
+    ///  2. Send; if not 401, return immediately.
+    ///  3. Parse `WWW-Authenticate`; exchange credentials for a token
+    ///     (`get_token(false)` — returns cached token if still valid).
+    ///  4. First retry with that token (uses the pre-cloned builder).
+    ///  5. If still 401: force-evict the cache entry, fetch a genuinely fresh
+    ///     token (`get_token(true)`), second retry.
+    ///  6. No third attempt — a freshly-fetched token that is also rejected means
+    ///     the credentials themselves are wrong.
+    async fn send_replayable(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        // Clone BEFORE applying the preemptive bearer so that retry clones
+        // start clean. If we cloned after bearer_auth, every subsequent
+        // `.bearer_auth(new_token)` call would produce a doubled Authorization
+        // header ("Bearer stale, Bearer fresh"), which breaks header matching.
+        let first_retry = req.try_clone();
+        let second_retry = req.try_clone();
+
+        // Step 1: attach a preemptive bearer to the initial send only.
+        // A valid cached token skips the 401 round trip — especially important
+        // for non-replayable streaming PUT bodies that cannot be replayed.
+        let initial_req = if let Some(token) = self.preemptive_token() {
+            req.bearer_auth(token)
+        } else {
+            req
+        };
+
+        // Step 2: send.
+        let resp = initial_req.send().await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+
+        // If we already have a static bearer, the registry is rejecting the token
+        // itself — no challenge exchange will help.
+        if self.auth_token.is_some() {
+            return Ok(resp);
+        }
+
+        let Some(www_auth) = resp
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(resp);
+        };
+
+        let challenge = BearerChallenge::parse(www_auth)?;
+
+        // Steps 3–4: exchange credentials → first retry.
+        let token = self.get_token(&challenge, false).await?;
+        let first_retry = first_retry.ok_or_else(|| RegistryError::Authentication {
+            message: "registry challenged a non-replayable request; \
+                      ensure credentials are warm before streaming uploads"
+                .into(),
+        })?;
+        let resp = first_retry.bearer_auth(token).send().await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+
+        // Step 5: force-evict and fetch a genuinely fresh token → second retry.
+        let token = self.get_token(&challenge, true).await?;
+        let second_retry = second_retry.ok_or_else(|| RegistryError::Authentication {
+            message: "registry challenged a non-replayable request on second attempt".into(),
+        })?;
+        Ok(second_retry.bearer_auth(token).send().await?)
+    }
+
+    /// Send a non-replayable request (e.g., a streaming PUT body) with full auth retry support.
+    ///
+    /// Unlike [`send_replayable`], this method does not rely on `try_clone()` of a
+    /// pre-built body. Instead, the caller supplies a **factory** that produces a
+    /// fresh `reqwest::Body` on each call. The factory may be invoked up to 3 times.
+    ///
+    /// Protocol steps:
+    ///  1. Attach a preemptive bearer from `last_challenge` cache if available
+    ///     (optimization for the common warm-cache case; may have wrong scope).
+    ///  2. Call factory for a fresh body; send.
+    ///  3. On 401: parse the challenge from *this specific request* (correct scope),
+    ///     fetch/cache a token, call factory again, retry.
+    ///  4. On second 401: force-evict the cache entry, fresh token, factory again, final retry.
+    ///
+    /// Correctness is guaranteed by the challenge from step 3, not by the preemptive
+    /// hint from step 1. A wrong-scope preemptive token just costs one extra round trip.
+    async fn send_nonreplayable<F>(
+        &self,
+        req: reqwest::RequestBuilder,
+        make_body: F,
+    ) -> Result<reqwest::Response>
+    where
+        F: Fn() -> Result<reqwest::Body>,
+    {
+        // Clone the body-less base builder for retries before attaching auth or body.
+        // try_clone() returns None only for builders that already hold a non-replayable
+        // streaming body — callers of send_nonreplayable must not pre-attach a body.
+        let clone_err = || RegistryError::Authentication {
+            message: "send_nonreplayable called with a non-cloneable request builder; \
+                      attach the body via the factory, not before calling this method"
+                .into(),
+        };
+        let retry1 = req.try_clone().ok_or_else(clone_err)?;
+        let retry2 = req.try_clone().ok_or_else(clone_err)?;
+
+        // Step 1: attach preemptive bearer (optimization — wrong scope → extra 401, not corruption).
+        let initial = if let Some(token) = self.preemptive_token() {
+            req.bearer_auth(token)
+        } else {
+            req
+        };
+
+        // Step 2: send with a fresh body from the factory.
+        let resp = initial.body(make_body()?).send().await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+
+        // Static auth_token rejected — challenge exchange won't help.
+        if self.auth_token.is_some() {
+            return Ok(resp);
+        }
+
+        let Some(www_auth) = resp
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(resp);
+        };
+
+        let challenge = BearerChallenge::parse(www_auth)?;
+
+        // Step 3: token for the scope this request actually needs, fresh body.
+        let token = self.get_token(&challenge, false).await?;
+        let resp = retry1.bearer_auth(token).body(make_body()?).send().await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+
+        // Step 4: force-evict stale cache entry, genuinely fresh token, final body.
+        let token = self.get_token(&challenge, true).await?;
+        Ok(retry2.bearer_auth(token).body(make_body()?).send().await?)
+    }
+
+    /// Fetch (or return a cached) OCI bearer token for the given challenge.
+    ///
+    /// If `force_refresh` is true the cache entry for this challenge is evicted
+    /// first, guaranteeing a fresh token from the token service. This is used
+    /// on the second 401 retry, when a cached token has just proven invalid.
+    async fn get_token(&self, challenge: &BearerChallenge, force_refresh: bool) -> Result<String> {
+        let key = TokenCacheKey {
+            realm: challenge.realm.clone(),
+            service: challenge.service.clone(),
+            scope: challenge.scope.clone(),
+        };
+
+        {
+            let mut cache = self
+                .token_cache
+                .lock()
+                .map_err(|_| RegistryError::Authentication {
+                    message: "registry token cache lock poisoned".into(),
+                })?;
+            if force_refresh {
+                cache.remove(&key);
+            } else if let Some(cached) = cache.get(&key) {
+                if cached.is_valid() {
+                    return Ok(cached.token.clone());
+                }
+                // Stale entry — fall through to fetch a fresh token.
+            }
+        }
+
+        let mut url =
+            reqwest::Url::parse(&challenge.realm).map_err(|e| RegistryError::Authentication {
+                message: format!("invalid token service realm: {e}"),
+            })?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            if let Some(service) = &challenge.service {
+                pairs.append_pair("service", service);
+            }
+            if let Some(scope) = &challenge.scope {
+                pairs.append_pair("scope", scope);
+            }
+        }
+
+        let req = self.http.get(url.clone());
+        let resp = if let Some(identity_token) = &self.identity_token {
+            // smolmachines path: upstream JWT exchanged with the token service.
+            req.bearer_auth(identity_token).send().await?
+        } else if let Some((username, password)) = &self.basic_credentials {
+            // Standard Docker/OCI path: Basic credentials sent to the registry's
+            // own auth service.
+            //
+            // Security checks before sending the PAT:
+            // 1. HTTPS-only: never send credentials to a plaintext endpoint.
+            // 2. Realm host allowlist for known registries: a compromised registry
+            //    could serve a valid HTTPS WWW-Authenticate challenge pointing to an
+            //    attacker-controlled token service. For known registries we verify the
+            //    realm host matches the expected auth service.
+            if url.scheme() != "https" {
+                return Err(RegistryError::Authentication {
+                    message: format!(
+                        "refusing Basic credentials for non-HTTPS realm: {}",
+                        url.as_str()
+                    ),
+                });
+            }
+            validate_realm_host(self.registry_host(), &url)?;
+            req.basic_auth(username, Some(password)).send().await?
+        } else {
+            // Anonymous token request — works for public repositories.
+            req.send().await?
+        };
+
+        if !resp.status().is_success() {
+            return Err(RegistryError::Authentication {
+                message: format!(
+                    "token service returned {}: {}",
+                    resp.status(),
+                    resp.text().await.unwrap_or_default()
+                ),
+            });
+        }
+
+        let token_response: TokenResponse = resp.json().await?;
+        let token = token_response
+            .token
+            .or(token_response.access_token)
+            .ok_or_else(|| RegistryError::Authentication {
+                message: "token service response did not include token".into(),
+            })?;
+
+        // Store the raw server-reported expiry. The 30-second safety buffer
+        // is applied only in `CachedToken::is_valid()`, not here, so that
+        // short-lived tokens (< 30 s) are immediately stale rather than
+        // producing expires_at = None (which means "valid forever").
+        let expires_at = token_response
+            .expires_in
+            .map(|secs| Instant::now() + Duration::from_secs(secs));
+
+        self.token_cache
+            .lock()
+            .map_err(|_| RegistryError::Authentication {
+                message: "registry token cache lock poisoned".into(),
+            })?
+            .insert(
+                key,
+                CachedToken {
+                    token: token.clone(),
+                    expires_at,
+                },
+            );
+
+        // Record the challenge so future requests can attach a preemptive bearer
+        // token without waiting for a 401 round trip (especially important for
+        // non-replayable streaming uploads).
+        if let Ok(mut lc) = self.last_challenge.lock() {
+            *lc = Some(challenge.clone());
+        }
+
+        // Persist pull tokens so the NEXT process can also attach a preemptive
+        // bearer. The in-memory cache above only helps within one process, and
+        // the CLI is a fresh process per command, so without this every
+        // `machine run` pays the full challenge exchange again. Push scopes and
+        // tokens without a server-reported expiry are deliberately not written.
+        if self.base_url.starts_with("https://")
+            && challenge
+                .scope
+                .as_deref()
+                .is_some_and(token_store::scope_is_pull_only)
+        {
+            if let (Some(secs), Ok(now)) = (
+                token_response.expires_in,
+                SystemTime::now().duration_since(UNIX_EPOCH),
+            ) {
+                token_store::save(
+                    &self.base_url,
+                    &self.identity_fingerprint(),
+                    &token_store::PersistedToken {
+                        realm: challenge.realm.clone(),
+                        service: challenge.service.clone(),
+                        scope: challenge.scope.clone(),
+                        token: token.clone(),
+                        expires_at_unix: now.as_secs().saturating_add(secs),
+                    },
+                );
+            }
+        }
+
+        Ok(token)
+    }
+
+    /// Return a valid cached bearer token from the most recent challenge exchange,
+    /// or `None` if the cache is empty, the entry is stale, or `auth_token` is set
+    /// (in which case `request()` already attaches the static bearer).
+    ///
+    /// Called at the top of `send_replayable()` to skip the 401 round trip for
+    /// authenticated operations — particularly important for streaming PUT bodies
+    /// that cannot be retried after a 401.
+    fn preemptive_token(&self) -> Option<String> {
+        // Static auth_token is always attached by request() — no preemptive needed.
+        if self.auth_token.is_some() {
+            return None;
+        }
+        // A fresh process has no challenge yet. If an earlier process
+        // persisted a still-valid pull token for this registry and identity,
+        // replay it into the in-memory cache first.
+        if self.last_challenge.lock().ok()?.is_none() {
+            self.restore_persisted_token();
+        }
+        let challenge = self.last_challenge.lock().ok()?.as_ref()?.clone();
+        let cache = self.token_cache.lock().ok()?;
+        let key = TokenCacheKey {
+            realm: challenge.realm,
+            service: challenge.service,
+            scope: challenge.scope,
+        };
+        let cached = cache.get(&key)?;
+        if cached.is_valid() {
+            Some(cached.token.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Load the newest still-valid persisted pull token for this registry and
+    /// identity into `token_cache` and `last_challenge`, as if this process had
+    /// already done the challenge exchange. Best-effort: on any miss the normal
+    /// 401 flow runs. A token persisted for a different repository scope is
+    /// harmless, the registry answers 401 and the normal exchange follows,
+    /// which is exactly what would have happened with no preemptive bearer.
+    fn restore_persisted_token(&self) {
+        let Some(entry) = token_store::load_any(&self.base_url, &self.identity_fingerprint())
+        else {
+            return;
+        };
+        let Some(expires_at) = entry.expires_at_instant() else {
+            return;
+        };
+        if let Ok(mut cache) = self.token_cache.lock() {
+            cache.insert(
+                TokenCacheKey {
+                    realm: entry.realm.clone(),
+                    service: entry.service.clone(),
+                    scope: entry.scope.clone(),
+                },
+                CachedToken {
+                    token: entry.token,
+                    expires_at: Some(expires_at),
+                },
+            );
+        }
+        if let Ok(mut lc) = self.last_challenge.lock() {
+            if lc.is_none() {
+                *lc = Some(BearerChallenge {
+                    realm: entry.realm,
+                    service: entry.service,
+                    scope: entry.scope,
+                });
+            }
+        }
+    }
+
+    /// Fingerprint of this client's credentials for the persisted token store,
+    /// so entries are keyed per identity.
+    fn identity_fingerprint(&self) -> String {
+        token_store::identity_fingerprint(
+            self.auth_token.as_deref(),
+            self.identity_token.as_deref(),
+            self.basic_credentials.as_ref(),
+        )
+    }
+}
+
+/// Validate the realm host against an allowlist of known registries.
+///
+/// For registries whose auth host is well-known, a compromised registry could
+/// send a valid HTTPS `WWW-Authenticate` challenge pointing to an attacker's
+/// token service. This check prevents PAT exfiltration in that scenario.
+///
+/// Unknown registries are not checked — we cannot enumerate every self-hosted
+/// registry's auth topology. The HTTPS-only guard in the caller handles those.
+fn validate_realm_host(registry_host: &str, realm_url: &reqwest::Url) -> Result<()> {
+    let realm_host = realm_url.host_str().unwrap_or("");
+
+    // Map known registry API hosts to their expected auth service host.
+    let expected_auth_host: Option<&str> = match registry_host {
+        "registry-1.docker.io" => Some("auth.docker.io"),
+        "ghcr.io" => Some("ghcr.io"),
+        "quay.io" => Some("quay.io"),
+        // ECR: auth endpoint is on *.amazonaws.com — allow any amazonaws.com subdomain.
+        h if h.ends_with(".amazonaws.com") => {
+            if realm_host.ends_with(".amazonaws.com") {
+                return Ok(());
+            }
+            return Err(RegistryError::Authentication {
+                message: format!(
+                    "ECR realm host '{realm_host}' is not on amazonaws.com (registry: {registry_host})"
+                ),
+            });
+        }
+        // GCR / Artifact Registry: auth is on oauth2.googleapis.com or the same host.
+        h if h == "gcr.io" || h.ends_with(".gcr.io") || h.ends_with(".pkg.dev") => {
+            if realm_host == "oauth2.googleapis.com"
+                || realm_host.ends_with(".gcr.io")
+                || realm_host.ends_with(".pkg.dev")
+            {
+                return Ok(());
+            }
+            return Err(RegistryError::Authentication {
+                message: format!(
+                    "GCR realm host '{realm_host}' is not on googleapis.com or gcr.io (registry: {registry_host})"
+                ),
+            });
+        }
+        _ => None,
+    };
+
+    if let Some(expected) = expected_auth_host {
+        if realm_host != expected {
+            return Err(RegistryError::Authentication {
+                message: format!(
+                    "realm host '{realm_host}' does not match expected auth host '{expected}' for registry '{registry_host}'"
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// A cached OCI bearer token with optional expiry.
+///
+/// `expires_at` is stored as the raw server-reported expiry (`now + expires_in`).
+/// The 30-second safety buffer lives exclusively in `is_valid()`, so short-lived
+/// tokens (< 30 s) are immediately considered stale rather than being cached
+/// with `expires_at = None` (which would incorrectly mean "valid forever").
+#[derive(Debug, Clone)]
+struct CachedToken {
+    token: String,
+    expires_at: Option<Instant>,
+}
+
+impl CachedToken {
+    /// Returns `true` if the token is still usable (at least 30 s remain).
+    fn is_valid(&self) -> bool {
+        match self.expires_at {
+            None => true,
+            Some(exp) => Instant::now() + Duration::from_secs(30) < exp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TokenCacheKey {
+    realm: String,
+    service: Option<String>,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BearerChallenge {
+    realm: String,
+    service: Option<String>,
+    scope: Option<String>,
+}
+
+impl BearerChallenge {
+    fn parse(header: &str) -> Result<Self> {
+        let header = header.trim();
+        let params = header
+            .strip_prefix("Bearer ")
+            .or_else(|| header.strip_prefix("bearer "))
+            .ok_or_else(|| RegistryError::Authentication {
+                message: format!("unsupported authenticate challenge: {header}"),
+            })?;
+
+        let mut values = HashMap::new();
+        for part in split_auth_params(params) {
+            let Some((key, value)) = part.split_once('=') else {
+                continue;
+            };
+            values.insert(key.trim().to_ascii_lowercase(), unquote(value.trim()));
+        }
+
+        let realm = values
+            .remove("realm")
+            .ok_or_else(|| RegistryError::Authentication {
+                message: "bearer challenge missing realm".into(),
+            })?;
+
+        Ok(Self {
+            realm,
+            service: values.remove("service"),
+            scope: values.remove("scope"),
+        })
+    }
+}
+
+fn split_auth_params(params: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut in_quote = false;
+    let mut escaped = false;
+
+    for (idx, ch) in params.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quote => escaped = true,
+            '"' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                parts.push(params[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(params[start..].trim());
+    parts
+}
+
+fn unquote(value: &str) -> String {
+    let Some(value) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return value.to_string();
+    };
+
+    let mut out = String::with_capacity(value.len());
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TokenResponse {
+    token: Option<String>,
+    access_token: Option<String>,
+    /// Token lifetime in seconds, as returned by the token service.
+    /// Used to populate `CachedToken::expires_at` with a 30-second safety buffer.
+    expires_in: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn registry_clients_verify_private_ca_for_registry_and_auth_requests() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::rustls::pki_types::PrivateKeyDer;
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("roots.pem");
+        std::fs::write(&bundle, cert.pem()).unwrap();
+        let config = tokio_rustls::rustls::ServerConfig::builder_with_provider(
+            std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()),
+        )
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+        )
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "https://localhost:{}/v2/",
+            listener.local_addr().unwrap().port()
+        );
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (socket, _) = listener.accept().await.unwrap();
+                if let Ok(mut socket) = acceptor.accept(socket).await {
+                    let mut request = [0; 1024];
+                    assert!(socket.read(&mut request).await.unwrap() > 0);
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let ordinary = registry_tls_with_bundle(reqwest::Client::builder(), None)
+            .no_proxy()
+            .build()
+            .unwrap();
+        assert!(ordinary.get(&url).send().await.is_err());
+        for builder in [
+            reqwest::Client::builder().read_timeout(READ_TIMEOUT),
+            reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT),
+        ] {
+            let trusted = registry_tls_with_bundle(builder, Some(&bundle))
+                .no_proxy()
+                .build()
+                .unwrap();
+            assert_eq!(
+                trusted.get(&url).send().await.unwrap().status(),
+                reqwest::StatusCode::OK
+            );
+        }
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn parse_next_link_extracts_rel_next() {
+        let h = r#"</v2/_catalog?n=100&last=repo99>; rel="next""#;
+        assert_eq!(
+            RegistryClient::parse_next_link(h).as_deref(),
+            Some("/v2/_catalog?n=100&last=repo99")
+        );
+    }
+
+    #[test]
+    fn parse_next_link_ignores_non_next_and_missing() {
+        assert_eq!(
+            RegistryClient::parse_next_link(r#"</v2/_catalog>; rel="prev""#),
+            None
+        );
+        assert_eq!(RegistryClient::parse_next_link(""), None);
+        // Multiple entries: only the rel="next" one is picked.
+        let h = r#"</a>; rel="prev", </b?n=2>; rel="next""#;
+        assert_eq!(
+            RegistryClient::parse_next_link(h).as_deref(),
+            Some("/b?n=2")
+        );
+    }
+
+    #[test]
+    fn validate_digest_accepts_valid_sha256() {
+        let valid = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        assert!(validate_digest(valid).is_ok());
+        // Uppercase hex is also accepted
+        let upper = "sha256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+        assert!(validate_digest(upper).is_ok());
+    }
+
+    #[test]
+    fn validate_digest_rejects_invalid() {
+        // Wrong/missing prefix
+        assert!(validate_digest("").is_err());
+        assert!(validate_digest("sha256:").is_err());
+        assert!(validate_digest(
+            "sha512:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        )
+        .is_err());
+        assert!(validate_digest(
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        )
+        .is_err());
+        // Wrong length
+        assert!(validate_digest("sha256:abcdef").is_err());
+        assert!(validate_digest(
+            "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567890"
+        )
+        .is_err());
+        // Non-hex chars
+        assert!(validate_digest(
+            "sha256:gggggg0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        )
+        .is_err());
+    }
+
+    fn client(base: &str) -> RegistryClient {
+        RegistryClient::new(base.to_string())
+    }
+
+    #[test]
+    fn resolve_location_allows_relative_and_same_host() {
+        let c = client("https://registry.example.com");
+        // Relative path
+        let r = c
+            .resolve_location("/v2/repo/blobs/uploads/abc?state=xyz")
+            .unwrap();
+        assert_eq!(
+            r,
+            "https://registry.example.com/v2/repo/blobs/uploads/abc?state=xyz"
+        );
+        // Absolute same host
+        let r = c
+            .resolve_location("https://registry.example.com/v2/uploads/abc")
+            .unwrap();
+        assert_eq!(r, "https://registry.example.com/v2/uploads/abc");
+        // Absolute same host with port
+        let c2 = client("http://localhost:5050");
+        let r = c2
+            .resolve_location("http://localhost:5050/v2/uploads/xyz")
+            .unwrap();
+        assert_eq!(r, "http://localhost:5050/v2/uploads/xyz");
+    }
+
+    #[test]
+    fn resolve_location_blocks_different_host() {
+        let c = client("https://registry.example.com");
+        // Different host
+        assert!(c
+            .resolve_location("https://evil.attacker.com/steal-data")
+            .is_err());
+        // Same host but different port (different origin)
+        let c2 = client("http://localhost:5050");
+        assert!(c2
+            .resolve_location("http://localhost:9999/v2/uploads/xyz")
+            .is_err());
+    }
+
+    #[test]
+    fn client_auth_token() {
+        let c = RegistryClient::new("https://r.example.com".to_string());
+        assert!(c.auth_token.is_none());
+        let c = c.with_token("secret".to_string());
+        assert_eq!(c.auth_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn client_identity_token_accessor() {
+        let c = RegistryClient::new("https://registry.smolmachines.com".to_string());
+        assert!(c.identity_token().is_none());
+        let c = c.with_identity_token("eyJhbG".to_string());
+        assert_eq!(c.identity_token(), Some("eyJhbG"));
+    }
+
+    #[test]
+    fn client_basic_credentials_accessor() {
+        let c = RegistryClient::new("https://registry-1.docker.io".to_string());
+        assert!(c.basic_credentials().is_none());
+        let c = c.with_basic_credentials("alice".to_string(), "ghp_secret".to_string());
+        assert_eq!(c.basic_credentials(), Some(("alice", "ghp_secret")));
+    }
+
+    #[test]
+    fn client_credential_modes_are_independent() {
+        // identity_token and basic_credentials are separate fields; setting one
+        // does not affect the other.
+        let c = RegistryClient::new("https://r.example.com".to_string())
+            .with_identity_token("jwt".to_string());
+        assert_eq!(c.identity_token(), Some("jwt"));
+        assert!(c.basic_credentials().is_none());
+
+        let c = RegistryClient::new("https://r.example.com".to_string())
+            .with_basic_credentials("user".to_string(), "pass".to_string());
+        assert!(c.identity_token().is_none());
+        assert_eq!(c.basic_credentials(), Some(("user", "pass")));
+    }
+
+    #[test]
+    fn bearer_challenge_parses_registry_params() {
+        let challenge = BearerChallenge::parse(
+            r#"Bearer realm="https://token.smolmachines.com/v2/auth",service="registry.smolmachines.com",scope="repository:binsquare/app:pull,push""#,
+        )
+        .unwrap();
+
+        assert_eq!(challenge.realm, "https://token.smolmachines.com/v2/auth");
+        assert_eq!(
+            challenge.service.as_deref(),
+            Some("registry.smolmachines.com")
+        );
+        assert_eq!(
+            challenge.scope.as_deref(),
+            Some("repository:binsquare/app:pull,push")
+        );
+    }
+
+    #[test]
+    fn bearer_challenge_handles_quoted_commas() {
+        let parts = split_auth_params(r#"realm="https://t.example/auth",scope="a:b:c,d""#);
+        assert_eq!(
+            parts,
+            vec![r#"realm="https://t.example/auth""#, r#"scope="a:b:c,d""#]
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // validate_realm_host
+    // ---------------------------------------------------------------------------
+
+    fn url(s: &str) -> reqwest::Url {
+        reqwest::Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn realm_host_docker_hub_allows_auth_endpoint() {
+        assert!(
+            validate_realm_host("registry-1.docker.io", &url("https://auth.docker.io/token"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn realm_host_docker_hub_rejects_attacker_endpoint() {
+        let err = validate_realm_host(
+            "registry-1.docker.io",
+            &url("https://evil.attacker.com/steal"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("auth.docker.io"), "{err}");
+    }
+
+    #[test]
+    fn realm_host_ghcr_allows_self() {
+        assert!(validate_realm_host("ghcr.io", &url("https://ghcr.io/token")).is_ok());
+    }
+
+    #[test]
+    fn realm_host_ghcr_rejects_other() {
+        assert!(validate_realm_host("ghcr.io", &url("https://malicious.io/token")).is_err());
+    }
+
+    #[test]
+    fn realm_host_ecr_allows_amazonaws_subdomain() {
+        assert!(validate_realm_host(
+            "123456789.dkr.ecr.us-east-1.amazonaws.com",
+            &url("https://123456789.dkr.ecr.us-east-1.amazonaws.com/token")
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn realm_host_ecr_rejects_non_amazonaws() {
+        let err = validate_realm_host(
+            "123456789.dkr.ecr.us-east-1.amazonaws.com",
+            &url("https://evil.notamazonaws.com/token"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("amazonaws.com"), "{err}");
+    }
+
+    #[test]
+    fn realm_host_gcr_allows_oauth2_googleapis() {
+        assert!(validate_realm_host("gcr.io", &url("https://oauth2.googleapis.com/token")).is_ok());
+    }
+
+    #[test]
+    fn realm_host_gcr_allows_gcr_subdomain() {
+        assert!(validate_realm_host("us.gcr.io", &url("https://us.gcr.io/v2/token")).is_ok());
+    }
+
+    #[test]
+    fn realm_host_gcr_rejects_arbitrary() {
+        assert!(validate_realm_host("gcr.io", &url("https://evil.com/token")).is_err());
+    }
+
+    #[test]
+    fn realm_host_unknown_registry_allows_any_https_realm() {
+        // Self-hosted registries are not enumerated; HTTPS alone is sufficient.
+        assert!(validate_realm_host(
+            "my-registry.internal",
+            &url("https://auth.my-registry.internal/token")
+        )
+        .is_ok());
+        assert!(validate_realm_host(
+            "harbor.company.io",
+            &url("https://harbor.company.io/service/token")
+        )
+        .is_ok());
+    }
+
+    // ---------------------------------------------------------------------------
+    // CachedToken expiry
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn cached_token_valid_without_expiry() {
+        let t = CachedToken {
+            token: "tok".into(),
+            expires_at: None,
+        };
+        assert!(t.is_valid());
+    }
+
+    #[test]
+    fn cached_token_valid_with_future_expiry() {
+        let t = CachedToken {
+            token: "tok".into(),
+            expires_at: Some(Instant::now() + Duration::from_secs(300)),
+        };
+        assert!(t.is_valid());
+    }
+
+    #[test]
+    fn cached_token_invalid_when_within_buffer() {
+        // expires_at is 10 s from now, but the buffer is 30 s → stale
+        let t = CachedToken {
+            token: "tok".into(),
+            expires_at: Some(Instant::now() + Duration::from_secs(10)),
+        };
+        assert!(!t.is_valid());
+    }
+
+    #[test]
+    fn cached_token_invalid_when_past() {
+        let t = CachedToken {
+            token: "tok".into(),
+            // Already expired — Instant::now() - 1 s; use checked_sub to avoid panic
+            expires_at: Instant::now().checked_sub(Duration::from_secs(1)),
+        };
+        assert!(!t.is_valid());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mock HTTP tests — prove the protocol flow, not just helpers
+// ---------------------------------------------------------------------------
+//
+// These tests start a real local HTTP server (wiremock) and drive the
+// RegistryClient through the OCI auth protocol. They verify:
+//
+//   1. 401 → WWW-Authenticate → token exchange → retry → success
+//   2. Cached token reused on the second request (token endpoint called once)
+//   3. Preemptive token attached on second request (no 401 round trip)
+//   4. Stale-cached token evicted and re-fetched on repeated 401
+//
+// Identity-token mode is used (no HTTPS restriction on the realm URL)
+// so the tests work against a plain HTTP wiremock server.
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn token_body(tok: &str, expires_in: u64) -> serde_json::Value {
+        serde_json::json!({ "token": tok, "expires_in": expires_in })
+    }
+
+    /// Set up HEAD mocks using wiremock priority ordering.
+    ///
+    /// Wiremock tries mocks in FIFO order (first mounted = first tried).
+    /// Mount the `times_401`-shot 401 first (highest priority), then the 404
+    /// fallback. The first N HEAD requests get 401; once those shots are
+    /// exhausted wiremock falls through to the 404 mock.
+    async fn mount_head_sequence(server: &MockServer, times_401: u64) {
+        let challenge = format!(
+            "Bearer realm=\"{}/token\",service=\"test\",scope=\"repository:myrepo:pull\"",
+            server.uri()
+        );
+        // High-priority N-shot 401 (mounted first = tried first).
+        Mock::given(method("HEAD"))
+            .and(path(format!("/v2/myrepo/blobs/{DIGEST}")))
+            .respond_with(
+                ResponseTemplate::new(401).insert_header("WWW-Authenticate", challenge.as_str()),
+            )
+            .up_to_n_times(times_401)
+            .mount(server)
+            .await;
+        // Low-priority fallback: 404 once the 401 shots are exhausted.
+        Mock::given(method("HEAD"))
+            .and(path(format!("/v2/myrepo/blobs/{DIGEST}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(server)
+            .await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1: 401 → token exchange → retry → success.
+    // Token endpoint called exactly once.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_auth_challenge_and_retry() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("tok", 300)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // first HEAD → 401, second HEAD (retry with bearer) → 404.
+        mount_head_sequence(&server, 1).await;
+
+        let client =
+            RegistryClient::new(server.uri().to_string()).with_identity_token("jwt".to_string());
+
+        let exists = client.blob_exists("myrepo", DIGEST).await.unwrap();
+        assert!(!exists);
+        // MockServer drop asserts expect(1) was satisfied.
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2: cached token reused across two calls.
+    // Token endpoint called exactly once total.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_cached_token_not_refetched() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("tok", 300)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Only the very first HEAD returns 401; all others return 404.
+        mount_head_sequence(&server, 1).await;
+
+        let client =
+            RegistryClient::new(server.uri().to_string()).with_identity_token("jwt".to_string());
+
+        // Call 1: auth dance → token cached, last_challenge recorded.
+        client.blob_exists("myrepo", DIGEST).await.unwrap();
+        // Call 2: preemptive_token() finds the cached token → initial send returns 404
+        //         immediately, no auth dance, token endpoint NOT called again.
+        client.blob_exists("myrepo", DIGEST).await.unwrap();
+        // Drop asserts expect(1).
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: stale cached token → 401 on retry → force-refresh → success.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_stale_token_force_refreshed() {
+        let server = MockServer::start().await;
+
+        // Priority: first mounted = first tried (wiremock FIFO).
+        // stale-tok (first) → served on initial fetch; fresh-tok (second) → served on force-refresh.
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("stale-tok", 0)))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("fresh-tok", 300)))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        // First 2 HEADs → 401 (initial + first_retry with stale token).
+        // Third HEAD (second_retry with fresh token) → 404.
+        mount_head_sequence(&server, 2).await;
+
+        let client =
+            RegistryClient::new(server.uri().to_string()).with_identity_token("jwt".to_string());
+
+        // initial → 401 → stale-tok (expires_in=0, immediately stale)
+        // retry#1 → 401 → get_token(true) force-evict → fresh-tok
+        // retry#2 → 404 → return Ok
+        let exists = client.blob_exists("myrepo", DIGEST).await.unwrap();
+        assert!(!exists);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: streaming PUT 401 → body factory produces fresh body for retry.
+    //
+    // Covers the critical upload path: a non-replayable PUT body that triggers
+    // a 401 challenge. The factory must be called twice (initial + one retry).
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_streaming_put_retries_with_fresh_body() {
+        let server = MockServer::start().await;
+
+        let challenge = format!(
+            "Bearer realm=\"{}/token\",service=\"test\",scope=\"repository:myrepo:push,pull\"",
+            server.uri()
+        );
+
+        // Token endpoint — must be called exactly once (first retry after 401).
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("push-tok", 300)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // blob_exists HEAD → 404 (blob absent; proceed to upload).
+        Mock::given(method("HEAD"))
+            .and(path(format!("/v2/myrepo/blobs/{DIGEST}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        // POST to initiate upload → 202 with upload Location.
+        Mock::given(method("POST"))
+            .and(path("/v2/myrepo/blobs/uploads/"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/sess-1"),
+            )
+            .mount(&server)
+            .await;
+
+        // PUT: first attempt → 401 (unauthenticated); second attempt → 201 Created.
+        // FIFO order: 401 mock first (higher priority, exhausts after 1 hit), 201 fallback second.
+        Mock::given(method("PUT"))
+            .and(path("/v2/myrepo/blobs/uploads/sess-1"))
+            .respond_with(
+                ResponseTemplate::new(401).insert_header("WWW-Authenticate", challenge.as_str()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v2/myrepo/blobs/uploads/sess-1"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        let client =
+            RegistryClient::new(server.uri().to_string()).with_identity_token("jwt".to_string());
+
+        let body_data: &[u8] = b"fake blob content for upload";
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let call_count_clone = call_count.clone();
+
+        client
+            .push_blob_stream("myrepo", DIGEST, body_data.len() as u64, move || {
+                call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(reqwest::Body::from(body_data))
+            })
+            .await
+            .unwrap();
+
+        // Factory called twice: once for the unauthenticated 401 attempt,
+        // once for the authenticated retry that succeeds.
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // MockServer drop asserts token endpoint expect(1) was satisfied.
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: POST warms the token; PUT uses preemptive bearer — no 401 on PUT.
+    //
+    // Verifies that after send_replayable does a challenge dance for the POST,
+    // last_challenge is set, and send_nonreplayable attaches the token
+    // preemptively so the PUT body is never sent unauthenticated.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_streaming_put_uses_preemptive_token_from_post() {
+        let server = MockServer::start().await;
+
+        let challenge = format!(
+            "Bearer realm=\"{}/token\",service=\"test\",scope=\"repository:myrepo:push,pull\"",
+            server.uri()
+        );
+
+        // Token endpoint — called once during the POST auth dance.
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("shared-tok", 300)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // blob_exists HEAD → 404.
+        Mock::given(method("HEAD"))
+            .and(path(format!("/v2/myrepo/blobs/{DIGEST}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        // POST → 401 first (triggers auth dance), then 202 with Location.
+        // FIFO order: 401 first (exhausts after 1 hit), 202 fallback second.
+        Mock::given(method("POST"))
+            .and(path("/v2/myrepo/blobs/uploads/"))
+            .respond_with(
+                ResponseTemplate::new(401).insert_header("WWW-Authenticate", challenge.as_str()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/myrepo/blobs/uploads/"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/sess-2"),
+            )
+            .mount(&server)
+            .await;
+
+        // PUT → 201 directly (preemptive token from POST dance).
+        Mock::given(method("PUT"))
+            .and(path("/v2/myrepo/blobs/uploads/sess-2"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        let client =
+            RegistryClient::new(server.uri().to_string()).with_identity_token("jwt".to_string());
+
+        let body_data: &[u8] = b"fake blob content";
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let call_count_clone = call_count.clone();
+
+        client
+            .push_blob_stream("myrepo", DIGEST, body_data.len() as u64, move || {
+                call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(reqwest::Body::from(body_data))
+            })
+            .await
+            .unwrap();
+
+        // Factory called exactly once — PUT succeeded on first attempt with preemptive token.
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // MockServer drop asserts token endpoint expect(1) was satisfied.
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunked upload: POST → one PATCH per chunk (Content-Range) → PUT finalize.
+    // 10 bytes with a 3-byte chunk_size = 4 PATCHes ([0-2],[3-5],[6-8],[9-9]),
+    // then a single PUT carrying the digest. Proves the engine never sends the
+    // blob as one oversized body (the Cloudflare-413 fix).
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_chunked_upload_patches_then_finalizes() {
+        let server = MockServer::start().await;
+        let content: &[u8] = b"abcdefghij"; // 10 bytes
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(content)));
+
+        Mock::given(method("HEAD"))
+            .and(path(format!("/v2/myrepo/blobs/{digest}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/myrepo/blobs/uploads/"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/sess-1"),
+            )
+            .mount(&server)
+            .await;
+        // Each PATCH is accepted and hands back the next upload URL (same one here).
+        Mock::given(method("PATCH"))
+            .and(path("/v2/myrepo/blobs/uploads/sess-1"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/sess-1"),
+            )
+            .expect(4)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v2/myrepo/blobs/uploads/sess-1"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("smolvm-chunk-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blob_path = dir.join("blob.bin");
+        std::fs::write(&blob_path, content).unwrap();
+
+        let client =
+            RegistryClient::new(server.uri().to_string()).with_identity_token("jwt".to_string());
+        client
+            .push_blob_chunked("myrepo", &digest, &blob_path, 3)
+            .await
+            .unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+        // MockServer drop asserts PATCH expect(4) and PUT expect(1) were satisfied.
+    }
+
+    // -----------------------------------------------------------------------
+    // A digest-addressed manifest whose bytes don't hash to the requested
+    // digest must be rejected (registry tamper / MITM on index→manifest
+    // resolution), mirroring the blob-digest check `pull_blob` performs.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn a_docker_image_resolves_to_its_schema_2_manifest() {
+        use wiremock::{Request, Respond};
+        // Answers like `distribution`: schema 2 only to a client that accepts
+        // it, the legacy schema 1 (no config) to one that does not.
+        struct Distribution;
+        impl Respond for Distribution {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let accept = req
+                    .headers
+                    .get("accept")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                if accept.contains("application/vnd.docker.distribution.manifest.v2+json") {
+                    ResponseTemplate::new(200)
+                        .insert_header(
+                            "content-type",
+                            "application/vnd.docker.distribution.manifest.v2+json",
+                        )
+                        .set_body_string(
+                            r#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","size":1},"layers":[]}"#,
+                        )
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header(
+                            "content-type",
+                            "application/vnd.docker.distribution.manifest.v1+prettyjws",
+                        )
+                        .set_body_string(r#"{"schemaVersion":1,"fsLayers":[],"history":[]}"#)
+                }
+            }
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v2/acct/app/manifests/dock"))
+            .respond_with(Distribution)
+            .mount(&server)
+            .await;
+        let client = RegistryClient::new(server.uri());
+        let bytes = client
+            .get_manifest_resolved("acct/app", "dock")
+            .await
+            .unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(manifest["schemaVersion"], 2);
+        assert!(manifest["config"]["digest"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_manifest_digest_mismatch_rejected() {
+        let server = MockServer::start().await;
+
+        let honest = br#"{"schemaVersion":2}"#.to_vec();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&honest)));
+
+        // Registry serves DIFFERENT bytes under the digest-addressed URL.
+        let tampered = br#"{"schemaVersion":2,"x":"evil"}"#.to_vec();
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/myrepo/manifests/{digest}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", MANIFEST_MEDIA_TYPE)
+                    .set_body_bytes(tampered),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RegistryClient::new(server.uri().to_string());
+        let err = client
+            .get_manifest_raw("myrepo", &digest)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, RegistryError::DigestMismatch { .. }),
+            "tampered digest-addressed manifest must be rejected, got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The honest case still passes through: bytes that hash to the requested
+    // digest are returned unchanged.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_manifest_digest_match_accepted() {
+        let server = MockServer::start().await;
+
+        let body = br#"{"schemaVersion":2}"#.to_vec();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&body)));
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/myrepo/manifests/{digest}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", MANIFEST_MEDIA_TYPE)
+                    .set_body_bytes(body.clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RegistryClient::new(server.uri().to_string());
+        let (bytes, _ct) = client.get_manifest_raw("myrepo", &digest).await.unwrap();
+        assert_eq!(bytes, body);
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 2 (end-to-end): `get_manifest` must reject a body exceeding
+    // MAX_MANIFEST_BYTES via the up-front Content-Length check, rather than
+    // buffering the whole (here, > 32 MiB) body into host RAM before hashing.
+    // The body is honest (matches Content-Length) so the transport accepts it;
+    // our guard rejects it before reading past the header.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_manifest_oversized_rejected() {
+        let server = MockServer::start().await;
+
+        let oversized = vec![0u8; MAX_MANIFEST_BYTES + 1];
+        Mock::given(method("GET"))
+            .and(path("/v2/myrepo/manifests/latest"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", MANIFEST_MEDIA_TYPE)
+                    .set_body_bytes(oversized),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RegistryClient::new(server.uri().to_string());
+        let err = client.get_manifest("myrepo", "latest").await.unwrap_err();
+        assert!(
+            matches!(err, RegistryError::ResponseTooLarge { .. }),
+            "oversized manifest must be rejected, got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 2: even with NO / understated Content-Length, the streamed body is
+    // capped — the accumulating read errors once it crosses the limit rather
+    // than buffering an unbounded body. Verified against `read_body_capped`
+    // directly with a tiny cap.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_read_body_capped_streams_and_rejects_over_limit() {
+        let server = MockServer::start().await;
+
+        // 4 KiB body, no explicit Content-Length reliance — cap at 1 KiB.
+        Mock::given(method("GET"))
+            .and(path("/big"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8; 4096]))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::get(format!("{}/big", server.uri())).await.unwrap();
+        let err = read_body_capped(resp, 1024, "test").await.unwrap_err();
+        assert!(
+            matches!(err, RegistryError::ResponseTooLarge { .. }),
+            "over-cap streamed body must be rejected, got {err:?}"
+        );
+
+        // A body within the cap is returned intact.
+        let resp2 = reqwest::get(format!("{}/big", server.uri())).await.unwrap();
+        let ok = read_body_capped(resp2, 8192, "test").await.unwrap();
+        assert_eq!(ok.len(), 4096);
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload steps must survive a registry that answers only AFTER the shared
+    // client's read-gap deadline: an upload's socket delivers no bytes until
+    // the server has consumed the body and committed the blob, which for a
+    // multi-gigabyte layer takes well over any sane read timeout. This is the
+    // failure that made every large `pack push` die with "error sending
+    // request" while the same PUT from curl returned 201.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_push_blob_stream_survives_slow_commit() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/myrepo/blobs/uploads/"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/session1"),
+            )
+            .mount(&server)
+            .await;
+        // The 201 arrives only after the read-gap deadline has long passed.
+        Mock::given(method("PUT"))
+            .respond_with(
+                ResponseTemplate::new(201).set_delay(READ_TIMEOUT + Duration::from_secs(3)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RegistryClient::new(server.uri().to_string());
+        let body = b"large blob stand-in".to_vec();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&body)));
+        client
+            .push_blob_stream("myrepo", &digest, body.len() as u64, move || {
+                Ok(reqwest::Body::from(body.clone()))
+            })
+            .await
+            .expect("upload must outlive a slow server-side blob commit");
+    }
+
+    // -----------------------------------------------------------------------
+    // When the monolithic PUT is rejected with a 5xx (a registry or proxy that
+    // cannot carry the blob in one request — zot's ~60 s body deadline, a
+    // proxy's 413), push_blob_file must retry the same blob as a chunked
+    // upload rather than surfacing the failure.
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_push_blob_file_falls_back_to_chunked() {
+        let server = MockServer::start().await;
+        let content: &[u8] = b"blob that cannot travel whole";
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(content)));
+
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/myrepo/blobs/uploads/"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/sess-fb"),
+            )
+            .mount(&server)
+            .await;
+        // First PUT (the monolithic attempt) → 502; consumed once, so the
+        // chunked finalize below reaches the 201 mock.
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(502))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/v2/myrepo/blobs/uploads/sess-fb"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("Location", "/v2/myrepo/blobs/uploads/sess-fb"),
+            )
+            .expect(1..)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("smolvm-fallback-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blob_path = dir.join("blob.bin");
+        std::fs::write(&blob_path, content).unwrap();
+
+        let client = RegistryClient::new(server.uri().to_string());
+        client
+            .push_blob_file("myrepo", &digest, &blob_path)
+            .await
+            .expect("5xx on the monolithic PUT must fall back to chunked");
+
+        std::fs::remove_dir_all(&dir).ok();
+        // MockServer drop asserts the chunked PATCH + finalize PUT both ran.
+    }
+}

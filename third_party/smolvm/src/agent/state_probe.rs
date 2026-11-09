@@ -1,0 +1,465 @@
+//! Resolve the actual state of a VM by reconciling DB record,
+//! process liveness, and agent reachability.
+//!
+//! Three signals can disagree:
+//!
+//! - `record.state` — what we last persisted (e.g., `Running` after
+//!   a successful start).
+//! - `is_process_alive(pid)` — whether the libkrun VMM process is
+//!   still around. Cheap (`kill(pid, 0)` + start-time match).
+//! - vsock ping — whether the guest agent inside the VM responds.
+//!   The only signal that proves the VM is *useful*; everything
+//!   else is approximation.
+//!
+//! The combinations and their resolutions:
+//!
+//! | record.state | PID alive | ping ok | resolved state |
+//! |---|---|---|---|
+//! | Running | yes | yes | Running |
+//! | Running | yes | no  | **Unreachable** ← the bug 2 case |
+//! | Running | no  | yes | Running (macOS PID-not-visible edge case) |
+//! | Running | no  | no  | Stopped |
+//! | Stopped/Created/Failed | * | * | record.state (no probe) |
+//!
+//! Used by:
+//! - CLI `machine list` — so the column shows the truth.
+//! - HTTP API list/get/exec handlers — same reason.
+//! - CLI `machine start --name` — to detect the Unreachable state
+//!   and recover by killing the zombie VMM.
+
+use crate::agent::{AgentClient, AgentManager};
+use crate::config::{RecordState, VmRecord};
+use crate::db::SmolvmDb;
+
+/// Compute the resolved state for a VM record. May perform a single
+/// short-timeout vsock ping; all other paths are stat-only.
+///
+/// `name` is the machine name (used to locate the agent socket).
+/// Pings use a 250 ms timeout — long enough to tolerate a busy host
+/// but short enough that a `machine list` over a handful of stale
+/// records doesn't take seconds.
+pub fn resolve_state(name: &str, record: &VmRecord) -> RecordState {
+    if record.state != RecordState::Running {
+        return record.state.clone();
+    }
+
+    let pid_alive = record.is_process_alive();
+
+    if pid_alive {
+        // A fork base with frozen-generation clones or a retained frozen
+        // checkpoint was snapshot-frozen: its guest is paused and never
+        // answers a vsock ping. A retained checkpoint remains authoritative
+        // between pool fills, when there may be zero dependent clone rows.
+        // Report it as Frozen *without* probing — this distinguishes it
+        // from a genuine zombie (so the reaper and supervisor leave it
+        // alone) and avoids a multi-second ping timeout on a VM we know
+        // won't respond (the `machine status`/`ls` hang).
+        if has_frozen_fork_state(name, record) {
+            return RecordState::Frozen;
+        }
+        // PID alive: confirm the agent responds. If it doesn't, the
+        // VMM is zombied — agent crashed but libkrun stayed up. This
+        // is the "machine list says running, exec says not running"
+        // divergence the operator sees in the wild.
+        if probe_agent(name) {
+            RecordState::Running
+        } else {
+            RecordState::Unreachable
+        }
+    } else {
+        // PID not visible. On macOS the session-leader VMM may not
+        // be reachable via `kill(pid, 0)` from a different shell —
+        // try the agent socket as a fallback before declaring stopped.
+        if probe_agent(name) {
+            RecordState::Running
+        } else {
+            RecordState::Stopped
+        }
+    }
+}
+
+/// Cheap (no vsock probe) check for a snapshot-frozen fork base: its
+/// record says `Running`, its VMM PID is alive, and it has frozen-generation clones
+/// or a retained checkpoint bound to that exact process. Such a VM's guest
+/// agent is paused and must not be connected to or probed — doing so blocks
+/// for the full vsock timeout. Callers report it as [`RecordState::Frozen`]
+/// directly. Shares the same condition `resolve_state` uses, so the two never
+/// disagree.
+pub fn is_frozen_fork_base(name: &str, record: &VmRecord) -> bool {
+    record.state == RecordState::Running
+        && record.is_process_alive()
+        && has_frozen_fork_state(name, record)
+}
+
+/// True if `name` has a frozen checkpoint or children requiring a frozen source.
+/// Continuing generations pivot the source's disks, so their children alone do
+/// not imply that its current process is paused. Frozen sources must not be
+/// probed, reaped, or auto-restarted. Best-effort: a DB error
+/// resolves to `false` (treat as not-a-fork-base) so a transient failure
+/// can't wedge state resolution.
+fn has_frozen_fork_state(name: &str, record: &VmRecord) -> bool {
+    let Ok(db) = SmolvmDb::open() else {
+        return false;
+    };
+    has_frozen_fork_state_in(
+        &db,
+        name,
+        record,
+        &crate::agent::vm_data_dir(name).join("s"),
+    )
+}
+
+fn has_frozen_fork_state_in(
+    db: &SmolvmDb,
+    name: &str,
+    record: &VmRecord,
+    snapshot_root: &std::path::Path,
+) -> bool {
+    let retained = db
+        .retained_fork_snapshot(name)
+        .ok()
+        .flatten()
+        .filter(|snapshot| {
+            crate::agent::fork::retained_snapshot_matches_golden(record, snapshot_root, snapshot)
+        });
+    if retained
+        .as_ref()
+        .is_some_and(crate::agent::fork::retained_snapshot_source_continues)
+    {
+        return false;
+    }
+    // A retained checkpoint is bound to the source's old PID after restart.
+    // Keep the same generation-aware distinction used to permit that restart:
+    // children of a committed continuing generation do not freeze the new VMM.
+    if crate::agent::fork::restart_blocking_dependent_clones_in(db, name, snapshot_root)
+        .map(|clones| !clones.is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    retained.is_some()
+}
+
+/// Tear down a zombie libkrun VMM (live PID, dead agent) and clear
+/// the record's PID/state so the caller can proceed to a clean
+/// fresh start — or simply leave the VM Stopped.
+///
+/// Refuses to signal a live PID unless its start time matches the record,
+/// then uses the shared VM shutdown path to wait for confirmed process death.
+/// The record is cleared only after that confirmation.
+///
+/// This is the shared teardown used by both the CLI (`machine start
+/// | stop | delete --stop`) and the HTTP API (`POST /machines/X/start`)
+/// so all surfaces recover from the Unreachable state the same way.
+pub fn recover_unreachable_machine(record: &VmRecord) -> crate::Result<()> {
+    let db = SmolvmDb::open()?;
+    recover_unreachable_machine_in_db(record, &db)
+}
+
+pub(crate) fn recover_unreachable_machine_in_db(
+    record: &VmRecord,
+    db: &SmolvmDb,
+) -> crate::Result<()> {
+    if let Some(pid) = record.pid {
+        if crate::process::is_alive(pid) {
+            if !crate::process::is_our_process_strict(pid, record.pid_start_time) {
+                return Err(crate::Error::agent(
+                    "recover unreachable machine",
+                    format!(
+                        "refusing to stop unverified process {pid}; if {pid} is \
+                         this VM's process, run: kill -9 {pid}, then retry"
+                    ),
+                ));
+            }
+            crate::vm_exit::mark_stop_requested(&crate::agent::vm_data_dir(&record.name), pid);
+            crate::process::stop_vm_process(
+                pid,
+                crate::process::VM_SIGTERM_TIMEOUT,
+                crate::process::VM_SIGKILL_TIMEOUT,
+            )?;
+        }
+    }
+
+    if let Err(error) = crate::agent::cleanup_dead_vm_runtime_in_db(&record.name, db) {
+        tracing::warn!(
+            machine = %record.name,
+            %error,
+            "failed to clean runtime after unreachable VM teardown"
+        );
+    }
+
+    // Write via SmolvmDb (not SmolvmConfig) to avoid pulling the full
+    // in-memory config load; the update is targeted to the one record.
+    db.update_vm(&record.name, |r| {
+        r.state = RecordState::Stopped;
+        r.pid = None;
+        r.pid_start_time = None;
+    })?;
+    Ok(())
+}
+
+/// If the named VM resolves to `Unreachable`, recover it (kill the
+/// zombie VMM, clear the record). No-op for any other state.
+///
+/// Loads the record via `SmolvmDb` so callers on either side of the
+/// CLI/API boundary can share the helper without coupling to
+/// `SmolvmConfig`.
+///
+/// Returns `Ok(true)` when recovery actually ran, so callers can print
+/// a user-facing notice (start/stop/delete all want to mention the
+/// teardown happened — the alternative is a silent kill, which is
+/// surprising when the operator didn't know a zombie existed).
+/// Returns `Ok(false)` when the machine is not Unreachable and nothing
+/// happened. Returns `Err` when the zombie could not be confirmed dead
+/// (unverified PID, or still alive after SIGTERM+SIGKILL); callers must
+/// not proceed as if the machine were stopped in that case.
+pub fn recover_if_unreachable(name: &str) -> crate::Result<bool> {
+    let db = SmolvmDb::open()?;
+    let Ok(Some(record)) = db.get_vm(name) else {
+        return Ok(false);
+    };
+    // Only a genuine zombie resolves to `Unreachable`. A frozen fork base
+    // resolves to `Frozen` (see `resolve_state`) and is left alone here —
+    // reaping it would kill the CoW backing out from under live clones.
+    // A force-delete that genuinely wants to break the chain calls
+    // `recover_unreachable_machine` directly, bypassing this path.
+    if resolve_state(name, &record) != RecordState::Unreachable {
+        return Ok(false);
+    }
+    recover_unreachable_machine_in_db(&record, &db)?;
+    Ok(true)
+}
+
+/// Return true if a short-timeout vsock ping to the agent for this
+/// machine succeeds. Used as the liveness ground-truth.
+fn probe_agent(name: &str) -> bool {
+    let Ok(manager) = AgentManager::for_vm(name) else {
+        return false;
+    };
+    // Detach immediately — this manager is only used to locate the vsock
+    // socket. Without detach, Drop sends Shutdown and kills the VM.
+    manager.detach();
+    // Use a moderate 3s timeout (not the 100ms boot probe) so a busy agent
+    // — e.g., processing a Run request's overlayfs setup or a container
+    // operation — isn't falsely reported as Unreachable. The 100ms timeout
+    // caused `machine ls` / `machine status` to flap to Unreachable any
+    // time the agent happened to be processing another request.
+    let Ok(mut client) = AgentClient::connect_for_state_probe(manager.vsock_socket()) else {
+        return false;
+    };
+    client.ping().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a record in the given state. We don't need to populate
+    /// every field — most of them are irrelevant to the resolver.
+    fn record(state: RecordState, pid: Option<i32>) -> VmRecord {
+        let mut r = VmRecord::new("test".to_string(), 1, 256, vec![], vec![], false);
+        r.state = state;
+        r.pid = pid;
+        r
+    }
+
+    #[test]
+    fn non_running_states_pass_through_without_probing() {
+        // The resolver short-circuits on any state other than
+        // Running — never touches the agent socket. This matters
+        // both for performance (no per-record probe on big lists)
+        // and for correctness (Stopped should never randomly
+        // become Unreachable just because some unrelated socket
+        // happens to be reachable).
+        for s in [
+            RecordState::Created,
+            RecordState::Stopped,
+            RecordState::Failed,
+            RecordState::Unreachable, // already-unreachable stays unreachable
+        ] {
+            let r = record(s.clone(), Some(99999));
+            // Pass a name that won't match any real agent socket on
+            // disk, so any accidental probe would fail fast.
+            let resolved = resolve_state("does-not-exist", &r);
+            assert_eq!(resolved, s, "state {:?} should pass through", s);
+        }
+    }
+
+    #[test]
+    fn running_with_no_pid_and_no_agent_returns_stopped() {
+        // No PID + no reachable agent socket → not running. The
+        // macOS PID-fallback path probes anyway (in case the PID
+        // check missed a session-leader process), but with a name
+        // that has no agent socket, the probe fails and we
+        // correctly return Stopped.
+        //
+        // Avoiding `Some(0)` here because PID 0 is a magic value
+        // (`kill(0, 0)` targets the current process group and
+        // returns success), which would mis-classify as "alive".
+        let r = record(RecordState::Running, None);
+        let resolved = resolve_state("ghost-does-not-exist", &r);
+        assert_eq!(resolved, RecordState::Stopped);
+    }
+
+    /// The cases that require a live agent socket (Running with PID
+    /// alive + ping ok, Running with PID alive + ping fail) are
+    /// exercised by the manual repro in `docs/file-transfer-fixes-plan.md`
+    /// because they need a real VM. Layer A's contract is otherwise
+    /// nailed down by the cases above.
+    #[test]
+    fn unreachable_variant_round_trips_through_serde() {
+        // The Unreachable variant must serialize cleanly so a record
+        // marked Unreachable in memory persists to the database correctly.
+        let r = record(RecordState::Unreachable, Some(12345));
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"state\":\"unreachable\""));
+        let back: VmRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.state, RecordState::Unreachable);
+    }
+
+    #[test]
+    fn unreachable_displays_as_unreachable() {
+        // The state shown in the CLI list comes from Display.
+        // Operator must see "unreachable" verbatim, not the debug
+        // form or a fallback.
+        assert_eq!(format!("{}", RecordState::Unreachable), "unreachable");
+    }
+
+    #[test]
+    fn frozen_displays_as_frozen() {
+        // A snapshot-frozen fork base must show as "frozen" in `ls`/`status`,
+        // not the misleading "unreachable" (which reads as a fault).
+        assert_eq!(format!("{}", RecordState::Frozen), "frozen");
+    }
+
+    #[test]
+    fn frozen_variant_round_trips_through_serde() {
+        let r = record(RecordState::Frozen, Some(12345));
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"state\":\"frozen\""));
+        let back: VmRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.state, RecordState::Frozen);
+    }
+
+    #[test]
+    fn non_running_fork_base_is_not_frozen() {
+        // `is_frozen_fork_base` requires record.state == Running. A golden
+        // that was force-reaped to Stopped (clones dangling) must NOT report
+        // Frozen — Frozen implies a live, paused VMM. (No clones exist for
+        // "does-not-exist" so this also covers has_live_clones == false.)
+        let r = record(RecordState::Stopped, Some(99999));
+        assert!(!is_frozen_fork_base("does-not-exist", &r));
+    }
+
+    #[test]
+    fn continuing_source_is_not_frozen_after_restart_with_retained_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = SmolvmDb::open_at(&temp.path().join("test.db")).unwrap();
+        let snapshot_root = temp.path().join("s");
+        let snapshot = crate::agent::fork::RetainedForkSnapshot {
+            path: snapshot_root.join("0123abcd"),
+            golden_pid: 123,
+            golden_pid_start_time: 456,
+        };
+        std::fs::create_dir_all(&snapshot.path).unwrap();
+        std::fs::write(snapshot.path.join("source-continues-v1"), b"").unwrap();
+        db.set_retained_fork_snapshot("source", &snapshot).unwrap();
+
+        let mut child = VmRecord::new("child".into(), 1, 128, vec![], vec![], false);
+        child.golden = Some("source".into());
+        child.fork_generation = Some("0123abcd".into());
+        db.insert_vm("child", &child).unwrap();
+        for child_state in [RecordState::Running, RecordState::Stopped] {
+            db.update_vm("child", |r| r.state = child_state.clone())
+                .unwrap();
+            // The original process, a new PID, and a reused PID must all
+            // remain eligible for the ordinary running/unreachable probe.
+            for (pid, start) in [(123, 456), (124, 457), (123, 458)] {
+                let mut source = record(RecordState::Running, Some(pid));
+                source.pid_start_time = Some(start);
+                assert!(
+                    !has_frozen_fork_state_in(&db, "source", &source, &snapshot_root),
+                    "source {pid}/{start} with {child_state:?} child was classified frozen"
+                );
+            }
+        }
+        // Retained checkpoints are an optimization. The child's committed
+        // continuing generation also suffices when that hint is absent.
+        db.remove_retained_fork_snapshot("source").unwrap();
+        let mut source = record(RecordState::Running, Some(124));
+        source.pid_start_time = Some(457);
+        assert!(!has_frozen_fork_state_in(
+            &db,
+            "source",
+            &source,
+            &snapshot_root
+        ));
+
+        // Do not relax the guard for children lacking a committed pivot.
+        let mut frozen_child = VmRecord::new("frozen-child".into(), 1, 128, vec![], vec![], false);
+        frozen_child.golden = Some("source".into());
+        frozen_child.fork_generation = Some("deadbeef".into());
+        db.insert_vm("frozen-child", &frozen_child).unwrap();
+        assert!(has_frozen_fork_state_in(
+            &db,
+            "source",
+            &source,
+            &snapshot_root
+        ));
+        db.remove_vm("frozen-child").unwrap();
+        std::fs::remove_file(snapshot.path.join("source-continues-v1")).unwrap();
+        assert!(has_frozen_fork_state_in(
+            &db,
+            "source",
+            &source,
+            &snapshot_root
+        ));
+    }
+
+    #[test]
+    fn retained_frozen_checkpoint_requires_the_current_process_even_without_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = SmolvmDb::open_at(&temp.path().join("test.db")).unwrap();
+        let snapshot_root = temp.path().join("s");
+        let snapshot = crate::agent::fork::RetainedForkSnapshot {
+            path: snapshot_root.join("0123abcd"),
+            golden_pid: 123,
+            golden_pid_start_time: 456,
+        };
+        std::fs::create_dir_all(&snapshot.path).unwrap();
+        db.set_retained_fork_snapshot("source", &snapshot).unwrap();
+        let mut source = record(RecordState::Running, Some(123));
+        source.pid_start_time = Some(456);
+        assert!(has_frozen_fork_state_in(
+            &db,
+            "source",
+            &source,
+            &snapshot_root
+        ));
+        source.pid_start_time = Some(457);
+        assert!(!has_frozen_fork_state_in(
+            &db,
+            "source",
+            &source,
+            &snapshot_root
+        ));
+    }
+
+    #[test]
+    fn failed_recovery_preserves_process_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = SmolvmDb::open_at(&dir.path().join("test.db")).unwrap();
+        let mut r = record(RecordState::Unreachable, Some(std::process::id() as i32));
+        r.pid_start_time = None;
+        db.insert_vm(&r.name, &r).unwrap();
+
+        let error = recover_unreachable_machine_in_db(&r, &db).unwrap_err();
+
+        assert!(error.to_string().contains("unverified process"));
+        assert!(error.to_string().contains("kill -9"));
+        let persisted = db.get_vm(&r.name).unwrap().unwrap();
+        assert_eq!(persisted.state, RecordState::Unreachable);
+        assert_eq!(persisted.pid, r.pid);
+        assert_eq!(persisted.pid_start_time, r.pid_start_time);
+    }
+}

@@ -1,0 +1,1039 @@
+//! Forward-to-host-lib marshaling generator.
+//!
+//! CUDA's library surface is hundreds of functions across cudart, cuBLAS,
+//! cuDNN, … Hand-writing the guest stub + host dispatch + (de)serialization for
+//! each is unmaintainable. This tool takes a compact per-function spec and emits
+//! both sides of the marshaling over the generic `LibCall` transport
+//! (`smolvm_cuda::proto::Op::LibCall`), so adding a function is a few lines of
+//! spec, not code across five files.
+//!
+//! Parameter kinds capture the one thing a C signature can't: whether a pointer
+//! is an opaque host **Handle**, a **DevPtr** (real device address), or a
+//! **HostIn** scalar to read and ship by value. Everything else follows.
+//!
+//! Emits two files:
+//! - `<out>/<lib>_guest.rs` — `extern "C"` stubs, `include!`d by the guest shim.
+//! - `<out>/<lib>_host.rs` — dlsym table + `dispatch(func, args)`, `include!`d by
+//!   the host backend.
+//!
+//! This is a spec-driven generator; the specs below are hand-authored today, but
+//! nothing stops a future front-end from emitting them from the CUDA headers.
+
+use std::fmt::Write as _;
+
+/// How one parameter is marshaled.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// A machine scalar passed by value. `.0` is the Rust scalar type.
+    Scalar(&'static str),
+    /// An opaque host handle (cuBLAS/cuDNN handle, …) — pass the pointer
+    /// value by reference; the guest never dereferences it.
+    Handle,
+    /// A `cudaStream_t`. Streams are session-mapped small ids on the wire (the
+    /// host mints them at StreamCreate), so the host must translate through the
+    /// session stream table — NOT vh_resolve — or the raw id reaches the real
+    /// library as a pointer and crashes it. 0 and the legacy constants
+    /// (0x1/0x2) pass through.
+    Stream,
+    /// A real device address — pass by value.
+    DevPtr,
+    /// A host input scalar behind a pointer (cuBLAS alpha/beta) — read `*p` on
+    /// the guest, ship the value, rebuild a pointer to a local on the host.
+    HostInScalar(&'static str),
+    /// A fixed-size host input object whose C ABI is pointer-only (for example
+    /// cuComplex). Copy bytes guest-side and rebuild them in 8-byte-aligned
+    /// host storage without imposing Rust's `u128` alignment on C callers.
+    HostInBytes(usize),
+    /// A host output scalar behind a pointer (cuDNN workspace size) — the host
+    /// fills a local and ships it back; the guest writes it through `*p`. `.0` is
+    /// the wire scalar type; the pointee type comes from the param's `cty`.
+    HostOutScalar(&'static str),
+    /// A host output `cudaStream_t`. The host converts the real stream back to
+    /// its session-scoped guest handle before returning it.
+    HostOutStream,
+}
+
+/// The pointee of a `*mut T` C type (for building a local of the right type).
+fn pointee(cty: &str) -> &str {
+    cty.strip_prefix("*mut ").unwrap_or(cty)
+}
+
+/// Wire size in bytes of a scalar type name.
+fn wire_size(t: &str) -> usize {
+    match t {
+        "u16" => 2, // __half forwarded bitwise
+        "i32" | "u32" | "f32" => 4,
+        _ => 8,
+    }
+}
+
+/// One parameter: its name, the Rust type in the `extern "C"` signature, and how
+/// to marshal it.
+struct P {
+    name: &'static str,
+    cty: &'static str,
+    kind: Kind,
+}
+const fn p(name: &'static str, cty: &'static str, kind: Kind) -> P {
+    P { name, cty, kind }
+}
+
+/// One function to generate.
+struct Fun {
+    /// Exported symbol name (what the guest program links).
+    sym: &'static str,
+    /// Real host symbol to dlsym (usually the same).
+    real: &'static str,
+    params: Vec<P>,
+}
+
+/// A library: an id (matches the guest shim's `LIB_*` constant) and its
+/// functions, indexed in order (the index is the `func` id on the wire).
+struct Lib {
+    name: &'static str,
+    id: u8,
+    /// Default soname to dlopen on the host if the env override is unset.
+    /// Sonames to probe via `open_host_lib`, most-specific last.
+    default_sos: &'static [&'static str],
+    funcs: Vec<Fun>,
+}
+
+fn cublas_spec() -> Lib {
+    use Kind::*;
+    let handle = || p("handle", "*mut c_void", Handle);
+    let i = |n| p(n, "c_int", Scalar("i32"));
+    // Column-major GEMM shared shape for S/D, differing only in element type.
+    let gemm = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            i("transa"),
+            i("transb"),
+            i("m"),
+            i("n"),
+            i("k"),
+            p("alpha", leak(format!("*const {ety}")), HostInScalar(ety)),
+            p("A", leak(format!("*const {ety}")), DevPtr),
+            i("lda"),
+            p("B", leak(format!("*const {ety}")), DevPtr),
+            i("ldb"),
+            p("beta", leak(format!("*const {ety}")), HostInScalar(ety)),
+            p("C", leak(format!("*mut {ety}")), DevPtr),
+            i("ldc"),
+        ],
+    };
+    // Strided-batched GEMM (PyTorch's `bmm`): same as gemm plus per-operand
+    // strides (i64) and a batch count.
+    let s64 = |n| p(n, "i64", Scalar("i64"));
+    let gemm_strided = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            i("transa"),
+            i("transb"),
+            i("m"),
+            i("n"),
+            i("k"),
+            p("alpha", leak(format!("*const {ety}")), HostInScalar(ety)),
+            p("A", leak(format!("*const {ety}")), DevPtr),
+            i("lda"),
+            s64("strideA"),
+            p("B", leak(format!("*const {ety}")), DevPtr),
+            i("ldb"),
+            s64("strideB"),
+            p("beta", leak(format!("*const {ety}")), HostInScalar(ety)),
+            p("C", leak(format!("*mut {ety}")), DevPtr),
+            i("ldc"),
+            s64("strideC"),
+            i("batchCount"),
+        ],
+    };
+    // ---- BLAS Level 1/2/3 (device-pointer ops with host scalars) ----
+    // Reduction ops (dot/nrm2/asum/amax) are omitted deliberately: their
+    // result pointer is host- or device-resident depending on the handle's
+    // pointer mode, which this uniform marshaling can't disambiguate — they
+    // stay honest NOT_SUPPORTED stubs rather than risk a silently-wrong result.
+    let ic = i; // alias for closures below
+    let dp = |n, ety: &'static str, m: bool| {
+        p(
+            n,
+            leak(format!("*{} {ety}", if m { "mut" } else { "const" })),
+            DevPtr,
+        )
+    };
+    let hin = |n, ety: &'static str| p(n, leak(format!("*const {ety}")), HostInScalar(ety));
+    let axpy = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("n"),
+            hin("alpha", ety),
+            dp("x", ety, false),
+            ic("incx"),
+            dp("y", ety, true),
+            ic("incy"),
+        ],
+    };
+    let scal = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("n"),
+            hin("alpha", ety),
+            dp("x", ety, true),
+            ic("incx"),
+        ],
+    };
+    let copyswap = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("n"),
+            dp("x", ety, true),
+            ic("incx"),
+            dp("y", ety, true),
+            ic("incy"),
+        ],
+    };
+    let gemv = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("trans"),
+            ic("m"),
+            ic("n"),
+            hin("alpha", ety),
+            dp("A", ety, false),
+            ic("lda"),
+            dp("x", ety, false),
+            ic("incx"),
+            hin("beta", ety),
+            dp("y", ety, true),
+            ic("incy"),
+        ],
+    };
+    let ger = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("m"),
+            ic("n"),
+            hin("alpha", ety),
+            dp("x", ety, false),
+            ic("incx"),
+            dp("y", ety, false),
+            ic("incy"),
+            dp("A", ety, true),
+            ic("lda"),
+        ],
+    };
+    let geam = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("transa"),
+            ic("transb"),
+            ic("m"),
+            ic("n"),
+            hin("alpha", ety),
+            dp("A", ety, false),
+            ic("lda"),
+            hin("beta", ety),
+            dp("B", ety, false),
+            ic("ldb"),
+            dp("C", ety, true),
+            ic("ldc"),
+        ],
+    };
+    let geam_complex = |sym, real, scalar_bytes: usize| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("transa"),
+            ic("transb"),
+            ic("m"),
+            ic("n"),
+            p("alpha", "*const c_void", HostInBytes(scalar_bytes)),
+            p("A", "*const c_void", DevPtr),
+            ic("lda"),
+            p("beta", "*const c_void", HostInBytes(scalar_bytes)),
+            p("B", "*const c_void", DevPtr),
+            ic("ldb"),
+            p("C", "*mut c_void", DevPtr),
+            ic("ldc"),
+        ],
+    };
+    let syrk = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("uplo"),
+            ic("trans"),
+            ic("n"),
+            ic("k"),
+            hin("alpha", ety),
+            dp("A", ety, false),
+            ic("lda"),
+            hin("beta", ety),
+            dp("C", ety, true),
+            ic("ldc"),
+        ],
+    };
+    let symm = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("side"),
+            ic("uplo"),
+            ic("m"),
+            ic("n"),
+            hin("alpha", ety),
+            dp("A", ety, false),
+            ic("lda"),
+            dp("B", ety, false),
+            ic("ldb"),
+            hin("beta", ety),
+            dp("C", ety, true),
+            ic("ldc"),
+        ],
+    };
+    let trsm = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("side"),
+            ic("uplo"),
+            ic("trans"),
+            ic("diag"),
+            ic("m"),
+            ic("n"),
+            hin("alpha", ety),
+            dp("A", ety, false),
+            ic("lda"),
+            dp("B", ety, true),
+            ic("ldb"),
+        ],
+    };
+    let dgmm = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("mode"),
+            ic("m"),
+            ic("n"),
+            dp("A", ety, false),
+            ic("lda"),
+            dp("x", ety, false),
+            ic("incx"),
+            dp("C", ety, true),
+            ic("ldc"),
+        ],
+    };
+    let sbmv = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("uplo"),
+            ic("n"),
+            ic("k"),
+            hin("alpha", ety),
+            dp("A", ety, false),
+            ic("lda"),
+            dp("x", ety, false),
+            ic("incx"),
+            hin("beta", ety),
+            dp("y", ety, true),
+            ic("incy"),
+        ],
+    };
+    let packed = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("uplo"),
+            ic("n"),
+            dp("src", ety, false),
+            dp("dst", ety, true),
+            ic("lda"),
+        ],
+    };
+    let unpacked_to_packed = |sym, real, ety: &'static str| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("uplo"),
+            ic("n"),
+            dp("src", ety, false),
+            ic("lda"),
+            dp("dst", ety, true),
+        ],
+    };
+    let getri_batched = |sym, real| Fun {
+        sym,
+        real,
+        params: vec![
+            handle(),
+            ic("n"),
+            p("Aarray", "*const c_void", DevPtr),
+            ic("lda"),
+            p("pivots", "*const c_int", DevPtr),
+            p("Carray", "*mut c_void", DevPtr),
+            ic("ldc"),
+            p("info", "*mut c_int", DevPtr),
+            ic("batch_size"),
+        ],
+    };
+    Lib {
+        name: "cublas",
+        id: 1,
+        default_sos: &["libcublas.so", "libcublas.so.13", "libcublas.so.12"],
+        funcs: vec![
+            Fun {
+                sym: "cublasCreate_v2",
+                real: "cublasCreate_v2",
+                params: vec![p("handle_out", "*mut *mut c_void", Handle)], // out-handle: special-cased below
+            },
+            Fun {
+                sym: "cublasDestroy_v2",
+                real: "cublasDestroy_v2",
+                params: vec![handle()],
+            },
+            gemm("cublasSgemm_v2", "cublasSgemm_v2", "f32"),
+            // __half forwarded bitwise as u16 (the value is never interpreted
+            // guest-side; the host passes a pointer to the same 2 bytes).
+            gemm("cublasHgemm", "cublasHgemm", "u16"),
+            gemm("cublasDgemm_v2", "cublasDgemm_v2", "f64"),
+            gemm_strided(
+                "cublasSgemmStridedBatched",
+                "cublasSgemmStridedBatched",
+                "f32",
+            ),
+            gemm_strided(
+                "cublasDgemmStridedBatched",
+                "cublasDgemmStridedBatched",
+                "f64",
+            ),
+            // Stream + config that PyTorch sets up before a matmul.
+            Fun {
+                sym: "cublasSetStream_v2",
+                real: "cublasSetStream_v2",
+                params: vec![handle(), p("stream", "*mut c_void", Stream)],
+            },
+            Fun {
+                sym: "cublasSetWorkspace_v2",
+                real: "cublasSetWorkspace_v2",
+                params: vec![
+                    handle(),
+                    p("workspace", "*mut c_void", DevPtr),
+                    p("size", "usize", Scalar("u64")),
+                ],
+            },
+            Fun {
+                sym: "cublasSetMathMode",
+                real: "cublasSetMathMode",
+                params: vec![handle(), i("mode")],
+            },
+            Fun {
+                sym: "cublasGetMathMode",
+                real: "cublasGetMathMode",
+                params: vec![handle(), p("mode", "*mut c_int", HostOutScalar("i32"))],
+            },
+            Fun {
+                sym: "cublasGetProperty",
+                real: "cublasGetProperty",
+                params: vec![
+                    i("prop_type"),
+                    p("value", "*mut c_int", HostOutScalar("i32")),
+                ],
+            },
+            // cublasGemmEx — PyTorch's general GEMM. alpha/beta are the compute
+            // type (f32 for the common CUBLAS_COMPUTE_32F path).
+            Fun {
+                sym: "cublasGemmEx",
+                real: "cublasGemmEx",
+                params: vec![
+                    handle(),
+                    i("transa"),
+                    i("transb"),
+                    i("m"),
+                    i("n"),
+                    i("k"),
+                    p("alpha", "*const f32", HostInScalar("f32")),
+                    p("A", "*const c_void", DevPtr),
+                    i("Atype"),
+                    i("lda"),
+                    p("B", "*const c_void", DevPtr),
+                    i("Btype"),
+                    i("ldb"),
+                    p("beta", "*const f32", HostInScalar("f32")),
+                    p("C", "*mut c_void", DevPtr),
+                    i("Ctype"),
+                    i("ldc"),
+                    i("computeType"),
+                    i("algo"),
+                ],
+            },
+            // cublasGemmStridedBatchedEx — PyTorch's mixed-precision batched GEMM
+            // (fp16/bf16 `bmm`). alpha/beta are the compute type (f32 common path).
+            Fun {
+                sym: "cublasGemmStridedBatchedEx",
+                real: "cublasGemmStridedBatchedEx",
+                params: vec![
+                    handle(),
+                    i("transa"),
+                    i("transb"),
+                    i("m"),
+                    i("n"),
+                    i("k"),
+                    p("alpha", "*const f32", HostInScalar("f32")),
+                    p("A", "*const c_void", DevPtr),
+                    i("Atype"),
+                    i("lda"),
+                    s64("strideA"),
+                    p("B", "*const c_void", DevPtr),
+                    i("Btype"),
+                    i("ldb"),
+                    s64("strideB"),
+                    p("beta", "*const f32", HostInScalar("f32")),
+                    p("C", "*mut c_void", DevPtr),
+                    i("Ctype"),
+                    i("ldc"),
+                    s64("strideC"),
+                    i("batchCount"),
+                    i("computeType"),
+                    i("algo"),
+                ],
+            },
+            // cublasGemmBatchedEx — pointer-array batched GEMM (llama.cpp's
+            // ggml-cuda attention batching). The A/B/C arrays are arrays OF
+            // device pointers living in device memory, so they forward as
+            // plain device pointers.
+            Fun {
+                sym: "cublasGemmBatchedEx",
+                real: "cublasGemmBatchedEx",
+                params: vec![
+                    handle(),
+                    i("transa"),
+                    i("transb"),
+                    i("m"),
+                    i("n"),
+                    i("k"),
+                    p("alpha", "*const f32", HostInScalar("f32")),
+                    p("Aarray", "*const c_void", DevPtr),
+                    i("Atype"),
+                    i("lda"),
+                    p("Barray", "*const c_void", DevPtr),
+                    i("Btype"),
+                    i("ldb"),
+                    p("beta", "*const f32", HostInScalar("f32")),
+                    p("Carray", "*mut c_void", DevPtr),
+                    i("Ctype"),
+                    i("ldc"),
+                    i("batchCount"),
+                    i("computeType"),
+                    i("algo"),
+                ],
+            },
+            // BLAS Level 1/2/3 — appended (indices grow; existing ones stable).
+            axpy("cublasSaxpy_v2", "cublasSaxpy_v2", "f32"),
+            axpy("cublasDaxpy_v2", "cublasDaxpy_v2", "f64"),
+            scal("cublasSscal_v2", "cublasSscal_v2", "f32"),
+            scal("cublasDscal_v2", "cublasDscal_v2", "f64"),
+            copyswap("cublasScopy_v2", "cublasScopy_v2", "f32"),
+            copyswap("cublasDcopy_v2", "cublasDcopy_v2", "f64"),
+            copyswap("cublasSswap_v2", "cublasSswap_v2", "f32"),
+            copyswap("cublasDswap_v2", "cublasDswap_v2", "f64"),
+            gemv("cublasSgemv_v2", "cublasSgemv_v2", "f32"),
+            gemv("cublasDgemv_v2", "cublasDgemv_v2", "f64"),
+            ger("cublasSger_v2", "cublasSger_v2", "f32"),
+            ger("cublasDger_v2", "cublasDger_v2", "f64"),
+            geam("cublasSgeam", "cublasSgeam", "f32"),
+            geam("cublasDgeam", "cublasDgeam", "f64"),
+            syrk("cublasSsyrk_v2", "cublasSsyrk_v2", "f32"),
+            syrk("cublasDsyrk_v2", "cublasDsyrk_v2", "f64"),
+            symm("cublasSsymm_v2", "cublasSsymm_v2", "f32"),
+            symm("cublasDsymm_v2", "cublasDsymm_v2", "f64"),
+            trsm("cublasStrsm_v2", "cublasStrsm_v2", "f32"),
+            trsm("cublasDtrsm_v2", "cublasDtrsm_v2", "f64"),
+            // CUDA 13 import surface. Append to preserve every existing wire id.
+            Fun {
+                sym: "cublasSetSmCountTarget",
+                real: "cublasSetSmCountTarget",
+                params: vec![handle(), i("sm_count_target")],
+            },
+            // Application-facing CUDA 13 image imports. Keep appends stable:
+            // the vector index is the wire function id.
+            Fun {
+                sym: "cublasGetStream_v2",
+                real: "cublasGetStream_v2",
+                params: vec![handle(), p("stream", "*mut *mut c_void", HostOutStream)],
+            },
+            Fun {
+                sym: "cublasGetVersion_v2",
+                real: "cublasGetVersion_v2",
+                params: vec![handle(), p("version", "*mut c_int", HostOutScalar("i32"))],
+            },
+            dgmm("cublasSdgmm", "cublasSdgmm", "f32"),
+            dgmm("cublasDdgmm", "cublasDdgmm", "f64"),
+            dgmm("cublasCdgmm", "cublasCdgmm", "c_void"),
+            dgmm("cublasZdgmm", "cublasZdgmm", "c_void"),
+            sbmv("cublasSsbmv_v2", "cublasSsbmv_v2", "f32"),
+            sbmv("cublasDsbmv_v2", "cublasDsbmv_v2", "f64"),
+            packed("cublasStpttr", "cublasStpttr", "f32"),
+            packed("cublasDtpttr", "cublasDtpttr", "f64"),
+            unpacked_to_packed("cublasStrttp", "cublasStrttp", "f32"),
+            unpacked_to_packed("cublasDtrttp", "cublasDtrttp", "f64"),
+            getri_batched("cublasSgetriBatched", "cublasSgetriBatched"),
+            getri_batched("cublasDgetriBatched", "cublasDgetriBatched"),
+            getri_batched("cublasCgetriBatched", "cublasCgetriBatched"),
+            getri_batched("cublasZgetriBatched", "cublasZgetriBatched"),
+            geam_complex("cublasCgeam", "cublasCgeam", 8),
+            geam_complex("cublasZgeam", "cublasZgeam", 16),
+        ],
+    }
+}
+
+/// An out-handle constructor (`fn(T* out)`), e.g. `cudnnCreateTensorDescriptor`.
+fn create(name: &'static str) -> Fun {
+    Fun {
+        sym: name,
+        real: name,
+        params: vec![p("out", "*mut *mut c_void", Kind::Handle)],
+    }
+}
+
+/// Core cuDNN legacy convolution path — the surface a basic conv forward needs.
+/// Descriptors are opaque handles; tensors are device pointers; alpha/beta are
+/// host scalars; the workspace size is a host output.
+fn cudnn_spec() -> Lib {
+    use Kind::*;
+    let h = || p("handle", "*mut c_void", Handle);
+    let d = |n| p(n, "*mut c_void", Handle);
+    let dev = |n| p(n, "*mut c_void", DevPtr);
+    let i = |n| p(n, "c_int", Scalar("i32"));
+    let f = |sym, params| Fun {
+        sym,
+        real: sym,
+        params,
+    };
+    Lib {
+        name: "cudnn",
+        id: 2,
+        default_sos: &["libcudnn.so", "libcudnn.so.9", "libcudnn.so.8"],
+        funcs: vec![
+            create("cudnnCreate"),
+            f("cudnnDestroy", vec![h()]),
+            f(
+                "cudnnSetStream",
+                vec![h(), p("stream", "*mut c_void", Stream)],
+            ),
+            create("cudnnCreateTensorDescriptor"),
+            f(
+                "cudnnSetTensor4dDescriptor",
+                vec![d("t"), i("fmt"), i("dtype"), i("n"), i("c"), i("h"), i("w")],
+            ),
+            f("cudnnDestroyTensorDescriptor", vec![d("t")]),
+            create("cudnnCreateFilterDescriptor"),
+            f(
+                "cudnnSetFilter4dDescriptor",
+                vec![d("f"), i("dtype"), i("fmt"), i("k"), i("c"), i("h"), i("w")],
+            ),
+            f("cudnnDestroyFilterDescriptor", vec![d("f")]),
+            create("cudnnCreateConvolutionDescriptor"),
+            f(
+                "cudnnSetConvolution2dDescriptor",
+                vec![
+                    d("cv"),
+                    i("pad_h"),
+                    i("pad_w"),
+                    i("u"),
+                    i("v"),
+                    i("dil_h"),
+                    i("dil_w"),
+                    i("mode"),
+                    i("ctype"),
+                ],
+            ),
+            f("cudnnDestroyConvolutionDescriptor", vec![d("cv")]),
+            f(
+                "cudnnGetConvolutionForwardWorkspaceSize",
+                vec![
+                    h(),
+                    d("x"),
+                    d("w"),
+                    d("cv"),
+                    d("y"),
+                    i("algo"),
+                    p("size", "*mut usize", HostOutScalar("u64")),
+                ],
+            ),
+            f(
+                "cudnnConvolutionForward",
+                vec![
+                    h(),
+                    p("alpha", "*const f32", HostInScalar("f32")),
+                    d("xDesc"),
+                    dev("x"),
+                    d("wDesc"),
+                    dev("w"),
+                    d("convDesc"),
+                    i("algo"),
+                    dev("workspace"),
+                    p("wsSize", "usize", Scalar("u64")),
+                    p("beta", "*const f32", HostInScalar("f32")),
+                    d("yDesc"),
+                    dev("y"),
+                ],
+            ),
+        ],
+    }
+}
+
+/// Leak a String to `&'static str` (generator is short-lived).
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+fn main() {
+    let out = std::env::args().nth(1).unwrap_or_else(|| ".".into());
+    for lib in [cublas_spec(), cudnn_spec()] {
+        std::fs::write(format!("{out}/{}_guest.rs", lib.name), gen_guest(&lib)).unwrap();
+        std::fs::write(format!("{out}/{}_host.rs", lib.name), gen_host(&lib)).unwrap();
+        eprintln!(
+            "generated {} functions for lib '{}' (id {})",
+            lib.funcs.len(),
+            lib.name,
+            lib.id
+        );
+    }
+}
+
+/// Is this the create/out-handle special case (first param is `*mut *mut`)?
+fn is_create(f: &Fun) -> bool {
+    f.params.len() == 1 && f.params[0].cty.starts_with("*mut *mut")
+}
+
+fn gen_guest(lib: &Lib) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "// @generated by smolvm-cuda-codegen — do not edit. lib='{}' id={}",
+        lib.name, lib.id
+    );
+    let _ = writeln!(s, "const LIB_ID: u8 = {};", lib.id);
+    // Guest-cached cuBLAS math mode: torch queries cublasGetMathMode before
+    // essentially every GEMM (~1,550×/training step). Each was a VM-boundary
+    // sync round-trip (~39% of ALL sync ops) for a value that only changes on
+    // cublasSetMathMode. Cache it guest-side: set fires-and-forgets AND stores;
+    // get answers from the store with zero round-trip.
+    if lib.name == "cublas" {
+        let _ = writeln!(
+            s,
+            "static MATH_MODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);"
+        );
+    }
+    for (idx, f) in lib.funcs.iter().enumerate() {
+        if f.sym == "cublasGetMathMode" {
+            let _ = writeln!(
+                s,
+                "#[no_mangle]\npub extern \"C\" fn cublasGetMathMode(_handle: *mut c_void, mode: *mut c_int) -> c_int {{\n    \
+                 if mode.is_null() {{ return 1; }}\n    \
+                 // guest-cached — no round-trip (see MATH_MODE).\n    \
+                 unsafe {{ *mode = MATH_MODE.load(std::sync::atomic::Ordering::Relaxed); }}\n    0\n}}"
+            );
+            continue;
+        }
+        if f.sym == "cublasSetMathMode" {
+            let _ = writeln!(
+                s,
+                "#[no_mangle]\npub extern \"C\" fn cublasSetMathMode(handle: *mut c_void, mode: c_int) -> c_int {{\n    \
+                 MATH_MODE.store(mode as i32, std::sync::atomic::Ordering::Relaxed);\n    \
+                 let mut a: Vec<u8> = Vec::new();\n    \
+                 a.extend_from_slice(&(handle as u64).to_le_bytes());\n    \
+                 a.extend_from_slice(&(mode as i32).to_le_bytes());\n    \
+                 match with_client(|c| c.lib_call_deferred(LIB_ID, {idx}, a)) {{ Ok(()) => 0, Err(e) => {{ super::lib_err_trace(LIB_ID, {idx}, e); 1 }} }}\n}}"
+            );
+            continue;
+        }
+        if is_create(f) {
+            // out-handle create: no args in; returns a handle (u64) in `out`.
+            let _ = writeln!(
+                s,
+                "#[no_mangle]\npub extern \"C\" fn {}(handle_out: *mut *mut c_void) -> c_int {{\n    \
+                 if handle_out.is_null() {{ return 1; }}\n    \
+                 // Fire-and-forget create: return a guest-assigned virtual id\n    \
+                 // immediately; the host materializes the real descriptor and\n    \
+                 // maps the id (see vh_resolve on the host side).\n    \
+                 let vh = super::alloc_vhandle();\n    \
+                 match with_client(|c| c.lib_call_deferred(LIB_ID, {idx}, vh.to_le_bytes().to_vec())) {{\n        \
+                 Ok(()) => {{ unsafe {{ *handle_out = vh as *mut c_void }}; 0 }}\n        \
+                 Err(e) => {{ super::lib_err_trace(LIB_ID, {idx}, e); 1 }}\n    }}\n}}",
+                f.sym
+            );
+            continue;
+        }
+        // signature
+        let sig = f
+            .params
+            .iter()
+            .map(|p| format!("{}: {}", p.name, p.cty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            s,
+            "#[no_mangle]\npub extern \"C\" fn {}({sig}) -> c_int {{",
+            f.sym
+        );
+        let _ = writeln!(s, "    let mut a: Vec<u8> = Vec::new();");
+        for p in &f.params {
+            match p.kind {
+                Kind::Scalar(t) => {
+                    let _ = writeln!(
+                        s,
+                        "    a.extend_from_slice(&({} as {t}).to_le_bytes());",
+                        p.name
+                    );
+                }
+                Kind::Handle | Kind::Stream | Kind::DevPtr => {
+                    let _ = writeln!(
+                        s,
+                        "    a.extend_from_slice(&({} as u64).to_le_bytes());",
+                        p.name
+                    );
+                }
+                Kind::HostInScalar(t) => {
+                    let _ = writeln!(
+                        s,
+                        "    if {n}.is_null() {{ return 1; }}\n    a.extend_from_slice(&(unsafe {{ *{n} }} as {t}).to_le_bytes());",
+                        n = p.name
+                    );
+                }
+                Kind::HostInBytes(bytes) => {
+                    let _ = writeln!(
+                        s,
+                        "    if {n}.is_null() {{ return 1; }}\n    a.extend_from_slice(unsafe {{ std::slice::from_raw_parts({n}.cast::<u8>(), {bytes}) }});",
+                        n = p.name
+                    );
+                }
+                Kind::HostOutScalar(_) | Kind::HostOutStream => {} // output-only
+            }
+        }
+        // Output params (in declaration order) come back in `out`.
+        let outs: Vec<(&str, &str)> = f
+            .params
+            .iter()
+            .filter_map(|p| match p.kind {
+                Kind::HostOutScalar(t) => Some((p.name, t)),
+                Kind::HostOutStream => Some((p.name, "u64")),
+                _ => None,
+            })
+            .collect();
+        if outs.is_empty() {
+            let _ = writeln!(
+                s,
+                "    // No output params: fire-and-forget (failures surface as sticky async errors).\n    match with_client(|c| c.lib_call_deferred(LIB_ID, {idx}, a)) {{ Ok(()) => 0, Err(e) => {{ super::lib_err_trace(LIB_ID, {idx}, e); 1 }} }}\n}}"
+            );
+        } else {
+            let _ = writeln!(
+                s,
+                "    // Sync call: retried once on a transport error (a fork clone's first\n    // post-fork call can hit the dead inherited connection before the\n    // liveness peek sees it) — the request never reached the host, so the\n    // retry runs it exactly once on the reconnected session.\n    match with_client_retrying(|c| c.lib_call(LIB_ID, {idx}, a.clone())) {{\n        Ok((st, out)) => {{ let mut o = 0usize;"
+            );
+            for (name, t) in &outs {
+                let sz = wire_size(t);
+                let _ = writeln!(
+                    s,
+                    "            if !{name}.is_null() && out.len() >= o + {sz} {{ unsafe {{ *{name} = {t}::from_le_bytes(out[o..o + {sz}].try_into().unwrap()) as _ }}; }} o += {sz};"
+                );
+            }
+            let _ = writeln!(
+                s,
+                "            let _ = o; st }}\n        Err(e) => {{ super::lib_err_trace(LIB_ID, {idx}, e); 1 }}\n    }}\n}}"
+            );
+        }
+    }
+    s
+}
+
+fn gen_host(lib: &Lib) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "// @generated by smolvm-cuda-codegen — do not edit. lib='{}' id={}",
+        lib.name, lib.id
+    );
+    // The resolved-symbols struct.
+    let _ = writeln!(s, "pub struct GenLib {{ _lib: Library,");
+    for f in &lib.funcs {
+        let cargs = f
+            .params
+            .iter()
+            .map(|p| p.cty)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            s,
+            "    f_{}: unsafe extern \"C\" fn({cargs}) -> c_int,",
+            f.real
+        );
+    }
+    let _ = writeln!(s, "}}");
+    // Loader.
+    let _ = writeln!(
+        s,
+        "impl GenLib {{\n    pub fn load() -> Result<GenLib, String> {{\n        unsafe {{\n            let lib = super::open_host_lib(\"SMOLVM_{}_LIB\", &[{}])?;\n            Ok(GenLib {{",
+        lib.name.to_uppercase(),
+        lib.default_sos
+            .iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for f in &lib.funcs {
+        let _ = writeln!(
+            s,
+            "                f_{r}: sym(&lib, b\"{r}\\0\")?,",
+            r = f.real
+        );
+    }
+    let _ = writeln!(
+        s,
+        "                _lib: lib,\n            }})\n        }}\n    }}"
+    );
+    // Dispatch.
+    let _ = writeln!(
+        s,
+        "    pub fn dispatch(&self, func: u16, args: &[u8], __vh: &mut std::collections::HashMap<u64, u64>, __streams: &std::collections::HashMap<u64, u64>) -> (i32, Vec<u8>) {{\n        let mut __c = GenCur {{ b: args, p: 0 }};\n        let _ = __streams;\n        match func {{"
+    );
+    for (idx, f) in lib.funcs.iter().enumerate() {
+        if is_create(f) {
+            let _ = writeln!(
+                s,
+                "            {idx} => {{ let mut h: *mut c_void = std::ptr::null_mut(); let st = unsafe {{ (self.f_{})(&mut h) }}; if st == 0 && args.len() >= 8 {{ let id = u64::from_le_bytes(args[..8].try_into().unwrap()); if id & super::VHANDLE_TAG != 0 {{ __vh.insert(id, h as u64); if std::env::var_os(\"SMOLVM_CUDA_HOST_OPLOG\").is_some() {{ eprintln!(\"[vh-insert] pid={{}} id={{id:#x}}\", std::process::id()); }} }} }} (st, (h as u64).to_le_bytes().to_vec()) }}",
+                f.real
+            );
+            continue;
+        }
+        let mut binds = String::new();
+        let mut call = Vec::new();
+        let mut outs = String::new(); // append out-params after the call
+        for p in &f.params {
+            match p.kind {
+                Kind::Scalar(t) => {
+                    let _ = writeln!(binds, "                let {} = __c.{t}();", p.name);
+                    call.push(format!("{} as {}", p.name, p.cty));
+                }
+                Kind::Handle => {
+                    // May be a guest-assigned virtual id — resolve to the real
+                    // pointer (untagged values pass through). Destroy calls
+                    // also retire the mapping so the table doesn't grow.
+                    if f.sym.contains("Destroy") {
+                        let _ = writeln!(
+                            binds,
+                            "                let __raw = __c.u64();\n                let {} = super::vh_resolve(__vh, __raw) as {};\n                if __raw & super::VHANDLE_TAG != 0 {{ __vh.remove(&__raw); }}",
+                            p.name, p.cty
+                        );
+                    } else {
+                        let _ = writeln!(
+                            binds,
+                            "                let {} = super::vh_resolve(__vh, __c.u64()) as {};",
+                            p.name, p.cty
+                        );
+                    }
+                    call.push(p.name.to_string());
+                }
+                Kind::Stream => {
+                    let _ = writeln!(
+                        binds,
+                        "                let {} = super::stream_resolve(__streams, __c.u64()) as {};",
+                        p.name, p.cty
+                    );
+                    call.push(p.name.to_string());
+                }
+                Kind::DevPtr => {
+                    // Clone sessions translate inherited golden pointers to
+                    // their private copies (identity for everything else) —
+                    // an untranslated golden VA here is unmapped in a worker
+                    // and faults the whole context (sticky 700; QA-1l).
+                    let _ = writeln!(
+                        binds,
+                        "                let {} = super::dptr_resolve(__c.u64()) as {};",
+                        p.name, p.cty
+                    );
+                    call.push(p.name.to_string());
+                }
+                Kind::HostInScalar(t) => {
+                    let _ = writeln!(binds, "                let {}_v = __c.{t}();", p.name);
+                    call.push(format!("&{}_v", p.name));
+                }
+                Kind::HostInBytes(bytes) => {
+                    let words = bytes.div_ceil(8);
+                    let values = std::iter::repeat_with(|| "__c.u64()")
+                        .take(words)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = writeln!(binds, "                let {}_v = [{values}];", p.name);
+                    call.push(format!("{}_v.as_ptr().cast()", p.name));
+                }
+                Kind::HostOutScalar(t) => {
+                    let pt = pointee(p.cty);
+                    let _ = writeln!(
+                        binds,
+                        "                let mut {}_v: {pt} = 0 as {pt};",
+                        p.name
+                    );
+                    call.push(format!("&mut {}_v", p.name));
+                    let _ = writeln!(
+                        outs,
+                        "                out.extend_from_slice(&({}_v as {t}).to_le_bytes());",
+                        p.name
+                    );
+                }
+                Kind::HostOutStream => {
+                    let _ = writeln!(
+                        binds,
+                        "                let mut {}_v: *mut c_void = std::ptr::null_mut();",
+                        p.name
+                    );
+                    call.push(format!("&mut {}_v", p.name));
+                    let _ = writeln!(
+                        outs,
+                        "                out.extend_from_slice(&super::stream_unresolve(__streams, {}_v as u64).to_le_bytes());",
+                        p.name
+                    );
+                }
+            }
+        }
+        let _ = writeln!(
+            s,
+            "            {idx} => {{\n{binds}                let mut out = Vec::new();\n                let st = unsafe {{ (self.f_{})({}) }};\n{outs}                (st, out)\n            }}",
+            f.real,
+            call.join(", ")
+        );
+    }
+    let _ = writeln!(
+        s,
+        "            _ => (super::super::CUDA_ERROR_NOT_FOUND, Vec::new()),\n        }}\n    }}\n}}"
+    );
+    // A tiny cursor with the scalar readers the generated code uses.
+    let _ = writeln!(
+        s,
+        "struct GenCur<'a> {{ b: &'a [u8], p: usize }}\nimpl GenCur<'_> {{\n    fn take(&mut self, n: usize) -> [u8; 8] {{ let mut o = [0u8; 8]; let end = (self.p + n).min(self.b.len()); o[..end - self.p].copy_from_slice(&self.b[self.p..end]); self.p = end; o }}\n    fn u16(&mut self) -> u16 {{ u16::from_le_bytes(self.take(2)[..2].try_into().unwrap()) }}\n    fn i32(&mut self) -> i32 {{ i32::from_le_bytes(self.take(4)[..4].try_into().unwrap()) }}\n    fn i64(&mut self) -> i64 {{ i64::from_le_bytes(self.take(8)) }}\n    fn u64(&mut self) -> u64 {{ u64::from_le_bytes(self.take(8)) }}\n    fn f32(&mut self) -> f32 {{ f32::from_le_bytes(self.take(4)[..4].try_into().unwrap()) }}\n    fn f64(&mut self) -> f64 {{ f64::from_le_bytes(self.take(8)) }}\n}}"
+    );
+    s
+}

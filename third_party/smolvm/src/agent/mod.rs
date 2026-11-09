@@ -1,0 +1,389 @@
+//! Agent VM management.
+//!
+//! This module manages the agent VM lifecycle and provides a client
+//! for communicating with the smolvm-agent via vsock.
+
+pub mod boot_config;
+mod client;
+pub mod cpu_limit;
+pub mod display;
+pub mod egress_watchlist;
+pub mod fork;
+mod fsnotify_watch;
+pub mod input;
+mod krun;
+mod launcher;
+pub mod launcher_dynamic;
+pub mod live_ports;
+pub mod live_resize;
+mod manager;
+pub mod pod_net;
+pub mod rootfs_store;
+pub mod state_probe;
+pub mod terminal;
+#[cfg(all(test, unix))]
+pub(crate) mod test_guest;
+#[cfg(unix)]
+pub mod video;
+pub(crate) mod virtiofs;
+pub use virtiofs::legacy_packed_layers_dax_window;
+/// Encoded browser video is unavailable on non-Unix hosts because the helper
+/// transport uses a mode-restricted Unix socket.
+#[cfg(not(unix))]
+pub mod video {
+    /// Leave the existing Raw VNC path active when encoded video is disabled.
+    pub fn prestart_helper() -> Result<(), String> {
+        let disabled = std::env::var_os("SMOLVM_VIDEO").is_none_or(|value| {
+            let value = value.to_string_lossy();
+            let value = value.trim();
+            value.is_empty()
+                || value == "0"
+                || value.eq_ignore_ascii_case("off")
+                || value.eq_ignore_ascii_case("false")
+                || value.eq_ignore_ascii_case("disabled")
+        });
+        if disabled {
+            Ok(())
+        } else {
+            Err("encoded video currently requires Unix sockets".into())
+        }
+    }
+
+    /// Encoded video is never configured on a non-Unix host, so the caller
+    /// does not try to start a helper that cannot exist here.
+    pub fn is_configured() -> bool {
+        false
+    }
+
+    /// Non-Unix hosts always serve Raw VNC.
+    pub fn is_available() -> bool {
+        false
+    }
+
+    /// Reject the encoded browser route without disturbing its Raw RFB socket.
+    pub(crate) fn serve_browser<S: std::io::Read + std::io::Write>(
+        _ws: super::websocket::WsStream<S>,
+        _fb: std::sync::Arc<super::display::DisplayFramebuffer>,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "encoded video currently requires Unix sockets",
+        ))
+    }
+
+    /// Reject direct starts of the Unix-only encoder helper.
+    pub fn run_helper(
+        _socket: &std::path::Path,
+        _owner_pid: u32,
+        _run_as: Option<(u32, u32)>,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "video encoder helper requires Unix sockets",
+        ))
+    }
+}
+pub mod vnc;
+mod vsock_service;
+mod websocket;
+
+pub use crate::data::network::PortMapping;
+pub use crate::data::resources::VmResources;
+pub use crate::data::storage::HostMount;
+pub(crate) use client::IMAGE_PULL_TIMEOUT_SECS;
+pub use client::{
+    file_transfer_max_total, interactive_input, pack_export_max_total, AgentClient, ExecEvent,
+    FileWriteMeta, InputClosed, InteractiveInput, InteractiveInputReceiver, InteractiveInputSender,
+    InteractiveOutput, PullOptions, RunConfig, WorkloadTarget,
+};
+pub use fsnotify_watch::FsNotifyWatcher;
+pub use krun::{host_layers_supported, KrunFunctions};
+pub use launcher::{
+    create_disk_overlays, find_lib_dir, launch_agent_vm, validate_external_interceptor,
+    DiskOverlaySpec, LaunchConfig, LaunchFeatures, VmDisks,
+};
+pub(crate) use manager::cleanup_dead_vm_runtime_in_db;
+pub use manager::{
+    apply_live_credential_values, apply_live_egress_policy, apply_live_published_ports,
+    cleanup_dead_vm_runtime, lock_live_egress,
+};
+pub use manager::{
+    bind_ready_listener, branchable_now, disk_used_mb, docker_config_dir, docker_config_mount,
+    ensure_vm_dir, machine_layers_cache_dir, prune_orphaned_ready_markers, read_egress_denials,
+    read_egress_flows, read_egress_signals, read_egress_telemetry, read_guest_pressure,
+    read_mediation_machine_id, read_shared_pack_pointer, resolve_disk_image, restore_base_dir,
+    running_forkable, shared_pack_cache_root, shared_pack_pointer_path, vm_cache_root, vm_data_dir,
+    vm_dir_hash, vm_uid_registry_dir, AgentManager, AgentState, EgressDenial, EgressFlowSummary,
+    EgressSignal, GuestPressure, PressureStall, EGRESS_TELEMETRY_FILE, SHARED_PACK_POINTER,
+};
+
+/// Agent VM name.
+pub const AGENT_VM_NAME: &str = "smolvm-agent";
+
+/// Parse a `WIDTHxHEIGHT` display size (e.g. `"1920x1080"`).
+///
+/// Returns `None` for absent/blank input so "no display" stays the default —
+/// a scanout adds a KMS connector the guest can see, which existing GPU
+/// workloads (CUDA, headless Vulkan) do not need.
+///
+/// Rejects zero and absurd dimensions rather than passing them to libkrun: the
+/// virtio-gpu EDID generator will happily build a nonsense mode, and the guest
+/// then fails far away from the cause.
+pub fn parse_display_size(raw: Option<&str>) -> Option<(u32, u32)> {
+    const MAX_DIM: u32 = 16384;
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (w, h) = raw.split_once(['x', 'X'])?;
+    let w: u32 = w.trim().parse().ok()?;
+    let h: u32 = h.trim().parse().ok()?;
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+        return None;
+    }
+    Some((w, h))
+}
+
+/// Default `KRUN_GPU_BACKEND=2d` on macOS when a display is requested.
+///
+/// The virglrenderer bundled on macOS is Venus-only: it cannot create the
+/// classic 2D resources a scanout serves, so every display path fails until
+/// libkrun is switched to rutabaga's CPU 2D component. Users shouldn't need
+/// to know that; an explicit KRUN_GPU_BACKEND still wins.
+///
+/// Shared by both launchers. Must run before the VM starts — libkrun reads
+/// the variable when it builds the virtio-gpu device.
+pub fn default_gpu_backend_for_display() {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("KRUN_GPU_BACKEND").is_none() {
+        std::env::set_var("KRUN_GPU_BACKEND", "2d");
+        tracing::info!("display requested on macOS: defaulting KRUN_GPU_BACKEND=2d");
+    }
+}
+
+/// Compute the `virgl_flags` bitmask for `krun_set_gpu_options2`.
+///
+/// Shared by both the static (`launcher.rs`) and dynamic (`launcher_dynamic.rs`)
+/// launchers so they can never silently diverge.
+///
+/// Flag values from `libkrun/include/libkrun.h` virglrenderer bindings:
+///   bit 0  — VIRGLRENDERER_USE_EGL         (Linux): EGL context for GPU rendering
+///   bit 3  — VIRGLRENDERER_USE_SURFACELESS  (Linux): no display server required
+///   bit 6  — VIRGLRENDERER_VENUS           (both): Vulkan-over-virtio-gpu (Venus ICD)
+///   bit 7  — VIRGLRENDERER_NO_VIRGL        (macOS): skip OpenGL (vrend) init — without
+///             EGL, vrend_renderer_init crashes on null platform function pointers
+///   bit 9  — VIRGLRENDERER_RENDER_SERVER   (Linux): REQUIRED for render-server mode.
+///             Enables virglrenderer to call the get_server_fd callback and use an
+///             external render server.  Without this bit, virglrenderer attempts
+///             in-process Venus which fails (version stays 0).  With get_server_fd
+///             provided in the callbacks struct, virglrenderer uses the externally
+///             spawned virgl_render_server instead of fork/exec-ing its own process.
+fn gpu_virgl_flags() -> u32 {
+    #[cfg(target_os = "linux")]
+    {
+        (1 << 0) | (1 << 3) | (1 << 6) | (1 << 9)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (1 << 6) | (1 << 7)
+    }
+}
+
+/// Guest env for the workload container, shared by both launchers like
+/// [`guest_network_env`]. A size the validator refuses (a hand-edited record)
+/// is dropped, so the agent falls back to its default.
+pub(crate) fn guest_workload_env(shm_size: Option<&str>) -> Vec<std::ffi::CString> {
+    shm_size
+        .and_then(|size| smolvm_protocol::guest_env::shm_size_option(size).ok())
+        .map(|size| {
+            std::ffi::CString::new(format!("{}={size}", smolvm_protocol::guest_env::SHM_SIZE))
+                .expect("validated size has no NUL")
+        })
+        .into_iter()
+        .collect()
+}
+
+/// Idle-poll ceiling handed to the agent at boot, shared by both launchers.
+///
+/// On a macOS host a vCPU parked in WFI takes most of a virtio-fs round trip
+/// to wake (45 us for a statvfs on a bind mount, 36 of them between the host's
+/// reply and the guest's next request). Letting the guest kernel poll briefly
+/// before parking halves the trip: 45 -> 24 us per synchronous request, and an
+/// npm ci into a bind mount 27.6 -> 26.6 s, for 0.1 to 0.4 points of a core
+/// while the machine idles. Linux and Windows hosts wake a vCPU far faster and
+/// keep the kernel's default of no polling.
+pub(crate) fn guest_idle_poll_env() -> Vec<std::ffi::CString> {
+    idle_poll_env(cfg!(target_os = "macos"))
+}
+
+/// Measured ceiling for macOS hosts: a longer poll gained nothing more on the
+/// round trip and only cost idle CPU.
+const MACOS_IDLE_POLL_US: u32 = 50;
+
+fn idle_poll_env(host_is_macos: bool) -> Vec<std::ffi::CString> {
+    if !host_is_macos {
+        return Vec::new();
+    }
+    vec![std::ffi::CString::new(format!(
+        "{}={MACOS_IDLE_POLL_US}",
+        smolvm_protocol::guest_env::IDLE_POLL_US
+    ))
+    .expect("constant has no NUL")]
+}
+
+/// Build the guest-network environment variables handed to the agent at boot.
+///
+/// Shared by both the static (`launcher.rs`) and dynamic (`launcher_dynamic.rs`)
+/// launchers — like [`gpu_virgl_flags`] — so the two can never silently diverge.
+/// They previously each open-coded this block, and the dynamic one drifted: it
+/// omitted the TSI `--dns` override, silently dropping `--dns` on the default
+/// backend (PR #466). With one source of truth, the guest's resolver is decided
+/// in exactly one place and the agent remains the sole writer of resolv.conf.
+///
+/// `guest_network` is `Some` for virtio-net (the agent derives its resolver from
+/// `dns_server`, the gateway address). For TSI it is `None`: there is no host
+/// gateway to route a resolver through, so the effective resolver is passed
+/// straight through for the agent to write into resolv.conf.
+pub(crate) fn guest_network_env(
+    guest_network: Option<smolvm_network::GuestNetworkConfig>,
+    dns_override: Option<std::net::Ipv4Addr>,
+    dns_options: &[String],
+    gateway_mac: Option<[u8; 6]>,
+) -> Vec<std::ffi::CString> {
+    use smolvm_protocol::guest_env;
+    let mut env: Vec<std::ffi::CString> = Vec::new();
+    let mut push = |key: &str, val: String| {
+        env.push(std::ffi::CString::new(format!("{key}={val}")).expect("env var contains NUL"));
+    };
+    if let Some(n) = guest_network {
+        push(
+            guest_env::BACKEND,
+            guest_env::BACKEND_VIRTIO_NET.to_string(),
+        );
+        push(guest_env::GUEST_IP, n.guest_ip.to_string());
+        push(guest_env::GATEWAY, n.gateway_ip.to_string());
+        push(guest_env::PREFIX_LEN, n.prefix_len.to_string());
+        push(guest_env::GUEST_MAC, format_mac(n.guest_mac));
+        // Pod-networking only: CNIs that pre-program the gateway as a static
+        // neighbor entry answer no ARP, so the guest must
+        // install the entry itself. The fabric path hands the guest no MAC and
+        // keeps resolving the gateway over ARP as before.
+        if let Some(gateway_mac) = gateway_mac {
+            push(guest_env::GATEWAY_MAC, format_mac(gateway_mac));
+        }
+        // Only hand the guest an IPv6 identity when the host can actually
+        // route v6: a global-scope guest address makes dual-stack clients
+        // sort AAAA answers first (RFC 6724), and on a v6-less host every
+        // such connection is refused. Omitting the trio keeps the guest
+        // v4-first; the agent treats the absent set as a valid contract.
+        if smolvm_network::host_has_ipv6_route() {
+            push(guest_env::GUEST_IP6, n.guest_ip6.to_string());
+            push(guest_env::GATEWAY6, n.gateway_ip6.to_string());
+            push(guest_env::PREFIX_LEN6, n.prefix_len6.to_string());
+        }
+        push(guest_env::DNS, n.dns_server.to_string());
+    } else if let Some(dns) = crate::data::network::effective_dns(
+        dns_override,
+        crate::network::EffectiveNetworkBackend::Tsi,
+    )
+    .addr
+    {
+        push(guest_env::DNS, dns.to_string());
+    }
+    // Resolver options (`--dns-option`) apply to whichever resolver the guest
+    // ends up with; the agent renders them into every resolv.conf it writes.
+    if !dns_options.is_empty() {
+        push(guest_env::DNS_OPTIONS, dns_options.join(" "));
+    }
+    env
+}
+
+fn format_mac(mac: [u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+#[cfg(test)]
+mod idle_poll_env_tests {
+    use super::idle_poll_env;
+
+    #[test]
+    fn only_a_macos_host_asks_the_guest_to_poll_before_parking() {
+        assert!(idle_poll_env(false).is_empty());
+        let env = idle_poll_env(true);
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].to_str().unwrap(), "SMOLVM_IDLE_POLL_US=50");
+    }
+}
+
+#[cfg(test)]
+mod display_size_tests {
+    use super::parse_display_size;
+
+    #[test]
+    fn parses_wxh() {
+        assert_eq!(parse_display_size(Some("1920x1080")), Some((1920, 1080)));
+        assert_eq!(parse_display_size(Some("1280X800")), Some((1280, 800)));
+        assert_eq!(parse_display_size(Some("  1024x768 ")), Some((1024, 768)));
+    }
+
+    // Absent/blank must mean "no display", not a default one: adding a scanout
+    // changes guest topology for every existing --gpu workload.
+    #[test]
+    fn absent_or_blank_means_no_display() {
+        assert_eq!(parse_display_size(None), None);
+        assert_eq!(parse_display_size(Some("")), None);
+        assert_eq!(parse_display_size(Some("   ")), None);
+    }
+
+    #[test]
+    fn rejects_malformed() {
+        for bad in ["1920", "1920x", "x1080", "axb", "1920*1080", "1920x1080x60"] {
+            assert_eq!(parse_display_size(Some(bad)), None, "should reject {bad}");
+        }
+    }
+
+    // Zero would produce a degenerate EDID mode; huge values blow up the
+    // framebuffer allocation. Fail here, where the error names the cause.
+    #[test]
+    fn rejects_zero_and_absurd() {
+        assert_eq!(parse_display_size(Some("0x1080")), None);
+        assert_eq!(parse_display_size(Some("1920x0")), None);
+        assert_eq!(parse_display_size(Some("99999x1080")), None);
+        assert_eq!(parse_display_size(Some("1920x99999")), None);
+    }
+}
+
+#[cfg(test)]
+mod guest_network_env_tests {
+    use super::guest_network_env;
+    use smolvm_protocol::guest_env;
+
+    fn value(env: &[std::ffi::CString], key: &str) -> Option<String> {
+        env.iter()
+            .filter_map(|entry| entry.to_str().ok())
+            .find_map(|entry| entry.strip_prefix(&format!("{key}=")).map(str::to_string))
+    }
+
+    // `--dns-option` reaches the agent as one ordered, space-separated value;
+    // with none set, the variable is absent (the agent then writes no
+    // `options` line, the pre-flag file).
+    #[test]
+    fn dns_options_travel_in_order_only_when_set() {
+        let options = ["timeout:1", "attempts:3", "rotate", "use-vc"].map(String::from);
+        let env = guest_network_env(None, None, &options, None);
+        assert_eq!(
+            value(&env, guest_env::DNS_OPTIONS).as_deref(),
+            Some("timeout:1 attempts:3 rotate use-vc")
+        );
+        assert_eq!(
+            value(
+                &guest_network_env(None, None, &[], None),
+                guest_env::DNS_OPTIONS
+            ),
+            None
+        );
+    }
+}
