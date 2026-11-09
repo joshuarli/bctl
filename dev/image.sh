@@ -3,14 +3,14 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--arg ARG]... [--env K=V]... [--trace] BINARY"
+	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--trace] BINARY"
 }
 
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 invocation=dev/image.sh
 for a in "$@"; do invocation="$invocation $(quote "$a")"; done
 
-out='' root='' trace=0 binary=''
+out='' root='' trace=0 binary='' klibs=''
 files=$(mktemp "$WORK/tmp/image-files.XXXXXX")
 args=$(mktemp "$WORK/tmp/image-args.XXXXXX")
 envs=$(mktemp "$WORK/tmp/image-envs.XXXXXX")
@@ -24,6 +24,7 @@ while [ $# -gt 0 ]; do
 	--file) printf '%s\t%s\n' "${2#*:}" "$(realpath "${2%%:*}")" >>"$files"; shift 2 ;;
 	--arg) printf '%s\n' "$2" >>"$args"; shift 2 ;;
 	--env) printf '%s\n' "$2" >>"$envs"; shift 2 ;;
+	--klib) klibs="$klibs $2"; shift 2 ;;
 	--trace) trace=1; shift ;;
 	-*) usage ;;
 	*) [ -z "$binary" ] || usage; binary=$1; shift ;;
@@ -91,6 +92,14 @@ trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 		}
 		END { printf "(\nchildren:(\n"; emit("", "  "); printf ")\n" }
 	'
+	if [ -n "$klibs" ]; then
+		printf 'boot:(children:(klib:(children:(\n'
+		for k in $klibs; do
+			[ -f "$NANOS_OUT/platform/pc/bin/$k" ] || die "no klib $k in $NANOS_OUT/platform/pc/bin"
+			printf '  %s:(contents:(host:%s))\n' "$k" "$NANOS_OUT/platform/pc/bin/$k"
+		done
+		printf '))))\nklibs:bootfs\n'
+	fi
 	printf 'program:/%s\n' "$name"
 	printf 'arguments:[%s' "$name"
 	while IFS= read -r a; do printf ' %s' "$a"; done <"$args"

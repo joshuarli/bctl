@@ -8,7 +8,11 @@ CFLAGS:=	--sysroot=$(SYSROOT) -O2 -g -Wall -Wextra -Werror
 STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result meminfo
 DYNAMIC_FIXTURES:=	hello_stdio
 
-all: $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES))
+all: $(OUT)/mini_chromium $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES))
+
+$(OUT)/mini_chromium: mini_chromium.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -Wno-sign-compare -pthread $< -o $@
 
 $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES)): $(OUT)/fixtures/%: fixtures/%.c
 	@mkdir -p $(@D)

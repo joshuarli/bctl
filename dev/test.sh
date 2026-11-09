@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics..."; }
+usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -63,12 +63,45 @@ suite_metrics() {
 	printf '%s\n' $samples | sort -n | awk '{ v[NR] = $1 } END { printf "metric boot_to_exit_seconds median=%.2f min=%.2f max=%.2f n=%d\n", (v[5] + v[6]) / 2, v[1], v[NR], NR }'
 }
 
+PROBE=$WORK/build/mini_chromium/mini_chromium
+
+probe_native() {
+	line=$("$ROOT/dev/run.sh" --native --timeout 120 --label probe "$PROBE" || :)
+	dir=${line##* dir=}
+	case $line in
+	"RUN verdict=PASS "*) printf 'PASS      probe              native  %s passing checks\n' "$(jaq '.tests | length' "$dir/result.json")" ;;
+	*) failures=$((failures + 1)); printf 'FAIL      probe              native  %s\n          log: %s\n' "${line%% dir=*}" "$dir" ;;
+	esac
+	probe_names=$(jaq -r '.tests[].name' "$dir/result.json")
+}
+
+suite_probe() {
+	make -s -C "$ROOT/tests/mini_chromium"
+	probe_native
+	[ -n "$probe_names" ] || { failures=$((failures + 1)); printf 'FAIL      probe              no native check names\n'; return; }
+	"$ROOT/dev/image.sh" --klib tmpfs --klib shmem -o "$IMAGES/mini_chromium.img" "$PROBE" >/dev/null
+	set --
+	for n in $probe_names; do set -- "$@" --expect-test "$n"; done
+	for smp in 1 2 4; do
+		line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 180 --label "probe-smp$smp" "$@" "$IMAGES/mini_chromium.img" || :)
+		dir=${line##* dir=}
+		pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
+		total=$(printf '%s\n' $probe_names | wc -l)
+		case $line in
+		"RUN verdict=PASS "*) printf 'FAIL      probe              smp=%s  known-red case now passes: delete its known-red marker\n' "$smp"; failures=$((failures + 1)) ;;
+		*) printf 'KNOWN-RED probe              smp=%s  %s/%s checks pass on Nanos; no fork, exec, wait4, seccomp or namespaces yet\n          log: %s\n' "$smp" "$pass" "$total" "$dir" ;;
+		esac
+	done
+}
+
 [ $# -ge 1 ] || usage
 mkdir -p "$IMAGES"
 for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
 	metrics) suite_metrics ;;
+	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native ;;
+	probe) suite_probe ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	*) usage ;;
 	esac

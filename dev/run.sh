@@ -3,10 +3,11 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--label NAME] IMAGE"
+	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--label NAME] IMAGE
+       dev/run.sh --native [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--label NAME] BINARY [ARG...]"
 }
 
-smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image=''
+smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0
 expected=$(mktemp "$WORK/tmp/run-expected.XXXXXX")
 trap 'rm -f "$expected"' EXIT
 while [ $# -gt 0 ]; do
@@ -18,19 +19,29 @@ while [ $# -gt 0 ]; do
 	--expect-test) printf '%s\n' "$2" >>"$expected"; shift 2 ;;
 	--net) net=1; shift ;;
 	--label) label=$2; shift 2 ;;
+	--native) native=1; shift ;;
 	-*) usage ;;
-	*) [ -z "$image" ] || usage; image=$1; shift ;;
+	*) image=$1; shift; break ;;
 	esac
 done
 [ -n "$image" ] && [ -f "$image" ] || usage
+[ "$native" -eq 1 ] || [ $# -eq 0 ] || usage
 kernel=$NANOS_OUT/platform/pc/bin/kernel.img
-[ -f "$kernel" ] || die "missing $kernel: run dev/build.sh"
+[ "$native" -eq 1 ] || [ -f "$kernel" ] || die "missing $kernel: run dev/build.sh"
 [ -n "$label" ] || label=$(basename -- "$image" .img)
+[ "$native" -eq 0 ] || label=native-$label
 
 dir=$WORK/runs/$(date -u +%Y%m%dT%H%M%SZ)-$label-$$
 mkdir -p "$dir"
 serial=$dir/serial.log
 
+if [ "$native" -eq 1 ]; then
+	program_host=$(realpath "$image")
+	set -- "$program_host" "$@"
+	qemu_cmd=''
+	start=$(cut -d' ' -f1 /proc/uptime)
+	( cd "$dir" && exec "$@" ) >"$serial" 2>"$dir/stderr.log" &
+else
 if [ "$net" -eq 1 ]; then nic='user,model=virtio-net-pci'; else nic='none'; fi
 set -- qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp "$smp" -m "$mem" \
 	-display none -monitor none -serial "file:$serial" -no-reboot \
@@ -41,6 +52,7 @@ qemu_cmd=$*
 
 start=$(cut -d' ' -f1 /proc/uptime)
 "$@" >"$dir/qemu.log" 2>&1 &
+fi
 qpid=$!
 ( sleep "$timeout" && : >"$dir/deadline" && kill "$qpid" ) >/dev/null 2>&1 &
 wpid=$!
@@ -59,8 +71,12 @@ verdict=PASS detail=''
 fail() { [ "$verdict" != PASS ] || { verdict=$1; detail=$2; }; }
 
 guest_code=$((rc >> 1))
+[ "$native" -eq 0 ] || guest_code=$rc
 if [ -f "$dir/deadline" ]; then
 	fail TIMEOUT "no guest exit within ${timeout}s"
+elif [ "$native" -eq 1 ]; then
+	if [ "$rc" -gt 128 ]; then fail CRASH "killed by signal $((rc - 128))"
+	elif [ "$rc" -ne "$want_exit" ]; then fail FAIL "exit=$rc want=$want_exit"; fi
 elif grep -q '^qemu-system-x86_64:' "$dir/qemu.log"; then
 	fail QEMU_ERROR "$(grep -m1 '^qemu-system-x86_64:' "$dir/qemu.log")"
 elif grep -qE '^\*\*\* signal|^\*\*\* Thread context|assertion .* failed|kernel page fault|^panic' "$log" ||
@@ -97,9 +113,12 @@ fi
 
 manifest=$image.manifest
 program=''
-[ -f "$manifest" ] && program=$(sed -n 's/^program:\///p' "$manifest")
+[ "$native" -eq 1 ] || [ ! -f "$manifest" ] || program=$(sed -n 's/^program:\///p' "$manifest")
 binary_sha='' host=''
-if [ -n "$program" ]; then
+if [ "$native" -eq 1 ]; then
+	program=$(basename -- "$image") host=$program_host
+	binary_sha=$(sha256sum "$host" | cut -d' ' -f1)
+elif [ -n "$program" ]; then
 	host=$(sed -n "s/^ *$program:(contents:(host:\([^)]*\)))/\1/p" "$manifest" | head -n 1)
 	[ -n "$host" ] && [ -f "$host" ] && binary_sha=$(sha256sum "$host" | cut -d' ' -f1)
 fi
@@ -131,14 +150,15 @@ printf '%s\n' "$tests" | sed -n 's/^MINI_CHROMIUM_TEST name=\([^ ]*\) status=\([
 jaq -n \
 	--arg verdict "$verdict" --arg detail "$detail" \
 	--arg hydrogen "$(git -C "$ROOT" rev-parse HEAD)" --argjson dirty "$dirty" \
-	--arg kernel_sha256 "$(sha256sum "$kernel" | cut -d' ' -f1)" \
-	--arg image_sha256 "$(sha256sum "$image" | cut -d' ' -f1)" \
+	--arg mode "$([ "$native" -eq 1 ] && echo native || echo nanos)" \
+	--arg kernel_sha256 "$([ "$native" -eq 1 ] || sha256sum "$kernel" | cut -d' ' -f1)" \
+	--arg image_sha256 "$([ "$native" -eq 1 ] || sha256sum "$image" | cut -d' ' -f1)" \
 	--arg binary_sha256 "$binary_sha" --arg program "$program" \
 	--arg gcc "$HOST_GCC_VERSION" --arg qemu "$HOST_QEMU_VERSION" --arg llvm "$LLVM_RELEASE" --arg musl "$MUSL_VERSION" \
 	--arg qemu_cmd "$qemu_cmd" --argjson qemu_exit "$rc" --argjson guest_exit "$guest_code" \
 	--arg elapsed "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }')" \
 	--arg reproduce "$reproduce" --slurpfile tests "$dir/tests.json" --rawfile frames "$dir/frames.txt" \
-	'{verdict: $verdict, detail: $detail, hydrogen: $hydrogen, dirty: $dirty,
+	'{mode: $mode, verdict: $verdict, detail: $detail, hydrogen: $hydrogen, dirty: $dirty,
 	  kernel_sha256: $kernel_sha256, image_sha256: $image_sha256, program: $program, binary_sha256: $binary_sha256,
 	  toolchain: {gcc: $gcc, qemu: $qemu, llvm: $llvm, musl: $musl},
 	  qemu: {command: $qemu_cmd, exit: $qemu_exit, guest_exit: $guest_exit},
