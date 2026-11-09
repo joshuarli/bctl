@@ -418,6 +418,7 @@ closure_func_basic(thunk, void, thread_return)
     halt("return from frame_return!\n");
   exit:
     {
+        ci->state = cpu_kernel;
         process p = t->p;
         boolean last = exit_thread(t);
         clear_fault_handler();

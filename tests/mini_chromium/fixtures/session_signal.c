@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -317,6 +318,43 @@ static void check_cross_process(void)
 	record("signal_cross_process", forged && forged_proc && queued && wrong_group && !tg_probe && !t_probe && code == 0, detail);
 }
 
+static volatile int clear_tid_ready;
+
+static void *park_with_unmapped_clear_tid(void *arg)
+{
+	void *page = arg;
+	syscall(SYS_set_tid_address, page);
+	munmap(page, 4096);
+	clear_tid_ready = 1;
+	for (;;)
+		pause();
+	return 0;
+}
+
+static int child_unmapped_clear_tid(void)
+{
+	void *page = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (page == MAP_FAILED)
+		return 2;
+	pthread_t th;
+	if (pthread_create(&th, 0, park_with_unmapped_clear_tid, page))
+		return 3;
+	while (!clear_tid_ready)
+		usleep(1000);
+	return 0;
+}
+
+static void check_exit_unmapped_clear_tid(void)
+{
+	char detail[64];
+	pid_t pid = fork();
+	if (pid == 0)
+		_exit(child_unmapped_clear_tid());
+	int st = child_status(pid);
+	snprintf(detail, sizeof detail, "status=0x%x", st);
+	record("exit_unmapped_clear_tid", st == 0, detail);
+}
+
 int main(void)
 {
 	check_setsid();
@@ -326,6 +364,7 @@ int main(void)
 	check_self_reraise();
 	check_cross_process();
 	check_thread_target();
+	check_exit_unmapped_clear_tid();
 	printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", passed, failed);
 	return failed ? 1 : 0;
 }
