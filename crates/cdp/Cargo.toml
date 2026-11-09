@@ -12,12 +12,12 @@ async-io = { package = "laputa-async-io", version = "0.3" }
 async-lock = "3"
 async-net = { package = "laputa-async-net", version = "0.3" }
 futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
-h12tiny = { version = "0.8", default-features = false, features = ["websocket-client"] }
+h12tiny = { version = "0.9", default-features = false, features = ["websocket-client"] }
 http = "1"
 miniserde = "0.1"
 
 [dev-dependencies]
-h12tiny = { version = "0.8", default-features = false, features = ["server", "http1", "web", "websocket", "websocket-client"] }
+h12tiny = { version = "0.9", default-features = false, features = ["server", "http1", "web", "websocket", "websocket-client"] }
 
 [lints]
 workspace = true
