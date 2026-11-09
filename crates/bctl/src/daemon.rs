@@ -646,7 +646,7 @@ impl Daemon {
             image: record.image.clone(),
             resources: resources_view(record.resources),
             allow_private: record.allow_private.iter().map(|r| r.as_str().to_string()).collect(),
-            grab_program: grab.as_ref().map(|_| runs::grab_program()),
+            grab_program: grab.as_ref().map(|_| runs::grab_program()).transpose().map_err(internal)?,
             exec,
             grab,
         };

@@ -66,8 +66,11 @@ impl RunConfig {
     }
 }
 
-pub(crate) fn grab_program() -> String {
-    std::env::var("BCTL_GRAB").unwrap_or_else(|_| "grab".to_string())
+pub(crate) fn grab_program() -> Result<String, String> {
+    match std::env::var("BCTL_GRAB") {
+        Ok(path) => fs::canonicalize(&path).map(|p| p.display().to_string()).map_err(|e| format!("the daemon's BCTL_GRAB={path}: {e}")),
+        Err(_) => Ok("grab".to_string()),
+    }
 }
 
 pub(crate) struct RunFiles {
