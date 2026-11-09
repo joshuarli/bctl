@@ -95,7 +95,21 @@ checks shifted symbols, Caps Lock, Alt and Ctrl chords, key repeat, and the
 Ctrl+Shift+U compose sequence; the US layout has no dead keys, so no dead-key
 sequence was tested. R3 open: no Helium arm64 archive exists to check its
 imports against the 33.
-Next: H1 (running); D2's acceptance on
+H1 harness (`0676de1`, `target/release/bctl-bench lifecycle|interaction|browser|resources`,
+`docs/performance.md`, `tests/bench/gates.json`): provisional numbers from a
+loaded host (load 9.6 to 14.7 under the 12.6 limit), so they are not
+baselines until rerun with `PERF_GATE_MAX_LOAD=0.25`: cold `up` 2.1 s, warm
+1.8 s, `down` 0.3 s, CDP round trip 0.40 ms direct and 0.49 ms through the
+gateway, pointer input to pixel 6.7 ms, 644 MiB VMM footprint and 5.5% of a
+core idle per session, Speedometer 3.1 at 81% (Sway) and 72% (Tinyland) of
+the same Chromium in a 2-CPU container. H1 findings: `smolvm machine pause`
+refuses any machine with an exposed socket, image layers, or `--gpu`, which is
+every session, so pause, resume, and X1's checkpoint restore are blocked on
+SmolVM; 7 of 16 guest Speedometer runs stalled on a lost module-script
+request while the container never did, which points at request loss in the
+guest network path (H3 owns it); the dashboard lease race on viewer reconnect
+was not retested after N6.
+Next: D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).
 Resume: `implement R1 and H3 from docs/CAMPAIGN-ROADMAP.md`.
