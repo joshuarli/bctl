@@ -181,6 +181,10 @@ endef
 
 $(foreach klib, $(KLIBS), $(eval $(call build_klib,$(klib))))
 
+ifeq ($(filter print-% clean cleandepend,$(MAKECMDGOALS)),)
+-include $(sort $(foreach klib,$(KLIBS),$(DEPS-$(klib))))
+endif
+
 klib-syms: $(KLIB_SYMS)
 
 $(KLIB_SYMS): $(KLIB_BINARIES)
