@@ -72,8 +72,16 @@ input lease, the CDP gateway, and run resume; a takeover ends a running
 `wait`, `goto`, or batch with `TAKEN_OVER`. M3N open: runs do not cooperate
 with a takeover (Grab and exec cannot pause without ending the attempt);
 a host program's own library connection is not interrupted; authority resets
-to Automation on daemon restart; native actions fail at once instead of
-waiting for actionability.
+to Automation on daemon restart. N7 (`--test actions --test authority`,
+fixtures adapted from Playwright `84e2bdc` `page-click.spec.ts`): actions wait
+up to `--timeout` (5 s) for visible, enabled, editable, stable, and hit, and a
+timeout names the last failing check; input is sent once and a lost reply is
+`UNKNOWN_OUTCOME`; a takeover ends preparation in every phase and cannot race
+a dispatch, because the last authority check and the send share the lock that
+leaves Automation. Chromium drops input to an unpainted page for about 500 ms
+after load, and preparation waits for paint. N7 open: a scroll already sent
+can land just after Human begins; iframe changes are seen only by the 200 ms
+recheck; a warm click is 18 CDP calls.
 R1 (`94b122e`, B1 3/3 and T0 on `ref-scratch-chromium`, `FROM scratch` with
 a Rust `bctl-guest` supervising seatd, tinyland, and the browser and relaying
 CDP): census gaps are the browser's 141-library closure plus `libxkbcommon`
