@@ -56,9 +56,17 @@ document, `STALE_REF`, both iframe kinds; a warm form snapshot costs 3 CDP
 calls and 317 bytes. N3 open: node liveness runs in the page's main world
 (N4 should use an isolated world); a node moved between same-process frames
 is not detected; one huge DOM read can exceed the 32 MiB message cap.
-Next: N4 (locators and actions), H1 (running); D2's acceptance on
-`ref-alpine-tinyland`.
-Resume: `implement N4 from docs/CAMPAIGN-ROADMAP.md`.
+N4 (`be0fc95`, `cargo test -p bctl --test actions -- --ignored`): locators
+(ref, CSS, role and name, label, placeholder, test id, `--nth`), actions with
+real input, hit-tested clicks that confirm the press landed, isolated-world
+helpers, dialogs, and refusal under a person's lease. Actions that send input
+bring the selected tab to the front (a hidden tab stalls input); the binding
+never moves. N4 open: actions fail at once rather than waiting for
+actionability; popups an action opens are not reported; a `wait` holds the
+session's page lock; the lease is checked only at command start (N6).
+Next: N5 (batches and Rust API), N6 (authority), H1 (running); D2's
+acceptance on `ref-alpine-tinyland`.
+Resume: `implement N5 and N6 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
