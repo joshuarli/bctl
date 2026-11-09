@@ -40,6 +40,9 @@ suite_harness() {
 		case_verdict writev_iov "$smp" 20 PASS '' "$FIXTURES/writev_iov"
 		case_verdict wait_nochild "$smp" 20 PASS '' "$FIXTURES/wait_nochild"
 		case_verdict low_user_va "$smp" 20 PASS '' "$FIXTURES/low_user_va"
+		case_verdict vm_isolation "$smp" 60 PASS '' "$FIXTURES/vm_isolation"
+		case_verdict vm_isolation_dyn "$smp" 60 PASS '' "$FIXTURES/vm_isolation_dyn"
+		case_verdict poll_xproc "$smp" 20 PASS '' "$FIXTURES/poll_xproc"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
