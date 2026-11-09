@@ -5,10 +5,10 @@ SYSROOT:=	$(ROOT)/.work/sysroot
 OUT:=		$(ROOT)/.work/build/mini_chromium
 CFLAGS:=	--sysroot=$(SYSROOT) -O2 -g -Wall -Wextra -Werror
 
-STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result meminfo writev_iov wait_nochild low_user_va vm_isolation poll_xproc
+STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result meminfo writev_iov wait_nochild low_user_va vm_isolation poll_xproc cow_stress
 DYNAMIC_FIXTURES:=	hello_stdio
 
-all: $(OUT)/mini_chromium $(OUT)/mini_chromium_raw $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES)) $(OUT)/fixtures/vm_isolation_dyn
+all: $(OUT)/mini_chromium $(OUT)/mini_chromium_raw $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES)) $(OUT)/fixtures/vm_isolation_dyn $(OUT)/fixtures/cow_stress_dyn
 
 $(OUT)/mini_chromium: mini_chromium.c
 	@mkdir -p $(@D)
@@ -27,6 +27,10 @@ $(addprefix $(OUT)/fixtures/,$(DYNAMIC_FIXTURES)): $(OUT)/fixtures/%: fixtures/%
 	$(CC) $(CFLAGS) -pthread $< -o $@
 
 $(OUT)/fixtures/vm_isolation_dyn: fixtures/vm_isolation.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -pthread $< -o $@
+
+$(OUT)/fixtures/cow_stress_dyn: fixtures/cow_stress.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -pthread $< -o $@
 

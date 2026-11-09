@@ -43,6 +43,8 @@ suite_harness() {
 		case_verdict vm_isolation "$smp" 60 PASS '' "$FIXTURES/vm_isolation"
 		case_verdict vm_isolation_dyn "$smp" 60 PASS '' "$FIXTURES/vm_isolation_dyn"
 		case_verdict poll_xproc "$smp" 20 PASS '' "$FIXTURES/poll_xproc"
+		case_verdict cow_stress "$smp" 60 PASS '' "$FIXTURES/cow_stress"
+		case_verdict cow_stress_dyn "$smp" 60 PASS '' "$FIXTURES/cow_stress_dyn"
 	done
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
@@ -109,9 +111,8 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	no_processes='no fork, exec, wait4, seccomp or namespaces yet'
-	probe_nanos mini_chromium "$no_processes" --klib tmpfs --klib shmem
-	probe_nanos mini_chromium_raw "$no_processes"
+	probe_nanos mini_chromium 'no execve, seccomp, namespaces, SCM data or shared futex keys yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium_raw 'no execve or seccomp yet'
 }
 
 upstream_known() {
