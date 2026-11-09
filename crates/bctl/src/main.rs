@@ -2,6 +2,7 @@ mod daemon;
 mod gateway;
 mod paths;
 mod protocol;
+mod runs;
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -14,10 +15,11 @@ use lexopt::prelude::*;
 use miniserde::json;
 
 use paths::Paths;
-use protocol::{ErrorBody, ErrorCode, Op, Request, Response, SessionView};
+use protocol::{BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView, SessionView};
 
 const USAGE: &str = "usage:
-  bctl up NAME [--profile PROFILE] [--image IMAGE] [--json]   start or reuse a browser session
+  bctl up NAME [--profile PROFILE] [--image IMAGE] [--allow-private CIDR]... [--json]
+                                                              start or reuse a browser session
   bctl down NAME [--json]                                     stop it, keeping its profile
   bctl rm NAME [--json]                                       forget a stopped session
   bctl status [--json]                               list sessions and why they are not ready
@@ -27,6 +29,11 @@ const USAGE: &str = "usage:
   bctl cdp-revoke NAME [--json]                      revoke every CDP control URL of a session
   bctl profile list [--json]                         profiles and the session holding each
   bctl profile login PROFILE [--image IMAGE]          start a session on PROFILE and open it to sign in by hand
+  bctl grab URL... --session S [--json]              crawl URLs with Grab in session S
+  bctl run JOB --session S [--config FILE] [--json]  run a bctl.toml job (default ./bctl.toml) in session S
+  bctl runs [RUN] [--session S] [--json]             list runs, or one run with every resolved field
+  bctl logs RUN                                      print a run's log
+  bctl pause RUN | resume RUN | cancel RUN [--json]  stop a grab at a page boundary, continue, or end a run
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
@@ -71,6 +78,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
             }
             _ => return Err("usage: bctl profile list | bctl profile login PROFILE [--image IMAGE]".into()),
         },
+        "grab" | "run" | "runs" | "logs" | "pause" | "resume" | "cancel" => return parse_run_command(&command, parser),
         "doctor" | "daemon" => (Op::Ping, false),
         other => return Err(format!("unknown command {other:?}").into()),
     };
@@ -83,6 +91,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
             Long("open") if op == Op::Serve => open = true,
             Long("profile") if op == Op::Up => request.profile = Some(parser.value()?.string()?),
             Long("image") if op == Op::Up => request.image = Some(parser.value()?.string()?),
+            Long("allow-private") if op == Op::Up => request.allow_private.push(parser.value()?.string()?),
             Value(v) if needs_session && request.session.is_none() => request.session = Some(v.string()?),
             _ => return Err(arg.unexpected()),
         }
@@ -95,6 +104,88 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "daemon" => Cli::Daemon,
         _ => Cli::Request { op, request, json, open },
     })
+}
+
+fn parse_run_command(command: &str, mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    let op = match command {
+        "grab" | "run" => Op::Run,
+        "runs" => Op::Runs,
+        "logs" => Op::Logs,
+        "pause" => Op::Pause,
+        "resume" => Op::Resume,
+        _ => Op::Cancel,
+    };
+    let mut request = Request { op: op.as_str().to_string(), ..Request::empty() };
+    let mut json = false;
+    let mut positional = Vec::new();
+    let mut config = None;
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Long("json") if command != "logs" => json = true,
+            Long("session") if matches!(op, Op::Run | Op::Runs) => request.session = Some(parser.value()?.string()?),
+            Long("config") if command == "run" => config = Some(std::path::PathBuf::from(parser.value()?)),
+            Value(v) => positional.push(v.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    match command {
+        "grab" => {
+            if positional.is_empty() {
+                return Err("bctl grab needs at least one URL".into());
+            }
+            let grab = GrabRequest { urls: positional, max_pages: None, jobs: None, robots: true, max_runtime_secs: None };
+            request.job = Some(Box::new(JobRequest { name: None, browser: None, exec: None, grab: Some(grab) }));
+        }
+        "run" => {
+            let [job] = positional.as_slice() else { return Err("bctl run needs exactly one job name".into()) };
+            request.job = Some(Box::new(resolve_job(config.as_deref(), job)?));
+        }
+        "runs" => match positional.as_slice() {
+            [] => {}
+            [run] => request.run = Some(run.parse().map_err(|_| format!("{run:?} is not a run id"))?),
+            _ => return Err("bctl runs takes at most one run id".into()),
+        },
+        _ => {
+            let [run] = positional.as_slice() else { return Err(format!("bctl {command} needs one run id").into()) };
+            request.run = Some(run.parse().map_err(|_| format!("{run:?} is not a run id"))?);
+        }
+    }
+    if op == Op::Run && request.session.is_none() {
+        return Err(format!("bctl {command} needs --session SESSION").into());
+    }
+    Ok(Cli::Request { op, request, json, open: false })
+}
+
+/// Resolves `job` from `bctl.toml` here, where relative paths mean something, and sends the daemon only the result.
+fn resolve_job(config: Option<&std::path::Path>, job: &str) -> Result<JobRequest, lexopt::Error> {
+    let path = config.unwrap_or(std::path::Path::new("bctl.toml"));
+    let path = path.canonicalize().map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let resolved = bctl_jobs::resolve(&bctl_jobs::load(&path).map_err(|e| e.to_string())?, job).map_err(|e| e.to_string())?;
+    let base = path.parent().ok_or_else(|| format!("{} has no directory", path.display()))?;
+    let resources = resolved.resources();
+    let browser = BrowserRequest {
+        profile: resolved.profile.to_string(),
+        image: resolved.image.clone(),
+        resources: ResourcesView { width: resources.viewport[0], height: resources.viewport[1], cpus: resources.cpus, memory_mib: resources.memory_mib },
+    };
+    let (exec, grab) = match resolved.kind {
+        bctl_jobs::ResolvedKind::Exec(exec) => {
+            let cwd = exec.cwd.map_or_else(|| base.to_path_buf(), |cwd| base.join(cwd));
+            let exec = ExecRequest { argv: exec.argv, cwd: cwd.display().to_string(), timeout_secs: exec.timeout.map(|t| t.as_secs()) };
+            (Some(exec), None)
+        }
+        bctl_jobs::ResolvedKind::Grab(grab) => {
+            let grab = GrabRequest {
+                urls: grab.urls,
+                max_pages: grab.max_pages,
+                jobs: grab.jobs,
+                robots: grab.robots,
+                max_runtime_secs: grab.max_runtime.map(|t| t.as_secs()),
+            };
+            (None, Some(grab))
+        }
+    };
+    Ok(JobRequest { name: Some(resolved.name.to_string()), browser: Some(browser), exec, grab })
 }
 
 fn main() -> ExitCode {
@@ -124,7 +215,7 @@ fn main() -> ExitCode {
         Cli::ProfileLogin { profile, image } => profile_login(&paths, profile, image),
         Cli::Request { op, request, json, open } => match call(&paths, &request) {
             Ok(response) => {
-                let code = render(op, &response, json);
+                let code = render(op, &response, json, request.run.is_some());
                 if open && let Some(url) = &response.url && Command::new("open").arg(url).status().map_or(true, |s| !s.success()) {
                     eprintln!("bctl: could not open {url}");
                     return ExitCode::FAILURE;
@@ -187,7 +278,7 @@ fn report(error: &ErrorBody, json: bool) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn render(op: Op, response: &Response, json: bool) -> ExitCode {
+fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
     if let Some(error) = &response.error {
         return report(error, json);
     }
@@ -215,8 +306,60 @@ fn render(op: Op, response: &Response, json: bool) -> ExitCode {
             }
         }
         Op::Rm | Op::Ping | Op::CdpRevoke => {}
+        Op::Run | Op::Pause | Op::Resume | Op::Cancel => response.runs.iter().for_each(print_run),
+        Op::Runs if detail => response.runs.iter().for_each(print_run),
+        Op::Runs => {
+            println!("{:<6} {:<20} {:<20} {:<5} {:<18} {:<20} PROGRESS", "RUN", "SESSION", "JOB", "KIND", "STATE", "OUTCOME");
+            for r in &response.runs {
+                println!(
+                    "{:<6} {:<20} {:<20} {:<5} {:<18} {:<20} {}",
+                    r.id,
+                    r.session,
+                    r.job.as_deref().unwrap_or("-"),
+                    r.kind,
+                    r.state,
+                    r.outcome.as_deref().unwrap_or("-"),
+                    progress(r)
+                );
+            }
+        }
+        Op::Logs => print!("{}", response.log.as_ref().map_or("", |log| log.text.as_str())),
     }
-    ExitCode::SUCCESS
+    let failed = matches!(op, Op::Run | Op::Resume) && response.runs.iter().any(|r| r.state == "failed");
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn progress(run: &RunView) -> String {
+    run.progress.map_or_else(|| "-".into(), |p| format!("{} pages, {} queued, {} assets", p.pages_done, p.pages_queued, p.assets_done))
+}
+
+fn print_run(r: &RunView) {
+    let field = |name: &str, value: Option<String>| {
+        if let Some(value) = value {
+            println!("{name:<15}{value}");
+        }
+    };
+    field("run", Some(r.id.to_string()));
+    field("state", Some(r.state.clone()));
+    field("outcome", r.outcome.clone());
+    field("detail", r.detail.clone());
+    field("waiting for", r.interaction.as_ref().map(|i| format!("{} at {} (`bctl resume {}` once it is done)", i.reason, i.url, r.id)));
+    field("progress", r.progress.map(|_| progress(r)));
+    field("session", Some(r.session.clone()));
+    field("job", Some(r.job.clone().unwrap_or_else(|| "(one-off grab)".into())));
+    field("kind", Some(r.kind.clone()));
+    field("profile", Some(r.profile.clone()));
+    field("image", Some(format!("{} ({})", r.image, r.image_digest)));
+    field("browser", Some(r.browser_version.clone()));
+    field("input digest", Some(r.input_digest.clone()));
+    field("config", Some(json::to_string(&r.config)));
+    field("output", Some(r.output_dir.clone()));
+    field("log", Some(r.log.clone()));
+    for a in &r.attempts {
+        let outcome = a.outcome.as_deref().map(|o| format!(" {o}")).unwrap_or_default();
+        let detail = a.detail.as_deref().map(|d| format!(": {d}")).unwrap_or_default();
+        field(&format!("attempt {}", a.number), Some(format!("{}{outcome}{detail}", a.state)));
+    }
 }
 
 fn print_session(s: &SessionView) {
@@ -231,6 +374,8 @@ fn print_session(s: &SessionView) {
     field("failure", s.failure.clone());
     field("profile", Some(s.profile.clone()));
     field("image", Some(s.image.clone()));
+    field("resources", Some(format!("{}x{}, {} CPUs, {} MiB", s.resources.width, s.resources.height, s.resources.cpus, s.resources.memory_mib)));
+    field("private", (!s.allow_private.is_empty()).then(|| s.allow_private.join(", ")));
     field("generation", Some(s.generation.to_string()));
     field("machine", s.machine.clone());
     field("vnc", s.vnc_port.map(|p| format!("127.0.0.1:{p}")));
@@ -280,16 +425,16 @@ fn doctor(paths: &Paths, json_output: bool) -> ExitCode {
 
 /// Brings up a session named after the profile and opens the dashboard on it, so the user can sign in to sites by hand.
 fn profile_login(paths: &Paths, profile: String, image: Option<String>) -> ExitCode {
-    let up = Request { op: Op::Up.as_str().to_string(), session: Some(profile.clone()), profile: Some(profile.clone()), image };
+    let up = Request { op: Op::Up.as_str().to_string(), session: Some(profile.clone()), profile: Some(profile.clone()), image, ..Request::empty() };
     match call(paths, &up) {
         Ok(response) if response.error.is_none() => {}
-        Ok(response) => return render(Op::Up, &response, false),
+        Ok(response) => return render(Op::Up, &response, false, false),
         Err(error) => return report(&error, false),
     }
     let serve = Request { op: Op::Serve.as_str().to_string(), ..Request::empty() };
     let url = match call(paths, &serve) {
         Ok(Response { url: Some(url), .. }) => format!("{url}&next=/sessions/{profile}"),
-        Ok(response) => return render(Op::Serve, &response, false),
+        Ok(response) => return render(Op::Serve, &response, false, false),
         Err(error) => return report(&error, false),
     };
     println!("{url}");

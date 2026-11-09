@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 bctl-core = { path = "../core" }
+bctl-jobs = { path = "../jobs" }
 bctl-rfb = { path = "../rfb" }
 async-lock = "3"
 async-net = { package = "laputa-async-net", version = "0.3" }
@@ -22,6 +23,8 @@ http = "1"
 bctl-runtime-smolvm = { path = "../runtime-smolvm" }
 lexopt = "0.3"
 miniserde = "0.1"
+rustix = { version = "1", features = ["process"] }
+sha2 = "0.11"
 
 [lints]
 workspace = true

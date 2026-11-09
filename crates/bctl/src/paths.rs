@@ -47,6 +47,10 @@ impl Paths {
         self.home.join("cdp").join(format!("{hash:016x}")).join("s")
     }
 
+    pub fn run_dir(&self, run: i64) -> PathBuf {
+        self.home.join("runs").join(run.to_string())
+    }
+
     pub fn profile_dir(&self, profile: &str) -> PathBuf {
         self.home.join("profiles").join(profile)
     }

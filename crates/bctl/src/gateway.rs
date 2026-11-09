@@ -107,6 +107,11 @@ pub fn mint_cdp_url(daemon: &Arc<Daemon>, session: &SessionName) -> io::Result<S
     Ok(format!("http://{token}.localhost:{port}"))
 }
 
+pub fn revoke_cdp_url(daemon: &Daemon, url: &str) {
+    let Some(token) = url.strip_prefix("http://").and_then(|host| host.split_once('.')).map(|(token, _)| token) else { return };
+    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capabilities.retain(|(candidate, _)| !constant_time_eq(candidate.as_bytes(), token.as_bytes()));
+}
+
 pub fn revoke_cdp(daemon: &Daemon, session: &SessionName) {
     daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capabilities.retain(|(_, bound)| bound != session);
 }

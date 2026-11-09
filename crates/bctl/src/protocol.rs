@@ -1,4 +1,4 @@
-use miniserde::{Deserialize, Serialize};
+use miniserde::{Deserialize, Serialize, json};
 
 /// One request per connection line. `op` is one of the `Op` names; the other fields depend on it.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -7,6 +7,52 @@ pub struct Request {
     pub session: Option<String>,
     pub profile: Option<String>,
     pub image: Option<String>,
+    /// For `up`: private IPv4 ranges the guest may reach; empty keeps an existing session's.
+    pub allow_private: Vec<String>,
+    pub run: Option<i64>,
+    pub job: Option<Box<JobRequest>>,
+}
+
+/// A job for `run`, resolved by the CLI: exactly one of `exec` and `grab`. `browser` is absent for a one-off
+/// `bctl grab`, which runs on the session as it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobRequest {
+    pub name: Option<String>,
+    pub browser: Option<BrowserRequest>,
+    pub exec: Option<ExecRequest>,
+    pub grab: Option<GrabRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserRequest {
+    pub profile: String,
+    pub image: String,
+    pub resources: ResourcesView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecRequest {
+    pub argv: Vec<String>,
+    /// Absolute: the CLI joins a job's relative `cwd` to the directory holding `bctl.toml`.
+    pub cwd: String,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrabRequest {
+    pub urls: Vec<String>,
+    pub max_pages: Option<u32>,
+    pub jobs: Option<u16>,
+    pub robots: bool,
+    pub max_runtime_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcesView {
+    pub width: u32,
+    pub height: u32,
+    pub cpus: u16,
+    pub memory_mib: u32,
 }
 
 impl Request {
@@ -27,6 +73,12 @@ pub enum Op {
     Serve,
     CdpUrl,
     CdpRevoke,
+    Run,
+    Runs,
+    Logs,
+    Pause,
+    Resume,
+    Cancel,
 }
 
 impl Op {
@@ -42,13 +94,36 @@ impl Op {
             Op::Serve => "serve",
             Op::CdpUrl => "cdp-url",
             Op::CdpRevoke => "cdp-revoke",
+            Op::Run => "run",
+            Op::Runs => "runs",
+            Op::Logs => "logs",
+            Op::Pause => "pause",
+            Op::Resume => "resume",
+            Op::Cancel => "cancel",
         }
     }
 
     pub fn parse(s: &str) -> Option<Op> {
-        [Op::Ping, Op::Up, Op::Down, Op::Rm, Op::Status, Op::Inspect, Op::Profiles, Op::Serve, Op::CdpUrl, Op::CdpRevoke]
-            .into_iter()
-            .find(|op| op.as_str() == s)
+        [
+            Op::Ping,
+            Op::Up,
+            Op::Down,
+            Op::Rm,
+            Op::Status,
+            Op::Inspect,
+            Op::Profiles,
+            Op::Serve,
+            Op::CdpUrl,
+            Op::CdpRevoke,
+            Op::Run,
+            Op::Runs,
+            Op::Logs,
+            Op::Pause,
+            Op::Resume,
+            Op::Cancel,
+        ]
+        .into_iter()
+        .find(|op| op.as_str() == s)
     }
 }
 
@@ -66,6 +141,12 @@ pub enum ErrorCode {
     StartFailed,
     RuntimeError,
     DaemonUnreachable,
+    NoSuchRun,
+    RunActive,
+    NotPausable,
+    NotResumable,
+    NotLive,
+    SessionNotReady,
     Internal,
 }
 
@@ -83,6 +164,12 @@ impl ErrorCode {
             ErrorCode::StartFailed => "START_FAILED",
             ErrorCode::RuntimeError => "RUNTIME_ERROR",
             ErrorCode::DaemonUnreachable => "DAEMON_UNREACHABLE",
+            ErrorCode::NoSuchRun => "NO_SUCH_RUN",
+            ErrorCode::RunActive => "RUN_ACTIVE",
+            ErrorCode::NotPausable => "NOT_PAUSABLE",
+            ErrorCode::NotResumable => "NOT_RESUMABLE",
+            ErrorCode::NotLive => "NOT_LIVE",
+            ErrorCode::SessionNotReady => "SESSION_NOT_READY",
             ErrorCode::Internal => "INTERNAL",
         }
     }
@@ -106,6 +193,8 @@ pub struct SessionView {
     pub name: String,
     pub profile: String,
     pub image: String,
+    pub resources: ResourcesView,
+    pub allow_private: Vec<String>,
     pub state: String,
     pub generation: u64,
     /// While starting, the readiness stage not yet reached.
@@ -115,6 +204,63 @@ pub struct SessionView {
     pub vnc_port: Option<u16>,
     /// `interactive` or `view-only`, once the guest has reported it.
     pub input: Option<String>,
+}
+
+/// One run and its attempts. Every resolved input is here, so `bctl runs ID --json` is the run's full record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunView {
+    pub id: i64,
+    pub session: String,
+    /// The `bctl.toml` job, or null for a one-off `bctl grab`.
+    pub job: Option<String>,
+    pub kind: String,
+    /// The current attempt's state, which is the run's state.
+    pub state: String,
+    pub outcome: Option<String>,
+    pub detail: Option<String>,
+    pub profile: String,
+    pub image: String,
+    pub image_digest: String,
+    pub browser_version: String,
+    pub config: json::Value,
+    pub input_digest: String,
+    pub output_dir: String,
+    pub log: String,
+    pub created_ms: i64,
+    pub progress: Option<ProgressView>,
+    pub interaction: Option<InteractionView>,
+    pub attempts: Vec<AttemptView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptView {
+    pub number: u32,
+    pub state: String,
+    pub outcome: Option<String>,
+    pub detail: Option<String>,
+    pub pid: Option<u32>,
+    pub started_ms: i64,
+    pub ended_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ProgressView {
+    pub pages_done: u32,
+    pub pages_queued: u32,
+    pub assets_done: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionView {
+    pub reason: String,
+    pub url: String,
+}
+
+/// For `logs`: a run's log, bounded to the run's cap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogView {
+    pub path: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,8 +279,10 @@ pub struct Response {
     pub error: Option<Box<ErrorBody>>,
     pub sessions: Vec<SessionView>,
     pub profiles: Vec<ProfileView>,
+    pub runs: Vec<RunView>,
     /// For `serve`: a single-use dashboard login URL. For `cdp-url`: a new CDP control URL for the session.
     pub url: Option<String>,
+    pub log: Option<Box<LogView>>,
 }
 
 impl Response {

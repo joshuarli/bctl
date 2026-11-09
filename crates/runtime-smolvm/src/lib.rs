@@ -87,6 +87,8 @@ pub struct LaunchSpec {
     pub display: (u16, u16),
     pub memory_mib: u32,
     pub cpus: u8,
+    /// IPv4 ranges in CIDR notation the guest may reach although private egress is blocked.
+    pub allow_private: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +206,9 @@ impl SmolVm {
         let volume = spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy()));
         if let Some(volume) = &volume {
             create.extend(["-v", volume]);
+        }
+        for range in &spec.allow_private {
+            create.extend(["--allow-private", range]);
         }
         self.run("machine create", &create, &[])?;
         let env = [

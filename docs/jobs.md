@@ -97,3 +97,98 @@ Resolving `mirror-docs` yields the image `ref-alpine-chromium`, viewport
 `[1280, 800]`, `2` CPUs, `4096` MiB, the `docs` profile, its single URL, up to
 `500` pages across `4` workers with `robots.txt` respected, and a `30m`
 runtime cap.
+
+## Running jobs
+
+The daemon runs jobs; the CLI only resolves and asks. Closing the CLI never
+stops a run.
+
+| Command | Effect |
+|---------|--------|
+| `bctl run JOB --session S [--config FILE]` | Resolves `JOB` from `FILE` (default `./bctl.toml`) and runs it in session `S`. |
+| `bctl grab URL... --session S` | Runs a one-off grab of the URLs, respecting `robots.txt`, in the existing session `S` as it is. |
+| `bctl runs [RUN] [--session S]` | Lists runs, newest first, or shows one run with every resolved field. |
+| `bctl logs RUN` | Prints the run's log. |
+| `bctl pause RUN` | Stops a grab at its next page boundary, keeping its state. |
+| `bctl resume RUN` | Continues a grab that waits for an operator, is paused, or was interrupted. |
+| `bctl cancel RUN` | Ends a live or paused run for good. |
+
+Every command takes `--json` except `logs`. Errors carry stable codes:
+`NO_SUCH_RUN`, `RUN_ACTIVE`, `NOT_PAUSABLE`, `NOT_RESUMABLE`, `NOT_LIVE`, and
+`SESSION_NOT_READY`, besides the session codes.
+
+`bctl run` brings `S` up with the job's profile and the resources its
+`[browsers.*]` entry resolves to (image, viewport, CPUs, memory). If `S` exists
+with any of them different, the run fails with `CONFLICT` and nothing starts.
+A session runs one run at a time; a second fails with `RUN_ACTIVE`.
+
+### Exec runs
+
+The program runs on the host as its own process group, with no shell, in
+`cwd` (the `bctl.toml` directory when unset). Its environment adds:
+
+| Variable | Value |
+|----------|-------|
+| `BCTL_CDP_URL` | A CDP control URL for the session, revoked when the attempt ends |
+| `BCTL_OUTPUT_DIR` | The run's output directory, which the program may fill |
+| `BCTL_RUN` | The run id |
+
+Standard input is empty. `timeout` and `bctl cancel` send the whole process
+group `SIGTERM`, then `SIGKILL` 5 seconds later. When the program exits, any
+process left in its group is killed. An exec run cannot be paused or resumed.
+
+### Grab runs
+
+bctl runs Shadowdriver's Grab, `BCTL_GRAB` or `grab` from `PATH` as the daemon
+found it, attached to the session's browser through a control URL. Grab writes
+its mirror under the run's output directory and reports progress on its event
+stream. When Grab meets a challenge or a login wall, the run moves to
+`needs-interaction` and names the URL; act in the session's browser (the
+dashboard or any CDP client), then `bctl resume RUN`. The crawl continues in
+the same browser and profile.
+
+`bctl pause` asks Grab to stop at its next page boundary; the run is `paused`
+and the VM keeps running. `bctl resume` of a paused or interrupted grab starts
+a new attempt over the same output directory, which continues from Grab's
+`state.db`. `bctl cancel` asks Grab to stop at a page boundary and ends the
+run; a Grab that has not stopped 60 seconds later is sent `SIGTERM`.
+
+A crawl Grab reports as succeeded counts as a success only after `grab verify`
+replays every mirror it wrote.
+
+### States and outcomes
+
+A run's state is its current attempt's: `starting`, `running`,
+`needs-interaction`, `paused`, `succeeded`, `failed`, `cancelled`, or
+`interrupted`. An ended attempt carries one outcome:
+
+| Outcome | Meaning |
+|---------|---------|
+| `succeeded` | The program exited 0, or Grab finished and its mirror verified |
+| `browser-crashed` | The run failed and the browser no longer answers CDP |
+| `site-rejected` | The crawl ended still blocked by a challenge |
+| `login-required` | The crawl ended still waiting for a login |
+| `verification-failed` | Grab finished, but `grab verify` rejected the mirror |
+| `job-error` | The program failed, timed out, or could not start |
+| `cancelled` | `bctl cancel`, or `bctl down` of the session |
+| `interrupted` | bctl stopped while the attempt was live |
+
+When the daemon restarts, every attempt it was running ends `interrupted`. A
+process of that attempt still running is sent `SIGTERM`, and `SIGKILL` 15
+seconds later. bctl never retries an interrupted attempt on its own.
+
+### Run records and files
+
+`bctl runs RUN --json` shows the resolved config, its `input_digest` (SHA-256
+of that config), the profile, the image and its manifest digest
+(`image_digest`), the browser version, and every attempt. A run's files live in
+`$BCTL_HOME/runs/RUN/`: `output/`, the `log`, and each attempt's event stream
+and control channel. The log holds every attempt's output and bctl's own
+notes, up to 8 MiB per run; later output is discarded.
+
+### Private addresses
+
+Guests reach the public internet only. `bctl up S --allow-private CIDR`
+(repeatable) lets session `S` reach a private IPv4 range too, and is part of
+its configuration. With SmolVM's default guest link, `100.96.0.0/30` allows
+the host's loopback, which the guest reaches at `100.96.0.1`.

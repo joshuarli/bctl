@@ -29,6 +29,7 @@ fn spec(session: &SessionName, generation: u64) -> LaunchSpec {
         display: (1280, 800),
         memory_mib: 4096,
         cpus: 2,
+        allow_private: Vec::new(),
     }
 }
 
