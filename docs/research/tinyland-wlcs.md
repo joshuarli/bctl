@@ -4,9 +4,10 @@
 its `wlcs_server_integration` ABI with one library split, one test-only feature,
 and one separate cdylib crate (about 300 lines). No compositor behavior changed
 to make the adapter work. The suite is a weak fit for tinyland's kiosk policy,
-though: of 1228 tests, 79 pass, 767 skip as unsupported protocols, and 379 fail,
+though: of 1228 tests, 162 pass, 770 skip as unsupported protocols, and 293 fail,
 and almost all of those failures come from what WLCS assumes of a compositor,
-not from tinyland defects. The run did find one real bug (fixed below).
+not from tinyland defects. The runs found one real bug and one misuse of error
+codes (both fixed below), and one unimplemented request (popup grab).
 
 WLCS is GPL-3 (test files are GPL-3, some build files GPL-2+ or Expat). It is
 used only as a test runner in a container. It is never linked into tinyland or
@@ -34,7 +35,9 @@ Build requirements: C++20, CMake, Boost headers, GoogleTest and GoogleMock,
 `libwayland-client` and `libwayland-server`. All of these exist on Alpine, so
 the runner and the adapter are both musl (`-C target-feature=-crt-static` for
 the cdylib). Nothing needs glibc. `harness/wlcs/Dockerfile` pins WLCS to
-`2b385328366de5db19521b9b3eef81861430d984` (v1.8.1) on the pinned Alpine base.
+`2b385328366de5db19521b9b3eef81861430d984` (v1.8.1) on the pinned Alpine base
+and applies `harness/wlcs/ack-initial-configure.patch` before building (see
+below).
 WLCS must be built as `Debug`: its `test_truncated_shm_file` calls
 `ftruncate` inside `assert`, so a `Release` build never truncates the file.
 
@@ -51,18 +54,49 @@ guest/tinyland/harness/wlcs/run.sh --sweep
 about 2.5 minutes on this Mac, including a cached image build. Per-test output
 lands in `.work/build/wlcs/target/sweep/`.
 
+## The WLCS client patch
+
+WLCS's stable xdg-shell test clients commit a buffer straight after
+`get_toplevel` or `get_popup`. xdg-shell requires an initial commit without a
+buffer, then an ack of the first `xdg_surface.configure`, and only then a
+buffer. Tinyland enforces that (`xdg_surface.unconfigured_buffer`), as wlroots
+and Weston do, so the unpatched suite hid every popup test. The patch
+(`harness/wlcs/ack-initial-configure.patch`, GPL-3 like WLCS, test-only, never
+shipped) adds `XdgSurfaceStable::commit_and_ack_initial_configure` and calls
+it before the first buffer. It touches five upstream files:
+
+- `include/xdg_shell_stable.h`, `src/xdg_shell_stable.cpp`: the helper.
+- `src/surface_builder.cpp`: `XdgStableSurfaceBuilder::build`, used by the
+  input-region and subsurface tests.
+- `tests/xdg_popup.cpp`: the popup manager's parent toplevel, in
+  `wait_for_frame_to_render`.
+- `tests/xdg_toplevel_stable.cpp`: the five tests that attach a buffer to a
+  bare toplevel (interactive move and resize, touch steal).
+
+Not patched: eight `SurfaceInputCombinations` tests
+(`input_seen_after_surface_unmapped_and_remapped`,
+`input_seen_by_subsurface_after_parent_unmapped_and_remapped`) unmap with a
+null buffer and attach a buffer again without a new initial commit and
+configure. xdg-shell says an unmapped toplevel returns to its state right
+after `get_toplevel`, so tinyland is right to reject it. Fixing it needs a
+per-surface-type change in WLCS's generic surface code.
+
 ## Results
 
 Run on 2026-11-09, arm64 Alpine 3.22 container, tinyland at the commit that
-adds this document.
+updates this document.
 
-| Outcome | Tests |
-|---|---|
-| Pass | 79 |
-| Skip: protocol or version unsupported (WLCS reports "missing extension") | 767 |
-| Fail | 379 |
-| Disabled upstream | 3 |
-| Crash or timeout | 0 |
+| Outcome | Unpatched | Patched |
+|---|---|---|
+| Pass | 79 | 162 |
+| Skip: protocol or version unsupported (WLCS reports "missing extension") | 767 | 770 |
+| Fail | 379 | 293 |
+| Disabled upstream | 3 | 3 |
+| Crash or timeout | 0 | 0 |
+
+The patch turned 83 failures into passes (popup placement, anchor, gravity,
+and dismissal cases, plus input and subsurface cases that need no window
+placement). Three tests that used to fail now skip.
 
 ### Unsupported protocols (skips)
 
@@ -72,29 +106,21 @@ wlr-foreign-toplevel-management, wlr-virtual-pointer, `wp_viewporter`,
 text-input v2/v3 with input-method, primary selection (both flavors),
 `zxdg_decoration_manager_v1`, `zxdg_output_manager_v1`, and `zxdg_shell_v6`. Also skipped are tests that need a newer `xdg_wm_base` than 1.
 
-### Passes in claimed protocols
-
-Core surface, output, frame callbacks, xdg-shell, and a few subsurface and
-data-device cases: surface enters output, frame timestamps increase,
-`wl_output` properties, frame requests without a buffer, one frame at a time,
-a client lying about buffer size, xdg_shell configure, role-conflict error,
-parent set and cleared, subsurface parent and placement, and the copy-paste
-offer after a sink gains focus. Nine more are WLCS self tests.
-
 ### Failures in claimed protocols, by cause
 
-The cause column comes from each test's first failure line; the split between
-the first two rows is a text match, not a hand audit, so treat counts as
-approximate.
+The split comes from each test's output and name, matched by text, so treat
+the touch and position counts as approximate; the named rows are exact.
 
 | Cause | Tests | Tinyland defect? |
 |---|---|---|
-| The test places a window and then hits it with the pointer (`position_window_absolute`); tinyland maximizes everything | 102 | No. Kiosk policy. Includes all surface input-region tests and the pointer-crossing tests. |
-| WLCS never sends `xdg_surface.ack_configure` and commits a buffer straight after `get_toplevel` or `get_popup`; tinyland rejects with `unconfigured_buffer` | 251 | No. The spec requires the ack, and wlroots and Weston enforce it. This hides every WLCS popup-placement test (positioner anchor, gravity, constraint adjustment, grabbed popups). |
-| Touch | 14 | No. No touch capability claimed. |
-| Other | 12 | See below. |
+| The test places a window (`position_window_absolute`, parent position) and then hits it with the pointer or expects popup placement relative to that position; tinyland maximizes every toplevel at the origin | about 182 | No. Policy mismatch. Input-region and surface-input combinations, the 44 popup positioner and constraint-adjustment cases (the parent is moved into the middle or off an edge, so slide, flip, and resize outcomes differ), subsurface and multilevel input, pointer motion, surface-moves-under-pointer, window-geometry offset, interactive move and resize (`xdg_toplevel.move` and `resize` are ignored), and two popup pointer-focus tests. |
+| The toplevel configuration tests: tinyland always configures maximized at the output size, ignores `set_maximized`, `unset_maximized`, `set_fullscreen`, and `unset_fullscreen`, and activates by stacking, not by pointer | 6 | No. Policy mismatch. |
+| Touch | about 93 (12 `TouchTest`, plus touch-parameterized input cases and two toplevel touch tests) | No. No touch capability claimed. |
+| Unmap then re-attach without a new initial commit (WLCS violates xdg-shell) | 8 | No. WLCS bug, left unpatched. |
+| `xdg_popup.grab` does not move keyboard focus to the popup (`grabbed_popup_gets_keyboard_focus`) | 1 | Gap. Tinyland accepts the request and ignores it; outside-click dismissal works without it. |
+| Named cases, below | 12 | See below. |
 
-The 12 others:
+The named cases:
 
 - `BadBufferTest.test_truncated_shm_file`: tinyland raises `wl_shm.invalid_fd`
   on `wl_shm` when the pool is created over a truncated file; the test wants
@@ -108,19 +134,18 @@ The 12 others:
 - `XdgToplevelStableTest.when_parent_is_set_to_self_error_is_raised` and
   `..._to_child_descendant_...`: expect `invalid_parent`, also a later
   version.
-- `XdgToplevelStableConfigurationTest.defaults`, `window_can_maximize_itself`,
-  `activated_state_follows_pointer`: tinyland always configures maximized at
-  the output size and activates by stacking, not by pointer.
 - `FrameSubmission.test_buffer_can_be_deleted_after_attached`: destroying an
-  attached buffer before commit disconnects the client with a `wl_surface`
-  error code 0 (`invalid_scale`). The spec leaves the result unspecified, so
-  the disconnect is defensible, but the code is a misuse of the enum. Left
-  alone.
+  attached buffer before commit disconnects the client, now with
+  `wl_display.implementation` (see below). The spec leaves the result
+  unspecified. The test accepts either of Weston's (commit a null buffer) or
+  wlroots' (keep the content) behavior and only forbids a crash, but its
+  roundtrip fails on a disconnect, so this stays a failure until tinyland
+  stops disconnecting. Decision for the owner.
 - `FrameSubmission.when_client_endlessly_requests_frame_then_callbacks_are_throttled`:
   the headless pump fires callbacks at once, where real scanout waits for a
   flip. Harness behavior, not tinyland's.
 - `CopyCutPaste.given_sink_has_focus_when_source_makes_offer_sink_sees_offer`:
-  the test picks keyboard focus by clicking a positioned window.
+  the test picks keyboard focus by clicking a positioned window (policy).
 
 ### Real bug found and fixed
 
@@ -131,9 +156,23 @@ A shm buffer whose file shrinks after the pool was created (a client crash or
 uses. Regression test:
 `committing_a_buffer_whose_file_was_truncated_reports_invalid_fd_on_the_buffer`.
 
-Several other client-limit errors (too many callbacks, memory budget) also
-post code 0 on `wl_surface`. They have no protocol-defined code, so they were
-left as they are.
+### Error codes for client limits
+
+Every per-client limit (surfaces, regions, region rectangles, frame callbacks,
+pools, buffers, outputs, seats, data sources and devices, mime types,
+toplevels, memory budget) and the oversized-buffer check posted code 0 on
+whichever object hit it. A client reads that as the first error of that
+interface: `invalid_scale` on `wl_surface`, `invalid_format` on `wl_shm`,
+`missing_capability` on `wl_seat`. They now post `wl_display.no_memory` on the
+display object. A buffer destroyed after attach and an internal unknown-pool
+lookup post `wl_display.implementation`. Interface-specific codes that were
+already correct are unchanged. The `wayland-server` API cannot name the
+`wl_display` object, so `src/server/display_error.rs` looks it up by protocol
+id 1 with a local `Interface` value named `wl_display`; the pure-Rust backend
+matches interfaces by name. Regression tests assert the object and code on
+the wire: `callback_bound_disconnects_offender_only`,
+`per_client_memory_budget_rejects_without_harming_healthy_client`, and
+`committing_a_buffer_destroyed_after_attach_reports_an_implementation_error_on_the_display`.
 
 ## Input regressions in tinyland's own suite
 
@@ -155,13 +194,16 @@ resume and unplug (`input.rs`, `seat.rs`), and repeat, compose, and text
 
 ## What this does not show
 
-- Popup grab and focus are not exercised by WLCS here. Every WLCS popup test
-  needs the client to ack configures, which WLCS does not do. Running them
-  needs a WLCS patch or an adapter-side option to relax the check, which
-  would test a different compositor than the one that ships.
+- Popup grab semantics: `xdg_popup.grab` is accepted and ignored, and the one
+  WLCS test of it fails. Nested grabbed popups and outside-click dismissal
+  pass. Popup placement against a parent that WLCS moves is a policy
+  mismatch, so constraint adjustment is only checked for a parent at the
+  origin.
 - Key release on disconnect and on seat takeover: the compositor resets
   modifiers on seat resume and unplug; the cases where a client disconnects
   with keys held rely on keyboard state belonging to the compositor, covered
   by the focus-loss test above. No test drives a real VT takeover.
-- B1 (`bctl-proof -- m1`) was not rerun; the only behavior change is the error
-  object and code for a truncated buffer.
+- Verification of the error-code change: tinyland's arm64 tests (75 library
+  tests plus the rest), T0 (`smolvm-proof.sh`), and B1 (`bctl-proof -- m1
+  --runs 2` on `ref-alpine-tinyland`, both runs ok). None exercises a client
+  limit, so the new codes are covered by the unit tests only.
