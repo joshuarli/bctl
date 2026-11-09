@@ -42,14 +42,27 @@ helpers. `smolvm/AGENTS.md` stays because the CLI embeds it in `--help`.
 lists them. Each patch names the tree it applies to in its filename
 (`<tree>-<order>-<slug>.patch`).
 
-`libkrun-0001-rutabaga-2d-beside-3d.patch` is the only one. macOS virglrenderer
-is built for Venus only and rejects `RESOURCE_CREATE_2D` with `EINVAL`, so no
-CPU-rendered scanout reaches the host. The patch keeps rutabaga's 2D component
-beside the default component: a 2D resource that the default component refuses
-is created on the 2D component, and every later operation on that resource
-(backing attach and detach, transfer, flush, unref) is routed by the resource's
-own component. This is what makes `RESOURCE_CREATE_2D` work, and Tinyland's dumb
-buffers need it too.
+`libkrun-0001-rutabaga-2d-beside-3d.patch` keeps a 2D rutabaga component
+beside the default one. macOS virglrenderer is built for Venus only and rejects
+`RESOURCE_CREATE_2D` with `EINVAL`, so no CPU-rendered scanout reaches the host.
+The patch creates a resource the default component refuses on the 2D component,
+and every later operation on that resource (backing attach and detach,
+transfer, flush, unref) is routed by the resource's own component. This is what
+makes `RESOURCE_CREATE_2D` work, and Tinyland's dumb buffers need it too.
+
+`smolvm-0001-graviola-only-crypto.patch` makes graviola the tree's only
+cryptography provider, so no `ring` or `aws-lc-rs` package is built or linked.
+rustls keeps no crypto backend; every TLS config takes `rustls-graviola`'s
+provider, installed once as the process default, and reqwest, hyper-rustls,
+tokio-rustls and axum-server use their `*-no-provider` features. Certificates
+rcgen used to sign through ring are generated and signed by graviola P-256
+through rcgen's `RemoteKeyPair`; the serial number and subject key identifier
+are supplied explicitly because a crypto-less rcgen cannot derive them.
+`smolvm-s3fs` uses reqwest's blocking client in place of ureq, whose `tls`
+feature hard-enables ring, and the SHA-256 call sites use the tree's existing
+`sha2` instead of ring's digest.
+
+Both patches are applied in the order `UPSTREAM.lock` lists them.
 
 The importer applies every patch to freshly imported source, so a patch that no
 longer matches the tip fails the import, not a later build. `runtime/build.sh`

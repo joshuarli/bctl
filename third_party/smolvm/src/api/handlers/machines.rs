@@ -29,6 +29,7 @@ use axum::{
     Json,
 };
 use futures_util::StreamExt;
+use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1559,6 +1560,7 @@ async fn upload_checkpoint_file(
     let file = Arc::new(file);
     // Same policy as the restore fetch: no redirects, so the host allow-list
     // cannot be escaped by a 302.
+    crate::install_crypto_provider();
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(30))
@@ -2172,6 +2174,7 @@ pub async fn restore_portable_checkpoint(
             // no hop, and following one would let the allow-list above be escaped by
             // a 302 to somewhere it forbids.
             let url = checked_checkpoint_source(raw)?;
+            crate::install_crypto_provider();
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(std::time::Duration::from_secs(30))
@@ -6742,9 +6745,8 @@ fn file_sha256(
     use std::io::Read;
     let mut file = std::fs::File::open(path)
         .map_err(|e| ApiError::internal(format!("open {}: {e}", path.display())))?;
-    // ring's SHA-256 is the same digest at several times the speed of sha2's,
-    // and this one pass over the whole base sets how long a publish takes.
-    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
+    // A single pass over the whole base sets how long a publish takes.
+    let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 8 << 20];
     loop {
         let read = file
@@ -6756,7 +6758,7 @@ fn file_sha256(
         hasher.update(&buffer[..read]);
         progress.touch();
     }
-    Ok(hex::encode(hasher.finish()))
+    Ok(hex::encode(hasher.finalize().as_slice()))
 }
 
 /// Largest cache base a create may fetch.
@@ -6817,6 +6819,7 @@ async fn fetch_cache_base(
         // any partial download of it left behind is abandoned.
         remove_abandoned_partials(&dir, &base);
         crate::api::cache_base_budget::make_room(&fetch_state).await;
+        crate::install_crypto_provider();
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(30))

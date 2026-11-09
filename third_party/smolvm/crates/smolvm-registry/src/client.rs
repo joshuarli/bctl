@@ -77,6 +77,7 @@ const FALLBACK_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 /// caller explicitly supplies the same bundle used by `--trust-host-certs`,
 /// add its certificates to both registry and auth-service requests as well.
 fn registry_tls(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    crate::install_crypto_provider();
     let path = std::env::var_os("SMOLVM_HOST_CA_BUNDLE");
     registry_tls_with_bundle(builder, path.as_deref().map(std::path::Path::new))
 }
@@ -1811,29 +1812,86 @@ struct TokenResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use graviola::signing::ecdsa::{P256, SigningKey};
+    use rcgen::{KeyPair, RemoteKeyPair};
+
+    struct GraviolaP256 {
+        key: SigningKey<P256>,
+        public: Vec<u8>,
+    }
+
+    impl GraviolaP256 {
+        fn new(key: SigningKey<P256>) -> Self {
+            let mut spki = [0u8; 128];
+            let spki = key.to_spki_der(&mut spki).unwrap();
+            let public = spki[spki.len() - 65..].to_vec();
+            assert_eq!(public[0], 0x04);
+            Self { key, public }
+        }
+    }
+
+    impl RemoteKeyPair for GraviolaP256 {
+        fn public_key(&self) -> &[u8] {
+            &self.public
+        }
+
+        fn sign(&self, msg: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
+            let mut signature = [0u8; 128];
+            self.key
+                .sign_asn1::<graviola::hashing::Sha256>(&[msg], &mut signature)
+                .map(|signature| signature.to_vec())
+                .map_err(|_| rcgen::Error::RemoteKeyError)
+        }
+
+        fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+            &rcgen::PKCS_ECDSA_P256_SHA256
+        }
+    }
+
+    fn test_key() -> (KeyPair, Vec<u8>) {
+        loop {
+            let mut scalar = [0u8; 32];
+            graviola::random::fill(&mut scalar).unwrap();
+            let mut sec1 = vec![0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20];
+            sec1.extend_from_slice(&scalar);
+            let Ok(signing) = SigningKey::<P256>::from_sec1_der(&sec1) else {
+                continue;
+            };
+            let mut buffer = [0u8; 256];
+            let pkcs8 = signing.to_pkcs8_der(&mut buffer).unwrap().to_vec();
+            let pair = KeyPair::from_remote(Box::new(GraviolaP256::new(signing))).unwrap();
+            return (pair, pkcs8);
+        }
+    }
 
     #[tokio::test]
     async fn registry_clients_verify_private_ca_for_registry_and_auth_requests() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio_rustls::rustls::pki_types::PrivateKeyDer;
 
-        let key = rcgen::KeyPair::generate().unwrap();
-        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
-            .unwrap()
-            .self_signed(&key)
-            .unwrap();
+        crate::install_crypto_provider();
+        let (key, key_der) = test_key();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let mut serial = [0u8; 20];
+        graviola::random::fill(&mut serial).unwrap();
+        serial[0] &= 0x7f;
+        params.serial_number = Some(rcgen::SerialNumber::from_slice(&serial));
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(key.public_key_der());
+        params.key_identifier_method =
+            rcgen::KeyIdMethod::PreSpecified(digest[..20].to_vec());
+        let cert = params.self_signed(&key).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let bundle = temp.path().join("roots.pem");
         std::fs::write(&bundle, cert.pem()).unwrap();
         let config = tokio_rustls::rustls::ServerConfig::builder_with_provider(
-            std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()),
+            std::sync::Arc::new(rustls_graviola::default_provider()),
         )
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()
         .with_single_cert(
             vec![cert.der().clone()],
-            PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+            PrivateKeyDer::Pkcs8(key_der.into()),
         )
         .unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));

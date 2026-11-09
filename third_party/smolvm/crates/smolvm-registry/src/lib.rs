@@ -15,6 +15,14 @@ pub use client::{validate_digest, RegistryClient};
 pub use pull::{pull, pull_with_progress, PullResult};
 pub use push::{push, PushResult};
 
+/// Installs Graviola as rustls' process-wide `CryptoProvider`.
+pub(crate) fn install_crypto_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls_graviola::default_provider().install_default();
+    });
+}
+
 use serde::{Deserialize, Serialize};
 
 /// OCI media type for the smolmachine config blob.

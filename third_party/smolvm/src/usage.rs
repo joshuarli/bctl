@@ -640,6 +640,7 @@ pub fn share_now(
         .map_err(std::io::Error::other)?;
     let endpoint_for_post = endpoint.clone();
     let status = runtime.block_on(async move {
+        crate::install_crypto_provider();
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()

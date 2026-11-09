@@ -1,6 +1,7 @@
 //! Canonical shared disk type metadata.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::data::storage::{
     DEFAULT_OVERLAY_SIZE_GIB, DEFAULT_STORAGE_SIZE_GIB, OVERLAY_DISK_FILENAME,
@@ -326,7 +327,7 @@ impl CacheDisk {
         let mut file = std::fs::File::open(&self.base).map_err(|e| {
             crate::Error::agent("hash cache base", format!("{}: {e}", self.base.display()))
         })?;
-        let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut hasher = Sha256::new();
         let mut buffer = vec![0_u8; 8 << 20];
         loop {
             let read = file.read(&mut buffer).map_err(|e| {
@@ -337,7 +338,7 @@ impl CacheDisk {
             }
             hasher.update(&buffer[..read]);
         }
-        let digest = hex::encode(hasher.finish());
+        let digest = hex::encode(hasher.finalize().as_slice());
         record_base_digest(&self.base, &digest);
         Ok(digest)
     }

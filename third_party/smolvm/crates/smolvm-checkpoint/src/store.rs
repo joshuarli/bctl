@@ -3,6 +3,7 @@
 //! invalidate a newer one. Export materializes a standalone pack on demand.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use smolvm_pack::format::PackManifest;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -83,12 +84,11 @@ fn safe_relative(path: &str) -> bool {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+    hex::encode(Sha256::digest(bytes).as_slice())
 }
 
 #[test]
 fn checkpoint_hashes_match_existing_sha256_objects() {
-    use sha2::{Digest, Sha256};
     let bytes: Vec<_> = (0..CHUNK_SIZE + 1)
         .map(|index| ((index * 73 + index / 127) & 255) as u8)
         .collect();

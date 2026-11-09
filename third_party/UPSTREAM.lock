@@ -1,9 +1,9 @@
 [import]
 format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
-source_identity = "sha256:33e7e1e7521f63e2ae0634f7ecc7ee857d6e0aa8f178cc27cbd706e40d078607"
+source_identity = "sha256:26ee7a90ebee27fcf5d23c715715ee4eabc83f0a3217a49db214717cbae64351"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -34,3 +34,8 @@ guest = "1.99.1"
 path = "libkrun-0001-rutabaga-2d-beside-3d.patch"
 tree = "libkrun"
 sha256 = "80cbf562d19aa957d675e3fb6700c5c31b2d1d01a23069877020bfbe01894714"
+
+[[patch]]
+path = "smolvm-0001-graviola-only-crypto.patch"
+tree = "."
+sha256 = "7e59e0f19463ef755124f0715a91edc1f29feff4bf865eb4c33f254e0896c2df"

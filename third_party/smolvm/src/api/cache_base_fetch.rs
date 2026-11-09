@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::api::error::ApiError;
@@ -122,7 +123,7 @@ async fn stream_to_file(
         .open(path)
         .await
         .map_err(|e| ApiError::internal(format!("create {}: {e}", path.display())))?;
-    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut hasher = Sha256::new();
     let mut received = 0_u64;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -142,7 +143,7 @@ async fn stream_to_file(
     file.sync_all()
         .await
         .map_err(|e| ApiError::internal(format!("sync cache base: {e}")))?;
-    Ok(hex::encode(hasher.finish()))
+    Ok(hex::encode(hasher.finalize().as_slice()))
 }
 
 /// Fill `path` with the `total` bytes of `url`, part by part over
@@ -291,14 +292,13 @@ fn write_at(file: &std::fs::File, offset: u64, bytes: &[u8]) -> std::io::Result<
 }
 
 /// The SHA-256 of a whole file, as lowercase hex. A base fetched in parts is
-/// hashed in this one pass after it lands, so it uses ring's SHA-256, several
-/// times faster than sha2's.
+/// hashed in this one pass after it lands.
 async fn hash_file(path: &std::path::Path) -> Result<String, ApiError> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         use std::io::Read;
         let mut file = std::fs::File::open(&path)?;
-        let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut hasher = Sha256::new();
         let mut buffer = vec![0_u8; 8 << 20];
         loop {
             let read = file.read(&mut buffer)?;
@@ -307,7 +307,7 @@ async fn hash_file(path: &std::path::Path) -> Result<String, ApiError> {
             }
             hasher.update(&buffer[..read]);
         }
-        Ok::<_, std::io::Error>(hex::encode(hasher.finish()))
+        Ok::<_, std::io::Error>(hex::encode(hasher.finalize().as_slice()))
     })
     .await
     .map_err(|e| ApiError::internal(format!("cache base hash task: {e}")))?
@@ -323,6 +323,7 @@ mod tests {
     /// 206 of exactly that slice; without, always send the whole body. Counts
     /// the requests it answered.
     async fn serve(body: Vec<u8>, ranges: bool) -> (reqwest::Url, Arc<AtomicU64>) {
+        crate::install_crypto_provider();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = reqwest::Url::parse(&format!("http://{}/base", listener.local_addr().unwrap()))
             .unwrap();

@@ -9,9 +9,10 @@
 //! cannot mint a certificate the guest would accept for any other domain.
 
 use anyhow::{Context, Result};
+use crate::p256::{serial_number, P256Key};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
-    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, KeyPair, KeyUsagePurpose, NameConstraints,
+    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, KeyUsagePurpose, NameConstraints,
     SanType,
 };
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -38,7 +39,7 @@ pub struct MachineCa {
     /// from disk this is re-derived from the machine name and key rather than
     /// parsed, which is all signing a leaf needs.
     issuer: Certificate,
-    key: KeyPair,
+    key: P256Key,
 }
 
 fn ca_params(machine: &str) -> CertificateParams {
@@ -52,6 +53,7 @@ fn ca_params(machine: &str) -> CertificateParams {
         format!("smolvm {machine} credential CA"),
     );
     params.distinguished_name = dn;
+    params.serial_number = Some(serial_number());
     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
     params.not_after = rcgen::date_time_ymd(2099, 1, 1);
     params
@@ -66,7 +68,7 @@ impl MachineCa {
             !permitted_hosts.is_empty(),
             "a machine CA needs at least one permitted host"
         );
-        let key = KeyPair::generate().context("generate CA key")?;
+        let key = P256Key::generate().context("generate CA key")?;
         let mut params = ca_params(machine);
         params.name_constraints = Some(NameConstraints {
             permitted_subtrees: permitted_hosts
@@ -75,7 +77,8 @@ impl MachineCa {
                 .collect(),
             excluded_subtrees: Vec::new(),
         });
-        let cert = params.self_signed(&key).context("self-sign CA")?;
+        params.key_identifier_method = key.key_identifier_method();
+        let cert = params.self_signed(key.key_pair()).context("self-sign CA")?;
         Ok(Self {
             name: machine.to_string(),
             cert_pem: cert.pem(),
@@ -95,7 +98,7 @@ impl MachineCa {
         std::fs::write(guest.join(GUEST_CA_FILE), &self.cert_pem)?;
         std::fs::write(dir.join(CA_NAME_FILE), &self.name)?;
         let key_path = dir.join(CA_KEY_FILE);
-        std::fs::write(&key_path, Zeroizing::new(self.key.serialize_pem()))?;
+        std::fs::write(&key_path, Zeroizing::new(self.key.serialize_der()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -112,16 +115,18 @@ impl MachineCa {
             .unwrap_or_else(|_| machine.to_string());
         let cert_pem = std::fs::read_to_string(dir.join(GUEST_CA_FILE))
             .with_context(|| format!("read {}", dir.join(GUEST_CA_FILE).display()))?;
-        let key_pem = Zeroizing::new(
-            std::fs::read_to_string(dir.join(CA_KEY_FILE))
+        let key_bytes = Zeroizing::new(
+            std::fs::read(dir.join(CA_KEY_FILE))
                 .with_context(|| format!("read {}", dir.join(CA_KEY_FILE).display()))?,
         );
-        let key = KeyPair::from_pem(&key_pem).context("parse CA key")?;
+        let key = P256Key::from_bytes(&key_bytes).context("parse CA key")?;
         let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
             .next()
             .context("CA certificate missing")??;
-        let issuer = ca_params(&name)
-            .self_signed(&key)
+        let mut params = ca_params(&name);
+        params.key_identifier_method = key.key_identifier_method();
+        let issuer = params
+            .self_signed(key.key_pair())
             .context("rebuild CA issuer")?;
         Ok(Self {
             name,
@@ -152,7 +157,7 @@ impl MachineCa {
             serde_json::json!({
                 "name": self.name,
                 "certificate": self.cert_pem,
-                "key": *Zeroizing::new(self.key.serialize_pem()),
+                "key": self.key.serialize_der(),
             })
             .to_string(),
         )
@@ -168,12 +173,26 @@ impl MachineCa {
         };
         let name = take("name")?.to_string();
         let cert_pem = take("certificate")?.to_string();
-        let key = KeyPair::from_pem(&take("key")?).context("parse exported CA key")?;
+        let key = match value.get_mut("key").map(serde_json::Value::take) {
+            Some(serde_json::Value::String(text)) => P256Key::from_bytes(text.as_bytes()),
+            Some(serde_json::Value::Array(items)) => {
+                let bytes = items
+                    .iter()
+                    .map(|item| item.as_u64().and_then(|value| u8::try_from(value).ok()))
+                    .collect::<Option<Vec<u8>>>()
+                    .context("exported CA key is not a byte array")?;
+                P256Key::from_pkcs8_der(&bytes)
+            }
+            _ => anyhow::bail!("exported CA has no key"),
+        }
+        .context("parse exported CA key")?;
         let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
             .next()
             .context("exported CA has no certificate")??;
-        let issuer = ca_params(&name)
-            .self_signed(&key)
+        let mut params = ca_params(&name);
+        params.key_identifier_method = key.key_identifier_method();
+        let issuer = params
+            .self_signed(key.key_pair())
             .context("rebuild CA issuer")?;
         Ok(Self {
             name,
@@ -195,7 +214,7 @@ impl MachineCa {
         &self,
         host: &str,
     ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-        let leaf_key = KeyPair::generate().context("generate leaf key")?;
+        let leaf_key = P256Key::generate().context("generate leaf key")?;
         let mut params = CertificateParams::new(Vec::<String>::new()).context("leaf params")?;
         params.subject_alt_names = vec![SanType::DnsName(
             host.try_into().context("host is not a valid DNS name")?,
@@ -212,10 +231,12 @@ impl MachineCa {
         // rcgen write its Subject Key Identifier.
         params.is_ca = IsCa::ExplicitNoCa;
         params.use_authority_key_identifier_extension = true;
+        params.key_identifier_method = leaf_key.key_identifier_method();
+        params.serial_number = Some(serial_number());
         params.not_before = rcgen::date_time_ymd(2024, 1, 1);
         params.not_after = rcgen::date_time_ymd(2099, 1, 1);
         let leaf = params
-            .signed_by(&leaf_key, &self.issuer, &self.key)
+            .signed_by(leaf_key.key_pair(), &self.issuer, self.key.key_pair())
             .context("sign leaf")?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
         Ok((vec![leaf.der().clone(), self.cert_der.clone()], key))
@@ -272,7 +293,7 @@ mod tests {
         roots.add(original.cert_der.clone()).unwrap();
         let verifier = WebPkiServerVerifier::builder_with_provider(
             std::sync::Arc::new(roots),
-            std::sync::Arc::new(rustls::crypto::ring::default_provider()),
+            std::sync::Arc::new(rustls_graviola::default_provider()),
         )
         .build()
         .unwrap();
@@ -302,7 +323,7 @@ mod tests {
         roots.add(ca.cert_der.clone()).unwrap();
         let verifier = WebPkiServerVerifier::builder_with_provider(
             std::sync::Arc::new(roots),
-            std::sync::Arc::new(rustls::crypto::ring::default_provider()),
+            std::sync::Arc::new(rustls_graviola::default_provider()),
         )
         .build()
         .unwrap();

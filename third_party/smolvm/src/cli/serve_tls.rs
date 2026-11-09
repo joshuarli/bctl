@@ -171,9 +171,9 @@ fn build_server_config(
     client_ca_path: &Path,
     policy: &ClientIdentityPolicy,
 ) -> Result<Arc<ServerConfig>, String> {
-    // Pin the ring provider explicitly rather than relying on a process-global
+    // Pin the provider explicitly rather than relying on a process-global
     // install — avoids ordering hazards if anything else touches rustls.
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls_graviola::default_provider());
 
     // Client-cert trust anchor: the node-CA. Only the control plane holds a
     // client cert signed by it.
@@ -530,26 +530,116 @@ mod tests {
 
     // ---- client identity (subject CN) enforcement ----
 
+    use graviola::signing::ecdsa::{P256, SigningKey};
     use rcgen::{
         BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     };
 
+    struct GraviolaP256 {
+        key: SigningKey<P256>,
+        public: Vec<u8>,
+    }
+
+    impl GraviolaP256 {
+        fn new(key: SigningKey<P256>) -> Self {
+            let mut spki = [0u8; 128];
+            let spki = key.to_spki_der(&mut spki).unwrap();
+            let public = spki[spki.len() - 65..].to_vec();
+            assert_eq!(public[0], 0x04);
+            Self { key, public }
+        }
+    }
+
+    impl rcgen::RemoteKeyPair for GraviolaP256 {
+        fn public_key(&self) -> &[u8] {
+            &self.public
+        }
+
+        fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, rcgen::Error> {
+            let mut signature = [0u8; 128];
+            self.key
+                .sign_asn1::<graviola::hashing::Sha256>(&[msg], &mut signature)
+                .map(|signature| signature.to_vec())
+                .map_err(|_| rcgen::Error::RemoteKeyError)
+        }
+
+        fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+            &rcgen::PKCS_ECDSA_P256_SHA256
+        }
+    }
+
+    struct P256Key {
+        pair: KeyPair,
+        pkcs8: Vec<u8>,
+    }
+
+    impl P256Key {
+        fn generate() -> Self {
+            loop {
+                let mut scalar = [0u8; 32];
+                graviola::random::fill(&mut scalar).unwrap();
+                let mut sec1 = vec![0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20];
+                sec1.extend_from_slice(&scalar);
+                let Ok(signing) = SigningKey::<P256>::from_sec1_der(&sec1) else {
+                    continue;
+                };
+                let mut buffer = [0u8; 256];
+                let pkcs8 = signing.to_pkcs8_der(&mut buffer).unwrap().to_vec();
+                let pair =
+                    KeyPair::from_remote(Box::new(GraviolaP256::new(signing))).unwrap();
+                return Self { pair, pkcs8 };
+            }
+        }
+
+        fn rcgen(&self) -> &KeyPair {
+            &self.pair
+        }
+
+        fn key_identifier_method(&self) -> rcgen::KeyIdMethod {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(self.pair.public_key_der());
+            rcgen::KeyIdMethod::PreSpecified(digest[..20].to_vec())
+        }
+
+        fn serialize_pem(&self) -> String {
+            use base64::Engine;
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(&self.pkcs8);
+            let mut pem = String::from("-----BEGIN PRIVATE KEY-----\n");
+            for line in encoded.as_bytes().chunks(64) {
+                pem.push_str(std::str::from_utf8(line).expect("base64 is ASCII"));
+                pem.push('\n');
+            }
+            pem.push_str("-----END PRIVATE KEY-----\n");
+            pem
+        }
+    }
+
     struct Ca {
         cert: rcgen::Certificate,
-        key: KeyPair,
+        key: P256Key,
     }
 
     struct Leaf {
         cert: rcgen::Certificate,
-        key: KeyPair,
+        key: P256Key,
+    }
+
+    fn serial_number() -> rcgen::SerialNumber {
+        let mut bytes = [0u8; 20];
+        graviola::random::fill(&mut bytes).expect("certificate serial randomness");
+        bytes[0] &= 0x7f;
+        rcgen::SerialNumber::from_slice(&bytes)
     }
 
     fn make_ca(name: &str) -> Ca {
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.distinguished_name.push(DnType::CommonName, name);
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        let key = KeyPair::generate().unwrap();
-        let cert = params.self_signed(&key).unwrap();
+        params.serial_number = Some(serial_number());
+        let key = P256Key::generate();
+        params.key_identifier_method = key.key_identifier_method();
+        let cert = params.self_signed(key.rcgen()).unwrap();
         Ca { cert, key }
     }
 
@@ -560,8 +650,12 @@ mod tests {
             ExtendedKeyUsagePurpose::ServerAuth,
             ExtendedKeyUsagePurpose::ClientAuth,
         ];
-        let key = KeyPair::generate().unwrap();
-        let cert = params.signed_by(&key, &ca.cert, &ca.key).unwrap();
+        params.serial_number = Some(serial_number());
+        let key = P256Key::generate();
+        params.key_identifier_method = key.key_identifier_method();
+        let cert = params
+            .signed_by(key.rcgen(), &ca.cert, ca.key.rcgen())
+            .unwrap();
         Leaf { cert, key }
     }
 
@@ -570,7 +664,7 @@ mod tests {
         roots.add(ca.cert.der().clone()).unwrap();
         let webpki = WebPkiClientVerifier::builder_with_provider(
             Arc::new(roots),
-            Arc::new(rustls::crypto::ring::default_provider()),
+            Arc::new(rustls_graviola::default_provider()),
         )
         .build()
         .unwrap();
@@ -688,6 +782,7 @@ mod tests {
         }
 
         fn client(&self, issuer: &Ca, cn: &str, addr: std::net::SocketAddr) -> reqwest::Client {
+            crate::install_crypto_provider();
             let leaf = make_leaf(issuer, cn);
             let identity_pem = format!("{}\n{}", leaf.cert.pem(), leaf.key.serialize_pem());
             reqwest::Client::builder()

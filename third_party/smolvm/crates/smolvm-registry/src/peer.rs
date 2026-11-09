@@ -67,6 +67,7 @@ pub(crate) fn peer_client() -> Option<&'static reqwest::Client> {
 /// trusting only the fleet node-CA (built-in roots disabled — peers are private
 /// fleet nodes, never public CAs).
 fn build_peer_client() -> std::result::Result<reqwest::Client, String> {
+    crate::install_crypto_provider();
     let cert = read_env_file(ENV_CERT)?;
     let key = read_env_file(ENV_KEY)?;
     let ca = read_env_file(ENV_CLIENT_CA)?;
@@ -179,6 +180,7 @@ mod tests {
     // A valid, well-formed sha256 digest of the test blob below. Computed once
     // so the tests assert against a real content address, not a placeholder.
     fn blob_and_digest() -> (Vec<u8>, String) {
+        crate::install_crypto_provider();
         use sha2::{Digest, Sha256};
         let data = b"the-quick-brown-fox-p2p-blob".to_vec();
         let digest = format!("sha256:{}", hex::encode(Sha256::digest(&data)));

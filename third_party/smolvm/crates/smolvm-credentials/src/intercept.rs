@@ -337,7 +337,7 @@ impl State {
         }
         let (chain, key) = self.ca.issue_leaf(host)?;
         let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
+            rustls_graviola::default_provider(),
         ))
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()
@@ -360,6 +360,7 @@ impl State {
         if let Some(client) = clients.get(&key) {
             return Ok(client.clone());
         }
+        crate::install_crypto_provider();
         let mut builder = reqwest::Client::builder()
             .use_rustls_tls()
             .no_proxy()
@@ -863,16 +864,17 @@ mod tests {
     }
 
     fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-        Arc::new(rustls::crypto::ring::default_provider())
+        Arc::new(rustls_graviola::default_provider())
     }
 
     async fn start_upstream() -> Upstream {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let cert =
+        let key = crate::p256::P256Key::generate().unwrap();
+        let mut params =
             rcgen::CertificateParams::new(vec![CRED_HOST.to_string(), OTHER_HOST.to_string()])
-                .unwrap()
-                .self_signed(&key)
                 .unwrap();
+        params.serial_number = Some(crate::p256::serial_number());
+        params.key_identifier_method = key.key_identifier_method();
+        let cert = params.self_signed(key.key_pair()).unwrap();
         let cert_pem = cert.pem().into_bytes();
         let mut config = rustls::ServerConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()

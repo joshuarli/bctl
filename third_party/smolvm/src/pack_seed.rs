@@ -445,10 +445,7 @@ mod imp {
     #[cfg(target_os = "macos")]
     fn artifact_digest(file: &mut File, root: &Path) -> Result<String> {
         let before = identity(&file.metadata().map_err(fail)?);
-        let key = hex::encode(ring::digest::digest(
-            &ring::digest::SHA256,
-            format!("{before:?}").as_bytes(),
-        ));
+        let key = hex::encode(Sha256::digest(format!("{before:?}").as_bytes()).as_slice());
         let hashes = root.join(".digests");
         fs::create_dir_all(&hashes).map_err(fail)?;
         let path = hashes.join(key);
@@ -463,7 +460,7 @@ mod imp {
             }
         }
         file.seek(SeekFrom::Start(0)).map_err(fail)?;
-        let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut hash = Sha256::new();
         let mut buffer = vec![0; 1024 * 1024];
         loop {
             let read = file.read(&mut buffer).map_err(fail)?;
@@ -475,7 +472,7 @@ mod imp {
         if identity(&file.metadata().map_err(fail)?) != before {
             return Err(fail("pack changed while hashing"));
         }
-        let digest = hex::encode(hash.finish());
+        let digest = hex::encode(hash.finalize().as_slice());
         let mut temporary = tempfile::NamedTempFile::new_in(&hashes).map_err(fail)?;
         use std::io::Write;
         temporary.write_all(digest.as_bytes()).map_err(fail)?;

@@ -4,7 +4,7 @@
 //! (sidecar mode via `runpack`) and the standalone stub executable.
 
 use crate::format::{PackFooter, SIDECAR_EXTENSION};
-use ring::digest::{Context, SHA256};
+use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -2888,7 +2888,7 @@ pub fn link_checkpoint_artifact(
 
 fn hash_artifact_sha256(sidecar_path: &Path) -> std::io::Result<String> {
     let mut source = File::open(sidecar_path)?;
-    let mut hasher = Context::new(&SHA256);
+    let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 4 * 1024 * 1024];
     loop {
         let read = source.read(&mut buffer)?;
@@ -2898,7 +2898,7 @@ fn hash_artifact_sha256(sidecar_path: &Path) -> std::io::Result<String> {
         hasher.update(&buffer[..read]);
     }
     let mut digest = String::with_capacity(64);
-    for byte in hasher.finish().as_ref() {
+    for byte in hasher.finalize().as_slice() {
         write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
     }
     Ok(digest)
@@ -2924,7 +2924,7 @@ pub struct ReceivedArtifactHashes {
 /// known to be the end until the stream ends, so that many bytes are held back
 /// from the CRC until more arrive.
 pub struct ArtifactStreamHasher {
-    sha256: Context,
+    sha256: Sha256,
     crc32: crc32fast::Hasher,
     held: Vec<u8>,
     len: u64,
@@ -2940,7 +2940,7 @@ impl ArtifactStreamHasher {
     /// Start an empty stream.
     pub fn new() -> Self {
         Self {
-            sha256: Context::new(&SHA256),
+            sha256: Sha256::new(),
             crc32: crc32fast::Hasher::new(),
             held: Vec::with_capacity(2 * crate::format::FOOTER_SIZE),
             len: 0,
@@ -2970,7 +2970,7 @@ impl ArtifactStreamHasher {
     /// Finish the stream.
     pub fn finish(self) -> ReceivedArtifactHashes {
         let mut sha256 = String::with_capacity(64);
-        for byte in self.sha256.finish().as_ref() {
+        for byte in self.sha256.finalize().as_slice() {
             write!(&mut sha256, "{byte:02x}").expect("writing to a String cannot fail");
         }
         ReceivedArtifactHashes {
@@ -3023,12 +3023,12 @@ impl ExtractDigestWorker {
         let worker = std::thread::Builder::new()
             .name("extract-sha256".into())
             .spawn(move || {
-                let mut hasher = Context::new(&SHA256);
+                let mut hasher = Sha256::new();
                 for bytes in receiver {
                     hasher.update(&bytes);
                 }
                 let mut digest = String::with_capacity(64);
-                for byte in hasher.finish().as_ref() {
+                for byte in hasher.finalize().as_slice() {
                     write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
                 }
                 digest

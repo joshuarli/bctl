@@ -1,0 +1,1828 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d2fd357..4ead861 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -65,7 +65,7 @@ version = "1.1.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+ dependencies = [
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -76,7 +76,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+ dependencies = [
+  "anstyle",
+  "once_cell_polyfill",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -308,29 +308,6 @@ version = "1.5.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+ 
+-[[package]]
+-name = "aws-lc-rs"
+-version = "1.18.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e"
+-dependencies = [
+- "aws-lc-sys",
+- "zeroize",
+-]
+-
+-[[package]]
+-name = "aws-lc-sys"
+-version = "0.45.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27"
+-dependencies = [
+- "cc",
+- "cmake",
+- "dunce",
+- "fs_extra",
+- "pkg-config",
+-]
+-
+ [[package]]
+ name = "axum"
+ version = "0.8.9"
+@@ -553,17 +530,6 @@ dependencies = [
+  "zbus",
+ ]
+ 
+-[[package]]
+-name = "chacha20"
+-version = "0.10.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+-dependencies = [
+- "cfg-if 1.0.4",
+- "cpufeatures 0.3.1",
+- "rand_core 0.10.1",
+-]
+-
+ [[package]]
+ name = "clap"
+ version = "4.6.7"
+@@ -613,15 +579,6 @@ version = "1.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+ 
+-[[package]]
+-name = "cmake"
+-version = "0.1.58"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+-dependencies = [
+- "cc",
+-]
+-
+ [[package]]
+ name = "colorchoice"
+ version = "1.0.5"
+@@ -723,15 +680,6 @@ dependencies = [
+  "libc",
+ ]
+ 
+-[[package]]
+-name = "cpufeatures"
+-version = "0.3.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
+-dependencies = [
+- "libc",
+-]
+-
+ [[package]]
+ name = "crc32fast"
+ version = "1.5.0"
+@@ -1015,12 +963,6 @@ dependencies = [
+  "syn 2.0.117",
+ ]
+ 
+-[[package]]
+-name = "dunce"
+-version = "1.0.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+-
+ [[package]]
+ name = "either"
+ version = "1.16.0"
+@@ -1067,7 +1009,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+ dependencies = [
+  "libc",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1172,12 +1114,6 @@ dependencies = [
+  "tokio",
+ ]
+ 
+-[[package]]
+-name = "fs_extra"
+-version = "1.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
+-
+ [[package]]
+ name = "fsevent-sys"
+ version = "4.1.0"
+@@ -1305,10 +1241,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+ dependencies = [
+  "cfg-if 1.0.4",
+- "js-sys",
+  "libc",
+  "wasi",
+- "wasm-bindgen",
+ ]
+ 
+ [[package]]
+@@ -1333,7 +1267,6 @@ dependencies = [
+  "js-sys",
+  "libc",
+  "r-efi 6.0.0",
+- "rand_core 0.10.1",
+  "wasip2",
+  "wasip3",
+  "wasm-bindgen",
+@@ -1359,6 +1292,16 @@ dependencies = [
+  "cfg-if 0.1.10",
+ ]
+ 
++[[package]]
++name = "graviola"
++version = "0.4.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a1a15622a211648cbf64f485e0369791466d133eb6578fd99e4a61230c88a6aa"
++dependencies = [
++ "cfg-if 1.0.4",
++ "getrandom 0.4.2",
++]
++
+ [[package]]
+ name = "h2"
+ version = "0.4.20"
+@@ -1568,7 +1511,7 @@ dependencies = [
+  "tokio",
+  "tokio-rustls",
+  "tower-service",
+- "webpki-roots 1.0.10",
++ "webpki-roots",
+ ]
+ 
+ [[package]]
+@@ -1950,12 +1893,6 @@ dependencies = [
+  "value-bag",
+ ]
+ 
+-[[package]]
+-name = "lru-slab"
+-version = "0.1.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+-
+ [[package]]
+ name = "managed"
+ version = "0.8.0"
+@@ -2047,7 +1984,7 @@ dependencies = [
+  "hashbrown 0.15.5",
+  "metrics",
+  "quanta",
+- "rand 0.9.4",
++ "rand",
+  "rand_xoshiro",
+  "sketches-ddsketch",
+ ]
+@@ -2210,7 +2147,7 @@ version = "0.50.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+ dependencies = [
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -2622,62 +2559,6 @@ dependencies = [
+  "winapi",
+ ]
+ 
+-[[package]]
+-name = "quinn"
+-version = "0.11.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
+-dependencies = [
+- "bytes",
+- "cfg_aliases",
+- "pin-project-lite",
+- "quinn-proto",
+- "quinn-udp",
+- "rustc-hash",
+- "rustls",
+- "socket2",
+- "thiserror 2.0.18",
+- "tokio",
+- "tracing",
+- "web-time",
+-]
+-
+-[[package]]
+-name = "quinn-proto"
+-version = "0.11.19"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe"
+-dependencies = [
+- "bytes",
+- "getrandom 0.4.2",
+- "lru-slab",
+- "rand 0.10.3",
+- "rand_pcg",
+- "ring",
+- "rustc-hash",
+- "rustls",
+- "rustls-pki-types",
+- "slab",
+- "thiserror 2.0.18",
+- "tinyvec",
+- "tracing",
+- "web-time",
+-]
+-
+-[[package]]
+-name = "quinn-udp"
+-version = "0.5.14"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
+-dependencies = [
+- "cfg_aliases",
+- "libc",
+- "once_cell",
+- "socket2",
+- "tracing",
+- "windows-sys 0.60.2",
+-]
+-
+ [[package]]
+ name = "quote"
+ version = "1.0.45"
+@@ -2706,18 +2587,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
+ dependencies = [
+  "rand_chacha",
+- "rand_core 0.9.5",
+-]
+-
+-[[package]]
+-name = "rand"
+-version = "0.10.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+-dependencies = [
+- "chacha20",
+- "getrandom 0.4.2",
+- "rand_core 0.10.1",
++ "rand_core",
+ ]
+ 
+ [[package]]
+@@ -2727,7 +2597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+ dependencies = [
+  "ppv-lite86",
+- "rand_core 0.9.5",
++ "rand_core",
+ ]
+ 
+ [[package]]
+@@ -2739,28 +2609,13 @@ dependencies = [
+  "getrandom 0.3.4",
+ ]
+ 
+-[[package]]
+-name = "rand_core"
+-version = "0.10.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+-
+-[[package]]
+-name = "rand_pcg"
+-version = "0.10.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+-dependencies = [
+- "rand_core 0.10.1",
+-]
+-
+ [[package]]
+ name = "rand_xoshiro"
+ version = "0.7.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+ dependencies = [
+- "rand_core 0.9.5",
++ "rand_core",
+ ]
+ 
+ [[package]]
+@@ -2788,7 +2643,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+ dependencies = [
+  "pem",
+- "ring",
+  "rustls-pki-types",
+  "time",
+  "yasna",
+@@ -2851,6 +2705,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+ dependencies = [
+  "base64 0.22.1",
+  "bytes",
++ "futures-channel",
+  "futures-core",
+  "futures-util",
+  "http",
+@@ -2863,7 +2718,6 @@ dependencies = [
+  "log",
+  "percent-encoding",
+  "pin-project-lite",
+- "quinn",
+  "rustls",
+  "rustls-native-certs",
+  "rustls-pki-types",
+@@ -2882,7 +2736,7 @@ dependencies = [
+  "wasm-bindgen-futures",
+  "wasm-streams",
+  "web-sys",
+- "webpki-roots 1.0.10",
++ "webpki-roots",
+ ]
+ 
+ [[package]]
+@@ -2913,12 +2767,6 @@ dependencies = [
+  "smallvec",
+ ]
+ 
+-[[package]]
+-name = "rustc-hash"
+-version = "2.1.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+-
+ [[package]]
+ name = "rustc_version"
+ version = "0.4.1"
+@@ -2960,7 +2808,7 @@ dependencies = [
+  "errno",
+  "libc",
+  "linux-raw-sys 0.12.1",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -2969,16 +2817,23 @@ version = "0.23.46"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+ dependencies = [
+- "aws-lc-rs",
+- "log",
+  "once_cell",
+- "ring",
+  "rustls-pki-types",
+  "rustls-webpki",
+  "subtle",
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "rustls-graviola"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bf5d0a370be690f7f1aa4e1b912fde3f5f9a5c53285062fd2d6ac1a52ab3e883"
++dependencies = [
++ "graviola",
++ "rustls",
++]
++
+ [[package]]
+ name = "rustls-native-certs"
+ version = "0.8.4"
+@@ -3006,7 +2861,6 @@ version = "1.14.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
+ dependencies = [
+- "web-time",
+  "zeroize",
+ ]
+ 
+@@ -3016,7 +2870,6 @@ version = "0.103.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+ dependencies = [
+- "aws-lc-rs",
+  "ring",
+  "rustls-pki-types",
+  "untrusted",
+@@ -3211,7 +3064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+ dependencies = [
+  "cfg-if 1.0.4",
+- "cpufeatures 0.2.17",
++ "cpufeatures",
+  "digest",
+ ]
+ 
+@@ -3222,7 +3075,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+ dependencies = [
+  "cfg-if 1.0.4",
+- "cpufeatures 0.2.17",
++ "cpufeatures",
+  "digest",
+ ]
+ 
+@@ -3324,6 +3177,7 @@ dependencies = [
+  "dirs",
+  "futures-util",
+  "getrandom 0.3.4",
++ "graviola",
+  "hex",
+  "http-body",
+  "humantime",
+@@ -3340,9 +3194,9 @@ dependencies = [
+  "rcgen",
+  "regex",
+  "reqwest",
+- "ring",
+  "rusqlite",
+  "rustls",
++ "rustls-graviola",
+  "rustls-pemfile",
+  "rustls-pki-types",
+  "seccompiler",
+@@ -3411,7 +3265,6 @@ version = "1.34.0"
+ dependencies = [
+  "hex",
+  "libc",
+- "ring",
+  "serde",
+  "serde_json",
+  "sha2",
+@@ -3429,12 +3282,14 @@ dependencies = [
+  "bytes",
+  "futures-util",
+  "getrandom 0.3.4",
++ "graviola",
+  "http-body-util",
+  "hyper",
+  "hyper-util",
+  "rcgen",
+  "reqwest",
+  "rustls",
++ "rustls-graviola",
+  "rustls-pemfile",
+  "rustls-pki-types",
+  "serde_json",
+@@ -3531,7 +3386,6 @@ dependencies = [
+  "crc32fast",
+  "dirs",
+  "libc",
+- "ring",
+  "serde",
+  "serde_json",
+  "sha2",
+@@ -3562,10 +3416,12 @@ dependencies = [
+  "dirs",
+  "filetime",
+  "futures-util",
++ "graviola",
+  "hex",
+  "rcgen",
+  "reqwest",
+  "rustls",
++ "rustls-graviola",
+  "rustls-native-certs",
+  "serde",
+  "serde_json",
+@@ -3586,9 +3442,10 @@ version = "1.34.0"
+ dependencies = [
+  "hmac",
+  "libc",
++ "reqwest",
++ "rustls-graviola",
+  "sha2",
+  "tracing",
+- "ureq",
+ ]
+ 
+ [[package]]
+@@ -3615,7 +3472,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
+ dependencies = [
+  "libc",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -3728,7 +3585,7 @@ dependencies = [
+  "getrandom 0.4.2",
+  "once_cell",
+  "rustix 1.1.4",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -3821,21 +3678,6 @@ dependencies = [
+  "zerovec",
+ ]
+ 
+-[[package]]
+-name = "tinyvec"
+-version = "1.11.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+-dependencies = [
+- "tinyvec_macros",
+-]
+-
+-[[package]]
+-name = "tinyvec_macros"
+-version = "0.1.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+-
+ [[package]]
+ name = "tokio"
+ version = "1.54.1"
+@@ -4183,7 +4025,7 @@ dependencies = [
+  "http",
+  "httparse",
+  "log",
+- "rand 0.9.4",
++ "rand",
+  "sha1",
+  "thiserror 2.0.18",
+ ]
+@@ -4214,7 +4056,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
+ dependencies = [
+  "memoffset 0.9.1",
+  "tempfile",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -4259,22 +4101,6 @@ version = "0.0.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+ 
+-[[package]]
+-name = "ureq"
+-version = "2.12.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+-dependencies = [
+- "base64 0.22.1",
+- "flate2",
+- "log",
+- "once_cell",
+- "rustls",
+- "rustls-pki-types",
+- "url",
+- "webpki-roots 0.26.11",
+-]
+-
+ [[package]]
+ name = "url"
+ version = "2.5.8"
+@@ -4553,25 +4379,6 @@ dependencies = [
+  "wasm-bindgen",
+ ]
+ 
+-[[package]]
+-name = "web-time"
+-version = "1.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+-dependencies = [
+- "js-sys",
+- "wasm-bindgen",
+-]
+-
+-[[package]]
+-name = "webpki-roots"
+-version = "0.26.11"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+-dependencies = [
+- "webpki-roots 1.0.10",
+-]
+-
+ [[package]]
+ name = "webpki-roots"
+ version = "1.0.10"
+@@ -4624,7 +4431,7 @@ version = "0.1.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+ dependencies = [
+- "windows-sys 0.48.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index f941110..9c581b4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -69,7 +69,6 @@ socket2 = "0.6"
+ dirs = "5"
+ sha1 = "0.10"
+ sha2 = "0.10"
+-ring = "0.17.14"
+ zstd = "0.14.3"
+ hex = "0.4"
+ getrandom = "0.3"
+@@ -96,10 +95,11 @@ axum = { version = "0.8", features = ["macros", "ws"] }
+ # mTLS for the fleet serve API (control↔node). axum-server's rustls acceptor
+ # does the TLS handshake + client-cert verification; rustls-pemfile parses the
+ # CA/cert/key PEMs handed to us at enrollment.
+-axum-server = { version = "0.7", features = ["tls-rustls"] }
++axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+ # Wraps a response body so serve counts a request until it has been sent.
+ http-body = "1"
+-rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
++rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"] }
++rustls-graviola = "0.4"
+ rustls-pemfile = "2"
+ rustls-pki-types = "1"
+ # Reads the subject CN of a verified mTLS client certificate so serve can
+@@ -114,7 +114,7 @@ tokio-util = { version = "0.7", features = ["io"] }
+ parking_lot = "0.12"
+ async-stream = "0.3"
+ futures-util = "0.3"
+-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "stream", "json"] }
++reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "rustls-tls-native-roots-no-provider", "stream", "json"] }
+ 
+ # OpenAPI documentation
+ utoipa = { version = "6", features = ["axum_extras"] }
+@@ -150,7 +150,8 @@ windows-sys = { version = "0.60", features = [
+ 
+ [dev-dependencies]
+ tempfile = "3"
+-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
++rcgen = { version = "0.13", default-features = false, features = ["pem"] }
++graviola = "0.4"
+ # WebSocket client for the interactive exec tests (already locked through axum).
+ tokio-tungstenite = "0.29"
+ smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.34.0" }
+diff --git a/crates/smolvm-checkpoint/Cargo.toml b/crates/smolvm-checkpoint/Cargo.toml
+index db74f91..97a0d81 100644
+--- a/crates/smolvm-checkpoint/Cargo.toml
++++ b/crates/smolvm-checkpoint/Cargo.toml
+@@ -12,11 +12,10 @@ smolvm-pack = { path = "../smolvm-pack", version = "1.16.2" }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ hex = "0.4"
+-ring = "0.17.14"
++sha2 = "0.10"
+ zstd = "0.14.3"
+ tempfile = "3"
+ tracing = "0.1"
+ libc = "0.2"
+ 
+ [dev-dependencies]
+-sha2 = "0.10"
+diff --git a/crates/smolvm-checkpoint/src/store.rs b/crates/smolvm-checkpoint/src/store.rs
+index 4319297..522d200 100644
+--- a/crates/smolvm-checkpoint/src/store.rs
++++ b/crates/smolvm-checkpoint/src/store.rs
+@@ -3,6 +3,7 @@
+ //! invalidate a newer one. Export materializes a standalone pack on demand.
+ 
+ use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
+ use smolvm_pack::format::PackManifest;
+ use std::collections::{HashMap, HashSet};
+ use std::fs::{self, File};
+@@ -83,12 +84,11 @@ fn safe_relative(path: &str) -> bool {
+ }
+ 
+ fn digest(bytes: &[u8]) -> String {
+-    hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
++    hex::encode(Sha256::digest(bytes).as_slice())
+ }
+ 
+ #[test]
+ fn checkpoint_hashes_match_existing_sha256_objects() {
+-    use sha2::{Digest, Sha256};
+     let bytes: Vec<_> = (0..CHUNK_SIZE + 1)
+         .map(|index| ((index * 73 + index / 127) & 255) as u8)
+         .collect();
+diff --git a/crates/smolvm-credentials/Cargo.toml b/crates/smolvm-credentials/Cargo.toml
+index ec4fff4..073f142 100644
+--- a/crates/smolvm-credentials/Cargo.toml
++++ b/crates/smolvm-credentials/Cargo.toml
+@@ -17,15 +17,17 @@ getrandom = { version = "0.3", features = ["std"] }
+ http-body-util = "0.1"
+ hyper = { version = "1", features = ["server", "http1"] }
+ hyper-util = { version = "0.1", features = ["tokio"] }
+-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
++rcgen = { version = "0.13", default-features = false, features = ["pem"] }
++reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "stream"] }
++rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"] }
++rustls-graviola = "0.4"
++graviola = "0.4"
+ rustls-pemfile = "2"
+ rustls-pki-types = "1"
+ serde_json = "1"
+ smolvm-protocol = { path = "../smolvm-protocol", version = "1.26.1" }
+ tokio = { version = "1", features = ["full"] }
+-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
++tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
+ tracing = { workspace = true }
+ zeroize = "1"
+ 
+diff --git a/crates/smolvm-credentials/src/ca.rs b/crates/smolvm-credentials/src/ca.rs
+index 690fe61..6461079 100644
+--- a/crates/smolvm-credentials/src/ca.rs
++++ b/crates/smolvm-credentials/src/ca.rs
+@@ -9,9 +9,10 @@
+ //! cannot mint a certificate the guest would accept for any other domain.
+ 
+ use anyhow::{Context, Result};
++use crate::p256::{serial_number, P256Key};
+ use rcgen::{
+     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
+-    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, KeyPair, KeyUsagePurpose, NameConstraints,
++    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, KeyUsagePurpose, NameConstraints,
+     SanType,
+ };
+ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+@@ -38,7 +39,7 @@ pub struct MachineCa {
+     /// from disk this is re-derived from the machine name and key rather than
+     /// parsed, which is all signing a leaf needs.
+     issuer: Certificate,
+-    key: KeyPair,
++    key: P256Key,
+ }
+ 
+ fn ca_params(machine: &str) -> CertificateParams {
+@@ -52,6 +53,7 @@ fn ca_params(machine: &str) -> CertificateParams {
+         format!("smolvm {machine} credential CA"),
+     );
+     params.distinguished_name = dn;
++    params.serial_number = Some(serial_number());
+     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
+     params.not_after = rcgen::date_time_ymd(2099, 1, 1);
+     params
+@@ -66,7 +68,7 @@ impl MachineCa {
+             !permitted_hosts.is_empty(),
+             "a machine CA needs at least one permitted host"
+         );
+-        let key = KeyPair::generate().context("generate CA key")?;
++        let key = P256Key::generate().context("generate CA key")?;
+         let mut params = ca_params(machine);
+         params.name_constraints = Some(NameConstraints {
+             permitted_subtrees: permitted_hosts
+@@ -75,7 +77,8 @@ impl MachineCa {
+                 .collect(),
+             excluded_subtrees: Vec::new(),
+         });
+-        let cert = params.self_signed(&key).context("self-sign CA")?;
++        params.key_identifier_method = key.key_identifier_method();
++        let cert = params.self_signed(key.key_pair()).context("self-sign CA")?;
+         Ok(Self {
+             name: machine.to_string(),
+             cert_pem: cert.pem(),
+@@ -95,7 +98,7 @@ impl MachineCa {
+         std::fs::write(guest.join(GUEST_CA_FILE), &self.cert_pem)?;
+         std::fs::write(dir.join(CA_NAME_FILE), &self.name)?;
+         let key_path = dir.join(CA_KEY_FILE);
+-        std::fs::write(&key_path, Zeroizing::new(self.key.serialize_pem()))?;
++        std::fs::write(&key_path, Zeroizing::new(self.key.serialize_der()))?;
+         #[cfg(unix)]
+         {
+             use std::os::unix::fs::PermissionsExt;
+@@ -112,16 +115,18 @@ impl MachineCa {
+             .unwrap_or_else(|_| machine.to_string());
+         let cert_pem = std::fs::read_to_string(dir.join(GUEST_CA_FILE))
+             .with_context(|| format!("read {}", dir.join(GUEST_CA_FILE).display()))?;
+-        let key_pem = Zeroizing::new(
+-            std::fs::read_to_string(dir.join(CA_KEY_FILE))
++        let key_bytes = Zeroizing::new(
++            std::fs::read(dir.join(CA_KEY_FILE))
+                 .with_context(|| format!("read {}", dir.join(CA_KEY_FILE).display()))?,
+         );
+-        let key = KeyPair::from_pem(&key_pem).context("parse CA key")?;
++        let key = P256Key::from_bytes(&key_bytes).context("parse CA key")?;
+         let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+             .next()
+             .context("CA certificate missing")??;
+-        let issuer = ca_params(&name)
+-            .self_signed(&key)
++        let mut params = ca_params(&name);
++        params.key_identifier_method = key.key_identifier_method();
++        let issuer = params
++            .self_signed(key.key_pair())
+             .context("rebuild CA issuer")?;
+         Ok(Self {
+             name,
+@@ -152,7 +157,7 @@ impl MachineCa {
+             serde_json::json!({
+                 "name": self.name,
+                 "certificate": self.cert_pem,
+-                "key": *Zeroizing::new(self.key.serialize_pem()),
++                "key": self.key.serialize_der(),
+             })
+             .to_string(),
+         )
+@@ -168,12 +173,26 @@ impl MachineCa {
+         };
+         let name = take("name")?.to_string();
+         let cert_pem = take("certificate")?.to_string();
+-        let key = KeyPair::from_pem(&take("key")?).context("parse exported CA key")?;
++        let key = match value.get_mut("key").map(serde_json::Value::take) {
++            Some(serde_json::Value::String(text)) => P256Key::from_bytes(text.as_bytes()),
++            Some(serde_json::Value::Array(items)) => {
++                let bytes = items
++                    .iter()
++                    .map(|item| item.as_u64().and_then(|value| u8::try_from(value).ok()))
++                    .collect::<Option<Vec<u8>>>()
++                    .context("exported CA key is not a byte array")?;
++                P256Key::from_pkcs8_der(&bytes)
++            }
++            _ => anyhow::bail!("exported CA has no key"),
++        }
++        .context("parse exported CA key")?;
+         let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+             .next()
+             .context("exported CA has no certificate")??;
+-        let issuer = ca_params(&name)
+-            .self_signed(&key)
++        let mut params = ca_params(&name);
++        params.key_identifier_method = key.key_identifier_method();
++        let issuer = params
++            .self_signed(key.key_pair())
+             .context("rebuild CA issuer")?;
+         Ok(Self {
+             name,
+@@ -195,7 +214,7 @@ impl MachineCa {
+         &self,
+         host: &str,
+     ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+-        let leaf_key = KeyPair::generate().context("generate leaf key")?;
++        let leaf_key = P256Key::generate().context("generate leaf key")?;
+         let mut params = CertificateParams::new(Vec::<String>::new()).context("leaf params")?;
+         params.subject_alt_names = vec![SanType::DnsName(
+             host.try_into().context("host is not a valid DNS name")?,
+@@ -212,10 +231,12 @@ impl MachineCa {
+         // rcgen write its Subject Key Identifier.
+         params.is_ca = IsCa::ExplicitNoCa;
+         params.use_authority_key_identifier_extension = true;
++        params.key_identifier_method = leaf_key.key_identifier_method();
++        params.serial_number = Some(serial_number());
+         params.not_before = rcgen::date_time_ymd(2024, 1, 1);
+         params.not_after = rcgen::date_time_ymd(2099, 1, 1);
+         let leaf = params
+-            .signed_by(&leaf_key, &self.issuer, &self.key)
++            .signed_by(leaf_key.key_pair(), &self.issuer, self.key.key_pair())
+             .context("sign leaf")?;
+         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+         Ok((vec![leaf.der().clone(), self.cert_der.clone()], key))
+@@ -272,7 +293,7 @@ mod tests {
+         roots.add(original.cert_der.clone()).unwrap();
+         let verifier = WebPkiServerVerifier::builder_with_provider(
+             std::sync::Arc::new(roots),
+-            std::sync::Arc::new(rustls::crypto::ring::default_provider()),
++            std::sync::Arc::new(rustls_graviola::default_provider()),
+         )
+         .build()
+         .unwrap();
+@@ -302,7 +323,7 @@ mod tests {
+         roots.add(ca.cert_der.clone()).unwrap();
+         let verifier = WebPkiServerVerifier::builder_with_provider(
+             std::sync::Arc::new(roots),
+-            std::sync::Arc::new(rustls::crypto::ring::default_provider()),
++            std::sync::Arc::new(rustls_graviola::default_provider()),
+         )
+         .build()
+         .unwrap();
+diff --git a/crates/smolvm-credentials/src/intercept.rs b/crates/smolvm-credentials/src/intercept.rs
+index 621eeed..3ae7a20 100644
+--- a/crates/smolvm-credentials/src/intercept.rs
++++ b/crates/smolvm-credentials/src/intercept.rs
+@@ -337,7 +337,7 @@ impl State {
+         }
+         let (chain, key) = self.ca.issue_leaf(host)?;
+         let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+-            rustls::crypto::ring::default_provider(),
++            rustls_graviola::default_provider(),
+         ))
+         .with_safe_default_protocol_versions()?
+         .with_no_client_auth()
+@@ -360,6 +360,7 @@ impl State {
+         if let Some(client) = clients.get(&key) {
+             return Ok(client.clone());
+         }
++        crate::install_crypto_provider();
+         let mut builder = reqwest::Client::builder()
+             .use_rustls_tls()
+             .no_proxy()
+@@ -863,16 +864,17 @@ mod tests {
+     }
+ 
+     fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+-        Arc::new(rustls::crypto::ring::default_provider())
++        Arc::new(rustls_graviola::default_provider())
+     }
+ 
+     async fn start_upstream() -> Upstream {
+-        let key = rcgen::KeyPair::generate().unwrap();
+-        let cert =
++        let key = crate::p256::P256Key::generate().unwrap();
++        let mut params =
+             rcgen::CertificateParams::new(vec![CRED_HOST.to_string(), OTHER_HOST.to_string()])
+-                .unwrap()
+-                .self_signed(&key)
+                 .unwrap();
++        params.serial_number = Some(crate::p256::serial_number());
++        params.key_identifier_method = key.key_identifier_method();
++        let cert = params.self_signed(key.key_pair()).unwrap();
+         let cert_pem = cert.pem().into_bytes();
+         let mut config = rustls::ServerConfig::builder_with_provider(provider())
+             .with_safe_default_protocol_versions()
+diff --git a/crates/smolvm-credentials/src/lib.rs b/crates/smolvm-credentials/src/lib.rs
+index 4bac121..3721732 100644
+--- a/crates/smolvm-credentials/src/lib.rs
++++ b/crates/smolvm-credentials/src/lib.rs
+@@ -15,10 +15,19 @@
+ 
+ pub mod ca;
+ pub mod intercept;
++mod p256;
+ pub mod policy;
+ pub mod resolver;
+ pub use smolvm_protocol::sni;
+ 
++/// Installs Graviola as rustls' process-wide `CryptoProvider`.
++pub(crate) fn install_crypto_provider() {
++    static INSTALL: std::sync::Once = std::sync::Once::new();
++    INSTALL.call_once(|| {
++        let _ = rustls_graviola::default_provider().install_default();
++    });
++}
++
+ pub use ca::MachineCa;
+ pub use intercept::{Interceptor, InterceptorConfig};
+ pub use policy::{
+diff --git a/crates/smolvm-pack/Cargo.toml b/crates/smolvm-pack/Cargo.toml
+index 134dcee..762d47d 100644
+--- a/crates/smolvm-pack/Cargo.toml
++++ b/crates/smolvm-pack/Cargo.toml
+@@ -17,7 +17,6 @@ zstd = { version = "0.14.3", features = ["zstdmt"] }
+ crc32fast = "1.4"
+ tempfile = "3"
+ sha2 = "0.10"
+-ring = "0.17.14"
+ dirs = "5"
+ time = { version = "0.3", features = ["formatting"] }
+ 
+diff --git a/crates/smolvm-pack/src/extract.rs b/crates/smolvm-pack/src/extract.rs
+index 3d4da2d..1b7f2a0 100644
+--- a/crates/smolvm-pack/src/extract.rs
++++ b/crates/smolvm-pack/src/extract.rs
+@@ -4,7 +4,7 @@
+ //! (sidecar mode via `runpack`) and the standalone stub executable.
+ 
+ use crate::format::{PackFooter, SIDECAR_EXTENSION};
+-use ring::digest::{Context, SHA256};
++use sha2::{Digest, Sha256};
+ use std::fmt::Write as _;
+ use std::fs::{self, File};
+ use std::io::{Read, Seek, SeekFrom, Write};
+@@ -2888,7 +2888,7 @@ pub fn link_checkpoint_artifact(
+ 
+ fn hash_artifact_sha256(sidecar_path: &Path) -> std::io::Result<String> {
+     let mut source = File::open(sidecar_path)?;
+-    let mut hasher = Context::new(&SHA256);
++    let mut hasher = Sha256::new();
+     let mut buffer = vec![0_u8; 4 * 1024 * 1024];
+     loop {
+         let read = source.read(&mut buffer)?;
+@@ -2898,7 +2898,7 @@ fn hash_artifact_sha256(sidecar_path: &Path) -> std::io::Result<String> {
+         hasher.update(&buffer[..read]);
+     }
+     let mut digest = String::with_capacity(64);
+-    for byte in hasher.finish().as_ref() {
++    for byte in hasher.finalize().as_slice() {
+         write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
+     }
+     Ok(digest)
+@@ -2924,7 +2924,7 @@ pub struct ReceivedArtifactHashes {
+ /// known to be the end until the stream ends, so that many bytes are held back
+ /// from the CRC until more arrive.
+ pub struct ArtifactStreamHasher {
+-    sha256: Context,
++    sha256: Sha256,
+     crc32: crc32fast::Hasher,
+     held: Vec<u8>,
+     len: u64,
+@@ -2940,7 +2940,7 @@ impl ArtifactStreamHasher {
+     /// Start an empty stream.
+     pub fn new() -> Self {
+         Self {
+-            sha256: Context::new(&SHA256),
++            sha256: Sha256::new(),
+             crc32: crc32fast::Hasher::new(),
+             held: Vec::with_capacity(2 * crate::format::FOOTER_SIZE),
+             len: 0,
+@@ -2970,7 +2970,7 @@ impl ArtifactStreamHasher {
+     /// Finish the stream.
+     pub fn finish(self) -> ReceivedArtifactHashes {
+         let mut sha256 = String::with_capacity(64);
+-        for byte in self.sha256.finish().as_ref() {
++        for byte in self.sha256.finalize().as_slice() {
+             write!(&mut sha256, "{byte:02x}").expect("writing to a String cannot fail");
+         }
+         ReceivedArtifactHashes {
+@@ -3023,12 +3023,12 @@ impl ExtractDigestWorker {
+         let worker = std::thread::Builder::new()
+             .name("extract-sha256".into())
+             .spawn(move || {
+-                let mut hasher = Context::new(&SHA256);
++                let mut hasher = Sha256::new();
+                 for bytes in receiver {
+                     hasher.update(&bytes);
+                 }
+                 let mut digest = String::with_capacity(64);
+-                for byte in hasher.finish().as_ref() {
++                for byte in hasher.finalize().as_slice() {
+                     write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
+                 }
+                 digest
+diff --git a/crates/smolvm-registry/Cargo.toml b/crates/smolvm-registry/Cargo.toml
+index 48a6011..0c0b624 100644
+--- a/crates/smolvm-registry/Cargo.toml
++++ b/crates/smolvm-registry/Cargo.toml
+@@ -9,8 +9,9 @@ readme = "README.md"
+ 
+ [dependencies]
+ smolvm-pack = { path = "../smolvm-pack", version = "1.6.1" }
+-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "stream", "json"] }
++reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "rustls-tls-native-roots-no-provider", "stream", "json"] }
+ rustls = { version = "0.23", default-features = false }
++rustls-graviola = "0.4"
+ rustls-native-certs = "0.8"
+ sha2 = "0.10"
+ bytes = "1"
+@@ -30,5 +31,6 @@ futures-util = "0.3"
+ tokio = { version = "1", features = ["full", "test-util"] }
+ tempfile = "3"
+ wiremock = "0.6"
+-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+-tokio-rustls = "0.26"
++rcgen = { version = "0.13", default-features = false, features = ["pem"] }
++graviola = "0.4"
++tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
+diff --git a/crates/smolvm-registry/src/client.rs b/crates/smolvm-registry/src/client.rs
+index d9b7925..c31b8eb 100644
+--- a/crates/smolvm-registry/src/client.rs
++++ b/crates/smolvm-registry/src/client.rs
+@@ -77,6 +77,7 @@ const FALLBACK_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+ /// caller explicitly supplies the same bundle used by `--trust-host-certs`,
+ /// add its certificates to both registry and auth-service requests as well.
+ fn registry_tls(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
++    crate::install_crypto_provider();
+     let path = std::env::var_os("SMOLVM_HOST_CA_BUNDLE");
+     registry_tls_with_bundle(builder, path.as_deref().map(std::path::Path::new))
+ }
+@@ -1811,29 +1812,86 @@ struct TokenResponse {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use graviola::signing::ecdsa::{P256, SigningKey};
++    use rcgen::{KeyPair, RemoteKeyPair};
++
++    struct GraviolaP256 {
++        key: SigningKey<P256>,
++        public: Vec<u8>,
++    }
++
++    impl GraviolaP256 {
++        fn new(key: SigningKey<P256>) -> Self {
++            let mut spki = [0u8; 128];
++            let spki = key.to_spki_der(&mut spki).unwrap();
++            let public = spki[spki.len() - 65..].to_vec();
++            assert_eq!(public[0], 0x04);
++            Self { key, public }
++        }
++    }
++
++    impl RemoteKeyPair for GraviolaP256 {
++        fn public_key(&self) -> &[u8] {
++            &self.public
++        }
++
++        fn sign(&self, msg: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
++            let mut signature = [0u8; 128];
++            self.key
++                .sign_asn1::<graviola::hashing::Sha256>(&[msg], &mut signature)
++                .map(|signature| signature.to_vec())
++                .map_err(|_| rcgen::Error::RemoteKeyError)
++        }
++
++        fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
++            &rcgen::PKCS_ECDSA_P256_SHA256
++        }
++    }
++
++    fn test_key() -> (KeyPair, Vec<u8>) {
++        loop {
++            let mut scalar = [0u8; 32];
++            graviola::random::fill(&mut scalar).unwrap();
++            let mut sec1 = vec![0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20];
++            sec1.extend_from_slice(&scalar);
++            let Ok(signing) = SigningKey::<P256>::from_sec1_der(&sec1) else {
++                continue;
++            };
++            let mut buffer = [0u8; 256];
++            let pkcs8 = signing.to_pkcs8_der(&mut buffer).unwrap().to_vec();
++            let pair = KeyPair::from_remote(Box::new(GraviolaP256::new(signing))).unwrap();
++            return (pair, pkcs8);
++        }
++    }
+ 
+     #[tokio::test]
+     async fn registry_clients_verify_private_ca_for_registry_and_auth_requests() {
+         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+         use tokio_rustls::rustls::pki_types::PrivateKeyDer;
+ 
+-        let key = rcgen::KeyPair::generate().unwrap();
+-        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+-            .unwrap()
+-            .self_signed(&key)
+-            .unwrap();
++        crate::install_crypto_provider();
++        let (key, key_der) = test_key();
++        let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
++        let mut serial = [0u8; 20];
++        graviola::random::fill(&mut serial).unwrap();
++        serial[0] &= 0x7f;
++        params.serial_number = Some(rcgen::SerialNumber::from_slice(&serial));
++        let digest = <sha2::Sha256 as sha2::Digest>::digest(key.public_key_der());
++        params.key_identifier_method =
++            rcgen::KeyIdMethod::PreSpecified(digest[..20].to_vec());
++        let cert = params.self_signed(&key).unwrap();
+         let temp = tempfile::tempdir().unwrap();
+         let bundle = temp.path().join("roots.pem");
+         std::fs::write(&bundle, cert.pem()).unwrap();
+         let config = tokio_rustls::rustls::ServerConfig::builder_with_provider(
+-            std::sync::Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()),
++            std::sync::Arc::new(rustls_graviola::default_provider()),
+         )
+         .with_safe_default_protocol_versions()
+         .unwrap()
+         .with_no_client_auth()
+         .with_single_cert(
+             vec![cert.der().clone()],
+-            PrivateKeyDer::Pkcs8(key.serialize_der().into()),
++            PrivateKeyDer::Pkcs8(key_der.into()),
+         )
+         .unwrap();
+         let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+diff --git a/crates/smolvm-registry/src/lib.rs b/crates/smolvm-registry/src/lib.rs
+index effe958..b8c9195 100644
+--- a/crates/smolvm-registry/src/lib.rs
++++ b/crates/smolvm-registry/src/lib.rs
+@@ -15,6 +15,14 @@ pub use client::{validate_digest, RegistryClient};
+ pub use pull::{pull, pull_with_progress, PullResult};
+ pub use push::{push, PushResult};
+ 
++/// Installs Graviola as rustls' process-wide `CryptoProvider`.
++pub(crate) fn install_crypto_provider() {
++    static INSTALL: std::sync::Once = std::sync::Once::new();
++    INSTALL.call_once(|| {
++        let _ = rustls_graviola::default_provider().install_default();
++    });
++}
++
+ use serde::{Deserialize, Serialize};
+ 
+ /// OCI media type for the smolmachine config blob.
+diff --git a/crates/smolvm-registry/src/peer.rs b/crates/smolvm-registry/src/peer.rs
+index 0d0256f..dcb5bd8 100644
+--- a/crates/smolvm-registry/src/peer.rs
++++ b/crates/smolvm-registry/src/peer.rs
+@@ -67,6 +67,7 @@ pub(crate) fn peer_client() -> Option<&'static reqwest::Client> {
+ /// trusting only the fleet node-CA (built-in roots disabled — peers are private
+ /// fleet nodes, never public CAs).
+ fn build_peer_client() -> std::result::Result<reqwest::Client, String> {
++    crate::install_crypto_provider();
+     let cert = read_env_file(ENV_CERT)?;
+     let key = read_env_file(ENV_KEY)?;
+     let ca = read_env_file(ENV_CLIENT_CA)?;
+@@ -179,6 +180,7 @@ mod tests {
+     // A valid, well-formed sha256 digest of the test blob below. Computed once
+     // so the tests assert against a real content address, not a placeholder.
+     fn blob_and_digest() -> (Vec<u8>, String) {
++        crate::install_crypto_provider();
+         use sha2::{Digest, Sha256};
+         let data = b"the-quick-brown-fox-p2p-blob".to_vec();
+         let digest = format!("sha256:{}", hex::encode(Sha256::digest(&data)));
+diff --git a/crates/smolvm-s3fs/Cargo.toml b/crates/smolvm-s3fs/Cargo.toml
+index 3978c30..f545672 100644
+--- a/crates/smolvm-s3fs/Cargo.toml
++++ b/crates/smolvm-s3fs/Cargo.toml
+@@ -9,5 +9,6 @@ license = "Apache-2.0"
+ hmac = "0.12"
+ sha2 = "0.10"
+ libc = "0.2"
+-ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
++reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-webpki-roots-no-provider"] }
++rustls-graviola = "0.4"
+ tracing = { workspace = true }
+diff --git a/crates/smolvm-s3fs/src/s3.rs b/crates/smolvm-s3fs/src/s3.rs
+index 4965d4d..392fff1 100644
+--- a/crates/smolvm-s3fs/src/s3.rs
++++ b/crates/smolvm-s3fs/src/s3.rs
+@@ -1,9 +1,8 @@
+ //! Minimal S3 client: only the operations a filesystem needs.
+ //!
+ //! Deliberately not an SDK. The agent is a static binary in the guest rootfs,
+-//! so every dependency is paid for on every machine; `ureq` is blocking (the
+-//! agent has no async runtime) and, with rustls, costs under a megabyte where
+-//! an SDK plus tokio would cost tens.
++//! so every dependency is paid for on every machine; the blocking reqwest
++//! client keeps the filesystem synchronous (the agent has no async runtime).
+ 
+ use std::io::Read;
+ use std::time::{Duration, SystemTime, UNIX_EPOCH};
+@@ -85,20 +84,25 @@ pub const MAX_IN_FLIGHT: usize = 32;
+ 
+ pub struct Client {
+     cfg: Config,
+-    agent: ureq::Agent,
++    agent: reqwest::blocking::Client,
++}
++
++fn install_crypto_provider() {
++    static INSTALL: std::sync::Once = std::sync::Once::new();
++    INSTALL.call_once(|| {
++        let _ = rustls_graviola::default_provider().install_default();
++    });
+ }
+ 
+ impl Client {
+     pub fn new(cfg: Config) -> Self {
+-        // Keep a warm connection for every request that can be in flight at
+-        // once. ureq keeps one per host by default, so concurrent requests
+-        // would each pay a fresh TLS handshake and then be thrown away.
+-        let agent = ureq::AgentBuilder::new()
+-            .max_idle_connections_per_host(MAX_IN_FLIGHT)
+-            .max_idle_connections(MAX_IN_FLIGHT)
++        install_crypto_provider();
++        let agent = reqwest::blocking::Client::builder()
++            .pool_max_idle_per_host(MAX_IN_FLIGHT)
+             .timeout(cfg.timeout)
+             .user_agent(concat!("smolvm-s3fs/", env!("CARGO_PKG_VERSION")))
+-            .build();
++            .build()
++            .expect("S3 HTTP client");
+         Self { cfg, agent }
+     }
+ 
+@@ -161,7 +165,7 @@ impl Client {
+         query: &[(String, String)],
+         mut headers: Vec<(String, String)>,
+         body: Option<&[u8]>,
+-    ) -> Result<ureq::Response> {
++    ) -> Result<reqwest::blocking::Response> {
+         let (url, path) = self.url_for(key);
+         headers.push(("host".into(), Self::host_of(&url)));
+ 
+@@ -209,23 +213,26 @@ impl Client {
+             format!("{url}?{qs}")
+         };
+ 
++        let method = reqwest::Method::from_bytes(method.as_bytes())
++            .map_err(|e| Error::Transport(e.to_string()))?;
+         let mut req = self.agent.request(method, &full);
+         for (k, v) in &headers {
+-            // ureq sets Host itself from the URL; re-adding it breaks signing parity.
++            // reqwest sets Host from the URL; re-adding it breaks signing parity.
+             if k.eq_ignore_ascii_case("host") {
+                 continue;
+             }
+-            req = req.set(k, v);
++            req = req.header(k, v);
+         }
+ 
+         let res = match body {
+-            Some(b) => req.send_bytes(b),
+-            None => req.call(),
++            Some(b) => req.body(b.to_vec()).send(),
++            None => req.send(),
+         };
+         match res {
+-            Ok(r) => Ok(r),
+-            Err(ureq::Error::Status(status, r)) => {
+-                let text = r.into_string().unwrap_or_default();
++            Ok(r) if r.status().is_success() => Ok(r),
++            Ok(r) => {
++                let status = r.status().as_u16();
++                let text = r.text().unwrap_or_default();
+                 let code = xml_field(&text, "Code").unwrap_or_default();
+                 let message = xml_field(&text, "Message").unwrap_or_default();
+                 Err(Error::Status {
+@@ -244,11 +251,15 @@ impl Client {
+         match self.send("HEAD", &key, &[], Vec::new(), None) {
+             Ok(r) => {
+                 let size = r
+-                    .header("content-length")
++                    .headers()
++                    .get("content-length")
++                    .and_then(|v| v.to_str().ok())
+                     .and_then(|v| v.parse().ok())
+                     .unwrap_or(0);
+                 let last_modified_secs = r
+-                    .header("last-modified")
++                    .headers()
++                    .get("last-modified")
++                    .and_then(|v| v.to_str().ok())
+                     .and_then(parse_http_date)
+                     .unwrap_or(0);
+                 Ok(Some(ObjectInfo {
+@@ -271,11 +282,14 @@ impl Client {
+         }
+         let r = self.send("GET", &key, &[], headers, None)?;
+         let mut buf = Vec::with_capacity(
+-            r.header("content-length")
++            r.headers()
++                .get("content-length")
++                .and_then(|v| v.to_str().ok())
+                 .and_then(|v| v.parse().ok())
+                 .unwrap_or(0),
+         );
+-        r.into_reader()
++        let mut reader = r;
++        reader
+             .read_to_end(&mut buf)
+             .map_err(|e| Error::Transport(e.to_string()))?;
+         Ok(buf)
+@@ -301,7 +315,7 @@ impl Client {
+         ];
+         let response = self.send("PUT", &self.full_key(to), &[], headers, Some(b""))?;
+         let body = response
+-            .into_string()
++            .text()
+             .map_err(|error| Error::Transport(error.to_string()))?;
+         if let Some(code) = xml_field(&body, "Code") {
+             return Err(Error::Status {
+@@ -360,9 +374,7 @@ impl Client {
+             }
+             // Listing addresses the bucket itself, not a key.
+             let r = self.send("GET", "", &query, Vec::new(), None)?;
+-            let body = r
+-                .into_string()
+-                .map_err(|e| Error::Transport(e.to_string()))?;
++            let body = r.text().map_err(|e| Error::Transport(e.to_string()))?;
+             let root = body
+                 .find("<ListBucketResult")
+                 .map(|start| body[start..].trim_end())
+diff --git a/crates/smolvm-s3fs/src/test_support.rs b/crates/smolvm-s3fs/src/test_support.rs
+index 7f4bb1f..45ca472 100644
+--- a/crates/smolvm-s3fs/src/test_support.rs
++++ b/crates/smolvm-s3fs/src/test_support.rs
+@@ -38,6 +38,7 @@ impl Server {
+                         Err(error) => panic!("accept failed: {error}"),
+                     }
+                 };
++                stream.set_nonblocking(false).unwrap();
+                 stream
+                     .set_read_timeout(Some(Duration::from_secs(5)))
+                     .unwrap();
+diff --git a/src/api/cache_base_fetch.rs b/src/api/cache_base_fetch.rs
+index 0a0ca5c..2166467 100644
+--- a/src/api/cache_base_fetch.rs
++++ b/src/api/cache_base_fetch.rs
+@@ -12,6 +12,7 @@ use std::sync::Arc;
+ use std::time::Duration;
+ 
+ use futures_util::StreamExt;
++use sha2::{Digest, Sha256};
+ use tokio::io::AsyncWriteExt;
+ 
+ use crate::api::error::ApiError;
+@@ -122,7 +123,7 @@ async fn stream_to_file(
+         .open(path)
+         .await
+         .map_err(|e| ApiError::internal(format!("create {}: {e}", path.display())))?;
+-    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
++    let mut hasher = Sha256::new();
+     let mut received = 0_u64;
+     let mut stream = response.bytes_stream();
+     while let Some(chunk) = stream.next().await {
+@@ -142,7 +143,7 @@ async fn stream_to_file(
+     file.sync_all()
+         .await
+         .map_err(|e| ApiError::internal(format!("sync cache base: {e}")))?;
+-    Ok(hex::encode(hasher.finish()))
++    Ok(hex::encode(hasher.finalize().as_slice()))
+ }
+ 
+ /// Fill `path` with the `total` bytes of `url`, part by part over
+@@ -291,14 +292,13 @@ fn write_at(file: &std::fs::File, offset: u64, bytes: &[u8]) -> std::io::Result<
+ }
+ 
+ /// The SHA-256 of a whole file, as lowercase hex. A base fetched in parts is
+-/// hashed in this one pass after it lands, so it uses ring's SHA-256, several
+-/// times faster than sha2's.
++/// hashed in this one pass after it lands.
+ async fn hash_file(path: &std::path::Path) -> Result<String, ApiError> {
+     let path = path.to_path_buf();
+     tokio::task::spawn_blocking(move || {
+         use std::io::Read;
+         let mut file = std::fs::File::open(&path)?;
+-        let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
++        let mut hasher = Sha256::new();
+         let mut buffer = vec![0_u8; 8 << 20];
+         loop {
+             let read = file.read(&mut buffer)?;
+@@ -307,7 +307,7 @@ async fn hash_file(path: &std::path::Path) -> Result<String, ApiError> {
+             }
+             hasher.update(&buffer[..read]);
+         }
+-        Ok::<_, std::io::Error>(hex::encode(hasher.finish()))
++        Ok::<_, std::io::Error>(hex::encode(hasher.finalize().as_slice()))
+     })
+     .await
+     .map_err(|e| ApiError::internal(format!("cache base hash task: {e}")))?
+@@ -323,6 +323,7 @@ mod tests {
+     /// 206 of exactly that slice; without, always send the whole body. Counts
+     /// the requests it answered.
+     async fn serve(body: Vec<u8>, ranges: bool) -> (reqwest::Url, Arc<AtomicU64>) {
++        crate::install_crypto_provider();
+         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+         let url = reqwest::Url::parse(&format!("http://{}/base", listener.local_addr().unwrap()))
+             .unwrap();
+diff --git a/src/api/handlers/machines.rs b/src/api/handlers/machines.rs
+index 234d43b..be3c05f 100644
+--- a/src/api/handlers/machines.rs
++++ b/src/api/handlers/machines.rs
+@@ -29,6 +29,7 @@ use axum::{
+     Json,
+ };
+ use futures_util::StreamExt;
++use sha2::{Digest, Sha256};
+ use std::future::Future;
+ use std::sync::Arc;
+ use std::time::Duration;
+@@ -1559,6 +1560,7 @@ async fn upload_checkpoint_file(
+     let file = Arc::new(file);
+     // Same policy as the restore fetch: no redirects, so the host allow-list
+     // cannot be escaped by a 302.
++    crate::install_crypto_provider();
+     let client = reqwest::Client::builder()
+         .redirect(reqwest::redirect::Policy::none())
+         .connect_timeout(Duration::from_secs(30))
+@@ -2172,6 +2174,7 @@ pub async fn restore_portable_checkpoint(
+             // no hop, and following one would let the allow-list above be escaped by
+             // a 302 to somewhere it forbids.
+             let url = checked_checkpoint_source(raw)?;
++            crate::install_crypto_provider();
+             let client = reqwest::Client::builder()
+                 .redirect(reqwest::redirect::Policy::none())
+                 .connect_timeout(std::time::Duration::from_secs(30))
+@@ -6742,9 +6745,8 @@ fn file_sha256(
+     use std::io::Read;
+     let mut file = std::fs::File::open(path)
+         .map_err(|e| ApiError::internal(format!("open {}: {e}", path.display())))?;
+-    // ring's SHA-256 is the same digest at several times the speed of sha2's,
+-    // and this one pass over the whole base sets how long a publish takes.
+-    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
++    // A single pass over the whole base sets how long a publish takes.
++    let mut hasher = Sha256::new();
+     let mut buffer = vec![0_u8; 8 << 20];
+     loop {
+         let read = file
+@@ -6756,7 +6758,7 @@ fn file_sha256(
+         hasher.update(&buffer[..read]);
+         progress.touch();
+     }
+-    Ok(hex::encode(hasher.finish()))
++    Ok(hex::encode(hasher.finalize().as_slice()))
+ }
+ 
+ /// Largest cache base a create may fetch.
+@@ -6817,6 +6819,7 @@ async fn fetch_cache_base(
+         // any partial download of it left behind is abandoned.
+         remove_abandoned_partials(&dir, &base);
+         crate::api::cache_base_budget::make_room(&fetch_state).await;
++        crate::install_crypto_provider();
+         let client = reqwest::Client::builder()
+             .redirect(reqwest::redirect::Policy::none())
+             .connect_timeout(Duration::from_secs(30))
+diff --git a/src/cli/serve.rs b/src/cli/serve.rs
+index 93be992..9a77b6e 100644
+--- a/src/cli/serve.rs
++++ b/src/cli/serve.rs
+@@ -1416,6 +1416,7 @@ mod tests {
+     /// pending reply plus how long the server took to return after being asked
+     /// to stop.
+     async fn stop_during_request((server, addr, stop, entered): TestServer) -> (Reply, Duration) {
++        crate::install_crypto_provider();
+         let request = tokio::spawn(async move {
+             let response = reqwest::Client::new()
+                 .get(format!("http://{addr}/slow"))
+diff --git a/src/cli/serve_tls.rs b/src/cli/serve_tls.rs
+index a556fb2..55f28f8 100644
+--- a/src/cli/serve_tls.rs
++++ b/src/cli/serve_tls.rs
+@@ -171,9 +171,9 @@ fn build_server_config(
+     client_ca_path: &Path,
+     policy: &ClientIdentityPolicy,
+ ) -> Result<Arc<ServerConfig>, String> {
+-    // Pin the ring provider explicitly rather than relying on a process-global
++    // Pin the provider explicitly rather than relying on a process-global
+     // install — avoids ordering hazards if anything else touches rustls.
+-    let provider = Arc::new(rustls::crypto::ring::default_provider());
++    let provider = Arc::new(rustls_graviola::default_provider());
+ 
+     // Client-cert trust anchor: the node-CA. Only the control plane holds a
+     // client cert signed by it.
+@@ -530,26 +530,116 @@ mod tests {
+ 
+     // ---- client identity (subject CN) enforcement ----
+ 
++    use graviola::signing::ecdsa::{P256, SigningKey};
+     use rcgen::{
+         BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+     };
+ 
++    struct GraviolaP256 {
++        key: SigningKey<P256>,
++        public: Vec<u8>,
++    }
++
++    impl GraviolaP256 {
++        fn new(key: SigningKey<P256>) -> Self {
++            let mut spki = [0u8; 128];
++            let spki = key.to_spki_der(&mut spki).unwrap();
++            let public = spki[spki.len() - 65..].to_vec();
++            assert_eq!(public[0], 0x04);
++            Self { key, public }
++        }
++    }
++
++    impl rcgen::RemoteKeyPair for GraviolaP256 {
++        fn public_key(&self) -> &[u8] {
++            &self.public
++        }
++
++        fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, rcgen::Error> {
++            let mut signature = [0u8; 128];
++            self.key
++                .sign_asn1::<graviola::hashing::Sha256>(&[msg], &mut signature)
++                .map(|signature| signature.to_vec())
++                .map_err(|_| rcgen::Error::RemoteKeyError)
++        }
++
++        fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
++            &rcgen::PKCS_ECDSA_P256_SHA256
++        }
++    }
++
++    struct P256Key {
++        pair: KeyPair,
++        pkcs8: Vec<u8>,
++    }
++
++    impl P256Key {
++        fn generate() -> Self {
++            loop {
++                let mut scalar = [0u8; 32];
++                graviola::random::fill(&mut scalar).unwrap();
++                let mut sec1 = vec![0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20];
++                sec1.extend_from_slice(&scalar);
++                let Ok(signing) = SigningKey::<P256>::from_sec1_der(&sec1) else {
++                    continue;
++                };
++                let mut buffer = [0u8; 256];
++                let pkcs8 = signing.to_pkcs8_der(&mut buffer).unwrap().to_vec();
++                let pair =
++                    KeyPair::from_remote(Box::new(GraviolaP256::new(signing))).unwrap();
++                return Self { pair, pkcs8 };
++            }
++        }
++
++        fn rcgen(&self) -> &KeyPair {
++            &self.pair
++        }
++
++        fn key_identifier_method(&self) -> rcgen::KeyIdMethod {
++            use sha2::{Digest, Sha256};
++            let digest = Sha256::digest(self.pair.public_key_der());
++            rcgen::KeyIdMethod::PreSpecified(digest[..20].to_vec())
++        }
++
++        fn serialize_pem(&self) -> String {
++            use base64::Engine;
++            let encoded =
++                base64::engine::general_purpose::STANDARD.encode(&self.pkcs8);
++            let mut pem = String::from("-----BEGIN PRIVATE KEY-----\n");
++            for line in encoded.as_bytes().chunks(64) {
++                pem.push_str(std::str::from_utf8(line).expect("base64 is ASCII"));
++                pem.push('\n');
++            }
++            pem.push_str("-----END PRIVATE KEY-----\n");
++            pem
++        }
++    }
++
+     struct Ca {
+         cert: rcgen::Certificate,
+-        key: KeyPair,
++        key: P256Key,
+     }
+ 
+     struct Leaf {
+         cert: rcgen::Certificate,
+-        key: KeyPair,
++        key: P256Key,
++    }
++
++    fn serial_number() -> rcgen::SerialNumber {
++        let mut bytes = [0u8; 20];
++        graviola::random::fill(&mut bytes).expect("certificate serial randomness");
++        bytes[0] &= 0x7f;
++        rcgen::SerialNumber::from_slice(&bytes)
+     }
+ 
+     fn make_ca(name: &str) -> Ca {
+         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+         params.distinguished_name.push(DnType::CommonName, name);
+         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+-        let key = KeyPair::generate().unwrap();
+-        let cert = params.self_signed(&key).unwrap();
++        params.serial_number = Some(serial_number());
++        let key = P256Key::generate();
++        params.key_identifier_method = key.key_identifier_method();
++        let cert = params.self_signed(key.rcgen()).unwrap();
+         Ca { cert, key }
+     }
+ 
+@@ -560,8 +650,12 @@ mod tests {
+             ExtendedKeyUsagePurpose::ServerAuth,
+             ExtendedKeyUsagePurpose::ClientAuth,
+         ];
+-        let key = KeyPair::generate().unwrap();
+-        let cert = params.signed_by(&key, &ca.cert, &ca.key).unwrap();
++        params.serial_number = Some(serial_number());
++        let key = P256Key::generate();
++        params.key_identifier_method = key.key_identifier_method();
++        let cert = params
++            .signed_by(key.rcgen(), &ca.cert, ca.key.rcgen())
++            .unwrap();
+         Leaf { cert, key }
+     }
+ 
+@@ -570,7 +664,7 @@ mod tests {
+         roots.add(ca.cert.der().clone()).unwrap();
+         let webpki = WebPkiClientVerifier::builder_with_provider(
+             Arc::new(roots),
+-            Arc::new(rustls::crypto::ring::default_provider()),
++            Arc::new(rustls_graviola::default_provider()),
+         )
+         .build()
+         .unwrap();
+@@ -688,6 +782,7 @@ mod tests {
+         }
+ 
+         fn client(&self, issuer: &Ca, cn: &str, addr: std::net::SocketAddr) -> reqwest::Client {
++            crate::install_crypto_provider();
+             let leaf = make_leaf(issuer, cn);
+             let identity_pem = format!("{}\n{}", leaf.cert.pem(), leaf.key.serialize_pem());
+             reqwest::Client::builder()
+diff --git a/src/data/disk.rs b/src/data/disk.rs
+index c49840d..3669312 100644
+--- a/src/data/disk.rs
++++ b/src/data/disk.rs
+@@ -1,6 +1,7 @@
+ //! Canonical shared disk type metadata.
+ 
+ use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
+ 
+ use crate::data::storage::{
+     DEFAULT_OVERLAY_SIZE_GIB, DEFAULT_STORAGE_SIZE_GIB, OVERLAY_DISK_FILENAME,
+@@ -326,7 +327,7 @@ impl CacheDisk {
+         let mut file = std::fs::File::open(&self.base).map_err(|e| {
+             crate::Error::agent("hash cache base", format!("{}: {e}", self.base.display()))
+         })?;
+-        let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
++        let mut hasher = Sha256::new();
+         let mut buffer = vec![0_u8; 8 << 20];
+         loop {
+             let read = file.read(&mut buffer).map_err(|e| {
+@@ -337,7 +338,7 @@ impl CacheDisk {
+             }
+             hasher.update(&buffer[..read]);
+         }
+-        let digest = hex::encode(hasher.finish());
++        let digest = hex::encode(hasher.finalize().as_slice());
+         record_base_digest(&self.base, &digest);
+         Ok(digest)
+     }
+diff --git a/src/lib.rs b/src/lib.rs
+index a5e716c..2a97d4b 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -69,6 +69,18 @@ pub mod artifact_cache;
+ pub mod attach;
+ pub mod config;
+ pub mod credentials;
++
++/// Installs Graviola as rustls' process-wide `CryptoProvider`.
++///
++/// reqwest, tokio-rustls and axum-server build their TLS configs from the
++/// default provider, and this build enables no crypto backend in rustls. Safe
++/// to call from every entry point; only the first call installs.
++pub fn install_crypto_provider() {
++    static INSTALL: std::sync::Once = std::sync::Once::new();
++    INSTALL.call_once(|| {
++        let _ = rustls_graviola::default_provider().install_default();
++    });
++}
+ // The shared CUDA daemon manages unix-domain sockets, flock, and detached
+ // process groups — all POSIX. GPU acceleration is unavailable on Windows anyway,
+ // so the module (and its callers in cuda_host) are unix-only.
+diff --git a/src/main.rs b/src/main.rs
+index c86d6f0..76a58ac 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -185,6 +185,7 @@ fn main() {
+ }
+ 
+ fn run_cli() {
++    smolvm::install_crypto_provider();
+     // Lets pack extraction pick host-side layers when this host's virtiofs
+     // server can present their recorded ownership.
+     smolvm_pack::extract::set_host_layers_probe(smolvm::agent::host_layers_supported);
+diff --git a/src/pack_seed.rs b/src/pack_seed.rs
+index e9e1921..97b2a07 100644
+--- a/src/pack_seed.rs
++++ b/src/pack_seed.rs
+@@ -445,10 +445,7 @@ mod imp {
+     #[cfg(target_os = "macos")]
+     fn artifact_digest(file: &mut File, root: &Path) -> Result<String> {
+         let before = identity(&file.metadata().map_err(fail)?);
+-        let key = hex::encode(ring::digest::digest(
+-            &ring::digest::SHA256,
+-            format!("{before:?}").as_bytes(),
+-        ));
++        let key = hex::encode(Sha256::digest(format!("{before:?}").as_bytes()).as_slice());
+         let hashes = root.join(".digests");
+         fs::create_dir_all(&hashes).map_err(fail)?;
+         let path = hashes.join(key);
+@@ -463,7 +460,7 @@ mod imp {
+             }
+         }
+         file.seek(SeekFrom::Start(0)).map_err(fail)?;
+-        let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
++        let mut hash = Sha256::new();
+         let mut buffer = vec![0; 1024 * 1024];
+         loop {
+             let read = file.read(&mut buffer).map_err(fail)?;
+@@ -475,7 +472,7 @@ mod imp {
+         if identity(&file.metadata().map_err(fail)?) != before {
+             return Err(fail("pack changed while hashing"));
+         }
+-        let digest = hex::encode(hash.finish());
++        let digest = hex::encode(hash.finalize().as_slice());
+         let mut temporary = tempfile::NamedTempFile::new_in(&hashes).map_err(fail)?;
+         use std::io::Write;
+         temporary.write_all(digest.as_bytes()).map_err(fail)?;
+diff --git a/src/usage.rs b/src/usage.rs
+index 262b5ad..a516ece 100644
+--- a/src/usage.rs
++++ b/src/usage.rs
+@@ -640,6 +640,7 @@ pub fn share_now(
+         .map_err(std::io::Error::other)?;
+     let endpoint_for_post = endpoint.clone();
+     let status = runtime.block_on(async move {
++        crate::install_crypto_provider();
+         let client = reqwest::Client::builder()
+             .timeout(timeout)
+             .build()

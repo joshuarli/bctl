@@ -1416,6 +1416,7 @@ mod tests {
     /// pending reply plus how long the server took to return after being asked
     /// to stop.
     async fn stop_during_request((server, addr, stop, entered): TestServer) -> (Reply, Duration) {
+        crate::install_crypto_provider();
         let request = tokio::spawn(async move {
             let response = reqwest::Client::new()
                 .get(format!("http://{addr}/slow"))

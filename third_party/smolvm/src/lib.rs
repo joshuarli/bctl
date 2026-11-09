@@ -69,6 +69,18 @@ pub mod artifact_cache;
 pub mod attach;
 pub mod config;
 pub mod credentials;
+
+/// Installs Graviola as rustls' process-wide `CryptoProvider`.
+///
+/// reqwest, tokio-rustls and axum-server build their TLS configs from the
+/// default provider, and this build enables no crypto backend in rustls. Safe
+/// to call from every entry point; only the first call installs.
+pub fn install_crypto_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls_graviola::default_provider().install_default();
+    });
+}
 // The shared CUDA daemon manages unix-domain sockets, flock, and detached
 // process groups — all POSIX. GPU acceleration is unavailable on Windows anyway,
 // so the module (and its callers in cuda_host) are unix-only.

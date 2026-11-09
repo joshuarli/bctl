@@ -12,11 +12,10 @@ smolvm-pack = { path = "../smolvm-pack", version = "1.16.2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
-ring = "0.17.14"
+sha2 = "0.10"
 zstd = "0.14.3"
 tempfile = "3"
 tracing = "0.1"
 libc = "0.2"
 
 [dev-dependencies]
-sha2 = "0.10"

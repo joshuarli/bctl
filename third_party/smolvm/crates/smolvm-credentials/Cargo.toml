@@ -17,15 +17,17 @@ getrandom = { version = "0.3", features = ["std"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "stream"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"] }
+rustls-graviola = "0.4"
+graviola = "0.4"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 serde_json = "1"
 smolvm-protocol = { path = "../smolvm-protocol", version = "1.26.1" }
 tokio = { version = "1", features = ["full"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 tracing = { workspace = true }
 zeroize = "1"
 

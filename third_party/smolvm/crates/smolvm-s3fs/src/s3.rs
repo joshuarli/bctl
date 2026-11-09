@@ -1,9 +1,8 @@
 //! Minimal S3 client: only the operations a filesystem needs.
 //!
 //! Deliberately not an SDK. The agent is a static binary in the guest rootfs,
-//! so every dependency is paid for on every machine; `ureq` is blocking (the
-//! agent has no async runtime) and, with rustls, costs under a megabyte where
-//! an SDK plus tokio would cost tens.
+//! so every dependency is paid for on every machine; the blocking reqwest
+//! client keeps the filesystem synchronous (the agent has no async runtime).
 
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -85,20 +84,25 @@ pub const MAX_IN_FLIGHT: usize = 32;
 
 pub struct Client {
     cfg: Config,
-    agent: ureq::Agent,
+    agent: reqwest::blocking::Client,
+}
+
+fn install_crypto_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls_graviola::default_provider().install_default();
+    });
 }
 
 impl Client {
     pub fn new(cfg: Config) -> Self {
-        // Keep a warm connection for every request that can be in flight at
-        // once. ureq keeps one per host by default, so concurrent requests
-        // would each pay a fresh TLS handshake and then be thrown away.
-        let agent = ureq::AgentBuilder::new()
-            .max_idle_connections_per_host(MAX_IN_FLIGHT)
-            .max_idle_connections(MAX_IN_FLIGHT)
+        install_crypto_provider();
+        let agent = reqwest::blocking::Client::builder()
+            .pool_max_idle_per_host(MAX_IN_FLIGHT)
             .timeout(cfg.timeout)
             .user_agent(concat!("smolvm-s3fs/", env!("CARGO_PKG_VERSION")))
-            .build();
+            .build()
+            .expect("S3 HTTP client");
         Self { cfg, agent }
     }
 
@@ -161,7 +165,7 @@ impl Client {
         query: &[(String, String)],
         mut headers: Vec<(String, String)>,
         body: Option<&[u8]>,
-    ) -> Result<ureq::Response> {
+    ) -> Result<reqwest::blocking::Response> {
         let (url, path) = self.url_for(key);
         headers.push(("host".into(), Self::host_of(&url)));
 
@@ -209,23 +213,26 @@ impl Client {
             format!("{url}?{qs}")
         };
 
+        let method = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|e| Error::Transport(e.to_string()))?;
         let mut req = self.agent.request(method, &full);
         for (k, v) in &headers {
-            // ureq sets Host itself from the URL; re-adding it breaks signing parity.
+            // reqwest sets Host from the URL; re-adding it breaks signing parity.
             if k.eq_ignore_ascii_case("host") {
                 continue;
             }
-            req = req.set(k, v);
+            req = req.header(k, v);
         }
 
         let res = match body {
-            Some(b) => req.send_bytes(b),
-            None => req.call(),
+            Some(b) => req.body(b.to_vec()).send(),
+            None => req.send(),
         };
         match res {
-            Ok(r) => Ok(r),
-            Err(ureq::Error::Status(status, r)) => {
-                let text = r.into_string().unwrap_or_default();
+            Ok(r) if r.status().is_success() => Ok(r),
+            Ok(r) => {
+                let status = r.status().as_u16();
+                let text = r.text().unwrap_or_default();
                 let code = xml_field(&text, "Code").unwrap_or_default();
                 let message = xml_field(&text, "Message").unwrap_or_default();
                 Err(Error::Status {
@@ -244,11 +251,15 @@ impl Client {
         match self.send("HEAD", &key, &[], Vec::new(), None) {
             Ok(r) => {
                 let size = r
-                    .header("content-length")
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
                 let last_modified_secs = r
-                    .header("last-modified")
+                    .headers()
+                    .get("last-modified")
+                    .and_then(|v| v.to_str().ok())
                     .and_then(parse_http_date)
                     .unwrap_or(0);
                 Ok(Some(ObjectInfo {
@@ -271,11 +282,14 @@ impl Client {
         }
         let r = self.send("GET", &key, &[], headers, None)?;
         let mut buf = Vec::with_capacity(
-            r.header("content-length")
+            r.headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
         );
-        r.into_reader()
+        let mut reader = r;
+        reader
             .read_to_end(&mut buf)
             .map_err(|e| Error::Transport(e.to_string()))?;
         Ok(buf)
@@ -301,7 +315,7 @@ impl Client {
         ];
         let response = self.send("PUT", &self.full_key(to), &[], headers, Some(b""))?;
         let body = response
-            .into_string()
+            .text()
             .map_err(|error| Error::Transport(error.to_string()))?;
         if let Some(code) = xml_field(&body, "Code") {
             return Err(Error::Status {
@@ -360,9 +374,7 @@ impl Client {
             }
             // Listing addresses the bucket itself, not a key.
             let r = self.send("GET", "", &query, Vec::new(), None)?;
-            let body = r
-                .into_string()
-                .map_err(|e| Error::Transport(e.to_string()))?;
+            let body = r.text().map_err(|e| Error::Transport(e.to_string()))?;
             let root = body
                 .find("<ListBucketResult")
                 .map(|start| body[start..].trim_end())

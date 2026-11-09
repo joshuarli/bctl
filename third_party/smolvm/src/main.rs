@@ -185,6 +185,7 @@ fn main() {
 }
 
 fn run_cli() {
+    smolvm::install_crypto_provider();
     // Lets pack extraction pick host-side layers when this host's virtiofs
     // server can present their recorded ownership.
     smolvm_pack::extract::set_host_layers_probe(smolvm::agent::host_layers_supported);

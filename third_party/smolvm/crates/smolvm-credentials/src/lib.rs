@@ -15,9 +15,18 @@
 
 pub mod ca;
 pub mod intercept;
+mod p256;
 pub mod policy;
 pub mod resolver;
 pub use smolvm_protocol::sni;
+
+/// Installs Graviola as rustls' process-wide `CryptoProvider`.
+pub(crate) fn install_crypto_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls_graviola::default_provider().install_default();
+    });
+}
 
 pub use ca::MachineCa;
 pub use intercept::{Interceptor, InterceptorConfig};
