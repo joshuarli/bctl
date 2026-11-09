@@ -1,0 +1,13 @@
+[package]
+name = "bctl-core"
+description = "Sessions, profiles, runs, and the reconciliation that keeps them honest across daemon restarts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = "0.41"
+
+[lints]
+workspace = true
