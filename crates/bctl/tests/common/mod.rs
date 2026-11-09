@@ -3,12 +3,14 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bctl_cdp::{Connection, Endpoint, Generation};
+use bctl_cdp::protocol::{AttachToTarget, Command as CdpCommand, Effect, SessionId, TargetId};
+use bctl_cdp::{Connection, Endpoint, Generation, Scope};
 use futures_lite::future::block_on;
-use miniserde::{Deserialize, json};
+use miniserde::{Deserialize, Serialize, json};
 
 #[derive(Deserialize)]
 pub struct Error {
@@ -135,6 +137,40 @@ pub fn outside_client(home: &Home, session: &str) -> Connection {
     connection
 }
 
+/// Attaches the outside client to a page target, for commands the page cannot tell from its own.
+pub fn attach(outside: &Connection, target: &str) -> SessionId {
+    block_on(outside.call(Scope::Browser, &AttachToTarget::new(TargetId::new(target)), soon())).unwrap().session_id
+}
+
+#[derive(Serialize)]
+struct Evaluate {
+    expression: String,
+    #[serde(rename = "returnByValue")]
+    return_by_value: bool,
+}
+
+#[derive(Deserialize)]
+struct Evaluated {
+    result: Remote,
+}
+
+#[derive(Deserialize)]
+struct Remote {
+    value: Option<json::Value>,
+}
+
+impl CdpCommand for Evaluate {
+    const METHOD: &'static str = "Runtime.evaluate";
+    const EFFECT: Effect = Effect::Mutating;
+    type Returns = Evaluated;
+}
+
+/// Evaluates `expression` in the page's main world through the outside client, not through bctl.
+pub fn evaluate_outside(outside: &Connection, session: &SessionId, expression: &str) -> json::Value {
+    let command = Evaluate { expression: expression.to_string(), return_by_value: true };
+    block_on(outside.call(Scope::Session(session), &command, soon())).unwrap().result.value.unwrap_or(json::Value::Null)
+}
+
 pub fn soon() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
@@ -158,29 +194,39 @@ pub const HOST_FROM_GUEST: &str = "100.96.0.1";
 pub const OTHER_SITE_FROM_GUEST: &str = "[::ffff:100.96.0.1]";
 
 /// A local HTTP server for fixture pages, reachable from the guest at [`HOST_FROM_GUEST`]. `site` maps a
-/// request path and the server's port to an HTML body.
+/// request path and the server's port to an HTML body. It answers every method alike and keeps each request
+/// line it was sent, so a page can report what it saw with a beacon.
 pub struct Fixture {
     pub port: u16,
+    requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl Fixture {
     pub fn start(site: fn(&str, u16) -> String) -> Fixture {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let kept = requests.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                thread::spawn(move || serve(stream, port, site));
+                let kept = kept.clone();
+                thread::spawn(move || serve(stream, port, site, &kept));
             }
         });
-        Fixture { port }
+        Fixture { port, requests }
     }
 
     pub fn url(&self, path: &str) -> String {
         format!("http://{HOST_FROM_GUEST}:{}{path}", self.port)
     }
+
+    /// Every request line the server has been sent, such as `POST /beacon?x`, in the order they came.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
 }
 
-fn serve(mut stream: TcpStream, port: u16, site: fn(&str, u16) -> String) {
+fn serve(mut stream: TcpStream, port: u16, site: fn(&str, u16) -> String, requests: &Mutex<Vec<String>>) {
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -191,7 +237,13 @@ fn serve(mut stream: TcpStream, port: u16, site: fn(&str, u16) -> String) {
         }
     }
     let text = String::from_utf8_lossy(&request);
-    let Some(path) = text.lines().next().and_then(|line| line.strip_prefix("GET ")).and_then(|rest| rest.split(' ').next()) else { return };
+    let Some((method, path)) = text.lines().next().and_then(|line| {
+        let mut parts = line.split(' ');
+        Some((parts.next()?, parts.next()?))
+    }) else {
+        return;
+    };
+    requests.lock().unwrap().push(format!("{method} {path}"));
     let body = site(path, port);
     let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
     let _ = stream.write_all(format!("{head}{body}").as_bytes());

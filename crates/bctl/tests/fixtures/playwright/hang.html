@@ -1,0 +1,40 @@
+<!--
+  Copyright 2018 Google Inc. All rights reserved.
+  Modifications copyright (c) Microsoft Corporation.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Changed for bctl from Playwright's click tests, as README.md lists.
+-->
+<!doctype html>
+<title>Hang</title>
+<button id=hang>Hang</button>
+<script>
+const seenKey = window === top ? "seen" : "seen " + location.pathname;
+window.seen = JSON.parse(sessionStorage.getItem(seenKey) || "[]");
+function note(what, on, trusted = true) {
+  seen.push({ what, on, trusted, page: location.pathname + location.search, at: Math.round(performance.now()) });
+  sessionStorage.setItem(seenKey, JSON.stringify(seen));
+}
+for (const type of ["mousedown", "mouseup", "click"]) {
+  addEventListener(type, event => note(type, event.target.id || event.target.localName, event.isTrusted), true);
+}
+</script>
+<script>
+const hangFor = Number(new URLSearchParams(location.search).get("ms"));
+document.getElementById("hang").addEventListener("mousedown", event => {
+  navigator.sendBeacon("/playwright/beacon?" + (event.isTrusted ? "trusted-" : "untrusted-") + event.target.id, "");
+  const until = performance.now() + hangFor;
+  while (performance.now() < until) {}
+});
+</script>

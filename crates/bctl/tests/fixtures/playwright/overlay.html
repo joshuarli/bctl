@@ -1,0 +1,54 @@
+<!--
+  Copyright 2018 Google Inc. All rights reserved.
+  Modifications copyright (c) Microsoft Corporation.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Changed for bctl from Playwright's click tests, as README.md lists.
+-->
+<!doctype html>
+<title>Overlay</title>
+<style>
+  body { margin: 0; position: relative }
+  button { display: block; border: 0; width: 200px; height: 20px }
+  #flyover { position: absolute; width: 400px; height: 20px; left: -200px; top: 0; background: red }
+  #below { margin-top: 30px }
+  #veil { position: absolute; left: 0; top: 50px; width: 200px; height: 20px; background: rgba(0, 0, 0, .2) }
+</style>
+<button id=target>Click target</button>
+<div id=flyover></div>
+<button id=below>Below</button>
+<div id=veil></div>
+<script>
+const seenKey = window === top ? "seen" : "seen " + location.pathname;
+window.seen = JSON.parse(sessionStorage.getItem(seenKey) || "[]");
+function note(what, on, trusted = true) {
+  seen.push({ what, on, trusted, page: location.pathname + location.search, at: Math.round(performance.now()) });
+  sessionStorage.setItem(seenKey, JSON.stringify(seen));
+}
+for (const type of ["mousedown", "mouseup", "click"]) {
+  addEventListener(type, event => note(type, event.target.id || event.target.localName, event.isTrusted), true);
+}
+</script>
+<script>
+function arm(which, after) {
+  note("armed", which);
+  if (which === "flyover") {
+    setTimeout(() => { document.getElementById("flyover").style.left = "0"; note("still covering", which); }, after / 2);
+    setTimeout(() => { document.getElementById("flyover").style.left = "200px"; note("ready", which); }, after);
+  } else {
+    setTimeout(() => { document.getElementById("veil").remove(); note("ready", which); }, after);
+  }
+  return "armed";
+}
+</script>

@@ -1,10 +1,13 @@
 mod common;
 
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use bctl_cdp::Scope;
 use bctl_cdp::protocol::{Command as CdpCommand, Effect, Empty, TargetId};
-use common::{Fixture, Home, OTHER_SITE_FROM_GUEST, assert_ok, dashboard_viewer, eventually, http, outside_client, soon, up_with_fixtures};
+use common::{
+    Fixture, Home, OTHER_SITE_FROM_GUEST, assert_ok, attach, dashboard_viewer, evaluate_outside, eventually, http, outside_client, soon, up_with_fixtures,
+};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, Serialize, json};
 
@@ -58,7 +61,24 @@ for (const id of ['name', 'bio', 'search', 'plan', 'agree']) {
 setTimeout(() => { document.getElementById('late').textContent = 'Arrived late'; location.hash = 'done'; }, 400);
 </script>"#;
 
+fn playwright(page: &str) -> Option<&'static str> {
+    Some(match page {
+        "late-layout" => include_str!("fixtures/playwright/late-layout.html"),
+        "overlay" => include_str!("fixtures/playwright/overlay.html"),
+        "fractional" => include_str!("fixtures/playwright/fractional.html"),
+        "detach" => include_str!("fixtures/playwright/detach.html"),
+        "frame" => include_str!("fixtures/playwright/frame.html"),
+        "navigation" => include_str!("fixtures/playwright/navigation.html"),
+        "landing" => include_str!("fixtures/playwright/landing.html"),
+        "hang" => include_str!("fixtures/playwright/hang.html"),
+        _ => return None,
+    })
+}
+
 fn site(path: &str, port: u16) -> String {
+    if let Some(page) = path.strip_prefix("/playwright/").and_then(|rest| playwright(rest.split('?').next().unwrap_or_default())) {
+        return page.to_string();
+    }
     match path {
         "/buttons" => BUTTONS.to_string(),
         "/form" => FORM.to_string(),
@@ -75,6 +95,16 @@ fn site(path: &str, port: u16) -> String {
         }
         _ => "<!doctype html><title>Missing</title>".to_string(),
     }
+}
+
+/// One thing a fixture page saw: a pointer event, or a change it made.
+#[derive(Deserialize, Debug, Clone)]
+struct Seen {
+    what: String,
+    on: String,
+    trusted: bool,
+    page: String,
+    at: f64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -450,4 +480,235 @@ fn n4_forms_take_unicode_text_selections_and_checks_like_a_person_and_refuse_whi
     );
     assert_eq!(refused(&home, "goto", s, &["http://100.96.0.1:1/"]).code, "NAVIGATION_FAILED");
     assert_ok(&home.bctl(&["down", s]));
+}
+
+fn seen_in(home: &Home, session: &str, expression: &str) -> Vec<Seen> {
+    let value = done(home, "eval", session, &[expression]).value.expect("eval returns a value");
+    json::from_str(&json::to_string(&value)).unwrap_or_else(|_| panic!("{expression} is not a record: {}", json::to_string(&value)))
+}
+
+fn seen(home: &Home, session: &str) -> Vec<Seen> {
+    seen_in(home, session, "seen")
+}
+
+fn input(seen: &[Seen]) -> Vec<&Seen> {
+    seen.iter().filter(|s| matches!(s.what.as_str(), "mousedown" | "mouseup" | "click")).collect()
+}
+
+fn noted<'a>(seen: &'a [Seen], what: &str, on: &str) -> &'a Seen {
+    seen.iter().rev().find(|s| s.what == what && s.on == on).unwrap_or_else(|| panic!("the page never noted {what} {on}: {seen:?}"))
+}
+
+/// Asserts the page's one trusted click went to `on`, after it noted `ready` and within `bound` of arming.
+fn clicked_after<'a>(seen: &'a [Seen], armed: &str, on: &str, bound: Duration) -> &'a Seen {
+    let arming = noted(seen, "armed", armed);
+    let armed_at = arming.at;
+    let ready = noted(seen, "ready", armed).at;
+    let since: Vec<&Seen> = input(seen).into_iter().filter(|s| s.page == arming.page && s.at >= armed_at).collect();
+    assert_eq!(since.iter().map(|s| (s.what.as_str(), s.on.as_str(), s.trusted)).collect::<Vec<_>>(), [("mousedown", on, true), ("mouseup", on, true), ("click", on, true)], "{seen:?}");
+    let click = since[2];
+    assert!(click.at >= ready, "{on} was clicked at {} ms, before it was ready at {ready} ms", click.at);
+    assert!(click.at - armed_at < bound.as_millis() as f64, "{on} was clicked {} ms after arming", click.at - armed_at);
+    click
+}
+
+#[derive(Serialize)]
+struct DeviceMetrics {
+    width: u32,
+    height: u32,
+    #[serde(rename = "deviceScaleFactor")]
+    device_scale_factor: f64,
+    mobile: bool,
+}
+
+impl CdpCommand for DeviceMetrics {
+    const METHOD: &'static str = "Emulation.setDeviceMetricsOverride";
+    const EFFECT: Effect = Effect::Mutating;
+    type Returns = Empty;
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+fn n7_actions_wait_for_late_layout_and_overlays_and_hit_fractional_boxes_at_any_device_scale() {
+    let fixture = Fixture::start(site);
+    let home = Home::new("n7-l");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    up_with_fixtures(&home, s, "n7-l");
+    let tab = open_tab(&home, s, "about:blank");
+    let bound = Duration::from_secs(5);
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/late-layout")]);
+    let started = Instant::now();
+    let late = refused(&home, "click", s, &["--css", "#shown", "--timeout", "800"]);
+    let waited = started.elapsed();
+    assert_eq!(late.code, "NOT_VISIBLE", "{late:?}");
+    assert!(late.message.contains("is not visible: its style hides it") && late.message.contains("still after waiting"), "{}", late.message);
+    assert!(waited >= Duration::from_millis(800) && waited < bound, "the click gave up after {waited:?}");
+    assert!(input(&seen(&home, s)).is_empty(), "an element that never became visible got no input");
+    for (id, after, on) in [("moving", 0, "moving"), ("shown", 500, "shown"), ("revealed", 500, "revealed"), ("nested", 500, "nested"), ("enabled", 500, "label")] {
+        done(&home, "eval", s, &[&format!("arm('{id}', {after})")]);
+        done(&home, "click", s, &["--css", &format!("#{id}")]);
+        clicked_after(&seen(&home, s), id, on, bound);
+    }
+    assert_eq!(noted(&seen(&home, s), "left", "200").on, "200", "the moving button was clicked where it came to rest");
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/overlay")]);
+    let covered = refused(&home, "click", s, &["--css", "#target", "--timeout", "600"]);
+    assert_eq!(covered.code, "COVERED", "{covered:?}");
+    assert!(covered.message.contains("div#flyover") && covered.message.contains("still after waiting"), "{}", covered.message);
+    for (overlay, target) in [("flyover", "target"), ("veil", "below")] {
+        done(&home, "eval", s, &[&format!("arm('{overlay}', 600)")]);
+        done(&home, "click", s, &["--css", &format!("#{target}")]);
+        clicked_after(&seen(&home, s), overlay, target, bound);
+    }
+    assert!(input(&seen(&home, s)).iter().all(|s| s.on != "flyover" && s.on != "veil"), "no overlay ever got the input");
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/fractional")]);
+    let outside = outside_client(&home, s);
+    let emulated = attach(&outside, &tab);
+    let dots = ["aligned", "half", "v1", "v2", "v3", "v4", "zoomed-v1", "zoomed-v4"];
+    for scale in [1.0, 1.5, 2.75] {
+        block_on(outside.call(Scope::Session(&emulated), &DeviceMetrics { width: 0, height: 0, device_scale_factor: scale, mobile: false }, soon())).unwrap();
+        let ratio = match evaluate_outside(&outside, &emulated, "devicePixelRatio") {
+            json::Value::Number(json::Number::F64(ratio)) => ratio,
+            json::Value::Number(json::Number::U64(ratio)) => ratio as f64,
+            other => panic!("devicePixelRatio is {}", json::to_string(&other)),
+        };
+        assert_eq!(ratio, scale, "the page renders at the emulated scale");
+        for dot in dots {
+            let before = input(&seen(&home, s)).len();
+            done(&home, "click", s, &["--css", &format!("#{dot}")]);
+            let all = seen(&home, s);
+            let after: Vec<_> = input(&all).into_iter().skip(before).map(|s| (s.what.clone(), s.on.clone(), s.trusted)).collect();
+            assert_eq!(after, [("mousedown".to_string(), dot.to_string(), true), ("mouseup".into(), dot.into(), true), ("click".into(), dot.into(), true)], "the 1x1 {dot} at scale {scale}");
+        }
+    }
+    assert_ok(&home.bctl(&["down", s]));
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+fn n7_a_ref_stays_stale_when_its_node_leaves_while_a_query_follows_the_page_to_its_new_element() {
+    let fixture = Fixture::start(site);
+    let home = Home::new("n7-d");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    up_with_fixtures(&home, s, "n7-d");
+    let tab = open_tab(&home, s, "about:blank");
+    let quickly = Duration::from_secs(3);
+    let stale = |args: &[&str]| {
+        let started = Instant::now();
+        let error = refused(&home, "click", s, args);
+        assert_eq!(error.code, "STALE_REF", "{args:?}: {error:?}");
+        assert!(started.elapsed() < quickly, "a stale ref fails when its node goes, not at the deadline: {:?}", started.elapsed());
+        error
+    };
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/detach")]);
+    done(&home, "wait", s, &["--css", "#inner"]);
+    done(&home, "eval", s, &["addButton()"]);
+    let first = snapshot_ref(&home, s, "button", "Click me");
+    done(&home, "eval", s, &["removeLater(600)"]);
+    let removed = stale(&[&format!("@{first}")]);
+    assert!(removed.message.contains("no longer in its document"), "{}", removed.message);
+
+    done(&home, "eval", s, &["addButton()"]);
+    done(&home, "eval", s, &["churnLater(300)"]);
+    let started = Instant::now();
+    done(&home, "click", s, &["--css", "#stage button"]);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let record = seen(&home, s);
+    let ready = noted(&record, "ready", "b4").at;
+    let clicks: Vec<_> = input(&record).into_iter().map(|s| (s.what.as_str(), s.on.as_str(), s.trusted)).collect();
+    assert_eq!(clicks, [("mousedown", "b4", true), ("mouseup", "b4", true), ("click", "b4", true)], "only the button that stayed got the input: {record:?}");
+    assert!(input(&record)[0].at >= ready, "{record:?}");
+
+    done(&home, "eval", s, &["stopButton(true)"]);
+    done(&home, "eval", s, &["addButton()"]);
+    let moving = snapshot_ref(&home, s, "button", "Click me");
+    done(&home, "eval", s, &["adoptLater(500)"]);
+    stale(&[&format!("@{moving}")]);
+    let framed = seen_in(&home, s, "document.getElementById('frame').contentWindow.seen");
+    assert!(input(&framed).is_empty() && input(&seen(&home, s)).len() == 3, "the button that moved into the frame got no input: {framed:?}");
+    noted(&seen(&home, s), "moved", "b5");
+
+    let inner = snapshot_ref(&home, s, "button", "Inner");
+    done(&home, "eval", s, &["dropFrameLater(500)"]);
+    stale(&[&format!("@{inner}")]);
+    let gone = refused(&home, "click", s, &["--css", "#inner", "--timeout", "800"]);
+    assert_eq!(gone.code, "NOT_FOUND", "a query for an element whose frame went away waits and then fails: {gone:?}");
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/navigation")]);
+    done(&home, "eval", s, &["sessionStorage.clear(); seen.length = 0"]);
+    let moving = snapshot_ref(&home, s, "button", "Moving");
+    done(&home, "eval", s, &["reloadLater(500)"]);
+    let navigated = stale(&[&format!("@{moving}")]);
+    assert!(navigated.message.contains("navigated away"), "{}", navigated.message);
+    done(&home, "goto", s, &[&fixture.url("/playwright/navigation")]);
+    done(&home, "eval", s, &["reloadLater(500)"]);
+    done(&home, "click", s, &["--css", "#moving"]);
+    let record = seen(&home, s);
+    let landed: Vec<_> = input(&record).into_iter().map(|s| (s.what.as_str(), s.on.as_str(), s.page.as_str())).collect();
+    assert_eq!(
+        landed,
+        [("mousedown", "moving", "/playwright/navigation?stable"), ("mouseup", "moving", "/playwright/navigation?stable"), ("click", "moving", "/playwright/navigation?stable")],
+        "the query clicked the button of the page the navigation brought: {record:?}"
+    );
+
+    for (id, from) in [("away", "link"), ("leave", "press")] {
+        done(&home, "goto", s, &[&fixture.url("/playwright/navigation?stable")]);
+        done(&home, "eval", s, &["sessionStorage.clear(); seen.length = 0"]);
+        done(&home, "click", s, &["--css", &format!("#{id}")]);
+        done(&home, "wait", s, &["--url", &format!("*from={from}")]);
+        let record = seen(&home, s);
+        let pressed = input(&record).into_iter().find(|s| s.what == "mousedown").unwrap_or_else(|| panic!("{record:?}"));
+        assert!(pressed.on == id && pressed.trusted && pressed.page == "/playwright/navigation?stable", "{record:?}");
+        noted(&record, "landed", &format!("?from={from}"));
+    }
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/navigation?stable")]);
+    let before = reply(&home, &["tab", "list", s]).tabs.expect("tabs").targets.len();
+    done(&home, "click", s, &["--css", "#popup"]);
+    let with_popup = eventually("the popup to open", || reply(&home, &["tab", "list", s]).tabs.filter(|t| t.targets.len() == before + 1));
+    assert_eq!(with_popup.selected.as_deref(), Some(tab.as_str()), "the popup left the selected target alone");
+    let record = seen(&home, s);
+    assert!(input(&record).iter().any(|s| s.what == "click" && s.on == "popup" && s.trusted), "{record:?}");
+    assert_ok(&home.bctl(&["down", s]));
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
+fn n7_input_whose_reply_or_connection_is_lost_is_unknown_and_never_sent_again() {
+    let fixture = Fixture::start(site);
+    let home = Home::new("n7-u");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    up_with_fixtures(&home, s, "n7-u");
+    open_tab(&home, s, "about:blank");
+    let beacons = || fixture.requests().into_iter().filter(|r| r.starts_with("POST /playwright/beacon")).collect::<Vec<_>>();
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/hang?ms=13000")]);
+    let lost = refused(&home, "click", s, &["--css", "#hang"]);
+    assert_eq!(lost.code, "UNKNOWN_OUTCOME", "{lost:?}");
+    assert!(lost.message.contains("Input.dispatchMouseEvent was sent but its outcome is unknown"), "{}", lost.message);
+    assert_eq!(beacons(), ["POST /playwright/beacon?trusted-hang"], "the press reached the button once");
+    let record = eventually("the page to answer again", || page(&home, "eval", s, &["seen"]).ok().map(|_| seen(&home, s)));
+    let sent: Vec<_> = input(&record).into_iter().map(|s| (s.what.as_str(), s.on.as_str(), s.trusted)).collect();
+    assert_eq!(sent, [("mousedown", "hang", true)], "after the lost reply bctl sent nothing more, not even the release: {record:?}");
+
+    done(&home, "goto", s, &[&fixture.url("/playwright/hang?ms=120000")]);
+    let clicking = {
+        let path = home.path.clone();
+        let session = session.clone();
+        thread::spawn(move || {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_bctl")).args(["page", "click", &session, "--css", "#hang", "--json"]).env("BCTL_HOME", path).output().unwrap();
+            json::from_str::<Reply>(&String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|_| panic!("{output:?}"))
+        })
+    };
+    eventually("the second press to reach the button", || (beacons().len() == 2).then_some(()));
+    assert_ok(&home.bctl(&["down", s]));
+    let cut = clicking.join().unwrap().error.expect("the click does not succeed");
+    assert_eq!(cut.code, "UNKNOWN_OUTCOME", "{cut:?}");
+    assert_eq!(beacons().len(), 2, "the press was sent once and never again");
 }
