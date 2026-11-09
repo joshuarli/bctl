@@ -652,20 +652,6 @@ NOTRACE
 boolean exit_thread(thread t)
 {
     process p = t->p;
-    spin_lock(&p->threads_lock);
-    rbtree_remove_by_key(p->threads, &t->n);
-    u64 remaining = rbtree_get_count(p->threads);
-    boolean last = remaining == 0;
-    context exec_waiter = 0;
-    if (remaining == 1) {
-        exec_waiter = p->exec_waiter;
-        p->exec_waiter = 0;
-    }
-    if (p->exec_thread == t)
-        p->exec_thread = 0;
-    spin_unlock(&p->threads_lock);
-    if (exec_waiter)
-        context_schedule_return(exec_waiter);
     t->signal_mask = -1ull;
 
     /* dequeue signals for thread */
@@ -683,6 +669,21 @@ boolean exit_thread(thread t)
     wake_robust_list(t);
     t->robust_list = 0;
     seccomp_thread_exit(t);
+
+    spin_lock(&p->threads_lock);
+    rbtree_remove_by_key(p->threads, &t->n);
+    u64 remaining = rbtree_get_count(p->threads);
+    boolean last = remaining == 0;
+    context exec_waiter = 0;
+    if (remaining == 1) {
+        exec_waiter = p->exec_waiter;
+        p->exec_waiter = 0;
+    }
+    if (p->exec_thread == t)
+        p->exec_thread = 0;
+    spin_unlock(&p->threads_lock);
+    if (exec_waiter)
+        context_schedule_return(exec_waiter);
 
     blockq_flush(t->thread_bq);
     deallocate_blockq(t->thread_bq);

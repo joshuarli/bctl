@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -355,6 +356,54 @@ static void check_exit_unmapped_clear_tid(void)
 	record("exit_unmapped_clear_tid", st == 0, detail);
 }
 
+struct robust_head {
+	void *list;
+	long futex_offset;
+	void *pending;
+};
+
+static void *busy_robust_thread(void *arg)
+{
+	(void)arg;
+	static __thread struct robust_head head;
+	static __thread int lock_word;
+	head.list = &head;
+	head.futex_offset = (char *)&lock_word - (char *)&head;
+	head.pending = 0;
+	syscall(SYS_set_robust_list, &head, sizeof head);
+	for (;;)
+		sched_yield();
+	return 0;
+}
+
+static int child_group_exit_many(void)
+{
+	pthread_t th;
+	for (int i = 0; i < 12; i++)
+		if (pthread_create(&th, 0, busy_robust_thread, 0))
+			return 2;
+	usleep(20000);
+	return 0;
+}
+
+static void check_group_exit_many_threads(void)
+{
+	char detail[64];
+	int bad = 0, last = 0;
+	for (int i = 0; i < 20; i++) {
+		pid_t pid = fork();
+		if (pid == 0)
+			_exit(child_group_exit_many());
+		int st = child_status(pid);
+		if (st) {
+			bad++;
+			last = st;
+		}
+	}
+	snprintf(detail, sizeof detail, "bad=%d,last=0x%x", bad, last);
+	record("group_exit_many_threads", bad == 0, detail);
+}
+
 int main(void)
 {
 	check_setsid();
@@ -365,6 +414,7 @@ int main(void)
 	check_cross_process();
 	check_thread_target();
 	check_exit_unmapped_clear_tid();
+	check_group_exit_many_threads();
 	printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", passed, failed);
 	return failed ? 1 : 0;
 }
