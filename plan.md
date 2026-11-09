@@ -214,8 +214,18 @@ only when every slice in it is accepted on `main`.
   page table. Kernel mappings are shared by pre-populating every kernel-half
   PML4 entry at boot, so later kernel mappings show up in every address space
   without copying. CR3 switches on context switch only when the address space
-  changes. TLB shootdown targets only the CPUs that have the address space
-  loaded. PCID is an optimization and waits for `P.1`. If Nanos places kernel
+  changes. TLB shootdown stays broadcast through G1 (correct without PCID,
+  only slower; performance is waived); G1.1 maintains the set of CPUs that
+  loaded each address space, and targeted shootdown plus PCID wait for `P.1`.
+  `nanos/docs/chromium-compat.md` is the binding design for G1 (verdict:
+  feasible); its §6 is the G1.1 commit plan and its §3 lists every
+  foreign-context user access G1.1 must remove. Until G1.2, `fork` returns
+  `ENOSYS` for parents with custom or `MAP_SHARED` anonymous mappings and is
+  x86_64-only. aarch64 and riscv64 must keep compiling in principle, but no
+  cross compiler exists here, so they go unverified (recorded, not gating).
+  G1.1 may touch every file listed in the design note's owner-decision 1,
+  including a `KERNEL_TEST_CFLAGS` hook in `nanos/rules.mk` for the
+  `-DVM_ISOLATION_SELFTEST_BREAK` build. If Nanos places kernel
   data in the lower half or depends on one global user `vmap` set, the G1.1
   design note gives the dependency graph and the smallest relocation, and the
   slice carries it out.
