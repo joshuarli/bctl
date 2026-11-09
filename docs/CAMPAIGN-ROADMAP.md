@@ -13,10 +13,11 @@ proves a pure-Rust userland (M4R) whose crates port back into laputa.
 Baseline 2026-11-08: the repo has no commits. Facts below were checked against
 the sibling repos on that date; see **Baseline**.
 
-Accepted: none. `guest/tinyland` and `guest/seatd` are vendored and pass
-`cargo check --locked --target aarch64-unknown-linux-musl --all-targets`.
-Next: P0, P1, and T0 (parallel).
-Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
+Accepted: P0 (`feac477`), P1 (`6ad2878`). `guest/tinyland` and `guest/seatd`
+are vendored and pass `cargo check --locked --target
+aarch64-unknown-linux-musl --all-targets`.
+Next: B1, then C1.
+Resume: `implement B1 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
@@ -102,13 +103,15 @@ Resume: `implement P0 from docs/CAMPAIGN-ROADMAP.md`.
   SmolVM's own: virtio-gpu scanout to host framebuffer to RFB and WebSocket
   (`src/agent/vnc.rs`), with input through virtio-input (`src/agent/input.rs`).
   The guest runs no VNC server.
-- Prescribed: bctl builds its own SmolVM host runtime. It pins the same
-  upstreams as niceforge's `third_party/UPSTREAM.lock` (smolvm `v1.31.4`
-  `e5e57cbe`, libkrun `62059976`, libkrunfw `8ba5fe22`) and builds libkrun with
-  `blk,net,gpu,input`. Niceforge's headless `blk,net` build stays as it is.
-  Port `scripts/build_smolvm_host.py` rather than parameterizing niceforge's
-  copy: the two products upgrade on different schedules. Reversal: a third
-  consumer appears, at which point extract a shared runtime-build repo.
+- Prescribed: the runtime is the official SmolVM 1.31.4 macOS bundle, taken by
+  digest, with only `libkrun.dylib` rebuilt (`runtime/build.sh`,
+  `runtime/runtime.toml`). The bundle already enables display and input, but
+  its venus-only virglrenderer rejects `RESOURCE_CREATE_2D` with `EINVAL`, so
+  no CPU-rendered scanout reaches the host. bctl's one libkrun patch keeps
+  rutabaga's 2D component beside the default one. Tinyland's dumb buffers
+  need it too. Reversal: upstream libkrun accepts 2D resources on macOS, at
+  which point drop the patch and the source build. Upstreaming it is the
+  owner's call.
 - Prescribed: CDP is the only automation boundary. The guest is a browser
   appliance (agent, compositor, Helium) and runs no automation code. Grab,
   Shadowdriver, and `exec` jobs are CDP clients outside the VM, attaching
@@ -200,31 +203,23 @@ Checked 2026-11-08, read-only, nothing built or run.
 
 ### M0: platform contracts
 
-- **P0 Display-capable runtime.** Owns `runtime/UPSTREAM.lock`,
-  `runtime/build.py`, `runtime/README.md`. No prereq. Port niceforge's
-  `build_smolvm_host.py` (pin checks, arm64 and ABI checks, hypervisor
-  entitlement signing) with libkrun features `blk,net,gpu,input`. Start from
-  the unpatched upstream pins. Niceforge carries 20 SmolVM patches
-  (`third_party/UPSTREAM.lock` `patches=`), mostly for its CI execution
-  authority and checkpoint ledger. Adopt one only when a bctl acceptance
-  check fails without it, and name that check in the commit body. Output goes
-  to `.work/runtime/<lock-digest>/`. Acceptance: the build succeeds from
-  clean; `nm` on the built libkrun shows `krun_add_display` and
-  `krun_add_input_device`; a second build with an unchanged lock does no
-  compile work; `smolvm --version` matches the lock. Parallel-safe with P1.
-- **P1 Reference appliance image.** Owns `images/ref-alpine-chromium/`,
-  `images/build.sh`, `docs/image-contract.md`. No prereq. An Alpine aarch64
-  rootfs with SmolVM's agent, seatd, Sway (`WLR_RENDERER=pixman`, XWayland off,
-  one output), and the Alpine `chromium` APK. Also a guest entrypoint
-  `bctl-guest` that starts seatd, then Sway, then Chromium with
-  `--ozone-platform=wayland --remote-debugging-port=9222
-  --remote-debugging-address=127.0.0.1 --user-data-dir=/profile`. Write down
-  the image contract: entrypoint, readiness signals, CDP port, profile mount,
-  output dir, and required guest devices. Settle the guest-base delegated
-  decision here. Acceptance: `images/build.sh ref-alpine-chromium` produces an
-  image SmolVM boots; inside it, `bctl-guest --check` reports seatd, compositor,
-  and Chromium ready, and renderers show `NoNewPrivs=1` and `Seccomp=2`.
-  Parallel-safe with P0.
+- **P0 Display-capable runtime.** Accepted `feac477`. Owns `runtime/`.
+  `runtime/build.sh` verifies the release digest, builds libkrun at the
+  pinned revision with `runtime/patches/`, swaps in `libkrun.dylib`, and
+  checks for `krun_add_display`, `krun_add_input_device`, and
+  `krun_set_display_backend`, for no Homebrew paths, and for the expected
+  `smolvm --version`. A rerun recompiles only the patched crates. Build
+  needs: Homebrew `libkrun/krun/virglrenderer-krun`, the Xcode Command Line
+  Tools, and the `aarch64-unknown-linux-musl` target on the init toolchain.
+  None of niceforge's 20 SmolVM patches were needed.
+- **P1 Reference appliance image.** Accepted `6ad2878`. Owns `images/`,
+  `docs/image-contract.md`. An Alpine 3.22 container image (the SmolVM agent
+  rootfs is Alpine 3.19 and is not bctl's), with Sway on pixman, seatd with
+  `SEATD_VTBOUND=0`, libudev-zero, and the Alpine `chromium` APK, started by
+  `images/bctl-guest`. Accepted on SmolVM: `bctl-guest check` reports `seat`,
+  `compositor`, `browser`, and `sandbox` ok; host `/json/version` through
+  `-p 19222:9222` returns Chrome/142 and a `webSocketDebuggerUrl` on the
+  host port; VNC frames show Chromium's UI.
 - **P2 Helium arm64 product image.** Owns `images/helium/`. Prereq: P1 and the
   arm64 artifact. Install the archive with chromium-build's
   `install-runtime.py --verify-extract`. Refuse an archive whose sidecars do not
