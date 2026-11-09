@@ -113,9 +113,14 @@ core idle per session, Speedometer 3.1 at 81% (Sway) and 72% (Tinyland) of
 the same Chromium in a 2-CPU container. H1 findings: `smolvm machine pause`
 refuses any machine with an exposed socket, image layers, or `--gpu`, which is
 every session, so pause, resume, and X1's checkpoint restore are blocked on
-SmolVM; 7 of 16 guest Speedometer runs stalled on a lost module-script
-request while the container never did, which points at request loss in the
-guest network path (H3 owns it); the dashboard lease race on viewer reconnect
+SmolVM; the guest Speedometer stalls (7 of 16 runs) were a macOS socket
+content filter on this host stalling TCP to the host's LAN address, not the
+guest: the bench now reaches the host at SmolVM's gateway `100.96.0.1`
+(`f38e3a4`, `--test host_http`), 24 of 24 runs finish that way, and
+`docs/jobs.md` says to use it; SmolVM's relay tracks at most 512 guest TCP
+connections and holds host-closed ones for a 10 s TIME-WAIT, so more than
+about 50 short connections a second are refused (not hit by Chromium's
+keep-alive pool; a crawl of close-per-request servers could); the dashboard lease race on viewer reconnect
 was not retested after N6.
 T5 (`f386cb1`, `guest/tinyland/harness/wlcs/run.sh --sweep`,
 `docs/research/tinyland-wlcs.md`): WLCS v1.8.1 drives tinyland through a
