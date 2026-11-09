@@ -1,0 +1,34 @@
+#ifndef _TEST_UTILS_H_
+#define _TEST_UTILS_H_
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#define FAULT_ADDR  ((void *)0xBADF0000)
+#define FAULT_ADDR1 ((void *)0xFFFFFFFFFFFF0000ull)
+
+#define test_assert(expr) do {                                                          \
+    if (!(expr)) {                                                                      \
+        fprintf(stderr, "Error: %s -- failed at %s:%d\n", #expr, __FILE__, __LINE__);   \
+        exit(EXIT_FAILURE);                                                             \
+    }                                                                                   \
+} while (0)
+
+#define test_error(msg, ...) do {                                                       \
+    fprintf(stderr, "Error at %s:%d: " msg "\n", __FILE__, __LINE__, ##__VA_ARGS__);    \
+    exit(EXIT_FAILURE);                                                                 \
+} while (0)
+
+#define TEST_FUNC(name) {                               \
+    extern void test_##name(int argc, char *argv[]);    \
+    test_##name(argc, argv);                            \
+    printf(#name " test:\tOK\n");                     \
+}
+
+#define test_perror(msg, ...) do {                                                      \
+    fprintf(stderr, "Error at %s:%d: " msg ": " , __FILE__, __LINE__, ##__VA_ARGS__);   \
+    perror(NULL);                                                                       \
+    exit(EXIT_FAILURE);                                                                 \
+} while (0)
+
+#endif

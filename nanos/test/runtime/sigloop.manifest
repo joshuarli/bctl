@@ -1,0 +1,15 @@
+(
+    children:(
+              #user program
+	      sigloop:(contents:(host:output/test/runtime/bin/sigloop))
+	      )
+    # filesystem path to elf for kernel to run
+    program:/sigloop
+#    trace:t
+#    debugsyscalls:t
+#    fault:t
+    arguments:[test]
+    environment:(USER:bobby PWD:/)
+    # expected either SIGABRT or SIGSEGV
+    expected_exit_code:[6 11]
+)

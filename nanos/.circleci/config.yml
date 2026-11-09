@@ -1,0 +1,211 @@
+version: 2.1
+jobs:
+  build-pc:
+    docker:
+      # specify the version
+      - image: cimg/go:1.25.0
+    steps:
+      - checkout
+      - run: sudo apt-get update
+      - run: sudo apt-get install nasm qemu-system-x86 ent ruby rustc fuse libfuse-dev
+      - run: cd .. && git clone git@github.com:nanovms/ops.git
+      - run: make
+      - run: make tools && make tfs-fuse
+      - run: curl https://ops.city/get.sh -sSfL | sh
+      - run:
+          command: |
+            OPS_DIR=$HOME/.ops
+            PATH=$HOME/.ops/bin:$PATH
+            make VCPUS=2 test-noaccel
+      - run: test/extended_tests.py
+      - run:
+          command: |
+            if [[ ! -v GCLOUD_SERVICE_KEY ]]; then
+              circleci-agent step halt
+            fi
+      - run: echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+      - run: curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+      - run: sudo apt-get update && sudo apt-get install google-cloud-cli
+      - run: echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+      - run: gcloud config set project ${GOOGLE_PROJECT_ID}
+      - run: gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+      - run:
+          name: copy build artifacts
+          command: |
+            shopt -s extglob
+            mkdir temp && cp output/platform/pc/bin/kernel.img temp/ && cp output/platform/pc/boot/boot.img temp/ && cp output/platform/pc/boot/bootx64.efi temp/ && mkdir temp/klibs && cp output/platform/pc/bin/!(test|*.dbg|kernel.*) temp/klibs
+      - run: echo "export COMMIT_ID="`git rev-parse --short=7 HEAD` >> $BASH_ENV
+      - run: cd temp && tar cvzf ../nanos-release-linux-${COMMIT_ID}.tar.gz *
+      - run: gsutil cp nanos-release-linux-${COMMIT_ID}.tar.gz gs://nanos/release/${COMMIT_ID}/
+      - run: gsutil cp gs://nanos/release/${COMMIT_ID}/nanos-release-linux-${COMMIT_ID}.tar.gz gs://nanos/release/${COMMIT_ID}/nanos-release-darwin-${COMMIT_ID}.tar.gz
+      - run: gsutil setmeta -h "Custom-Time:`date -Iseconds`" gs://nanos/release/${COMMIT_ID}/*
+      - run: gsutil acl ch -u AllUsers:R gs://nanos/release/${COMMIT_ID}/*
+
+  build-pc-debug:
+    docker:
+      # specify the version
+      - image: cimg/go:1.25.0
+    steps:
+      - checkout
+      - run: sudo apt-get update
+      - run: sudo apt-get install nasm qemu-system-x86 ent ruby rustc
+      - run: cd .. && git clone git@github.com:nanovms/ops.git
+      - run: make MEMDEBUG=all UBSAN=1
+      - run: curl https://ops.city/get.sh -sSfL | sh
+      - run:
+          command: |
+            OPS_DIR=$HOME/.ops
+            PATH=$HOME/.ops/bin:$PATH
+            make MEMDEBUG=all UBSAN=1 VCPUS=2 test-noaccel
+
+  nightly-build:
+    docker:
+      - image: cimg/go:1.25.0
+    steps:
+      - checkout
+      - run: sudo apt-get update
+      - run: sudo apt-get install nasm qemu-system-x86 ent ruby rustc
+      - run: make
+      - run: curl https://ops.city/get.sh -sSfL | sh
+      - run:
+          command: |
+            OPS_DIR=$HOME/.ops
+            PATH=$HOME/.ops/bin:$PATH
+            make VCPUS=2 test-noaccel
+
+      - run: echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+      - run: curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+      - run: sudo apt-get update && sudo apt-get install google-cloud-cli
+
+      - run: echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+      - run: gcloud config set project ${GOOGLE_PROJECT_ID}
+      - run: gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+
+      - run:
+          name: copy build artifacts
+          command: |
+            shopt -s extglob
+            mkdir temp && cp output/platform/pc/bin/kernel.img temp/ && cp output/platform/pc/boot/boot.img temp/ && cp output/platform/pc/boot/bootx64.efi temp/ && mkdir temp/klibs && cp output/platform/pc/bin/!(test|*.dbg|kernel.*) temp/klibs
+      - run: cd temp && tar cvzf nanos-nightly-linux.tar.gz * && gsutil cp nanos-nightly-linux.tar.gz gs://nanos/release/nightly
+      - run: gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/nanos-nightly-linux.tar.gz
+      - run: rm -r temp
+      - run: echo $(date +"%m%d%Y") > nanos-nightly-linux.timestamp
+      - run: gsutil cp nanos-nightly-linux.timestamp gs://nanos/release/nightly
+      - run: gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/nanos-nightly-linux.timestamp
+
+  build-virt:
+    docker:
+      - image: cimg/go:1.25.0
+    steps:
+      - checkout
+      - run: sudo apt-get update
+      - run: sudo apt-get install gcc-aarch64-linux-gnu qemu-system-arm ent xxd
+      - run: mkdir target-root && cd target-root && wget https://storage.googleapis.com/testmisc/arm64-target-root.tar.gz && sudo tar --exclude=dev/* -xzf arm64-target-root.tar.gz
+      # runtime tests for now - can add go tests when aarch64 support is added to ops
+      - run:
+          name: aarch64-build
+          environment:
+            NANOS_TARGET_ROOT: ~/project/target-root
+          command: |
+            make PLATFORM=virt VCPUS=2 runtime-tests-noaccel
+      - run:
+          command: |
+            if [[ ! -v GCLOUD_SERVICE_KEY ]]; then
+              circleci-agent step halt
+            fi
+
+      - run: echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+      - run: curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+      - run: sudo apt-get update && sudo apt-get install google-cloud-cli
+
+      - run: echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+      - run: gcloud config set project ${GOOGLE_PROJECT_ID}
+      - run: gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+
+      - run:
+          name: copy build artifacts
+          command: |
+            shopt -s extglob
+            mkdir temp && cp output/platform/virt/bin/kernel.img temp/ && cp output/platform/virt/boot/bootaa64.efi temp/ && mkdir temp/klibs && cp output/platform/virt/bin/!(test|*.dbg|kernel.*) temp/klibs
+
+      - run: echo "export COMMIT_ID="`git rev-parse --short=7 HEAD` >> $BASH_ENV
+      - run: cd temp && tar cvzf ../nanos-release-linux-${COMMIT_ID}-virt.tar.gz *
+      - run: gsutil cp nanos-release-linux-${COMMIT_ID}-virt.tar.gz gs://nanos/release/${COMMIT_ID}/
+      - run: gsutil setmeta -h "Custom-Time:`date -Iseconds`" gs://nanos/release/${COMMIT_ID}/*
+      - run: gsutil acl ch -u AllUsers:R gs://nanos/release/${COMMIT_ID}/*
+
+  nightly-build-virt:
+    docker:
+      - image: cimg/go:1.25.0
+    steps:
+      - checkout
+      - run: sudo apt-get update
+      - run: sudo apt-get install gcc-aarch64-linux-gnu qemu-system-arm ent xxd
+      - run: mkdir target-root && cd target-root && wget https://storage.googleapis.com/testmisc/arm64-target-root.tar.gz && sudo tar --exclude=dev/* -xzf arm64-target-root.tar.gz
+      # runtime tests for now - can add go tests when aarch64 support is added to ops
+      - run:
+          name: aarch64-build
+          environment:
+            NANOS_TARGET_ROOT: ~/project/target-root
+          command: |
+            make PLATFORM=virt VCPUS=2 runtime-tests-noaccel
+
+      - run: echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+      - run: curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+      - run: sudo apt-get update && sudo apt-get install google-cloud-cli
+
+      - run: echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+      - run: gcloud config set project ${GOOGLE_PROJECT_ID}
+      - run: gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+
+      - run:
+          name: copy build artifacts
+          command: |
+            shopt -s extglob
+            mkdir temp && cp output/platform/virt/bin/kernel.img temp/ && cp output/platform/virt/boot/bootaa64.efi temp/ && mkdir temp/klibs && cp output/platform/virt/bin/!(test|*.dbg|kernel.*) temp/klibs
+
+      - run: cd temp && tar cvzf nanos-nightly-linux-virt.tar.gz * && gsutil cp nanos-nightly-linux-virt.tar.gz gs://nanos/release/nightly
+      - run: gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/nanos-nightly-linux-virt.tar.gz
+      - run: rm -r temp
+      - run: echo $(date +"%m%d%Y") > nanos-nightly-linux-virt.timestamp
+      - run: gsutil cp nanos-nightly-linux-virt.timestamp gs://nanos/release/nightly
+      - run: gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/nanos-nightly-linux-virt.timestamp
+
+  build-riscv:
+    docker:
+      - image: cimg/go:1.20.0
+    steps:
+      - checkout
+      - run: sudo apt-get update
+      - run: sudo apt-get install gcc-riscv64-linux-gnu qemu-system-riscv64 ent xxd
+      # requires a custom built qemu for now
+      - run: mkdir qemu && cd qemu && wget https://storage.googleapis.com/testmisc/qemu-riscv64-6.2.tar.gz && tar -xzf qemu-riscv64-6.2.tar.gz
+      - run: mkdir target-root && cd target-root && wget https://storage.googleapis.com/testmisc/riscv64-target-root.tar.gz && sudo tar --exclude=dev/* -xzf riscv64-target-root.tar.gz
+      # runtime tests for now
+      - run:
+          name: riscv64-build
+          environment:
+            NANOS_TARGET_ROOT: ~/project/target-root
+            QEMU_PATH: ~/project/qemu/
+          command: |
+            make PLATFORM=riscv-virt VCPUS=2 runtime-tests-noaccel
+
+workflows:
+  version: 2
+  commit-workflow:
+    jobs:
+      - build-pc
+      - build-virt
+      - build-pc-debug
+      - build-riscv
+  nightly:
+    triggers:
+      - schedule:
+          cron: "0 2 * * *" # 7PM PST
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - nightly-build
+      - nightly-build-virt

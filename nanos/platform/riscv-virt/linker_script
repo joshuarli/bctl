@@ -1,0 +1,84 @@
+OUTPUT_FORMAT("elf64-littleriscv")
+
+ENTRY(_start)
+
+INCLUDE klib-syms.lds
+
+SECTIONS
+{
+        . = 0x80200000; /* KERNEL_PHYS */
+        START = .;
+
+        text_start = .;
+        .text :
+        {
+       	    *(.text)
+            *(.text.*)
+            . = ALIGN(4096);
+        }
+        text_end = .;
+
+        .rodata :
+        {
+            *(.rodata)
+            *(.rodata.*)
+            *(.dynamic)
+            _DYNSYM = .;
+            *(.dynsym)
+        }
+        .srodata ALIGN(4096):
+        {
+            *(.srodata)
+            *(.srodata.*)
+        }
+
+        . = ALIGN(4096);
+        READONLY_END = .;
+        .data :
+        {
+            ro_after_init_start = .;
+            *(.ro_after_init)
+            . = ALIGN(4096);
+            ro_after_init_end = .;
+            *(.data)
+            *(.data.*)
+        }
+        .sdata ALIGN(4096):
+        {
+            *(.sdata)
+            *(.sdata.*)
+        }
+
+        .bss ALIGN(4096):
+        {
+            PROVIDE(bss_start = .);
+            bss_ro_after_init_start = .;
+            *(.bss.ro_after_init)
+            . = ALIGN(4096);
+            bss_ro_after_init_end = .;
+            *(.bss)
+            *(.bss.*)
+            *(COMMON)
+        }
+        .sbss ALIGN(4096):
+        {
+            *(.sbss)
+            *(.sbss.*)
+        }
+        . = ALIGN(4096);
+        PROVIDE(bss_end = .);
+        /* All kernel variables accessible to userspace
+         * Offsets from vvar_page must match the corresponding offsets specified
+         * in src/aarch64/vdso.lds
+         *
+         * We could look at generating them automatically, but for now it's easy enough
+         * to do it this way
+         */
+        .vvar :
+        {
+            vvar_page = .;
+            __vdso_vdso_dat = vvar_page + 128;
+            . += 4096; /* reserve a page since the linker seems to discard this section */
+        }
+        END = .;
+}

@@ -1,0 +1,4 @@
+set architecture riscv:rv64
+file ./output/platform/riscv-virt/bin/kernel.elf -o 0xfffffffeffe00000
+target remote :1234
+

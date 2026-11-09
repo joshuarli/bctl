@@ -1,0 +1,17 @@
+(
+    children:(
+              #user program
+	      mkdir:(contents:(host:output/test/runtime/bin/mkdir))
+              tmp:(children:(mkdir_test:(children:())))
+	      )
+    # filesystem path to elf for kernel to run
+    program:/mkdir
+#    trace:t
+#    debugsyscalls:t
+#    fault:t
+    arguments:[mkdir /tmp/mkdir_test]
+    environment:(USER:bobby PWD:/)
+    cwd:/tmp/mkdir_test
+    uid:1000
+    gid:1000
+)

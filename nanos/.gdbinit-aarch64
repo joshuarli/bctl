@@ -1,0 +1,4 @@
+set architecture aarch64
+file ./output/platform/virt/bin/kernel.elf -o 0xffffffff3fc00000
+target remote :1234
+

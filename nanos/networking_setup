@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# find the first ethernet adapter name
+ETH0="$(ip link | awk -F: '$0 !~ "lo|vir|wl|^[^0-9]"{print $2;getline}')"
+##Setup
+# create bridge named br0.
+ip link add br0 type bridge
+# bring up the bridge.
+ip link set br0 up
+# add the ethernet adapter eth0 to bridge.
+ip link set $(ETH0) master br0
+# create a tap device named tap0.
+ip tuntap add tap0 mode tap user `whoami`
+# bring up the tap.
+ip link set tap0 up
+# add tap0 to bridge.
+ip link set tap0 master br0
+# assign ip to bridge.
+dhclient -v br0
+
+##Cleanup
+# remove eth0 from br0.
+ip link set $(ETH0) nomaster
+# remove tap0 from br0.
+ip link set tap0 nomaster
+# take down tap0.
+ip link set tap0 down
+# delete the bridge.
+ip link delete br0 type bridge
+# delete tap0
+ip link delete tap0.
+# you might have to renew your IP
+dhclient -v $(ETH0)
