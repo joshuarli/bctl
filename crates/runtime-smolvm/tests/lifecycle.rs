@@ -17,6 +17,7 @@ fn spec(session: &SessionName, generation: u64) -> LaunchSpec {
     LaunchSpec {
         machine: MachineName { session: session.clone(), generation: Generation(generation) },
         image: workspace().join(".work/images/ref-alpine-chromium.tar"),
+        profile_dir: None,
         endpoints: Endpoints { cdp_port: free_port(), vnc_port: free_port() },
         display: (1280, 800),
         memory_mib: 4096,

@@ -78,6 +78,8 @@ pub struct Ready {
 pub struct LaunchSpec {
     pub machine: MachineName,
     pub image: PathBuf,
+    /// Host directory mounted at `/profile`, so the browser profile outlives the VM.
+    pub profile_dir: Option<PathBuf>,
     pub endpoints: Endpoints,
     pub display: (u16, u16),
     pub memory_mib: u32,
@@ -195,11 +197,12 @@ impl SmolVm {
         let port = format!("{}:{GUEST_CDP_PORT}", spec.endpoints.cdp_port);
         let memory = spec.memory_mib.to_string();
         let cpus = spec.cpus.to_string();
-        self.run(
-            "machine create",
-            &["machine", "create", "--name", &name, "--gpu", "--mem", &memory, "--cpus", &cpus, "-p", &port, "--image", &image],
-            &[],
-        )?;
+        let mut create = vec!["machine", "create", "--name", &name, "--gpu", "--mem", &memory, "--cpus", &cpus, "-p", &port, "--image", &image];
+        let volume = spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy()));
+        if let Some(volume) = &volume {
+            create.extend(["-v", volume]);
+        }
+        self.run("machine create", &create, &[])?;
         let env = [
             ("SMOLVM_DISPLAY", format!("{}x{}", spec.display.0, spec.display.1)),
             ("SMOLVM_VNC", format!("127.0.0.1:{}", spec.endpoints.vnc_port)),

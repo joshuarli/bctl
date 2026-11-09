@@ -262,9 +262,25 @@ impl Daemon {
         let endpoints = Endpoints { cdp_port: free_port().map_err(internal)?, vnc_port: free_port().map_err(internal)? };
         let machine = self.store().begin_start(name, endpoints).map_err(store_failure)?;
         self.observe(name, |o| *o = Observed::default());
+        let profile_dir = match self.ensure_profile_dir(&profile) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+                return Err(internal(error));
+            }
+        };
+        let image_path = match self.paths.image(&image).canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                let message = format!("cannot resolve image {image}: {error}");
+                let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&message));
+                return Err(Response::failure(ErrorCode::ImageMissing, message, None));
+            }
+        };
         let spec = LaunchSpec {
             machine: machine.clone(),
-            image: self.paths.image(&image),
+            image: image_path,
+            profile_dir: Some(profile_dir),
             endpoints,
             display: DISPLAY,
             memory_mib: MEMORY_MIB,
@@ -285,6 +301,13 @@ impl Daemon {
                 Some(format!("the VM was removed; retry with `bctl up {name}`")),
             ))
         }
+    }
+
+    fn ensure_profile_dir(&self, profile: &ProfileName) -> Result<std::path::PathBuf, String> {
+        let path = self.paths.profile_dir(profile.as_str());
+        fs::create_dir_all(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        Ok(path)
     }
 
     fn image_required(&self) -> Response {

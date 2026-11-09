@@ -40,6 +40,10 @@ impl Paths {
         self.home.join("images")
     }
 
+    pub fn profile_dir(&self, profile: &str) -> PathBuf {
+        self.home.join("profiles").join(profile)
+    }
+
     pub fn image(&self, name: &str) -> PathBuf {
         self.images().join(format!("{name}.tar"))
     }
