@@ -22,6 +22,8 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let mut cold_stages: BTreeMap<&str, Samples> = STAGES.iter().map(|s| (*s, Samples::new())).collect();
     let mut cold_first = Samples::new();
     let mut warm_first = Samples::new();
+    let mut cold_rest = Samples::new();
+    let mut warm_rest = Samples::new();
     let mut warm_total = Samples::new();
     let mut warm_stages: BTreeMap<&str, Samples> = STAGES.iter().map(|s| (*s, Samples::new())).collect();
     let mut down = Samples::new();
@@ -38,11 +40,12 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
 
         let name = session_name("life");
         let profile = format!("h1-life-{round}");
-        for (label, total, stages, first) in [("cold", &mut cold_total, &mut cold_stages, &mut cold_first), ("warm", &mut warm_total, &mut warm_stages, &mut warm_first)] {
+        for (label, total, stages, first, rest) in [("cold", &mut cold_total, &mut cold_stages, &mut cold_first, &mut cold_rest), ("warm", &mut warm_total, &mut warm_stages, &mut warm_first, &mut warm_rest)] {
             let (timing, _, verdict) = ctx.gate.run(|| home.up(&name, &profile, IMAGE, &[]))?;
             total.record(ms(timing.total), verdict);
             if let Some((_, at)) = timing.stages.first() {
                 first.record(ms(*at), verdict);
+                rest.record(ms(timing.total.saturating_sub(*at)), verdict);
             }
             for (stage, at) in &timing.stages {
                 if let Some(samples) = stages.get_mut(stage.as_str()) {
@@ -66,12 +69,14 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     outcome.measures.push(daemon.finish("lifecycle.daemon_start", "ms", Statistic::Median, "first bctl command on an empty home: spawn the daemon until it answers"));
     outcome.measures.push(cold_total.finish("lifecycle.cold_up.total", "ms", Statistic::Median, conditions));
     outcome.measures.push(cold_first.finish("lifecycle.cold_up.first_probe", "ms", Statistic::Median, "time after the up request at which status first named any stage, i.e. create and start of the machine until the first readiness probe fails"));
+    outcome.measures.push(cold_rest.finish("lifecycle.cold_up.after_first_probe", "ms", Statistic::Median, "total minus first_probe: every readiness stage after the first failed probe, through the display having drawn"));
     for stage in STAGES {
         let samples = cold_stages.remove(stage).expect("stage exists");
         outcome.measures.push(samples.finish(&format!("lifecycle.cold_up.first_seen.{stage}"), "ms", Statistic::Median, "time after the up request at which status first named this stage as the one not yet reached; a stage that passes between 20 ms polls is not seen"));
     }
     outcome.measures.push(warm_total.finish("lifecycle.warm_up.total", "ms", Statistic::Median, "same session and profile as the cold up, after down; image and profile warm"));
     outcome.measures.push(warm_first.finish("lifecycle.warm_up.first_probe", "ms", Statistic::Median, "as cold_up.first_probe, on the warm up"));
+    outcome.measures.push(warm_rest.finish("lifecycle.warm_up.after_first_probe", "ms", Statistic::Median, "as cold_up.after_first_probe, on the warm up"));
     for stage in STAGES {
         let samples = warm_stages.remove(stage).expect("stage exists");
         outcome.measures.push(samples.finish(&format!("lifecycle.warm_up.first_seen.{stage}"), "ms", Statistic::Median, "as cold_up, on the warm up"));

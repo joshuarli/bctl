@@ -13,6 +13,7 @@ use crate::session::{Home, session_name};
 use crate::stats::Statistic;
 use crate::{Context, Outcome};
 
+const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 const SPEEDOMETER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const LOADS_PER_BATCH: usize = 5;
 pub const SPEEDOMETER_DIR: &str = ".work/dl/speedometer/src";
@@ -108,6 +109,7 @@ fn container_target(server_port: u16, notes: &mut Vec<String>) -> Fallible<Targe
 #[derive(Deserialize)]
 struct SpeedometerState {
     done: Option<bool>,
+    finished: Option<u32>,
     scores: Option<Vec<f64>>,
 }
 
@@ -115,7 +117,8 @@ fn speedometer(target: &mut Target, iterations: usize) -> Fallible<Vec<f64>> {
     let url = format!("{}/speedometer/index.html?startAutomatically&iterationCount={iterations}", target.base_url);
     target.page.navigate(&url)?;
     let started = Instant::now();
-    let probe = "typeof benchmarkClient === 'undefined' ? '{}' : JSON.stringify({done: benchmarkClient._hasResults, scores: benchmarkClient._metrics.Score ? benchmarkClient._metrics.Score.values : null})";
+    let mut progress = (0u32, Instant::now());
+    let probe = "typeof benchmarkClient === 'undefined' ? '{}' : JSON.stringify({done: benchmarkClient._hasResults, finished: benchmarkClient._finishedTestCount, scores: benchmarkClient._metrics.Score ? benchmarkClient._metrics.Score.values : null})";
     loop {
         thread::sleep(Duration::from_secs(2));
         let state: SpeedometerState = json::from_str(&target.page.evaluate(probe)?).map_err(|_| "speedometer state is not JSON")?;
@@ -124,6 +127,13 @@ fn speedometer(target: &mut Target, iterations: usize) -> Fallible<Vec<f64>> {
                 Some(scores) if scores.len() == iterations => Ok(scores),
                 other => Err(format!("speedometer finished without {iterations} scores: {other:?}")),
             };
+        }
+        let finished = state.finished.unwrap_or(0);
+        if finished != progress.0 || started.elapsed() < Duration::from_secs(30) {
+            progress = (finished, Instant::now());
+        } else if progress.1.elapsed() > STALL_TIMEOUT {
+            let frame = target.page.evaluate("(document.querySelector('iframe') || {}).src || ''").unwrap_or_default();
+            return Err(format!("speedometer stalled for {} s at {finished} tests in {frame}", STALL_TIMEOUT.as_secs()));
         }
         if started.elapsed() > SPEEDOMETER_TIMEOUT {
             return Err("speedometer did not finish in time".into());

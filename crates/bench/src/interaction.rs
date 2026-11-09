@@ -3,6 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use bctl_rfb::{Client, Rgb};
+use miniserde::{Deserialize, json};
 
 use crate::cdp::Endpoint;
 use crate::host::{Fallible, Verdict};
@@ -79,6 +80,12 @@ fn cdp_block(endpoint: &Endpoint) -> Fallible<(Vec<f64>, Vec<f64>)> {
     Ok((browser_calls, page_calls))
 }
 
+#[derive(Deserialize)]
+struct ControlState {
+    authority: String,
+    mine: bool,
+}
+
 struct Dashboard {
     port: u16,
     cookie: String,
@@ -105,6 +112,10 @@ fn take_control(dashboard: &Dashboard, session: &str) -> Fallible<()> {
     let control = net::request(&mut stream, "POST", &host, &format!("/api/sessions/{session}/control"), &[("Cookie", &dashboard.cookie), ("Origin", &origin)], b"")?;
     if control.status != 200 {
         return Err(format!("taking control answered {}: {}", control.status, control.text()));
+    }
+    let state: ControlState = json::from_str(&control.text()).map_err(|_| format!("control answered {:?}", control.text()))?;
+    if state.authority != "human" || !state.mine {
+        return Err(format!("taking control left authority {} (mine: {})", state.authority, state.mine));
     }
     Ok(())
 }
@@ -219,7 +230,10 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         }
         for path in paths(round) {
             let mut viewer = connect_viewer(path, vnc_port, &dashboard, &session)?;
-            match ctx.gate.run(|| input_block(&mut viewer, &probe, click)) {
+            let block = ctx.gate.run(|| input_block(&mut viewer, &probe, click));
+            drop(viewer);
+            thread::sleep(Duration::from_secs(1));
+            match block {
                 Ok(((pointer, key, failed), _, verdict)) => {
                     eprintln!("interaction round {round}: input {} {} pointer / {} key ({verdict:?})", path.name(), pointer.len(), key.len());
                     failures += failed;

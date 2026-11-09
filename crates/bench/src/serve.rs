@@ -22,7 +22,9 @@ pub fn start(speedometer: Option<PathBuf>) -> Fallible<Server> {
         for stream in listener.incoming().flatten() {
             let speedometer = speedometer.clone();
             thread::spawn(move || {
-                let _ = serve(stream, speedometer.as_deref());
+                if let Err(e) = serve(stream, speedometer.as_deref()) {
+                    eprintln!("bctl-bench serve: connection ended with {:?}: {e}", e.kind());
+                }
             });
         }
     });
