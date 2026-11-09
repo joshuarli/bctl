@@ -114,6 +114,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bctl-bench"
+version = "0.1.0"
+dependencies = [
+ "bctl-rfb",
+ "miniserde",
+]
+
+[[package]]
 name = "bctl-cdp"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,18 @@
+[package]
+name = "bctl-bench"
+description = "Named benchmark suites that drive a real appliance VM and write dated JSON results; not shipped"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bctl-bench"
+path = "src/main.rs"
+
+[dependencies]
+bctl-rfb = { path = "../rfb" }
+miniserde = "0.1"
+
+[lints]
+workspace = true
