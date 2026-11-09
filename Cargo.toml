@@ -13,3 +13,7 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+
+[patch.crates-io]
+h12tiny = { path = "/Users/josh/d/h12tiny/.work/wt/bctl-n1" }
+laputa-fastwebsockets-futures-lite = { path = "/Users/josh/d/h12tiny/.work/wt/bctl-n1/crates/laputa-fastwebsockets-futures-lite" }

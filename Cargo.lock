@@ -95,6 +95,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bctl-cdp"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "h12tiny",
+ "http",
+ "laputa-async-channel",
+ "laputa-async-io",
+ "laputa-async-net",
+ "laputa-futures-lite",
+ "miniserde",
+]
+
+[[package]]
 name = "bctl-core"
 version = "0.1.0"
 dependencies = [
@@ -373,8 +387,6 @@ dependencies = [
 [[package]]
 name = "h12tiny"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a35d7d87ab3a544b570d02d6938949a942bd3a6b8cfd254f43b33589640c1d7b"
 dependencies = [
  "h12tiny-client",
  "h12tiny-core",
@@ -386,8 +398,6 @@ dependencies = [
 [[package]]
 name = "h12tiny-client"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ec4b537c548efcf5b5cfbcbbd709a4d4a0c299295bcd9f0d1c0ce3c3a6020d"
 dependencies = [
  "futures-channel",
  "futures-io",
@@ -404,8 +414,6 @@ dependencies = [
 [[package]]
 name = "h12tiny-client-normalize"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e53167e4a59cd06d089a4a5a307becfe25c257e5e831851b307732c712ca05a"
 dependencies = [
  "http",
 ]
@@ -413,8 +421,6 @@ dependencies = [
 [[package]]
 name = "h12tiny-core"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52154307800ef6ac159dc605e92a18851c219ff88c2323e02a747787f8f66fa6"
 dependencies = [
  "futures-io",
  "laputa-async-io",
@@ -424,8 +430,6 @@ dependencies = [
 [[package]]
 name = "h12tiny-server"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "299c1a2887d342c7a9055c2cd7a1c8bddc649ba45be317ccc0103ecc57d986d4"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -442,8 +446,6 @@ dependencies = [
 [[package]]
 name = "h12tiny-util"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f0d0ae8495a92a90df52b77bb05fa19679e49b8c6355d6c5846b2adfc2d525"
 dependencies = [
  "bytes",
  "futures-io",
@@ -458,12 +460,11 @@ dependencies = [
 [[package]]
 name = "h12tiny-web"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fea9d61a06e9983bb24d910652b545c77fab70cc71648ba9e52bbf75b29e7942"
 dependencies = [
  "base64",
  "bytes",
  "futures-util",
+ "getrandom",
  "h12tiny-core",
  "h12tiny-server",
  "h12tiny-util",
@@ -779,8 +780,6 @@ checksum = "1c1293aa4081169faa64c29c796e2facc823e1babf6ca28702fdacaee4e2c02a"
 [[package]]
 name = "laputa-fastwebsockets-futures-lite"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2896a0c19da8078dfb86b3f040f5a490ae5f5cf36220c2076b03abd904f741ee"
 dependencies = [
  "bytes",
  "getrandom",
@@ -805,8 +804,6 @@ dependencies = [
 [[package]]
 name = "laputa-hyper-futures-lite"
 version = "1.12.0-beta.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90f0c32d9d90f65367d225d7dc3ec5d2ccbdd33c00043402a5aa7718af771fb5"
 dependencies = [
  "bytes",
  "futures-channel",
