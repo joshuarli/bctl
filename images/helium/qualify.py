@@ -11,6 +11,12 @@ SYSTEM_PATH = (PurePosixPath("/lib"), PurePosixPath("/usr/local/lib"), PurePosix
 BROWSER_ROOT = PurePosixPath("/opt/browser")
 BROWSER_LIBRARY_PATH = (BROWSER_ROOT / "lib",)
 XKBCOMMON = PurePosixPath("/usr/local/lib/libxkbcommon.so.0")
+BCTL_BUILT = (
+    PurePosixPath("/usr/local/bin/tinyland"),
+    PurePosixPath("/usr/local/bin/seatd"),
+    PurePosixPath("/usr/local/bin/bctl-guest"),
+    XKBCOMMON,
+)
 MAX_SYMLINK_HOPS = 16
 
 
@@ -171,6 +177,10 @@ def qualify(root: Path) -> dict:
                 unresolved.setdefault(f"{elf.path} (loaded by {path})" if elf.path != path else str(path), []).append(name)
     for where, names in unresolved.items():
         failures.append(f"{where}: imports defined nowhere in its closure: {', '.join(names)}")
+    for path in BCTL_BUILT:
+        comment = readelf(rootfs.host(path), "-p", ".comment")
+        if "GCC:" in comment:
+            failures.append(f"{path}: carries GCC-built objects: {' '.join(line.strip() for line in comment.splitlines() if 'GCC:' in line)}")
     xkb_exports = sorted(name for name in rootfs.load(XKBCOMMON).defined if name.startswith("xkb_"))
     xkb_imports = {
         str(path): sorted(name for name in rootfs.elfs[path].undefined if name.startswith("xkb_"))

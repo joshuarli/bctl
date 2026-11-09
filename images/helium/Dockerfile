@@ -17,7 +17,19 @@ COPY --from=guest appliance/ ./appliance/
 COPY --from=guest seatd-protocol/ ./seatd-protocol/
 COPY --from=guest seatd/ ./seatd/
 COPY --from=guest tinyland/ ./tinyland/
-RUN cargo build --locked --release --target aarch64-unknown-linux-musl -p tinyland -p seatd -p bctl-guest
+ARG LLVM_URL=https://github.com/laputa-systems/llvm-prebuilt-musl/releases/download/llvm-musl-23.1.5-3afbb74/clang%2Bllvm-23.1.5-aarch64-linux-musl.tar.xz
+ARG LLVM_SHA256=ca1c593163ac37d6656a5fddebec4c2714050c7345d9326e5afa8ea46949cede
+RUN curl --proto '=https' --tlsv1.2 -sSfL "$LLVM_URL" -o /tmp/llvm.tar.xz \
+ && echo "$LLVM_SHA256  /tmp/llvm.tar.xz" | sha256sum -c - \
+ && mkdir /opt/llvm \
+ && tar -xJf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1 \
+ && rm /tmp/llvm.tar.xz
+ENV CC_aarch64_unknown_linux_musl=/opt/llvm/bin/clang \
+    CXX_aarch64_unknown_linux_musl=/opt/llvm/bin/clang++ \
+    CFLAGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl \
+    CXXFLAGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl \
+    RUSTFLAGS="-Clinker=/opt/llvm/bin/clang -Clink-self-contained=no -Clink-arg=--target=aarch64-linux-musl -Clink-arg=-fuse-ld=mold"
+RUN cargo build -Zbuild-std=std,panic_abort --locked --release --target aarch64-unknown-linux-musl -p tinyland -p seatd -p bctl-guest
 
 FROM guest-build AS xkbcommon-build
 RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\([0-9a-f]*\)#.*|\1|p' Cargo.lock | sort -u) \
@@ -26,8 +38,9 @@ RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\(
  && git -C /kbvm fetch -q --depth 1 https://github.com/laputa-systems/kbvm "$rev" \
  && git -C /kbvm checkout -q FETCH_HEAD \
  && cd /kbvm \
- && RUSTFLAGS='-C target-feature=-crt-static' \
-    cargo build --locked --release --target aarch64-unknown-linux-musl -p kbvm-xkbcommon \
+ && RUSTFLAGS="$RUSTFLAGS -Ctarget-feature=-crt-static" \
+    cargo build -Zbuild-std=std,panic_abort -Zbuild-std-features=panic-unwind,llvm-libunwind \
+        --locked --release --target aarch64-unknown-linux-musl -p kbvm-xkbcommon \
  && readelf -d target/aarch64-unknown-linux-musl/release/libxkbcommon.so > /tmp/dynamic \
  && grep -q 'SONAME.*\[libxkbcommon.so.0\]' /tmp/dynamic \
  && [ "$(grep NEEDED /tmp/dynamic)" = "$(printf ' 0x0000000000000001 (NEEDED)             Shared library: [libc.musl-aarch64.so.1]')" ] \

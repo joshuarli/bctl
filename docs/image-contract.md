@@ -142,6 +142,10 @@ the receipt:
 
 musl's loader comes from the Alpine 3.24.1 image chromium-build builds the
 arm64 archive on (musl 1.2.6), not from Alpine 3.22.
+`tinyland`, `seatd`, `bctl-guest`, and kbvm's `libxkbcommon.so.0` are linked
+by llvm-prebuilt-musl's LLVM 23.1.5 (`llvm-musl-23.1.5-3afbb74`, checked by
+SHA-256) with `std` rebuilt for the target, so none of them contains an
+object GCC compiled (`docs/userland.md`, Compiler-support provenance).
 
 `images/helium/qualify.py` then fails the build unless every ELF file in the
 rootfs is AArch64 ELF64, names musl's loader as its interpreter if it has

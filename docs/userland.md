@@ -348,25 +348,31 @@ shows `helium` mapping `/usr/local/lib/libxkbcommon.so.0`.
 
 ### Compiler-support provenance
 
-`check-purity.sh` (llvm-prebuilt-musl) on the image's 114 ELF files reports
-82 impure, all for GCC `.comment` strings; none has a glibc dependency, a
-foreign interpreter, or a GNU runtime symbol it detects:
+The files bctl builds (`tinyland`, `seatd`, `bctl-guest`, and kbvm's
+`libxkbcommon.so.0`) are linked by the pure-musl LLVM 23.1.5 from
+llvm-prebuilt-musl (`llvm-musl-23.1.5-3afbb74`, taken by SHA-256), not by
+Alpine's GCC driver, and `check-purity.sh` reports 0 impure among them. Their
+`.comment` sections name only mold, rustc, and clang 23.1.5. The image build
+enforces it: `qualify.py` fails if any of the four carries a `GCC:` comment.
 
-- 78 libraries in `/opt/browser/lib`, built by Alpine GCC 15.2.0 (the
-  Alpine 3.24 packages chromium-build copies in). The gaps above own them.
-- `tinyland`, `seatd`, `bctl-guest`: `GCC: (GNU) 9.4.0`, from the musl CRT
-  objects (`crt1.o`, `crti.o`, `crtn.o`) in Rust's self-contained musl
-  sysroot, which Rust's CI compiles with GCC 9.4. Their `crtbegin` is not
-  GCC's (no `frame_dummy` or `__do_global_dtors_aux`), and their unwinder
-  is LLVM libunwind. No libgcc code was found in them.
-- `libxkbcommon.so.0` (kbvm): `GCC: (Alpine 14.2.0)`, because the cdylib
-  links through Alpine 3.22's GCC driver, which adds GCC's
-  `crtbeginS.o`/`crtendS.o` (`frame_dummy`, `__do_global_dtors_aux`, and
-  `deregister_tm_clones` are present). That is GCC runtime code in a
-  Rust-owned file. `-C link-self-contained=yes` does not fix it: that
-  statically links a second musl into the library (it defines `malloc`).
-  The fix belongs in kbvm-xkbcommon's `build.rs`: link the self-contained
-  `crtbeginS.o`/`crtendS.o` with `-nostartfiles`.
+- `std` is rebuilt for the target (`-Zbuild-std=std,panic_abort`) with
+  `-Clink-self-contained=no`. Rust's prebuilt musl target ships musl's
+  `libc.a` (bundled into its `std` for static links), CRT objects, and
+  `libunwind.a`, all compiled by GCC 9.4 in Rust's CI; rebuilt, `std` takes `libc.a`, `crt1.o`, `crti.o`, `crtn.o`,
+  and `libunwind.a` from the LLVM package, and compiler-rt's `crtbegin`.
+- The static binaries hold that package's musl 1.2.6 `libc.a`, built by its
+  clang.
+- `libxkbcommon.so.0` is dynamic against the image's musl (it imports
+  `malloc`; there is no second musl inside it). Its `std` is built with
+  `llvm-libunwind`, so the unwinder is compiled by the LLVM clang from
+  Rust's vendored libunwind source; without it, the dynamic musl `std` asks
+  for `libgcc_s`, which kbvm's `build.rs` satisfies with Rust's GCC-built
+  `libunwind.a`. Its `crtbeginS` is compiler-rt's (`__do_init`, no
+  `frame_dummy`).
+
+`check-purity.sh` on all 114 ELF files of the image still reports the 78
+libraries in `/opt/browser/lib` that Alpine GCC 15.2.0 built (the Alpine 3.24
+packages chromium-build copies in); the gaps above own them.
 
 Helium itself carries only `clang 23.1.5`, `LLD 23.1.5`, and `rustc`
 `.comment` strings.
