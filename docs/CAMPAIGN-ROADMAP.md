@@ -50,8 +50,15 @@ pages, bounded logs, download-only artifacts, and takeover and resume of a
 login-walled crawl through the live view. D2 open: authority shows the lease
 only (N6); the viewer sends `:` as `;` (noVNC or SmolVM key mapping,
 unexplained); the takeover test has fixed waits.
-Next: N3 (running), H1 (running); D2's acceptance on `ref-alpine-tinyland`.
-Resume: `implement N3 from docs/CAMPAIGN-ROADMAP.md`.
+N3 (`7a763bf`, `cargo test -p bctl --test snapshots -- --ignored`): bulk
+accessibility snapshots, refs scoped to generation, target, frame, and
+document, `STALE_REF`, both iframe kinds; a warm form snapshot costs 3 CDP
+calls and 317 bytes. N3 open: node liveness runs in the page's main world
+(N4 should use an isolated world); a node moved between same-process frames
+is not detected; one huge DOM read can exceed the 32 MiB message cap.
+Next: N4 (locators and actions), H1 (running); D2's acceptance on
+`ref-alpine-tinyland`.
+Resume: `implement N4 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
