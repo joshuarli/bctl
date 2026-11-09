@@ -185,7 +185,7 @@ suite_helium() {
 
 EXTERNAL=$WORK/build/external
 EXTERNAL_BINS='gvisor_dup gvisor_fcntl gvisor_lseek gvisor_fork gvisor_exec gvisor_wait gvisor_socket_unix_cmsg gvisor_socket_unix_peercred'
-EXTERNAL_PASSING_ON_NANOS='gvisor_fcntl_DupAfterO_ASYNC gvisor_lseek_EtcPasswdDup gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_BasicFDPass gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_FDPassRecvEFAULT'
+EXTERNAL_PASSING_ON_NANOS='gvisor_fcntl_FcntlTest_DupAfterO_ASYNC gvisor_lseek_LseekTest_EtcPasswdDup gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_BasicFDPass gvisor_socket_unix_cmsg_UnixSocketPairCmsgTest_FDPassRecvEFAULT'
 
 suite_external() {
 	make -s -C "$ROOT/tests/external"
