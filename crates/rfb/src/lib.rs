@@ -15,6 +15,7 @@ const BYTES_PER_PIXEL: usize = 4;
 pub const KEY_RETURN: u32 = 0xff0d;
 pub const KEY_DOWN: u32 = 0xff54;
 pub const KEY_SHIFT: u32 = 0xffe1;
+pub const KEY_ESCAPE: u32 = 0xff1b;
 
 /// Pointer button mask bits as RFB defines them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub struct Buttons(u8);
 impl Buttons {
     pub const NONE: Buttons = Buttons(0);
     pub const LEFT: Buttons = Buttons(1);
+    pub const RIGHT: Buttons = Buttons(1 << 2);
     pub const WHEEL_UP: Buttons = Buttons(1 << 3);
     pub const WHEEL_DOWN: Buttons = Buttons(1 << 4);
 }

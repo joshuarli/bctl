@@ -21,6 +21,7 @@ type Proof<T> = Result<T, String>;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runs = match args.as_slice() {
+        [cmd] if cmd == "census" => return census_main(),
         [cmd] if cmd == "m1" => 1,
         [cmd, flag, n] if cmd == "m1" && flag == "--runs" => match n.parse::<usize>() {
             Ok(n) if n > 0 => n,
@@ -53,7 +54,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: bctl-proof m1 [--runs N]");
+    eprintln!("usage: bctl-proof m1 [--runs N] | bctl-proof census");
     ExitCode::from(2)
 }
 
@@ -64,12 +65,15 @@ struct Machine {
 }
 
 impl Machine {
-    fn start(smolvm: &Path, image: &Path, name: &str, vnc_port: u16, cdp_port: u16) -> Proof<Machine> {
+    fn start(smolvm: &Path, image: &Path, name: &str, vnc_port: u16, forwards: &[(u16, u16)]) -> Proof<Machine> {
         let mut machine = Machine { smolvm: smolvm.to_path_buf(), name: name.to_string(), pid: None };
-        machine.smolvm(&[
-            "machine", "create", "--name", name, "--gpu", "--mem", "4096",
-            "-p", &format!("{cdp_port}:9222"), "--image", &image.to_string_lossy(),
-        ])?;
+        let image = image.to_string_lossy();
+        let ports: Vec<String> = forwards.iter().map(|(host, guest)| format!("{host}:{guest}")).collect();
+        let mut create = vec!["machine", "create", "--name", name, "--gpu", "--mem", "4096", "--image", &image];
+        for port in &ports {
+            create.extend(["-p", port]);
+        }
+        machine.smolvm(&create)?;
         let started = Command::new(&machine.smolvm)
             .args(["machine", "start", "--name", name])
             .env("SMOLVM_DISPLAY", format!("{}x{}", DISPLAY.0, DISPLAY.1))
@@ -173,7 +177,7 @@ fn m1(smolvm: &Path, image: &Path, run: usize) -> Proof<()> {
     let vnc_port = free_port()?;
     let cdp_port = free_port()?;
     let name = format!("bctl-proof-{}-{run}", std::process::id());
-    let machine = Machine::start(smolvm, image, &name, vnc_port, cdp_port)?;
+    let machine = Machine::start(smolvm, image, &name, vnc_port, &[(cdp_port, 9222)])?;
     wait_until("CDP through the host forward", READY_TIMEOUT, || cdp_version(cdp_port))?;
     let check = machine.guest_check()?;
     for stage in ["seat", "compositor", "browser", "sandbox"] {
@@ -336,4 +340,105 @@ async fn wait_for_js(tab: &CrawlerTab, condition: &str) -> Proof<()> {
         }
         async_io::Timer::after(Duration::from_millis(50)).await;
     }
+}
+
+const CENSUS_GUEST_PORT: u16 = 9301;
+
+fn census_main() -> ExitCode {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let smolvm = root.join(".work/runtime/smolvm/smolvm");
+    let image = root.join(".work/images/ref-alpine-chromium.tar");
+    match census(&smolvm, &image, &root.join(".work/tmp/census.log")) {
+        Ok(summary) => {
+            print!("{summary}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("census: FAILED: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Records every Wayland global Chromium binds and every request it sends while driving the B1 interactions
+/// plus a dialog and a context menu, using a second, WAYLAND_DEBUG-logging browser in the same guest.
+fn census(smolvm: &Path, image: &Path, log_path: &Path) -> Proof<String> {
+    let vnc_port = free_port()?;
+    let cdp_port = free_port()?;
+    let census_port = free_port()?;
+    let name = format!("bctl-census-{}", std::process::id());
+    let machine = Machine::start(smolvm, image, &name, vnc_port, &[(cdp_port, 9222), (census_port, CENSUS_GUEST_PORT)])?;
+    wait_until("the appliance browser", READY_TIMEOUT, || cdp_version(cdp_port))?;
+    machine.smolvm(&[
+        "machine", "exec", "--name", &name, "--", "sh", "-c",
+        "nohup su-exec browser env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 WAYLAND_DEBUG=1 \
+         chromium --ozone-platform=wayland --remote-debugging-port=9300 --user-data-dir=/tmp/census \
+         --no-first-run --no-default-browser-check about:blank > /run/bctl/census.log 2>&1 & \
+         nohup socat TCP-LISTEN:9301,fork,reuseaddr TCP:127.0.0.1:9300 > /dev/null 2>&1 &",
+    ])?;
+    wait_until("the census browser", READY_TIMEOUT, || cdp_version(census_port))?;
+    async_io::block_on(drive(census_port, vnc_port))?;
+    async_io::block_on(dialog_and_menu(census_port, vnc_port))?;
+    let log = machine.smolvm(&["machine", "exec", "--name", &name, "--", "cat", "/run/bctl/census.log"])?;
+    machine.stop()?;
+    std::fs::write(log_path, &log).map_err(|e| format!("cannot write {}: {e}", log_path.display()))?;
+    Ok(summarize(&log, log_path))
+}
+
+async fn dialog_and_menu(cdp_port: u16, vnc_port: u16) -> Proof<()> {
+    let mut options = ChromiumSessionOptions::new(PathBuf::new(), PathBuf::new());
+    options.control_url = Some(format!("http://127.0.0.1:{cdp_port}"));
+    options.headless = false;
+    options.stealth = false;
+    options.identity_mode = shadowdriver::BrowserIdentityMode::BrowserNative;
+    let session = CrawlerSession::ensure_chromium(options).await.map_err(|e| format!("attach failed: {e}"))?;
+    let tab = session
+        .new_tab(TabOptions { preload_script: None, apply_stealth: false, viewport_width: 1200, viewport_height: 600 })
+        .await
+        .map_err(|e| format!("new tab failed: {e}"))?;
+    tab.activate().await.map_err(|e| format!("bring to front failed: {e}"))?;
+    tab.navigate("data:text/html,<body style='background:%23ff00ff'><p title='a tooltip'>menu</p></body>", "load", Duration::from_secs(30))
+        .await
+        .map_err(|e| format!("navigation failed: {e}"))?;
+    let mut vnc = Client::connect(("127.0.0.1", vnc_port), Duration::from_secs(10)).map_err(io)?;
+    let (x, y) = wait_until("the magenta page", Duration::from_secs(20), || vnc.refresh().ok().and_then(|f| f.find(MARKER)))?;
+    let (x, y) = (x + 40, y + 40);
+    vnc.pointer(x, y, Buttons::NONE).map_err(io)?;
+    vnc.pointer(x, y, Buttons::RIGHT).map_err(io)?;
+    vnc.pointer(x, y, Buttons::NONE).map_err(io)?;
+    thread::sleep(Duration::from_millis(800));
+    vnc.tap(bctl_rfb::KEY_ESCAPE).map_err(io)?;
+    tab.evaluate("setTimeout(() => alert('bctl'), 0); 'scheduled'").await.map_err(|e| format!("alert failed: {e}"))?;
+    thread::sleep(Duration::from_millis(800));
+    vnc.tap(KEY_RETURN).map_err(io)?;
+    thread::sleep(Duration::from_millis(400));
+    session.close(false).await;
+    Ok(())
+}
+
+fn summarize(log: &str, log_path: &Path) -> String {
+    let mut globals: BTreeMap<String, String> = BTreeMap::new();
+    let mut requests: BTreeMap<String, usize> = BTreeMap::new();
+    for line in log.lines().filter(|l| l.contains(" -> ")) {
+        let Some(call) = line.split(" -> ").nth(1) else { continue };
+        let Some((target, rest)) = call.split_once('(') else { continue };
+        let Some((object, request)) = target.split_once(['#', '@']) else { continue };
+        let request = request.split_once('.').map(|(_, r)| r).unwrap_or(request);
+        if object == "wl_registry" && request == "bind" {
+            let mut args = rest.split(", ");
+            if let (Some(_), Some(name), Some(version)) = (args.next(), args.next(), args.next()) {
+                globals.insert(name.trim_matches('"').to_string(), version.to_string());
+            }
+        }
+        *requests.entry(format!("{object}.{request}")).or_default() += 1;
+    }
+    let mut out = format!("census log: {}\n\nglobals bound (interface version):\n", log_path.display());
+    for (name, version) in &globals {
+        out.push_str(&format!("  {name} {version}\n"));
+    }
+    out.push_str("\nrequests sent (count):\n");
+    for (request, count) in &requests {
+        out.push_str(&format!("  {request} {count}\n"));
+    }
+    out
 }
