@@ -31,13 +31,15 @@ case_verdict() {
 	[ "$status" = PASS ] || printf '          log: %s\n' "$dir"
 }
 
-userns_native() {
-	line=$(unshare -Ur "$ROOT/dev/run.sh" --native --timeout 120 --label userns-native "$FIXTURES/userns" || :)
+fixture_native() {
+	name=$1
+	shift
+	line=$("$@" "$ROOT/dev/run.sh" --native --timeout 120 --label "$name-native" "$FIXTURES/$name" || :)
 	dir=${line##* dir=}
 	checks=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json" 2>/dev/null || echo 0)
 	case $line in
-	"RUN verdict=PASS "*) printf 'PASS      %-18s native  %s checks\n' userns "$checks" ;;
-	*) failures=$((failures + 1)); printf 'FAIL      %-18s native  %s\n          log: %s\n' userns "${line%% dir=*}" "$dir" ;;
+	"RUN verdict=PASS "*) printf 'PASS      %-18s native  %s checks\n' "$name" "$checks" ;;
+	*) failures=$((failures + 1)); printf 'FAIL      %-18s native  %s\n          log: %s\n' "$name" "${line%% dir=*}" "$dir" ;;
 	esac
 }
 
@@ -67,8 +69,10 @@ suite_harness() {
 		case_verdict userns "$smp" 90 PASS '' "$FIXTURES/userns"
 		case_verdict mmap_bad_fd "$smp" 20 PASS '' "$FIXTURES/mmap_bad_fd"
 		case_verdict scm_rights "$smp" 60 PASS '' "$FIXTURES/scm_rights"
+		case_verdict session_signal "$smp" 30 PASS '' "$FIXTURES/session_signal"
 	done
-	userns_native
+	fixture_native userns unshare -Ur
+	fixture_native session_signal env
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
 	case_verdict duplicate_result 1 20 'FAIL detail=duplicate-record' '' "$FIXTURES/duplicate_result"
@@ -134,7 +138,7 @@ probe_nanos() {
 
 suite_probe() {
 	make -s -C "$ROOT/tests/mini_chromium"
-	probe_nanos mini_chromium 'no namespaces or SCM data yet' --klib tmpfs --klib shmem
+	probe_nanos mini_chromium 'no PID or network namespaces yet' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw ''
 }
 
@@ -144,7 +148,7 @@ upstream_known() {
 	io_uring@*) echo 'mmap of the rings does not give EINVAL where expected (io_uring.c:553)' ;;
 	mmap@*) echo 'user write fault in memset at an odd address' ;;
 	netsock@*) echo 'crash reading the msghdr in sendmsg (netsock_test_msg)' ;;
-	sigloop@*) echo 'sigaction rejects SIG_DFL/SIG_IGN without SA_RESTORER, which musl abort() uses' ;;
+	sigloop@*) echo 'abort() in the SIGABRT handler now ends the process with SIGABRT, an outcome the test accepts, but dev/upstream.sh counts every signal death as CRASH' ;;
 	signal@*) echo 'silent hang' ;;
 	tun@*) echo 'TUNGETIFF does not return EBADFD (tun.c:49)' ;;
 	esac
