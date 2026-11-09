@@ -1,13 +1,10 @@
 mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::process::Command;
-use std::time::Duration;
 
 use bctl_cdp::protocol::{AttachToTarget, Command as CdpCommand, Effect, Empty, TargetId};
 use bctl_cdp::Scope;
-use common::{Home, assert_ok, eventually, outside_client, soon};
+use common::{Home, assert_ok, dashboard_viewer, eventually, http, outside_client, soon};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, Serialize, json};
 
@@ -84,29 +81,6 @@ impl CdpCommand for Evaluate {
     const METHOD: &'static str = "Runtime.evaluate";
     const EFFECT: Effect = Effect::Mutating;
     type Returns = Empty;
-}
-
-fn http(port: u16, host: &str, request_line: &str, extra: &str) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    write!(stream, "{request_line} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n").unwrap();
-    let mut response = String::new();
-    let _ = stream.read_to_string(&mut response);
-    let status = response.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    (status, response)
-}
-
-/// Signs a dashboard viewer in and returns the headers that act as it, plus the dashboard's address.
-fn dashboard_viewer(home: &Home) -> (u16, String, String) {
-    let served = home.bctl(&["serve"]);
-    assert_ok(&served);
-    let login = String::from_utf8_lossy(&served.stdout).trim().to_string();
-    let address = login.strip_prefix("http://").unwrap().split('/').next().unwrap().to_string();
-    let port: u16 = address.rsplit(':').next().unwrap().parse().unwrap();
-    let (status, response) = http(port, &address, &format!("GET /{}", login.split_once(&format!("{address}/")).unwrap().1), "");
-    assert_eq!(status, 303, "{response}");
-    let cookie = response.lines().find_map(|l| l.strip_prefix("set-cookie: ")).unwrap().split(';').next().unwrap().to_string();
-    (port, address.clone(), format!("Cookie: {cookie}\r\nOrigin: http://{address}\r\nContent-Length: 0\r\n"))
 }
 
 #[test]

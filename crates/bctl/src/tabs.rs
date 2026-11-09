@@ -63,16 +63,23 @@ pub(crate) enum TabCommand {
     Close,
 }
 
-pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand, request: &Request) -> Result<Response, Refusal> {
-    let mutates = matches!(command, TabCommand::New | TabCommand::Close);
-    if mutates && gateway::person_in_control(daemon, session) {
+pub(crate) fn refuse_while_person_in_control(daemon: &Daemon, session: &SessionName) -> Result<(), Refusal> {
+    if gateway::person_in_control(daemon, session) {
         return Err(failure(
             ErrorCode::HumanInControl,
             format!("a person has control of session {session}; native commands do not change its pages until they release it"),
             Some("release control in the dashboard, then retry".into()),
             None,
             None,
-        ).into());
+        )
+        .into());
+    }
+    Ok(())
+}
+
+pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: TabCommand, request: &Request) -> Result<Response, Refusal> {
+    if matches!(command, TabCommand::New | TabCommand::Close) {
+        refuse_while_person_in_control(daemon, session)?;
     }
     let connection = browser(daemon, session)?.connection;
     let store = SessionBindings { daemon, session };

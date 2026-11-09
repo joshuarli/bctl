@@ -21,6 +21,53 @@ pub struct Request {
     pub snapshot: Option<Box<SnapshotRequest>>,
     /// For `page-resolve`: an element ref from `page-snapshot`, as `e12` or `@e12`.
     pub element: Option<String>,
+    /// For the `page-*` actions (`page-click` and the rest).
+    pub action: Option<Box<ActionRequest>>,
+}
+
+/// A page action's element and arguments, as the CLI read them. Which fields apply depends on the op; the
+/// daemon refuses a request that names more than one locator or a field the op does not take.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActionRequest {
+    /// An element ref, `e12` or `@e12`.
+    pub element: Option<String>,
+    pub css: Option<String>,
+    /// A browser-computed role, optionally with `name`, its exact accessible name.
+    pub role: Option<String>,
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub placeholder: Option<String>,
+    pub testid: Option<String>,
+    /// Which match of a query, from 1.
+    pub nth: Option<u32>,
+    /// For `page-goto`: where to go. For `page-wait`: a URL pattern, `*` matching any run of characters.
+    pub url: Option<String>,
+    /// For `page-fill` and `page-type`: what to enter. For `page-wait`: text to appear. For `page-dialog
+    /// accept`: a prompt's answer.
+    pub text: Option<String>,
+    /// For `page-press`: a key such as `Enter` or `Control+a`.
+    pub key: Option<String>,
+    /// For `page-select`: option values or labels.
+    pub values: Vec<String>,
+    /// For `page-get`: `text`, `title`, `url`, `attribute`, or `value`.
+    pub read: Option<String>,
+    /// For `page-get attribute`: the attribute's name.
+    pub attribute: Option<String>,
+    /// For `page-goto`: `commit`, `domcontentloaded`, `load` (the default), or `networkidle`. For `page-wait`:
+    /// `domcontentloaded` or `load`.
+    pub load: Option<String>,
+    /// For `page-wait` with a locator: wait until nothing matches instead.
+    pub gone: bool,
+    pub timeout_ms: Option<u64>,
+    /// For `page-scroll` without a locator: wheel distances in CSS pixels.
+    pub dx: Option<f64>,
+    pub dy: Option<f64>,
+    /// For `page-eval`.
+    pub expression: Option<String>,
+    /// For `page-dialog`: `accept` or `dismiss`.
+    pub answer: Option<String>,
+    /// For `page-screenshot`: the absolute path the PNG is written to.
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -107,6 +154,22 @@ pub enum Op {
     TabClose,
     PageSnapshot,
     PageResolve,
+    PageGoto,
+    PageClick,
+    PageDblclick,
+    PageFill,
+    PageType,
+    PagePress,
+    PageHover,
+    PageScroll,
+    PageSelect,
+    PageCheck,
+    PageUncheck,
+    PageWait,
+    PageGet,
+    PageScreenshot,
+    PageEval,
+    PageDialog,
 }
 
 impl Op {
@@ -134,6 +197,22 @@ impl Op {
             Op::TabClose => "tab-close",
             Op::PageSnapshot => "page-snapshot",
             Op::PageResolve => "page-resolve",
+            Op::PageGoto => "page-goto",
+            Op::PageClick => "page-click",
+            Op::PageDblclick => "page-dblclick",
+            Op::PageFill => "page-fill",
+            Op::PageType => "page-type",
+            Op::PagePress => "page-press",
+            Op::PageHover => "page-hover",
+            Op::PageScroll => "page-scroll",
+            Op::PageSelect => "page-select",
+            Op::PageCheck => "page-check",
+            Op::PageUncheck => "page-uncheck",
+            Op::PageWait => "page-wait",
+            Op::PageGet => "page-get",
+            Op::PageScreenshot => "page-screenshot",
+            Op::PageEval => "page-eval",
+            Op::PageDialog => "page-dialog",
         }
     }
 
@@ -161,6 +240,22 @@ impl Op {
             Op::TabClose,
             Op::PageSnapshot,
             Op::PageResolve,
+            Op::PageGoto,
+            Op::PageClick,
+            Op::PageDblclick,
+            Op::PageFill,
+            Op::PageType,
+            Op::PagePress,
+            Op::PageHover,
+            Op::PageScroll,
+            Op::PageSelect,
+            Op::PageCheck,
+            Op::PageUncheck,
+            Op::PageWait,
+            Op::PageGet,
+            Op::PageScreenshot,
+            Op::PageEval,
+            Op::PageDialog,
         ]
         .into_iter()
         .find(|op| op.as_str() == s)
@@ -194,6 +289,20 @@ pub enum ErrorCode {
     StaleRef,
     ScopeNotFound,
     HumanInControl,
+    Ambiguous,
+    NotFound,
+    NotVisible,
+    Disabled,
+    Covered,
+    Missed,
+    Detached,
+    NotActionable,
+    DialogOpen,
+    NoDialog,
+    Timeout,
+    NavigationFailed,
+    EvalFailed,
+    WriteFailed,
     UnknownOutcome,
     CdpFailed,
     Internal,
@@ -226,6 +335,20 @@ impl ErrorCode {
             ErrorCode::StaleRef => "STALE_REF",
             ErrorCode::ScopeNotFound => "SCOPE_NOT_FOUND",
             ErrorCode::HumanInControl => "HUMAN_IN_CONTROL",
+            ErrorCode::Ambiguous => "AMBIGUOUS",
+            ErrorCode::NotFound => "NOT_FOUND",
+            ErrorCode::NotVisible => "NOT_VISIBLE",
+            ErrorCode::Disabled => "DISABLED",
+            ErrorCode::Covered => "COVERED",
+            ErrorCode::Missed => "MISSED",
+            ErrorCode::Detached => "DETACHED",
+            ErrorCode::NotActionable => "NOT_ACTIONABLE",
+            ErrorCode::DialogOpen => "DIALOG_OPEN",
+            ErrorCode::NoDialog => "NO_DIALOG",
+            ErrorCode::Timeout => "TIMEOUT",
+            ErrorCode::NavigationFailed => "NAVIGATION_FAILED",
+            ErrorCode::EvalFailed => "EVAL_FAILED",
+            ErrorCode::WriteFailed => "WRITE_FAILED",
             ErrorCode::UnknownOutcome => "UNKNOWN_OUTCOME",
             ErrorCode::CdpFailed => "CDP_FAILED",
             ErrorCode::Internal => "INTERNAL",
@@ -242,12 +365,35 @@ pub struct ErrorBody {
     pub target: Option<String>,
     /// For target errors: every page target that exists, so a caller can choose one without another request.
     pub targets: Option<Vec<TabView>>,
+    /// For `AMBIGUOUS`: the first matches, each with a fresh ref that names it.
+    pub candidates: Option<Vec<CandidateView>>,
+    /// For `DIALOG_OPEN`: the dialog the page waits on.
+    pub dialog: Option<DialogView>,
 }
 
 impl ErrorBody {
     pub fn new(code: ErrorCode, message: impl Into<String>, remedy: Option<String>) -> ErrorBody {
-        ErrorBody { code: code.as_str().to_string(), message: message.into(), remedy, target: None, targets: None }
+        ErrorBody { code: code.as_str().to_string(), message: message.into(), remedy, target: None, targets: None, candidates: None, dialog: None }
     }
+}
+
+/// One element an ambiguous locator matched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateView {
+    #[serde(rename = "ref")]
+    pub element: String,
+    pub frame: String,
+    /// The element's role and name, or its tag, id, and leading text.
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DialogView {
+    /// `alert`, `confirm`, `prompt`, or `beforeunload`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub message: String,
+    pub default_prompt: String,
 }
 
 /// One page target. `url` has no userinfo, query, or fragment.
@@ -270,6 +416,45 @@ pub struct TabsView {
 pub struct PageView {
     pub snapshot: Option<SnapshotView>,
     pub element: Option<ElementView>,
+    pub action: Option<ActionView>,
+}
+
+/// For the `page-*` actions: what was done, where, and what it cost. Fields an action does not produce are null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionView {
+    /// The op without its `page-` prefix: `click`, `fill`, and so on.
+    pub action: String,
+    pub target: String,
+    /// The frame of the element acted on.
+    pub frame: Option<String>,
+    /// The element's ref, when the request named it by ref.
+    #[serde(rename = "ref")]
+    pub element: Option<String>,
+    /// For `check` and `uncheck`: false when the element was already in that state.
+    pub changed: Option<bool>,
+    /// For `select`: the values now selected.
+    pub selected: Option<Vec<String>>,
+    /// For `get text`, `title`, `url`, and `value`.
+    pub text: Option<String>,
+    /// For `get text`: the text was cut at its bound.
+    pub truncated: Option<bool>,
+    /// For `get value`: a password field's value is never read.
+    pub redacted: Option<bool>,
+    /// For `get attribute`: the attribute's value, or null when it is absent. For `eval`: the JSON result.
+    pub value: Option<json::Value>,
+    /// For `wait` with a locator: elements matching when the wait ended.
+    pub matched: Option<u64>,
+    /// For `screenshot`: where the PNG was written and its size.
+    pub path: Option<String>,
+    pub bytes: Option<u64>,
+    /// For `dialog`: the dialog answered, if bctl saw it open.
+    pub dialog: Option<DialogView>,
+    /// CDP commands the action sent, not counting the check that the selected target exists.
+    pub cdp_calls: u32,
+    /// Time inside the action itself.
+    pub action_ms: u64,
+    /// Time the daemon spent on the whole request.
+    pub elapsed_ms: u64,
 }
 
 /// For `page-snapshot`: the selected target's snapshot, as `text` or, if asked, as `nodes`.

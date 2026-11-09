@@ -18,8 +18,8 @@ use miniserde::json;
 
 use paths::Paths;
 use protocol::{
-    BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView, SessionView, SnapshotRequest,
-    TabView,
+    ActionRequest, ActionView, BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView,
+    SessionView, SnapshotRequest, TabView,
 };
 
 const USAGE: &str = "usage:
@@ -46,6 +46,22 @@ const USAGE: &str = "usage:
   bctl page snapshot SESSION [--full] [--depth N] [--scope CSS] [--json]
                                                      the selected target's accessibility tree with element refs
   bctl page resolve SESSION REF [--json]             the live role and name of the node an element ref names
+  bctl page goto SESSION URL [--wait commit|domcontentloaded|load|networkidle] [--timeout MS]
+  bctl page click|dblclick|hover|check|uncheck SESSION ELEMENT
+  bctl page fill SESSION ELEMENT TEXT                replace a field's content
+  bctl page type SESSION [ELEMENT] TEXT              type key by key at the end, or into what has focus
+  bctl page press SESSION [ELEMENT] KEY              press Enter, Tab, Control+a, ...
+  bctl page scroll SESSION (ELEMENT | --dx N --dy N) scroll an element into view, or turn the wheel
+  bctl page select SESSION ELEMENT VALUE...          choose <select> options by value or label
+  bctl page wait SESSION (QUERY [--gone] | --text T | --url PATTERN | --load domcontentloaded|load) [--timeout MS]
+  bctl page get SESSION text [ELEMENT] | title | url | attribute NAME ELEMENT | value ELEMENT
+  bctl page screenshot SESSION PATH                  write the viewport as a PNG
+  bctl page eval SESSION EXPRESSION                  run JavaScript in the page and print its JSON value
+  bctl page dialog SESSION accept [--text T] | dismiss
+                                                     answer the dialog the page shows
+      ELEMENT is a ref (@e12) or a QUERY: --css SELECTOR | --role ROLE [--name NAME] | --label TEXT |
+      --placeholder TEXT | --testid ID, plus --nth N to pick a match; a query matching several fails AMBIGUOUS.
+      Page commands act on the target `bctl tab use` selected; every one takes --json.
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
@@ -207,8 +223,14 @@ const PAGE_USAGE: &str = "usage: bctl page snapshot SESSION [--full] [--depth N]
 
 fn parse_page_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
     let op = match parser.next()? {
-        Some(Value(v)) if v == "snapshot" => Op::PageSnapshot,
-        Some(Value(v)) if v == "resolve" => Op::PageResolve,
+        Some(Value(v)) => match v.string()?.as_str() {
+            "snapshot" => Op::PageSnapshot,
+            "resolve" => Op::PageResolve,
+            verb => match Op::parse(&format!("page-{verb}")) {
+                Some(op) => return parse_page_action(op, parser),
+                None => return Err(format!("unknown page command {verb:?}; see `bctl --help`").into()),
+            },
+        },
         _ => return Err(PAGE_USAGE.into()),
     };
     let mut json = false;
@@ -238,6 +260,88 @@ fn parse_page_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> 
     if positional.next().is_some() {
         return Err(PAGE_USAGE.into());
     }
+    Ok(Cli::Request { op, request, json, open: false })
+}
+
+fn parse_page_action(op: Op, mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    let usage = || -> lexopt::Error { format!("bctl {} arguments are missing or extra; see `bctl --help`", op.as_str().replacen('-', " ", 1)).into() };
+    let number = |flag: &str, text: String| -> Result<u64, lexopt::Error> { text.parse().map_err(|_| format!("--{flag} {text:?} is not a whole number").into()) };
+    let mut json = false;
+    let mut action = ActionRequest::default();
+    let mut positional = Vec::new();
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Long("json") => json = true,
+            Long("css") => action.css = Some(parser.value()?.string()?),
+            Long("role") => action.role = Some(parser.value()?.string()?),
+            Long("name") => action.name = Some(parser.value()?.string()?),
+            Long("label") => action.label = Some(parser.value()?.string()?),
+            Long("placeholder") => action.placeholder = Some(parser.value()?.string()?),
+            Long("testid") => action.testid = Some(parser.value()?.string()?),
+            Long("nth") => {
+                let nth = number("nth", parser.value()?.string()?)?;
+                action.nth = Some(u32::try_from(nth).map_err(|_| "--nth is too large")?);
+            }
+            Long("wait") if op == Op::PageGoto => action.load = Some(parser.value()?.string()?),
+            Long("load") if op == Op::PageWait => action.load = Some(parser.value()?.string()?),
+            Long("timeout") if matches!(op, Op::PageGoto | Op::PageWait) => action.timeout_ms = Some(number("timeout", parser.value()?.string()?)?),
+            Long("text") if matches!(op, Op::PageWait | Op::PageDialog) => action.text = Some(parser.value()?.string()?),
+            Long("url") if op == Op::PageWait => action.url = Some(parser.value()?.string()?),
+            Long("gone") if op == Op::PageWait => action.gone = true,
+            Long(flag @ ("dx" | "dy")) if op == Op::PageScroll => {
+                let flag = flag.to_string();
+                let text = parser.value()?.string()?;
+                let distance: f64 = text.parse().map_err(|_| format!("--{flag} {text:?} is not a number"))?;
+                if flag == "dx" { action.dx = Some(distance) } else { action.dy = Some(distance) }
+            }
+            Value(v) => positional.push(v.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    let named_by_flag = [&action.css, &action.role, &action.label, &action.placeholder, &action.testid].iter().any(|f| f.is_some());
+    let mut positional = positional.into_iter().peekable();
+    let session = positional.next().ok_or_else(usage)?;
+    let mut element = |positional: &mut std::iter::Peekable<std::vec::IntoIter<String>>| {
+        if !named_by_flag && positional.peek().is_some_and(|p| p.starts_with('@')) {
+            action.element = positional.next();
+        }
+    };
+    match op {
+        Op::PageGoto => action.url = Some(positional.next().ok_or_else(usage)?),
+        Op::PageClick | Op::PageDblclick | Op::PageHover | Op::PageCheck | Op::PageUncheck | Op::PageScroll | Op::PageWait => element(&mut positional),
+        Op::PageFill | Op::PageType => {
+            element(&mut positional);
+            action.text = Some(positional.next().ok_or_else(usage)?);
+        }
+        Op::PagePress => {
+            element(&mut positional);
+            action.key = Some(positional.next().ok_or_else(usage)?);
+        }
+        Op::PageSelect => {
+            element(&mut positional);
+            action.values = positional.by_ref().collect();
+        }
+        Op::PageGet => {
+            let read = positional.next().ok_or_else(usage)?;
+            if read == "attribute" {
+                action.attribute = Some(positional.next().ok_or_else(usage)?);
+            }
+            action.read = Some(read);
+            element(&mut positional);
+        }
+        Op::PageScreenshot => {
+            let path = std::path::PathBuf::from(positional.next().ok_or_else(usage)?);
+            let path = if path.is_absolute() { path } else { std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?.join(path) };
+            action.path = Some(path.to_str().ok_or("the screenshot path is not UTF-8")?.to_string());
+        }
+        Op::PageEval => action.expression = Some(positional.next().ok_or_else(usage)?),
+        Op::PageDialog => action.answer = Some(positional.next().ok_or_else(usage)?),
+        _ => unreachable!("{} is not a page action", op.as_str()),
+    }
+    if positional.next().is_some() {
+        return Err(usage());
+    }
+    let request = Request { op: op.as_str().to_string(), session: Some(session), action: Some(Box::new(action)), ..Request::empty() };
     Ok(Cli::Request { op, request, json, open: false })
 }
 
@@ -321,9 +425,9 @@ fn send(paths: &Paths, request: &Request) -> std::io::Result<Response> {
 }
 
 /// Sends `request`, starting the daemon first if nothing is listening. Closing the CLI never stops the daemon.
-fn call(paths: &Paths, request: &Request) -> Result<Response, ErrorBody> {
+fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     let unreachable = |e: std::io::Error| {
-        ErrorBody::new(ErrorCode::DaemonUnreachable, e.to_string(), Some(format!("see {}", paths.log().display())))
+        Box::new(ErrorBody::new(ErrorCode::DaemonUnreachable, e.to_string(), Some(format!("see {}", paths.log().display()))))
     };
     match send(paths, request) {
         Ok(response) => return Ok(response),
@@ -361,6 +465,12 @@ fn report(error: &ErrorBody, json: bool) -> ExitCode {
         }
         if let Some(targets) = &error.targets {
             targets.iter().for_each(|t| eprintln!("  {}", tab_line(t, None)));
+        }
+        if let Some(candidates) = &error.candidates {
+            candidates.iter().for_each(|c| eprintln!("  @{}  {}  frame {}", c.element, c.summary, c.frame));
+        }
+        if let Some(dialog) = &error.dialog {
+            eprintln!("  {} {}", dialog.kind, json::to_string(&dialog.message));
         }
     }
     ExitCode::FAILURE
@@ -423,9 +533,63 @@ fn render(op: Op, response: &Response, json: bool, detail: bool) -> ExitCode {
                 println!("{} {} {}  frame {}", e.element, e.role, json::to_string(&e.name), e.frame);
             }
         }
+        Op::PageGoto
+        | Op::PageClick
+        | Op::PageDblclick
+        | Op::PageFill
+        | Op::PageType
+        | Op::PagePress
+        | Op::PageHover
+        | Op::PageScroll
+        | Op::PageSelect
+        | Op::PageCheck
+        | Op::PageUncheck
+        | Op::PageWait
+        | Op::PageGet
+        | Op::PageScreenshot
+        | Op::PageEval
+        | Op::PageDialog => {
+            if let Some(action) = response.page.as_ref().and_then(|p| p.action.as_ref()) {
+                print_action(op, action);
+            }
+        }
     }
     let failed = matches!(op, Op::Run | Op::Resume) && response.runs.iter().any(|r| r.state == "failed");
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn print_action(op: Op, action: &ActionView) {
+    match op {
+        Op::PageGet => match (&action.text, &action.value, action.redacted) {
+            (Some(text), _, _) => println!("{text}"),
+            (None, Some(json::Value::String(value)), _) => println!("{value}"),
+            (None, _, Some(true)) => println!("<redacted>"),
+            _ => {}
+        },
+        Op::PageEval => println!("{}", json::to_string(action.value.as_ref().unwrap_or(&json::Value::Null))),
+        _ => {
+            let mut detail = Vec::new();
+            if let Some(element) = &action.element {
+                detail.push(format!("@{element}"));
+            }
+            if let Some(changed) = action.changed {
+                detail.push(if changed { "changed".into() } else { "already so".into() });
+            }
+            if let Some(selected) = &action.selected {
+                detail.push(format!("selected {}", json::to_string(selected)));
+            }
+            if let Some(matched) = action.matched {
+                detail.push(format!("{matched} matching"));
+            }
+            if let (Some(path), Some(bytes)) = (&action.path, action.bytes) {
+                detail.push(format!("{path} ({bytes} bytes)"));
+            }
+            if let Some(dialog) = &action.dialog {
+                detail.push(format!("{} {}", dialog.kind, json::to_string(&dialog.message)));
+            }
+            println!("{} {} {}  {} ms, {} CDP calls", action.action, action.target, detail.join("  "), action.elapsed_ms, action.cdp_calls);
+        }
+    }
 }
 
 fn tab_line(tab: &TabView, selected: Option<&str>) -> String {

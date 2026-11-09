@@ -1,24 +1,13 @@
 mod common;
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
 use bctl_cdp::protocol::{AttachToTarget, Command as CdpCommand, Effect, Empty, GetTargets, TargetId};
 use bctl_cdp::{Connection, Scope};
-use common::{Home, assert_ok, eventually, outside_client, soon};
+use common::{Fixture, Home, OTHER_SITE_FROM_GUEST, assert_ok, eventually, outside_client, soon, up_with_fixtures};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, Serialize, json};
 
-const IMAGE: &str = "ref-alpine-chromium";
-/// SmolVM's default guest link: the gateway, 100.96.0.1, is the host's loopback.
-const HOST_RANGE: &str = "100.96.0.0/30";
-const HOST_FROM_GUEST: &str = "100.96.0.1";
-/// The same address as an IPv4-mapped IPv6 host: another site to Chromium, so its iframe gets its own
-/// process and CDP target.
-const OTHER_SITE_FROM_GUEST: &str = "[::ffff:100.96.0.1]";
 const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024;
 
 const FORM: &str = "<!doctype html><title>Form</title>
@@ -57,44 +46,6 @@ fn site(path: &str, port: u16) -> String {
         inner if inner.starts_with("/inner?") => format!("<!doctype html><title>Inner</title><button>Inside {}</button>", &inner[7..]),
         _ => "<!doctype html><title>Missing</title>".to_string(),
     }
-}
-
-struct Fixture {
-    port: u16,
-}
-
-impl Fixture {
-    fn start() -> Fixture {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                thread::spawn(move || serve(stream, port));
-            }
-        });
-        Fixture { port }
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("http://{HOST_FROM_GUEST}:{}{path}", self.port)
-    }
-}
-
-fn serve(mut stream: TcpStream, port: u16) {
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    let mut request = Vec::new();
-    let mut chunk = [0u8; 4096];
-    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => request.extend_from_slice(&chunk[..n]),
-        }
-    }
-    let text = String::from_utf8_lossy(&request);
-    let Some(path) = text.lines().next().and_then(|line| line.strip_prefix("GET ")).and_then(|rest| rest.split(' ').next()) else { return };
-    let body = site(path, port);
-    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-    let _ = stream.write_all(format!("{head}{body}").as_bytes());
 }
 
 #[derive(Deserialize, Debug)]
@@ -269,18 +220,14 @@ fn run_script(outside: &Connection, target: &str, expression: &str) {
     block_on(outside.call(Scope::Session(&attached.session_id), &Evaluate { expression: expression.to_string() }, soon())).unwrap();
 }
 
-fn up(home: &Home, session: &str, profile: &str) {
-    assert_ok(&home.bctl(&["up", session, "--profile", profile, "--image", IMAGE, "--allow-private", HOST_RANGE]));
-}
-
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
 fn n3_snapshots_show_roles_names_states_and_refs_across_frames_and_never_a_password() {
-    let fixture = Fixture::start();
+    let fixture = Fixture::start(site);
     let home = Home::new("n3-s");
     let session = format!("{}-s", home.prefix());
     let s = session.as_str();
-    up(&home, s, "n3-s");
+    up_with_fixtures(&home, s, "n3-s");
 
     let form = open_tab(&home, s, &fixture.url("/form"));
     titled(&home, s, &form, "Form");
@@ -398,11 +345,11 @@ fn n3_snapshots_show_roles_names_states_and_refs_across_frames_and_never_a_passw
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and images/build.sh ref-alpine-chromium"]
 fn n3_a_ref_resolves_only_while_its_node_document_target_and_daemon_last() {
-    let fixture = Fixture::start();
+    let fixture = Fixture::start(site);
     let home = Home::new("n3-r");
     let session = format!("{}-s", home.prefix());
     let s = session.as_str();
-    up(&home, s, "n3-r");
+    up_with_fixtures(&home, s, "n3-r");
     let outside = outside_client(&home, s);
 
     let page = open_tab(&home, s, &fixture.url("/dynamic"));

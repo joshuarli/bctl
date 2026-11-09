@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::thread;
@@ -148,4 +148,79 @@ pub fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// SmolVM's default guest link: the gateway, 100.96.0.1, is the host's loopback.
+pub const HOST_RANGE: &str = "100.96.0.0/30";
+pub const HOST_FROM_GUEST: &str = "100.96.0.1";
+/// The same address as an IPv4-mapped IPv6 host: another site to Chromium, so its iframe gets its own
+/// process and CDP target.
+pub const OTHER_SITE_FROM_GUEST: &str = "[::ffff:100.96.0.1]";
+
+/// A local HTTP server for fixture pages, reachable from the guest at [`HOST_FROM_GUEST`]. `site` maps a
+/// request path and the server's port to an HTML body.
+pub struct Fixture {
+    pub port: u16,
+}
+
+impl Fixture {
+    pub fn start(site: fn(&str, u16) -> String) -> Fixture {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                thread::spawn(move || serve(stream, port, site));
+            }
+        });
+        Fixture { port }
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        format!("http://{HOST_FROM_GUEST}:{}{path}", self.port)
+    }
+}
+
+fn serve(mut stream: TcpStream, port: u16, site: fn(&str, u16) -> String) {
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => request.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let text = String::from_utf8_lossy(&request);
+    let Some(path) = text.lines().next().and_then(|line| line.strip_prefix("GET ")).and_then(|rest| rest.split(' ').next()) else { return };
+    let body = site(path, port);
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+    let _ = stream.write_all(format!("{head}{body}").as_bytes());
+}
+
+/// Starts a session whose guest may reach the fixture server.
+pub fn up_with_fixtures(home: &Home, session: &str, profile: &str) {
+    assert_ok(&home.bctl(&["up", session, "--profile", profile, "--image", "ref-alpine-chromium", "--allow-private", HOST_RANGE]));
+}
+
+pub fn http(port: u16, host: &str, request_line: &str, extra: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(stream, "{request_line} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n").unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    let status = response.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, response)
+}
+
+/// Signs a dashboard viewer in and returns the headers that act as it, plus the dashboard's address.
+pub fn dashboard_viewer(home: &Home) -> (u16, String, String) {
+    let served = home.bctl(&["serve"]);
+    assert_ok(&served);
+    let login = String::from_utf8_lossy(&served.stdout).trim().to_string();
+    let address = login.strip_prefix("http://").unwrap().split('/').next().unwrap().to_string();
+    let port: u16 = address.rsplit(':').next().unwrap().parse().unwrap();
+    let (status, response) = http(port, &address, &format!("GET /{}", login.split_once(&format!("{address}/")).unwrap().1), "");
+    assert_eq!(status, 303, "{response}");
+    let cookie = response.lines().find_map(|l| l.strip_prefix("set-cookie: ")).unwrap().split(';').next().unwrap().to_string();
+    (port, address.clone(), format!("Cookie: {cookie}\r\nOrigin: http://{address}\r\nContent-Length: 0\r\n"))
 }

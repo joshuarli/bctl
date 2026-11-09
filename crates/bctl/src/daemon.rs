@@ -292,6 +292,22 @@ impl Daemon {
             Op::TabClose => tabs::handle(self, &session()?, TabCommand::Close, request),
             Op::PageSnapshot => page::handle(self, &session()?, PageCommand::Snapshot, request),
             Op::PageResolve => page::handle(self, &session()?, PageCommand::Resolve, request),
+            Op::PageGoto
+            | Op::PageClick
+            | Op::PageDblclick
+            | Op::PageFill
+            | Op::PageType
+            | Op::PagePress
+            | Op::PageHover
+            | Op::PageScroll
+            | Op::PageSelect
+            | Op::PageCheck
+            | Op::PageUncheck
+            | Op::PageWait
+            | Op::PageGet
+            | Op::PageScreenshot
+            | Op::PageEval
+            | Op::PageDialog => page::act(self, &session()?, op, request),
             Op::Rm => {
                 let name = session()?;
                 tabs::close(self, &name);

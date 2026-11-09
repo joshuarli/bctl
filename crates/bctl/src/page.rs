@@ -1,17 +1,29 @@
+use std::fs;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use bctl_automation::{
-    AttachError, Checked, Coverage, ElementRef, NodeValue, RefCounter, RefCounterError, RefError, SnapshotError, SnapshotNode, SnapshotOptions, TargetScope,
-    Tabs,
+    Acted, Action, ActionError, AttachError, Checked, Chord, ClickCount, Condition, Coverage, Dialog, DialogResponse, ElementRef, FieldValue, LoadState,
+    Locator, NodeValue, Occurrence, Outcome, Query, Read, Readiness, RefCounter, RefCounterError, RefError, Scroll, SnapshotError, SnapshotNode,
+    SnapshotOptions, TargetScope, Tabs,
 };
 use bctl_cdp::CallError;
 use bctl_core::SessionName;
 use futures_lite::future::block_on;
+use miniserde::json;
 
 use crate::daemon::{Daemon, Refusal};
-use crate::protocol::{ElementView, ErrorCode, NodeView, PageView, Request, Response, SnapshotRequest, SnapshotView};
+use crate::protocol::{
+    ActionRequest, ActionView, CandidateView, DialogView, ElementView, ErrorBody, ErrorCode, NodeView, Op, PageView, Request, Response, SnapshotRequest,
+    SnapshotView,
+};
 use crate::tabs::{self, SessionBindings, failure};
+
+const GOTO_TIMEOUT: Duration = Duration::from_secs(30);
+const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy)]
 pub(crate) enum PageCommand {
@@ -49,7 +61,7 @@ pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: PageComman
                 documents: snapshot.documents as u32,
                 cdp_calls: snapshot.cdp_calls,
             };
-            Ok(Response { page: Some(Box::new(PageView { snapshot: Some(view), element: None })), ..Response::empty() })
+            Ok(Response { page: Some(Box::new(PageView { snapshot: Some(view), element: None, action: None })), ..Response::empty() })
         }
         PageCommand::Resolve => {
             let text = request.element.as_deref().unwrap_or_default();
@@ -65,7 +77,7 @@ pub(crate) fn handle(daemon: &Daemon, session: &SessionName, command: PageComman
                 role: accessible.role,
                 name: accessible.name,
             };
-            Ok(Response { page: Some(Box::new(PageView { snapshot: None, element: Some(view) })), ..Response::empty() })
+            Ok(Response { page: Some(Box::new(PageView { snapshot: None, element: Some(view), action: None })), ..Response::empty() })
         }
     }
 }
@@ -159,5 +171,268 @@ fn ref_failure(session: &SessionName, target: &TargetScope, error: RefError) -> 
         }
         RefError::Attach(error) => attach_failure(session, target, error),
         RefError::Cdp(error) => cdp_failure(session, target, error),
+    }
+}
+
+fn bad(message: impl Into<String>) -> Refusal {
+    failure(ErrorCode::BadRequest, message, None, None, None).into()
+}
+
+fn locator(asked: &ActionRequest) -> Result<Option<Locator>, Refusal> {
+    let text = |flag: &str, value: &Option<String>| -> Result<Option<String>, Refusal> {
+        match value {
+            Some(value) if value.trim().is_empty() => Err(bad(format!("--{flag} needs a value"))),
+            value => Ok(value.clone()),
+        }
+    };
+    let mut queries = Vec::new();
+    if let Some(css) = text("css", &asked.css)? {
+        queries.push(Query::Css(css));
+    }
+    match (text("role", &asked.role)?, text("name", &asked.name)?) {
+        (Some(role), name) => queries.push(Query::Role { role, name }),
+        (None, Some(_)) => return Err(bad("--name needs --role")),
+        (None, None) => {}
+    }
+    if let Some(label) = text("label", &asked.label)? {
+        queries.push(Query::Label(label));
+    }
+    if let Some(placeholder) = text("placeholder", &asked.placeholder)? {
+        queries.push(Query::Placeholder(placeholder));
+    }
+    if let Some(id) = text("testid", &asked.testid)? {
+        queries.push(Query::TestId(id));
+    }
+    let element = match asked.element.as_deref() {
+        Some(text) => Some(ElementRef::parse(text).ok_or_else(|| bad(format!("{text:?} is not an element ref; refs look like @e12")))?),
+        None => None,
+    };
+    let occurrence = match asked.nth {
+        None => None,
+        Some(n) => Some(Occurrence(NonZeroUsize::new(n as usize).ok_or_else(|| bad("--nth counts from 1"))?)),
+    };
+    let one_locator = "name the element once: a ref, or one of --css, --role, --label, --placeholder, --testid";
+    match (element, queries.len(), occurrence) {
+        (Some(_), 1.., _) | (None, 2.., _) => Err(bad(one_locator)),
+        (Some(_), 0, Some(_)) | (None, 0, Some(_)) => Err(bad("--nth picks a match of --css, --role, --label, --placeholder, or --testid")),
+        (Some(element), 0, None) => Ok(Some(Locator::Ref(element))),
+        (None, 0, None) => Ok(None),
+        (None, 1, occurrence) => Ok(Some(Locator::Query { query: queries.remove(0), occurrence })),
+    }
+}
+
+fn required(locator: Option<Locator>, op: Op) -> Result<Locator, Refusal> {
+    locator.ok_or_else(|| bad(format!("{} needs an element: a ref like @e12, or --css, --role, --label, --placeholder, or --testid", op.as_str())))
+}
+
+fn query(locator: Option<Locator>) -> Result<Option<Query>, Refusal> {
+    match locator {
+        None => Ok(None),
+        Some(Locator::Query { query, occurrence: None }) => Ok(Some(query)),
+        Some(_) => Err(bad("wait takes --css, --role, --label, --placeholder, or --testid without --nth; a ref already names a live element")),
+    }
+}
+
+fn timeout(asked: &ActionRequest, default: Duration) -> Result<Duration, Refusal> {
+    match asked.timeout_ms.map(Duration::from_millis) {
+        None => Ok(default),
+        Some(timeout) if timeout.is_zero() || timeout > MAX_TIMEOUT => Err(bad(format!("--timeout must be between 1 and {} ms", MAX_TIMEOUT.as_millis()))),
+        Some(timeout) => Ok(timeout),
+    }
+}
+
+fn needed<'a>(value: &'a Option<String>, what: &str) -> Result<&'a str, Refusal> {
+    value.as_deref().ok_or_else(|| bad(format!("{what} is required")))
+}
+
+fn action(op: Op, asked: &ActionRequest) -> Result<Action, Refusal> {
+    let locator = locator(asked)?;
+    Ok(match op {
+        Op::PageGoto => {
+            let readiness = match asked.load.as_deref() {
+                None | Some("load") => Readiness::Load,
+                Some("commit") => Readiness::Commit,
+                Some("domcontentloaded") => Readiness::DomContentLoaded,
+                Some("networkidle") => Readiness::NetworkIdle,
+                Some(other) => return Err(bad(format!("--wait {other:?} is not commit, domcontentloaded, load, or networkidle"))),
+            };
+            Action::Navigate { url: needed(&asked.url, "a URL")?.to_string(), readiness, timeout: timeout(asked, GOTO_TIMEOUT)? }
+        }
+        Op::PageClick => Action::Click { locator: required(locator, op)?, count: ClickCount::Single },
+        Op::PageDblclick => Action::Click { locator: required(locator, op)?, count: ClickCount::Double },
+        Op::PageHover => Action::Hover(required(locator, op)?),
+        Op::PageFill => Action::Fill { locator: required(locator, op)?, text: needed(&asked.text, "the text to fill")?.to_string() },
+        Op::PageType => Action::Type { into: locator, text: needed(&asked.text, "the text to type")?.to_string() },
+        Op::PagePress => Action::Press { into: locator, chord: Chord::parse(needed(&asked.key, "a key")?).map_err(|e| bad(e.to_string()))? },
+        Op::PageScroll => match (locator, asked.dx, asked.dy) {
+            (Some(locator), None, None) => Action::Scroll(Scroll::IntoView(locator)),
+            (None, dx, dy) if dx.is_some() || dy.is_some() => {
+                let (dx, dy) = (dx.unwrap_or(0.0), dy.unwrap_or(0.0));
+                if !dx.is_finite() || !dy.is_finite() {
+                    return Err(bad("--dx and --dy must be finite"));
+                }
+                Action::Scroll(Scroll::By { dx, dy })
+            }
+            _ => return Err(bad("scroll takes an element to scroll into view, or --dx and --dy, not both")),
+        },
+        Op::PageSelect => {
+            if asked.values.is_empty() {
+                return Err(bad("select needs at least one option value or label"));
+            }
+            Action::Select { locator: required(locator, op)?, values: asked.values.clone() }
+        }
+        Op::PageCheck => Action::SetChecked { locator: required(locator, op)?, checked: true },
+        Op::PageUncheck => Action::SetChecked { locator: required(locator, op)?, checked: false },
+        Op::PageWait => {
+            let query = query(locator)?;
+            let condition = match (query, &asked.text, &asked.url, asked.load.as_deref(), asked.gone) {
+                (Some(query), None, None, None, false) => Condition::Present(query),
+                (Some(query), None, None, None, true) => Condition::Absent(query),
+                (None, Some(text), None, None, false) => Condition::Text(text.clone()),
+                (None, None, Some(url), None, false) => Condition::Url(url.clone()),
+                (None, None, None, Some("domcontentloaded"), false) => Condition::Loaded(LoadState::DomContentLoaded),
+                (None, None, None, Some("load"), false) => Condition::Loaded(LoadState::Load),
+                (None, None, None, Some(other), false) => return Err(bad(format!("--load {other:?} is not domcontentloaded or load"))),
+                _ => return Err(bad("wait for one thing: an element (optionally --gone), --text, --url, or --load")),
+            };
+            Action::Wait { condition, timeout: timeout(asked, WAIT_TIMEOUT)? }
+        }
+        Op::PageGet => match (asked.read.as_deref(), locator) {
+            (Some("text"), locator) => Action::Read(Read::Text(locator)),
+            (Some("title"), None) => Action::Read(Read::Title),
+            (Some("url"), None) => Action::Read(Read::Url),
+            (Some("attribute"), Some(locator)) => Action::Read(Read::Attribute { locator, name: needed(&asked.attribute, "the attribute name")?.to_string() }),
+            (Some("value"), Some(locator)) => Action::Read(Read::Value(locator)),
+            (Some("title" | "url"), Some(_)) => return Err(bad("get title and get url read the page, not an element")),
+            (Some("attribute" | "value"), None) => return Err(bad("get attribute and get value need an element")),
+            _ => return Err(bad("get reads text, title, url, attribute NAME, or value")),
+        },
+        Op::PageScreenshot => {
+            let path = needed(&asked.path, "a path for the PNG")?;
+            if !Path::new(path).is_absolute() {
+                return Err(bad("the screenshot path must be absolute"));
+            }
+            Action::Screenshot
+        }
+        Op::PageEval => Action::Evaluate(needed(&asked.expression, "an expression")?.to_string()),
+        Op::PageDialog => match asked.answer.as_deref() {
+            Some("accept") => Action::Dialog(DialogResponse::Accept { text: asked.text.clone() }),
+            Some("dismiss") if asked.text.is_none() => Action::Dialog(DialogResponse::Dismiss),
+            Some("dismiss") => return Err(bad("--text answers a prompt you accept")),
+            _ => return Err(bad("dialog takes accept or dismiss")),
+        },
+        _ => unreachable!("{} is not a page action", op.as_str()),
+    })
+}
+
+fn write_png(path: &Path, png: &[u8]) -> Result<(), String> {
+    let name = path.file_name().ok_or_else(|| format!("{} names no file", path.display()))?;
+    let partial = path.with_file_name(format!(".{}.partial", name.to_string_lossy()));
+    fs::write(&partial, png).map_err(|e| format!("cannot write {}: {e}", partial.display()))?;
+    fs::rename(&partial, path).map_err(|e| format!("cannot move the screenshot to {}: {e}", path.display()))
+}
+
+fn dialog_view(dialog: Dialog) -> DialogView {
+    DialogView { kind: dialog.kind, message: dialog.message, default_prompt: dialog.default_prompt }
+}
+
+pub(crate) fn act(daemon: &Daemon, session: &SessionName, op: Op, request: &Request) -> Result<Response, Refusal> {
+    let started = Instant::now();
+    let asked = request.action.as_deref().cloned().unwrap_or_default();
+    let action = action(op, &asked)?;
+    if action.mutates() {
+        tabs::refuse_while_person_in_control(daemon, session)?;
+    }
+    let browser = tabs::browser(daemon, session)?;
+    let store = SessionBindings { daemon, session };
+    let target = block_on(Tabs::new(&browser.connection, &store).selected()).map_err(|error| tabs::tab_failure(session, error))?;
+    let acted = {
+        let mut pages = browser.pages.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        block_on(pages.act(&target, &action, &StoredRefCounter { daemon })).map_err(|e| action_failure(session, &target, e))?
+    };
+    let Acted { on, outcome, cdp_calls, elapsed, .. } = acted;
+    let mut view = ActionView {
+        action: op.as_str().trim_start_matches("page-").to_string(),
+        target: target.target.to_string(),
+        frame: on.as_ref().map(|on| on.frame.to_string()),
+        element: on.and_then(|on| on.element).map(|e| e.to_string()),
+        changed: None,
+        selected: None,
+        text: None,
+        truncated: None,
+        redacted: None,
+        value: None,
+        matched: None,
+        path: None,
+        bytes: None,
+        dialog: None,
+        cdp_calls,
+        action_ms: elapsed.as_millis() as u64,
+        elapsed_ms: 0,
+    };
+    match outcome {
+        Outcome::Done => {}
+        Outcome::Checked { changed } => view.changed = Some(changed),
+        Outcome::Selected(values) => view.selected = Some(values),
+        Outcome::Text { text, truncated } => {
+            view.text = Some(text);
+            view.truncated = Some(truncated);
+        }
+        Outcome::Attribute(value) => view.value = Some(value.map_or(json::Value::Null, json::Value::String)),
+        Outcome::Value(FieldValue::Text(text)) => view.text = Some(text),
+        Outcome::Value(FieldValue::Redacted) => view.redacted = Some(true),
+        Outcome::Evaluated(value) => view.value = Some(value),
+        Outcome::Matched(matches) => view.matched = Some(matches as u64),
+        Outcome::Png(png) => {
+            let path = needed(&asked.path, "a path for the PNG")?;
+            write_png(Path::new(path), &png).map_err(|message| page_failure(&target, ErrorCode::WriteFailed, message, None))?;
+            view.path = Some(path.to_string());
+            view.bytes = Some(png.len() as u64);
+        }
+        Outcome::DialogHandled(dialog) => view.dialog = dialog.map(dialog_view),
+    }
+    view.elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(Response { page: Some(Box::new(PageView { snapshot: None, element: None, action: Some(view) })), ..Response::empty() })
+}
+
+fn action_failure(session: &SessionName, target: &TargetScope, error: ActionError) -> Response {
+    let message = error.to_string();
+    let snapshot = || Some(format!("see what the page shows with `bctl page snapshot {session}`"));
+    match error {
+        ActionError::InvalidLocator { .. } => page_failure(target, ErrorCode::BadRequest, message, None),
+        ActionError::NotFound { .. } => page_failure(target, ErrorCode::NotFound, message, snapshot()),
+        ActionError::Ambiguous { candidates, .. } => {
+            let mut response = page_failure(target, ErrorCode::Ambiguous, message, Some("name one: use a candidate's ref, or add --nth N".into()));
+            let body: &mut ErrorBody = response.error.as_deref_mut().expect("a failure has an error");
+            body.candidates = Some(
+                candidates.into_iter().map(|c| CandidateView { element: c.element.to_string(), frame: c.frame.to_string(), summary: c.summary }).collect(),
+            );
+            response
+        }
+        ActionError::Ref(error) => ref_failure(session, target, error),
+        ActionError::NotVisible { .. } => page_failure(target, ErrorCode::NotVisible, message, snapshot()),
+        ActionError::Disabled { .. } => page_failure(target, ErrorCode::Disabled, message, None),
+        ActionError::Covered { .. } => page_failure(target, ErrorCode::Covered, message, Some("close or move what covers it first".into())),
+        ActionError::Missed { .. } => page_failure(
+            target,
+            ErrorCode::Missed,
+            message,
+            Some("the page changed under the pointer; bctl does not click again, so check what happened before retrying".into()),
+        ),
+        ActionError::Detached { .. } => page_failure(target, ErrorCode::Detached, message, snapshot()),
+        ActionError::NotActionable { .. } => page_failure(target, ErrorCode::NotActionable, message, None),
+        ActionError::DialogOpen(dialog) => {
+            let remedy = Some(format!("answer it with `bctl page dialog {session} accept` or `bctl page dialog {session} dismiss`"));
+            let mut response = page_failure(target, ErrorCode::DialogOpen, message, remedy);
+            response.error.as_deref_mut().expect("a failure has an error").dialog = Some(dialog_view(dialog));
+            response
+        }
+        ActionError::NoDialog => page_failure(target, ErrorCode::NoDialog, message, None),
+        ActionError::Timeout { .. } => page_failure(target, ErrorCode::Timeout, message, Some("wait longer with --timeout MS".into())),
+        ActionError::NavigationFailed { .. } => page_failure(target, ErrorCode::NavigationFailed, message, None),
+        ActionError::Script { .. } => page_failure(target, ErrorCode::EvalFailed, message, None),
+        ActionError::Attach(error) => attach_failure(session, target, error),
+        ActionError::Cdp(error) => cdp_failure(session, target, error),
+        ActionError::OtherGeneration | ActionError::Helper { .. } | ActionError::Counter(_) => page_failure(target, ErrorCode::Internal, message, None),
     }
 }
