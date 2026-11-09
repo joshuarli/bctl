@@ -29,23 +29,21 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   vCPUs). G3.2 (seccomp-BPF: validator, interpreter, strict mode, TSYNC,
   the standard actions with forced SIGSYS, one dispatch point shared with
   strace; `seccomp` fixture green on 1 and 2 vCPUs, also under strace).
-  Probe on Nanos: 36/55, raw 6/6; upstream 64 pass.
+  Probe on Nanos: 42/55, raw 6/6; upstream 64 pass.
   G3.3 (user namespaces with one-shot id maps and scoped capabilities, a
   shared `fs_struct`, `chroot` with a root-clamped lookup, procfs
   `root`/`ns`/map files; `userns` 20/20 on 1 and 2 vCPUs, 11 checks native).
+  G2.1 (SCM_RIGHTS/SCM_CREDENTIALS, SO_PASSCRED, SO_PEERCRED from the owner's
+  session; `scm_rights` 20/20 on 1 and 2 vCPUs; gVisor cmsg 18/18).
   Realtime timers with a deadline before boot now fire (they wrapped to a
   far-future expiry and hung `shmem_xproc` intermittently).
   **Red:** none.
-  **Owner-run:** G2.1 (SCM data and Unix-socket credentials) runs in the
-  owner's session in `.work/wt/g2.1`; slices that need it (G3.4's credential
-  translation, the probe's `scm_rights`/`peer_credentials` checks, the
-  zygote checks) wait with it.
-- **Running lane:** none; G2.1 from the owner is being integrated.
-- **Next:** integrate G2.1, then G3.4 by `nanos/docs/sandbox-design.md` §5. The headless switch is
+- **Running lane:** none.
+- **Next:** G3.4 by `nanos/docs/sandbox-design.md` §5. The headless switch is
   staged in `.work/wt/agent-a96d4fa7dc419bc95` (uncommitted) until
   chromium-build produces a headless archive
   (`docs/handoff-helium-headless-ozone.md`).
-- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 NOT RUN (G2.2, G2.3 accepted; G2.1 owner-run) · G3 NOT RUN (G3.1, G3.2, G3.3 accepted) · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
+- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1, G3.2, G3.3 accepted) · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
