@@ -15,7 +15,7 @@ version_is() {
 	if [ "$got" = "$want" ]; then ok "$name $got"; else bad "$name is '${got:-absent}', toolchain.lock pins $want: $4"; fi
 }
 
-for t in git curl sha256sum tar xz make gcc ld objcopy strip nasm qemu-system-x86_64 qemu-img gdb addr2line readelf; do
+for t in git curl sha256sum tar xz make gcc ccache ld objcopy strip nasm qemu-system-x86_64 qemu-img gdb addr2line readelf; do
 	need "$t" "install it on the host (Alpine: apk add $t)"
 done
 
@@ -23,6 +23,7 @@ command -v gcc >/dev/null 2>&1 && version_is gcc "$HOST_GCC_VERSION" "$(gcc -dum
 command -v ld >/dev/null 2>&1 && version_is binutils "$HOST_BINUTILS_VERSION" "$(ld --version | sed -n '1s/.* //p')" "install binutils $HOST_BINUTILS_VERSION"
 command -v nasm >/dev/null 2>&1 && version_is nasm "$HOST_NASM_VERSION" "$(nasm -v | sed -n 's/^NASM version \([^ ]*\).*/\1/p')" "install nasm $HOST_NASM_VERSION"
 command -v make >/dev/null 2>&1 && version_is make "$HOST_MAKE_VERSION" "$(make --version | sed -n '1s/.* //p')" "install GNU make $HOST_MAKE_VERSION"
+command -v ccache >/dev/null 2>&1 && version_is ccache "$HOST_CCACHE_VERSION" "$(ccache --version | sed -n '1s/^ccache version //p')" "install ccache $HOST_CCACHE_VERSION"
 command -v qemu-system-x86_64 >/dev/null 2>&1 && version_is qemu "$HOST_QEMU_VERSION" "$(qemu-system-x86_64 --version | sed -n '1s/.*version \([^ ]*\).*/\1/p')" "install qemu $HOST_QEMU_VERSION"
 
 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ok "/dev/kvm read/write"; else bad "/dev/kvm is not read/write for $(id -un): add the user to the kvm group or fix its mode"; fi

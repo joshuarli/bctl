@@ -15,7 +15,7 @@ case ${1:-} in
 esac
 
 ensure_work
-make -C "$src" -j"$(nproc)" kernel tools ${kconfig:+KCONFIG=$kconfig} >"$WORK/tmp/build.log" 2>&1 || { tail -n 30 "$WORK/tmp/build.log" >&2; die "build failed; full log in $WORK/tmp/build.log"; }
+make -C "$src" -j"$(nproc)" kernel tools CC="ccache gcc" ${kconfig:+KCONFIG=$kconfig} >"$WORK/tmp/build.log" 2>&1 || { tail -n 30 "$WORK/tmp/build.log" >&2; die "build failed; full log in $WORK/tmp/build.log"; }
 
 out=$src/output
 bin=$out/platform/pc/bin

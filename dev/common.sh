@@ -9,7 +9,8 @@ NANOS=$ROOT/nanos
 NANOS_OUT=$NANOS/output
 NANOS_DEBUG=$WORK/build/nanos-debug
 TMPDIR=$WORK/tmp
-export TMPDIR
+CCACHE_DIR=$WORK/ccache
+export TMPDIR CCACHE_DIR
 
 die() { printf '%s: %s\n' "$(basename -- "$0")" "$*" >&2; exit 1; }
 
