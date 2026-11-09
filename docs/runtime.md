@@ -104,15 +104,36 @@ All from the vendored source, on the host:
    feature is what exports `krun_add_display`; the input feature is what
    exports `krun_add_input_device`.
 3. **smolvm.** The CLI, linked against the just-built `libkrun.dylib`.
-4. **The guest agent rootfs** and the pre-formatted disk templates, built in a
-   pinned Debian container (see below).
+4. **The guest agent rootfs and `krun-init`**, plus the pre-formatted disk
+   templates, built in a pinned Alpine container (see below).
 
-The kernel and the guest agent are built in a container because this host is
-macOS: the kernel needs a Linux toolchain, and the agent's C dependencies
-(`ring`) need a musl C compiler and headers that macOS does not have. The
-container image is pinned by digest, and every input it fetches is pinned:
-Alpine's release, the `apk.static` from it, Crane's release archive by SHA-256,
-and Rust from rustup.
+The kernel and the guest binaries are built in a container because this host is
+macOS: the kernel needs a Linux toolchain, and the guest's C tools need a Linux
+musl compiler and headers.
+
+`krun-init`, `smolvm-agent`, and every program in the rootfs link statically
+against the musl `libc.a` and startup objects from the `llvm-prebuilt-musl`
+release that the Helium image also uses. Rust std is rebuilt with
+`-Zbuild-std` on the nightly named in `UPSTREAM.lock`, and clang is the C compiler
+and linker, so no GCC object, `.comment`, or runtime enters a guest binary.
+`runtime/guest/check-purity.sh` fails the build on any `INTERP`, `DT_NEEDED`,
+GCC `.comment`, or GNU runtime symbol in the rootfs or `krun-init`.
+
+The container image is pinned by digest, and every input it fetches is pinned
+by version and SHA-256: the LLVM/musl toolchain, musl's headers, BusyBox, GNU
+tar, e2fsprogs, util-linux, crun, json-c, libcap, libseccomp, argp-standalone,
+curl, Go, Crane, and the CA bundle; Rust comes from rustup. The rootfs is
+assembled by `runtime/guest/rootfs.sh`, not by upstream's Alpine script: the
+vendored script can only produce an Alpine userland, and every Alpine binary is
+GCC-built. The assembly keeps the layout SmolVM needs: `/usr/local/bin/smolvm-agent`,
+`/usr/local/bin/crane`, `/sbin/init`, `/usr/bin/crun`, `/usr/bin/seatd`,
+e2fsprogs in `/sbin`, and the `/etc` files the agent reads. It includes only
+what the agent execs and reads: BusyBox for `sh` and the coreutils, mount,
+umount, cp, sleep, true, nc and wget applets; GNU tar for the long options
+BusyBox lacks; e2fsprogs for `mkfs.ext4`, `fsck.ext4`, `e2fsck` and
+`resize2fs`; util-linux for `fstrim -a` and `nsenter`; curl; crane; crun; and
+seatd. There is no CUDA runner, Vulkan bundle, or Rosetta wrapper: bctl uses
+none of them.
 
 `runtime/guest.sh` does only that container work. It is skipped when its four
 outputs are present, so a host rebuild of libkrun and the CLI does not rebuild
@@ -121,23 +142,13 @@ against `UPSTREAM.lock` before it enters the container, and `krun-init` from
 that build is embedded into the host `libkrun.dylib` rather than rebuilt on the
 host, so the host and guest agree on it by construction.
 
-The agent rootfs is upstream's Alpine rootfs (3.24.4, the release in
-`runtime/guest.sh`), built by upstream's own `scripts/build-agent-rootfs.sh`
-with `--crane-release`. Two of that script's optional components are not in it:
-`smolvm-cuda-run` (the `--cuda` guest runner) and the Vulkan/Venus guest driver
-bundle, which upstream's script stages from RPMs and therefore needs an RPM
-extractor the pinned container does not have. bctl uses neither: it never passes
-`--cuda`, and its guests render on the CPU. The release rootfs is Alpine 3.19;
-the version is not part of what an appliance image provides, because the image
-brings its own userland.
-
 ## Installed layout
 
 ```
 .work/runtime/smolvm/
   smolvm                  # sets DYLD_LIBRARY_PATH and SMOLVM_AGENT_ROOTFS
   smolvm-bin              # the CLI, signed with smolvm.entitlements
-  agent-rootfs/           # the guest agent rootfs, Alpine-based
+  agent-rootfs/           # the guest agent rootfs, static musl
   lib/
     libkrun.dylib
     libkrunfw.5.dylib -> copied file, plus the libkrunfw.dylib symlink
@@ -171,6 +182,8 @@ Venus-only build whose 2D refusal the patch works around.
   `smolvm.entitlements`, including `com.apple.security.hypervisor`, which HVF
   requires;
 - every staged Mach-O is `arm64`;
+- the guest rootfs and `krun-init` have no `INTERP`, no `DT_NEEDED`, no GCC
+  `.comment`, and no GNU runtime symbols;
 - `smolvm --version` reports the version pinned in the lock.
 
 `smolvm.entitlements` is upstream's file: the hypervisor entitlement, the
@@ -211,9 +224,10 @@ digest changed.
 
 Nothing in the runtime. libkrun, libkrunfw (and so the guest kernel),
 `krun-init`, the guest agent, the agent rootfs, the disk templates, and the
-CLI are all built from the vendored tip. The Homebrew GPU dylibs are
-third-party dependencies, not SmolVM release files, and they are what the
-release bundle ships too.
+CLI are all built from source. The rootfs's CA bundle is Mozilla's certificate
+data, pinned by SHA-256, not a binary. The Homebrew GPU dylibs are third-party
+dependencies, not SmolVM release files, and they are what the release bundle
+ships too.
 
 ## Using it
 
