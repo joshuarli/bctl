@@ -1242,7 +1242,6 @@ static int filesystem_resolve_internal(filesystem *fs, tuple cwd, sstring f,
         }
         if (root_fs != *fs) {
             filesystem_unlock(*fs);
-            filesystem_release(*fs);
             *fs = root_fs;
             filesystem_lock(*fs);
         }

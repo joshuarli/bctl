@@ -452,6 +452,10 @@ static void check_proc_status(void)
 	char exe[4096] = "";
 	n = readlink("/proc/self/exe", exe, sizeof exe - 1);
 	int exe_ok = n > 0 && exe[0] == '/' && strstr(exe, "creds_procfs");
+	for (int i = 0; exe_ok && i < 256; i++) {
+		struct stat st;
+		exe_ok = !stat("/proc/self/exe", &st) && S_ISREG(st.st_mode);
+	}
 
 	int ready[2], hold[2];
 	pipe(ready);
