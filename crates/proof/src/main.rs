@@ -69,7 +69,7 @@ impl Machine {
         let mut machine = Machine { smolvm: smolvm.to_path_buf(), name: name.to_string(), pid: None };
         let image = image.to_string_lossy();
         let ports: Vec<String> = forwards.iter().map(|(host, guest)| format!("{host}:{guest}")).collect();
-        let mut create = vec!["machine", "create", "--name", name, "--gpu", "--mem", "4096", "--image", &image];
+        let mut create = vec!["machine", "create", "--name", name, "--gpu", "--mem", "4096", "--image", &image, "-e", "BCTL_CDP_PORT=9222"];
         for port in &ports {
             create.extend(["-p", port]);
         }

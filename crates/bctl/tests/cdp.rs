@@ -71,9 +71,10 @@ fn cdp_is_reachable_only_through_a_live_capability() {
 
     let (status, response) = http(port, &host, "GET /json/version", "");
     assert_eq!(status, 200, "{response}");
-    let guest_port = home.json(&["status"]).sessions[0].cdp_url.clone().unwrap();
+    let (status, _) = http(port, &host, "GET /json/version/", "");
+    assert_eq!(status, 200, "Playwright asks for /json/version/ with a trailing slash");
     assert!(response.contains(&format!("ws://{host}/devtools/browser/")), "{response}");
-    assert!(!response.contains(guest_port.trim_start_matches("http://")), "the guest address leaked: {response}");
+    assert!(!response.contains("ws://127.0.0.1") && !response.contains("devtoolsFrontendUrl"), "the guest address leaked: {response}");
 
     let browser_path = response.split("ws://").nth(1).and_then(|r| r.find('/').map(|i| r[i..].split('"').next().unwrap().to_string())).unwrap();
     let mut live = TcpStream::connect(("127.0.0.1", port)).unwrap();

@@ -1,6 +1,7 @@
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -10,7 +11,7 @@ use bctl_core::{Endpoints, MachineName, MachineObservation};
 use bctl_rfb::Client;
 use miniserde::{Deserialize, json};
 
-const GUEST_CDP_PORT: u16 = 9222;
+const GUEST_CDP_SOCKET: &str = "/run/bctl/cdp.sock";
 
 /// Why a smolvm operation failed. `Smolvm` carries smolvm's own stable error code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +82,8 @@ pub struct LaunchSpec {
     /// Host directory mounted at `/profile`, so the browser profile outlives the VM.
     pub profile_dir: Option<PathBuf>,
     pub endpoints: Endpoints,
+    /// Host path where the guest's CDP socket appears; its directory must already exist and be private.
+    pub cdp_socket: PathBuf,
     pub display: (u16, u16),
     pub memory_mib: u32,
     pub cpus: u8,
@@ -194,10 +197,10 @@ impl SmolVm {
     pub fn launch(&self, spec: &LaunchSpec) -> Result<(), RuntimeError> {
         let name = spec.machine.to_string();
         let image = spec.image.to_string_lossy();
-        let port = format!("{}:{GUEST_CDP_PORT}", spec.endpoints.cdp_port);
+        let socket = format!("{GUEST_CDP_SOCKET}:{}", spec.cdp_socket.to_string_lossy());
         let memory = spec.memory_mib.to_string();
         let cpus = spec.cpus.to_string();
-        let mut create = vec!["machine", "create", "--name", &name, "--gpu", "--mem", &memory, "--cpus", &cpus, "-p", &port, "--image", &image];
+        let mut create = vec!["machine", "create", "--name", &name, "--gpu", "--mem", &memory, "--cpus", &cpus, "--expose-socket", &socket, "--block-private", "--image", &image];
         let volume = spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy()));
         if let Some(volume) = &volume {
             create.extend(["-v", volume]);
@@ -244,18 +247,19 @@ impl SmolVm {
     }
 
     /// Waits until every stage holds: machine, guest agent, seat, compositor, browser, sandbox, CDP through the
-    /// host forward, and a display that has drawn something. An open port alone is never taken as ready.
+    /// exposed socket, and a display that has drawn something. An open port alone is never taken as ready.
     pub fn wait_ready(
         &self,
         machine: &MachineName,
         endpoints: Endpoints,
+        cdp_socket: &Path,
         timeout: Duration,
         mut on_stage: impl FnMut(Stage),
     ) -> Result<Ready, RuntimeError> {
         let deadline = Instant::now() + timeout;
         let name = machine.to_string();
         loop {
-            match self.probe(&name, machine, endpoints) {
+            match self.probe(&name, machine, endpoints, cdp_socket) {
                 Ok(ready) => return Ok(ready),
                 Err(error @ RuntimeError::NotReady { .. }) if Instant::now() >= deadline => return Err(error),
                 Err(RuntimeError::NotReady { stage, .. }) => on_stage(stage),
@@ -265,7 +269,7 @@ impl SmolVm {
         }
     }
 
-    fn probe(&self, name: &str, machine: &MachineName, endpoints: Endpoints) -> Result<Ready, RuntimeError> {
+    fn probe(&self, name: &str, machine: &MachineName, endpoints: Endpoints, cdp_socket: &Path) -> Result<Ready, RuntimeError> {
         let not_ready = |stage, detail: String| RuntimeError::NotReady { stage, detail };
         let running = self.list()?.into_iter().any(|m| m.name == name && m.running);
         if !running {
@@ -275,7 +279,7 @@ impl SmolVm {
         if let Some(stage) = report.first_missing() {
             return Err(not_ready(stage, "bctl-guest check reports it missing".into()));
         }
-        let browser = cdp_browser(endpoints.cdp_port).ok_or_else(|| not_ready(Stage::Cdp, "no /json/version through the host forward".into()))?;
+        let browser = cdp_socket_browser(cdp_socket).ok_or_else(|| not_ready(Stage::Cdp, "no /json/version through the CDP socket".into()))?;
         let mut vnc = Client::connect(("127.0.0.1", endpoints.vnc_port), Duration::from_secs(5))
             .map_err(|e| not_ready(Stage::Display, format!("VNC: {e}")))?;
         let frame = vnc.refresh().map_err(|e| not_ready(Stage::Display, format!("VNC: {e}")))?;
@@ -290,14 +294,25 @@ impl SmolVm {
 
 /// The `Browser` field of `/json/version` on a host loopback port, if CDP answers there.
 pub fn cdp_browser(port: u16) -> Option<String> {
+    let stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    version_browser(stream, &format!("127.0.0.1:{port}"))
+}
+
+/// The `Browser` field of `/json/version` on a Unix socket, if CDP answers there.
+pub fn cdp_socket_browser(socket: &Path) -> Option<String> {
+    let stream = UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    version_browser(stream, "localhost")
+}
+
+fn version_browser(mut stream: impl Read + Write, host: &str) -> Option<String> {
     #[derive(Deserialize)]
     struct Version {
         #[serde(rename = "Browser")]
         browser: String,
     }
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    write!(stream, "GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").ok()?;
+    write!(stream, "GET /json/version HTTP/1.1\r\nHost: {host}\r\n\r\n").ok()?;
     let mut response = Vec::new();
     let mut chunk = [0; 4096];
     loop {

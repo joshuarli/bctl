@@ -40,11 +40,12 @@ build does not.
 
 - Runs as the unprivileged user `browser` (uid 1000, group `video`), headed,
   on Wayland, with the Chromium sandbox enabled.
-- CDP listens on guest port `9222` (`BCTL_CDP_PORT`) on all guest
-  interfaces. bctl forwards it to a host loopback port; the guest network is
-  reachable only through that forward. Chromium builds
-  `webSocketDebuggerUrl` from the request's Host header, so clients see the
-  host-side address.
+- CDP is relayed on the guest Unix socket `/run/bctl/cdp.sock`
+  (`BCTL_CDP_SOCKET`); bctl exposes that socket to a host path in a
+  per-session directory only the user can enter, so no host TCP port reaches
+  CDP. Setting `BCTL_CDP_PORT` also relays it on that guest TCP port, for
+  diagnostics that publish ports themselves. Chromium builds
+  `webSocketDebuggerUrl` from the request's Host header.
 - The profile lives at `/profile` (`BCTL_PROFILE_DIR`), owned by `browser`.
 - The first page is `BCTL_START_URL`, default `about:blank`.
 

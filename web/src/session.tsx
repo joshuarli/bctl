@@ -88,7 +88,6 @@ export function SessionPage(props: { name: string; session: SessionView | null }
           <dl class="facts">
             <dt>Profile</dt><dd>{session().profile}</dd>
             <dt>Image</dt><dd>{session().image}</dd>
-            <dt>CDP</dt><dd>{session().cdp_url ?? "–"}</dd>
           </dl>
         </Panel>
         <Panel title="Tabs" flush>

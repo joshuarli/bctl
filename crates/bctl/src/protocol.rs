@@ -112,7 +112,6 @@ pub struct SessionView {
     pub stage: Option<String>,
     pub failure: Option<String>,
     pub machine: Option<String>,
-    pub cdp_url: Option<String>,
     pub vnc_port: Option<u16>,
     /// `interactive` or `view-only`, once the guest has reported it.
     pub input: Option<String>,

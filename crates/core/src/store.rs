@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     image TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'failed')),
     generation INTEGER NOT NULL CHECK (generation >= 0),
-    cdp_port INTEGER CHECK (cdp_port BETWEEN 1 AND 65535),
     vnc_port INTEGER CHECK (vnc_port BETWEEN 1 AND 65535),
     failure TEXT
 ) STRICT;
@@ -106,7 +105,7 @@ impl Store {
     pub fn session(&self, name: &SessionName) -> Result<SessionRecord, StoreError> {
         self.db
             .query_row(
-                "SELECT name, profile, image, state, generation, failure, cdp_port, vnc_port FROM sessions WHERE name = ?1",
+                "SELECT name, profile, image, state, generation, failure, vnc_port FROM sessions WHERE name = ?1",
                 [name.as_str()],
                 raw_session,
             )
@@ -116,7 +115,7 @@ impl Store {
     }
 
     pub fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError> {
-        let mut stmt = self.db.prepare("SELECT name, profile, image, state, generation, failure, cdp_port, vnc_port FROM sessions ORDER BY name")?;
+        let mut stmt = self.db.prepare("SELECT name, profile, image, state, generation, failure, vnc_port FROM sessions ORDER BY name")?;
         let raw = stmt.query_map([], raw_session)?.collect::<Result<Vec<_>, _>>()?;
         raw.into_iter().map(session_record).collect()
     }
@@ -126,7 +125,7 @@ impl Store {
         let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let session = tx
             .query_row(
-                "SELECT name, profile, image, state, generation, failure, cdp_port, vnc_port FROM sessions WHERE name = ?1",
+                "SELECT name, profile, image, state, generation, failure, vnc_port FROM sessions WHERE name = ?1",
                 [name.as_str()],
                 raw_session,
             )
@@ -138,8 +137,8 @@ impl Store {
         }
         let generation = session.generation.next();
         let updated = tx.execute(
-            "UPDATE sessions SET state = 'starting', generation = ?2, cdp_port = ?3, vnc_port = ?4, failure = NULL WHERE name = ?1",
-            params![name.as_str(), to_sql_generation(generation)?, endpoints.cdp_port, endpoints.vnc_port],
+            "UPDATE sessions SET state = 'starting', generation = ?2, vnc_port = ?3, failure = NULL WHERE name = ?1",
+            params![name.as_str(), to_sql_generation(generation)?, endpoints.vnc_port],
         );
         match updated {
             Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::ConstraintViolation => {
@@ -253,24 +252,20 @@ impl Store {
     }
 }
 
-type RawSession = (String, String, String, String, i64, Option<String>, Option<u16>, Option<u16>);
+type RawSession = (String, String, String, String, i64, Option<String>, Option<u16>);
 
 fn raw_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
 }
 
-fn session_record((name, profile, image, state, generation, failure, cdp_port, vnc_port): RawSession) -> Result<SessionRecord, StoreError> {
+fn session_record((name, profile, image, state, generation, failure, vnc_port): RawSession) -> Result<SessionRecord, StoreError> {
     Ok(SessionRecord {
         name: parse_session_name(&name)?,
         profile: ProfileName::new(&profile).map_err(|e| StoreError::Corrupt(e.to_string()))?,
         image,
         state: SessionState::parse(&state).ok_or_else(|| StoreError::Corrupt(format!("session state {state:?}")))?,
         generation: Generation(u64::try_from(generation).map_err(|_| StoreError::Corrupt(format!("generation {generation}")))?),
-        endpoints: match (cdp_port, vnc_port) {
-            (Some(cdp_port), Some(vnc_port)) => Some(Endpoints { cdp_port, vnc_port }),
-            (None, None) => None,
-            _ => return Err(StoreError::Corrupt(format!("session {name} has only one of its ports"))),
-        },
+        endpoints: vnc_port.map(|vnc_port| Endpoints { vnc_port }),
         failure,
     })
 }
@@ -289,7 +284,7 @@ mod tests {
     use crate::reconcile::reconcile;
     use crate::state::MachineObservation;
 
-    const PORTS: Endpoints = Endpoints { cdp_port: 19222, vnc_port: 15900 };
+    const PORTS: Endpoints = Endpoints { vnc_port: 15900 };
 
     fn name(s: &str) -> SessionName {
         SessionName::new(s).unwrap()

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -176,7 +177,7 @@ impl Daemon {
             }
             Op::CdpUrl => {
                 let name = session()?;
-                if self.cdp_port(&name).is_none() {
+                if self.cdp_socket(&name).is_none() {
                     return Err(Response::failure(ErrorCode::Conflict, format!("session {name} is not ready"), Some(format!("run `bctl up {name}`"))));
                 }
                 let url = gateway::mint_cdp_url(self, &name).map_err(internal)?;
@@ -227,7 +228,6 @@ impl Daemon {
             stage: if record.state == SessionState::Starting { observed.and_then(|o| o.stage).map(str::to_string) } else { None },
             failure: record.failure.clone(),
             machine: holds.then(|| MachineName { session: record.name.clone(), generation: record.generation }.to_string()),
-            cdp_url: record.endpoints.filter(|_| holds).map(|e| format!("http://127.0.0.1:{}", e.cdp_port)),
             vnc_port: record.endpoints.filter(|_| holds).map(|e| e.vnc_port),
             input: observed.and_then(|o| o.input).filter(|_| holds).map(|i| match i {
                 InputSupport::Interactive => "interactive".to_string(),
@@ -283,7 +283,7 @@ impl Daemon {
             }
         }
 
-        let endpoints = Endpoints { cdp_port: free_port().map_err(internal)?, vnc_port: free_port().map_err(internal)? };
+        let endpoints = Endpoints { vnc_port: free_port().map_err(internal)? };
         let machine = self.store().begin_start(name, endpoints).map_err(store_failure)?;
         self.observe(name, |o| *o = Observed::default());
         let profile_dir = match self.ensure_profile_dir(&profile) {
@@ -301,11 +301,19 @@ impl Daemon {
                 return Err(Response::failure(ErrorCode::ImageMissing, message, None));
             }
         };
+        let cdp_socket = match self.private_cdp_dir(&machine) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+                return Err(internal(error));
+            }
+        };
         let spec = LaunchSpec {
             machine: machine.clone(),
             image: image_path,
             profile_dir: Some(profile_dir),
             endpoints,
+            cdp_socket,
             display: DISPLAY,
             memory_mib: MEMORY_MIB,
             cpus: CPUS,
@@ -327,6 +335,21 @@ impl Daemon {
         }
     }
 
+    /// Creates the user-only directory that will hold the machine's CDP socket and returns the socket path.
+    fn private_cdp_dir(&self, machine: &MachineName) -> Result<PathBuf, String> {
+        let socket = self.paths.cdp_socket(&machine.to_string());
+        if socket.as_os_str().len() > 100 {
+            return Err(format!("{} is too long for a Unix socket; set a shorter BCTL_HOME", socket.display()));
+        }
+        let dir = socket.parent().expect("a socket path has a directory");
+        let _ = fs::remove_dir_all(dir);
+        for path in [dir.parent().expect("the socket directory has a parent"), dir] {
+            fs::create_dir_all(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        }
+        Ok(socket)
+    }
+
     fn ensure_profile_dir(&self, profile: &ProfileName) -> Result<std::path::PathBuf, String> {
         let path = self.paths.profile_dir(profile.as_str());
         fs::create_dir_all(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
@@ -344,8 +367,9 @@ impl Daemon {
         (record.state == SessionState::Ready).then_some(record.endpoints).flatten()
     }
 
-    pub(crate) fn cdp_port(&self, name: &SessionName) -> Option<u16> {
-        self.ready_endpoints(name).map(|e| e.cdp_port)
+    pub(crate) fn cdp_socket(&self, name: &SessionName) -> Option<PathBuf> {
+        let record = self.store().session(name).ok()?;
+        (record.state == SessionState::Ready).then(|| self.paths.cdp_socket(&MachineName { session: record.name, generation: record.generation }.to_string()))
     }
 
     /// The VNC port to proxy and whether this runtime has input devices at all.
@@ -376,7 +400,7 @@ impl Daemon {
 
     fn await_ready(&self, machine: &MachineName, endpoints: Endpoints) {
         let session = &machine.session;
-        let result = self.runtime.wait_ready(machine, endpoints, READY_TIMEOUT, |stage| self.observe(session, |o| o.stage = Some(stage.as_str())));
+        let result = self.runtime.wait_ready(machine, endpoints, &self.paths.cdp_socket(&machine.to_string()), READY_TIMEOUT, |stage| self.observe(session, |o| o.stage = Some(stage.as_str())));
         match result {
             Ok(ready) => {
                 self.observe(session, |o| {
@@ -430,6 +454,7 @@ impl Daemon {
         let generation: Generation = record.generation;
         match self.runtime.remove(machine) {
             Ok(()) => {
+                let _ = fs::remove_dir_all(self.paths.cdp_socket(&machine.to_string()).parent().expect("a socket path has a directory"));
                 self.observe(&record.name, |o| *o = Observed::default());
                 let _ = self.store().transition(&record.name, generation, SessionState::Stopped, None);
             }

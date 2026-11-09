@@ -5,7 +5,8 @@ browser_user=browser
 runtime_dir=/run/user/1000
 state=/run/bctl
 profile=${BCTL_PROFILE_DIR:-/profile}
-cdp_port=${BCTL_CDP_PORT:-9222}
+cdp_socket=${BCTL_CDP_SOCKET:-/run/bctl/cdp.sock}
+cdp_tcp_port=${BCTL_CDP_PORT:-}
 browser_cdp_port=9221
 start_url=${BCTL_START_URL:-about:blank}
 
@@ -47,7 +48,7 @@ stop() {
 }
 
 wayland_socket() { [ -S "$runtime_dir/wayland-1" ]; }
-cdp_ready() { wget -qO- "http://127.0.0.1:$cdp_port/json/version" >/dev/null 2>&1; }
+cdp_ready() { wget -qO- "http://127.0.0.1:$browser_cdp_port/json/version" >/dev/null 2>&1; }
 
 run() {
     trap stop TERM INT
@@ -74,7 +75,10 @@ run() {
         --user-data-dir="$profile" --no-first-run --no-default-browser-check \
         --start-maximized "$start_url" > "$state/browser.log" 2>&1 &
     browser=$!
-    socat TCP-LISTEN:"$cdp_port",fork,reuseaddr TCP:127.0.0.1:"$browser_cdp_port" > "$state/relay.log" 2>&1 &
+    socat UNIX-LISTEN:"$cdp_socket",fork,unlink-early TCP:127.0.0.1:"$browser_cdp_port" > "$state/relay.log" 2>&1 &
+    if [ -n "$cdp_tcp_port" ]; then
+        socat TCP-LISTEN:"$cdp_tcp_port",fork,reuseaddr TCP:127.0.0.1:"$browser_cdp_port" > "$state/relay-tcp.log" 2>&1 &
+    fi
     wait_for browser cdp_ready
     echo "bctl-guest: ready"
     wait "$browser" || true

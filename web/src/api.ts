@@ -7,7 +7,6 @@ export type SessionView = {
   stage: string | null;
   failure: string | null;
   machine: string | null;
-  cdp_url: string | null;
   vnc_port: number | null;
   input: "interactive" | "view-only" | null;
 };

@@ -13,7 +13,7 @@ function bctl(...args: string[]): string {
   return execFileSync(bctlBinary, args, { env: { ...process.env, BCTL_HOME: home }, encoding: "utf8" });
 }
 
-type Session = { name: string; state: string; cdp_url: string | null };
+type Session = { name: string; state: string };
 
 let guest: Browser;
 let guestPage: Page;
@@ -27,10 +27,7 @@ test.beforeAll(async () => {
   symlinkSync(resolve(workspace, ".work/runtime/smolvm"), resolve(home, "runtime/smolvm"));
   symlinkSync(resolve(workspace, ".work/images/ref-alpine-chromium.tar"), resolve(home, "images/ref-alpine-chromium.tar"));
   bctl("up", session, "--image", "ref-alpine-chromium");
-  const status = JSON.parse(bctl("status", "--json")) as { sessions: Session[] };
-  const cdp = status.sessions.find((s) => s.name === session)?.cdp_url;
-  if (!cdp) throw new Error("session has no CDP URL");
-  guest = await chromium.connectOverCDP(cdp);
+  guest = await chromium.connectOverCDP(bctl("cdp-url", session).trim());
   const context = guest.contexts()[0];
   if (!context) throw new Error("guest browser has no context");
   guestPage = context.pages()[0] ?? (await context.newPage());

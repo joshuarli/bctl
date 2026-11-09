@@ -197,11 +197,10 @@ fn render(op: Op, response: &Response, json: bool) -> ExitCode {
     }
     match op {
         Op::Status => {
-            println!("{:<20} {:<16} {:<10} {:<12} {:<22} IMAGE", "NAME", "PROFILE", "STATE", "WAITING ON", "CDP");
+            println!("{:<20} {:<16} {:<10} {:<12} IMAGE", "NAME", "PROFILE", "STATE", "WAITING ON");
             for s in &response.sessions {
                 let waiting = s.stage.clone().unwrap_or_else(|| "-".into());
-                let cdp = s.cdp_url.clone().unwrap_or_else(|| "-".into());
-                println!("{:<20} {:<16} {:<10} {:<12} {:<22} {}", s.name, s.profile, s.state, waiting, cdp, s.image);
+                println!("{:<20} {:<16} {:<10} {:<12} {}", s.name, s.profile, s.state, waiting, s.image);
             }
         }
         Op::Profiles => {
@@ -234,7 +233,6 @@ fn print_session(s: &SessionView) {
     field("image", Some(s.image.clone()));
     field("generation", Some(s.generation.to_string()));
     field("machine", s.machine.clone());
-    field("cdp", s.cdp_url.clone());
     field("vnc", s.vnc_port.map(|p| format!("127.0.0.1:{p}")));
     field("input", s.input.clone());
 }

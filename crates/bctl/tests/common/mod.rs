@@ -17,7 +17,6 @@ pub struct Session {
     pub stage: Option<String>,
     pub input: Option<String>,
     pub machine: Option<String>,
-    pub cdp_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +59,12 @@ impl Home {
 
     pub fn up(&self, session: &str, profile: &str) -> Output {
         self.bctl(&["up", session, "--profile", profile, "--image", "ref-alpine-chromium"])
+    }
+
+    pub fn cdp_url(&self, session: &str) -> String {
+        let output = self.bctl(&["cdp-url", session]);
+        assert_ok(&output);
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     pub fn prefix(&self) -> String {

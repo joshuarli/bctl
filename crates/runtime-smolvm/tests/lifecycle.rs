@@ -13,12 +13,19 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+fn cdp_socket(session: &SessionName, generation: u64) -> PathBuf {
+    let dir = workspace().join(format!(".work/tmp/cdp-{session}-{generation}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("s")
+}
+
 fn spec(session: &SessionName, generation: u64) -> LaunchSpec {
     LaunchSpec {
         machine: MachineName { session: session.clone(), generation: Generation(generation) },
         image: workspace().join(".work/images/ref-alpine-chromium.tar"),
         profile_dir: None,
-        endpoints: Endpoints { cdp_port: free_port(), vnc_port: free_port() },
+        endpoints: Endpoints { vnc_port: free_port() },
+        cdp_socket: cdp_socket(session, generation),
         display: (1280, 800),
         memory_mib: 4096,
         cpus: 2,
@@ -34,7 +41,7 @@ fn a_session_starts_becomes_ready_stops_and_restarts_under_a_new_generation() {
     for generation in [1, 2] {
         let spec = spec(&session, generation);
         runtime.launch(&spec).unwrap();
-        let ready = runtime.wait_ready(&spec.machine, spec.endpoints, Duration::from_secs(120), |_| {});
+        let ready = runtime.wait_ready(&spec.machine, spec.endpoints, &spec.cdp_socket, Duration::from_secs(120), |_| {});
         let listed = runtime.list().unwrap();
         runtime.remove(&spec.machine).unwrap();
 

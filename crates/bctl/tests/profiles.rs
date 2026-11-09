@@ -58,7 +58,7 @@ fn a_profile_keeps_its_cookies_across_twenty_down_up_cycles() {
         assert_ok(&home.up(&session, "keeper"));
         let status = home.json(&["status"]);
         let s = status_of(&status, &session);
-        let cdp_url = s.cdp_url.clone().expect("a ready session has a CDP URL");
+        let cdp_url = home.cdp_url(&session);
         let machine = s.machine.clone().expect("a ready session has a machine");
         let value = format!("cycle-{cycle}");
         async_io::block_on(cookie_round_trip(&cdp_url, previous.as_deref(), &value)).unwrap_or_else(|e| panic!("cycle {cycle}: {e}"));

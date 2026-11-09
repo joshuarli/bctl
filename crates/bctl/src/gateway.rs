@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::net::TcpStream as StdTcpStream;
+use std::os::unix::net::UnixStream as StdUnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -265,10 +266,10 @@ struct CdpTarget {
     url: String,
 }
 
-fn cdp_get(port: u16, path: &str) -> Result<String, String> {
-    let mut stream = StdTcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("CDP: {e}"))?;
+fn cdp_get(socket: &Path, path: &str) -> Result<String, String> {
+    let mut stream = StdUnixStream::connect(socket).map_err(|e| format!("CDP: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").map_err(|e| e.to_string())?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").map_err(|e| e.to_string())?;
     let mut response = Vec::new();
     let mut chunk = [0; 8192];
     loop {
@@ -290,13 +291,13 @@ fn cdp_get(port: u16, path: &str) -> Result<String, String> {
     }
 }
 
-fn session_cdp_port(daemon: &Daemon, name: &str) -> Result<u16, String> {
+fn session_cdp_socket(daemon: &Daemon, name: &str) -> Result<PathBuf, String> {
     let name = SessionName::new(name).map_err(|e| e.to_string())?;
-    daemon.cdp_port(&name).ok_or_else(|| format!("session {name} is not running"))
+    daemon.cdp_socket(&name).ok_or_else(|| format!("session {name} is not running"))
 }
 
 fn tabs(daemon: &Daemon, name: &str) -> Result<Vec<Tab>, String> {
-    let body = cdp_get(session_cdp_port(daemon, name)?, "/json/list")?;
+    let body = cdp_get(&session_cdp_socket(daemon, name)?, "/json/list")?;
     let targets: Vec<CdpTarget> = json::from_str(&body).map_err(|_| "CDP returned an unexpected target list".to_string())?;
     Ok(targets.into_iter().filter(|t| t.kind == "page").map(|t| Tab { id: t.id, title: t.title, url: t.url }).collect())
 }
@@ -305,7 +306,7 @@ fn activate(daemon: &Daemon, name: &str, id: &str) -> Result<(), String> {
     if !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err("invalid tab id".into());
     }
-    cdp_get(session_cdp_port(daemon, name)?, &format!("/json/activate/{id}")).map(drop)
+    cdp_get(&session_cdp_socket(daemon, name)?, &format!("/json/activate/{id}")).map(drop)
 }
 
 fn handle_cdp(daemon: &Arc<Daemon>, host: &str, token: &str, request: &mut Request) -> Response<BoxBody> {
@@ -324,19 +325,19 @@ fn handle_cdp(daemon: &Arc<Daemon>, host: &str, token: &str, request: &mut Reque
     if person_in_control {
         return text(StatusCode::CONFLICT, "A person has taken control of this browser; new CDP attachments are refused until they release it.");
     }
-    let Some(cdp_port) = daemon.cdp_port(&session) else {
+    let Some(cdp_socket) = daemon.cdp_socket(&session) else {
         return text(StatusCode::CONFLICT, "That session is not running.");
     };
-    let path = request.uri().path().to_string();
+    let path = request.uri().path().trim_end_matches('/').to_string();
     let upgrading = request.headers().contains_key(header::UPGRADE);
     match (request.method(), path.as_str()) {
         (&Method::GET, "/json/version" | "/json/list" | "/json") if !upgrading => {
-            match cdp_get(cdp_port, &path).and_then(|body| rewrite_targets(&body, host)) {
+            match cdp_get(&cdp_socket, &path).and_then(|body| rewrite_targets(&body, host)) {
                 Ok(body) => respond(StatusCode::OK, "application/json", body),
                 Err(e) => text(StatusCode::BAD_GATEWAY, &e),
             }
         }
-        (&Method::GET, _) if upgrading && is_devtools_path(&path) => proxy_cdp_socket(daemon, token, cdp_port, &path, request),
+        (&Method::GET, _) if upgrading && is_devtools_path(&path) => proxy_cdp_socket(daemon, token, &cdp_socket, &path, request),
         _ => text(StatusCode::NOT_FOUND, "Not found."),
     }
 }
@@ -366,12 +367,12 @@ fn rewrite_targets(body: &str, host: &str) -> Result<String, String> {
     Ok(json::to_string(&value))
 }
 
-fn guest_websocket(cdp_port: u16, path: &str, key: &str) -> Result<(StdTcpStream, String), String> {
-    let mut stream = StdTcpStream::connect(("127.0.0.1", cdp_port)).map_err(|e| format!("CDP: {e}"))?;
+fn guest_websocket(cdp_socket: &Path, path: &str, key: &str) -> Result<(StdUnixStream, String), String> {
+    let mut stream = StdUnixStream::connect(cdp_socket).map_err(|e| format!("CDP: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{cdp_port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
     )
     .map_err(|e| e.to_string())?;
     let mut head = Vec::new();
@@ -395,19 +396,19 @@ fn guest_websocket(cdp_port: u16, path: &str, key: &str) -> Result<(StdTcpStream
     Ok((stream, accept))
 }
 
-fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, cdp_port: u16, path: &str, request: &mut Request) -> Response<BoxBody> {
+fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, cdp_socket: &Path, path: &str, request: &mut Request) -> Response<BoxBody> {
     let key = header_str(request, header::SEC_WEBSOCKET_KEY).unwrap_or("");
     if header_str(request, header::SEC_WEBSOCKET_VERSION) != Some("13") || key.len() != 24 || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)) {
         return text(StatusCode::BAD_REQUEST, "Not a WebSocket upgrade.");
     }
-    let (guest, accept) = match guest_websocket(cdp_port, path, key) {
+    let (guest, accept) = match guest_websocket(cdp_socket, path, key) {
         Ok(guest) => guest,
         Err(e) => return text(StatusCode::BAD_GATEWAY, &e),
     };
     let Ok(watched) = guest.try_clone() else {
         return text(StatusCode::BAD_GATEWAY, "Could not watch the CDP connection.");
     };
-    let Ok(guest) = TcpStream::try_from(guest) else {
+    let Ok(guest) = async_net::unix::UnixStream::try_from(guest) else {
         return text(StatusCode::BAD_GATEWAY, "Could not adopt the CDP connection.");
     };
     let on_upgrade = h12tiny::server::upgrade::on(request);
