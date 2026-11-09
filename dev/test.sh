@@ -69,6 +69,7 @@ suite_harness() {
 		case_verdict userns "$smp" 90 PASS '' "$FIXTURES/userns"
 		case_verdict mmap_bad_fd "$smp" 20 PASS '' "$FIXTURES/mmap_bad_fd"
 		case_verdict scm_rights "$smp" 60 PASS '' "$FIXTURES/scm_rights"
+		case_verdict crashpad_cmsg "$smp" 60 PASS '' "$FIXTURES/crashpad_cmsg"
 		case_verdict session_signal "$smp" 30 PASS '' "$FIXTURES/session_signal"
 	done
 	fixture_native userns unshare -Ur

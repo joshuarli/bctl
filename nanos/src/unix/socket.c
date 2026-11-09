@@ -11,6 +11,8 @@ typedef struct unix_cred {
 typedef struct unixsock_scm {
     struct unix_cred cred;
     boolean has_cred;
+    struct unix_cred auto_cred;
+    boolean has_auto;
     u16 nfds;
     fdesc fds[];
 } *unixsock_scm;
@@ -109,8 +111,25 @@ static void scm_release(unixsock_scm scm)
         fdesc_put(scm->fds[i]);
     if (scm->has_cred && scm->cred.p)
         process_release(scm->cred.p);
+    if (scm->has_auto && scm->auto_cred.p)
+        process_release(scm->auto_cred.p);
     heap h = heap_locked(get_kernel_heaps());
     deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
+}
+
+static boolean scm_effective_cred(unixsock_scm scm, struct unix_cred *out)
+{
+    if (!scm)
+        return false;
+    if (scm->has_cred) {
+        *out = scm->cred;
+        return true;
+    }
+    if (scm->has_auto) {
+        *out = scm->auto_cred;
+        return true;
+    }
+    return false;
 }
 
 static inline void unixsock_msg_dealloc(unixsock_msg shb)
@@ -403,6 +422,8 @@ static sysreturn scm_parse(const struct msghdr *m, unixsock sender, unixsock des
             process_release(explicit_p);
         return parse_err;
     }
+    boolean has_auto = false;
+    struct unix_cred auto_cred = { 0, 0, 0 };
     if (!has_explicit) {
         boolean dest_pass = false;
         if (dest) {
@@ -413,15 +434,14 @@ static sysreturn scm_parse(const struct msghdr *m, unixsock sender, unixsock des
         if (dest_pass) {
             struct creds scon;
             creds_snapshot(sender_p, &scon);
-            explicit.pid = sender_p->pid;
-            explicit.uid = scon.uid;
-            explicit.gid = scon.gid;
-            has_explicit = true;
-            explicit_p = sender_p;
-            process_reserve(explicit_p);
+            auto_cred.p = sender_p;
+            auto_cred.uid = scon.uid;
+            auto_cred.gid = scon.gid;
+            process_reserve(auto_cred.p);
+            has_auto = true;
         }
     }
-    if (!has_explicit && tmp_nfds == 0)
+    if (!has_explicit && !has_auto && tmp_nfds == 0)
         return 0;
     heap h = heap_locked(get_kernel_heaps());
     u64 size = sizeof(struct unixsock_scm) + tmp_nfds * sizeof(fdesc);
@@ -431,12 +451,16 @@ static sysreturn scm_parse(const struct msghdr *m, unixsock sender, unixsock des
             fdesc_put(tmp_fds[i]);
         if (explicit_p)
             process_release(explicit_p);
+        if (has_auto && auto_cred.p)
+            process_release(auto_cred.p);
         return -ENOMEM;
     }
     scm->has_cred = has_explicit;
     scm->cred.p = explicit_p;
     scm->cred.uid = explicit.uid;
     scm->cred.gid = explicit.gid;
+    scm->has_auto = has_auto;
+    scm->auto_cred = auto_cred;
     scm->nfds = tmp_nfds;
     for (u16 i = 0; i < tmp_nfds; i++)
         scm->fds[i] = tmp_fds[i];
@@ -445,16 +469,21 @@ static sysreturn scm_parse(const struct msghdr *m, unixsock sender, unixsock des
 }
 
 static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags, process receiver,
-                             int *installed_fds, u16 *installed_count, vector dropped, boolean *ctrunc)
+                             boolean receiver_passcred, int *installed_fds, u16 *installed_count, vector dropped, boolean *ctrunc)
 {
     *ctrunc = false;
-    if (!scm)
+    if (!scm) {
+        if (m)
+            m->msg_controllen = 0;
         return 0;
+    }
     if (!m) {
         for (u16 i = 0; i < scm->nfds; i++)
             vector_push(dropped, scm->fds[i]);
         if (scm->has_cred && scm->cred.p)
             process_release(scm->cred.p);
+        if (scm->has_auto && scm->auto_cred.p)
+            process_release(scm->auto_cred.p);
         heap h = heap_locked(get_kernel_heaps());
         deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
         return 0;
@@ -474,6 +503,8 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
             vector_push(dropped, scm->fds[i]);
         if (scm->has_cred && scm->cred.p)
             process_release(scm->cred.p);
+        if (scm->has_auto && scm->auto_cred.p)
+            process_release(scm->auto_cred.p);
         heap h = heap_locked(get_kernel_heaps());
         deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
         if (installed_count)
@@ -485,16 +516,19 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
     control = m->msg_control;
     if (!control)
         controllen = 0;
-    if (scm->has_cred) {
-        u64 need = SCM_CMSG_SPACE(sizeof(unix_ucred));
-        if (controllen - off < need) {
-            truncated = true;
-        } else {
-            u8 *cp = (u8 *)control + off;
-            s32 pid = process_visible_pid(scm->cred.p, receiver);
-            user_namespace receiver_ns = process_user_ns(receiver);
-            u32 local_uid = user_ns_from_kuid(receiver_ns, scm->cred.uid);
-            u32 local_gid = user_ns_from_kgid(receiver_ns, scm->cred.gid);
+    {
+        struct unix_cred use_cred;
+        boolean deliver_cred = receiver_passcred && scm_effective_cred(scm, &use_cred);
+        if (deliver_cred) {
+            u64 need = SCM_CMSG_SPACE(sizeof(unix_ucred));
+            if (controllen - off < need) {
+                truncated = true;
+            } else {
+                u8 *cp = (u8 *)control + off;
+                s32 pid = process_visible_pid(use_cred.p, receiver);
+                user_namespace receiver_ns = process_user_ns(receiver);
+                u32 local_uid = user_ns_from_kuid(receiver_ns, use_cred.uid);
+                u32 local_gid = user_ns_from_kgid(receiver_ns, use_cred.gid);
             user_ns_release(receiver_ns);
             *(u32 *)cp = (u32)SCM_CMSG_LEN(sizeof(unix_ucred));
             *(u32 *)(cp + 4) = 0;
@@ -507,6 +541,7 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
                 cp[i] = 0;
             off += need;
         }
+    }
     }
     if (scm->nfds) {
         if (controllen - off < sizeof(unix_cmsghdr)) {
@@ -550,6 +585,8 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
         vector_push(dropped, scm->fds[i]);
     if (scm->has_cred && scm->cred.p)
         process_release(scm->cred.p);
+    if (scm->has_auto && scm->auto_cred.p)
+        process_release(scm->auto_cred.p);
     for (u16 i = 0; i < local_count; i++) {
         if (installed_fds)
             installed_fds[i] = local_installed[i];
@@ -588,6 +625,8 @@ static void scm_drop_to_vector(unixsock_scm scm, vector dropped)
     }
     if (scm->has_cred && scm->cred.p)
         process_release(scm->cred.p);
+    if (scm->has_auto && scm->auto_cred.p)
+        process_release(scm->auto_cred.p);
     heap h = heap_locked(get_kernel_heaps());
     deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
 }
@@ -623,6 +662,7 @@ closure_function(9, 1, sysreturn, unixsock_read_bh,
     struct unix_cred first_cred = { 0, 0, 0 };
     boolean seen_rights = false;
     boolean truncated = false;
+    boolean delivered = false;
     boolean read_done = false;
     context ctx = context_from_closure(closure_self());
     process receiver = is_syscall_context(ctx) ? ((syscall_context)ctx)->t->p : ((process_context)ctx)->p;
@@ -638,6 +678,10 @@ closure_function(9, 1, sysreturn, unixsock_read_bh,
     if (shb == INVALID_ADDRESS) {
         if (end_of_data) {
             rv = 0;
+            if (bound(msg)) {
+                bound(msg)->msg_controllen = 0;
+                bound(msg)->msg_flags = 0;
+            }
             goto out;
         } else if ((s->sock.f.flags & SOCK_NONBLOCK) || (bound(msgflags) & MSG_DONTWAIT)) {
             rv = -EAGAIN;
@@ -692,11 +736,12 @@ closure_function(9, 1, sysreturn, unixsock_read_bh,
             if (seen_rights)
                 break;
             if (s->passcred) {
-                boolean cur_has = (shb->scm && shb->scm->has_cred);
+                struct unix_cred cur_eff;
+                boolean cur_has = scm_effective_cred(shb->scm, &cur_eff);
                 boolean differs = (cur_has != first_has_cred);
                 if (!differs && cur_has && first_has_cred) {
-                    if (shb->scm->cred.p != first_cred.p || shb->scm->cred.uid != first_cred.uid ||
-                        shb->scm->cred.gid != first_cred.gid)
+                    if (cur_eff.p != first_cred.p || cur_eff.uid != first_cred.uid ||
+                        cur_eff.gid != first_cred.gid)
                         differs = true;
                 }
                 if (differs)
@@ -751,14 +796,16 @@ closure_function(9, 1, sysreturn, unixsock_read_bh,
             boolean had_rights = (scm && scm->nfds);
             if (!first_set) {
                 first_set = true;
-                first_has_cred = (scm && scm->has_cred);
+                struct unix_cred eff;
+                first_has_cred = scm_effective_cred(scm, &eff);
                 if (first_has_cred)
-                    first_cred = scm->cred;
+                    first_cred = eff;
             }
             if (scm) {
+                delivered = true;
                 boolean this_ctrunc = false;
                 u16 per_call = 0;
-                sysreturn d = scm_deliver(scm, bound(msg), bound(msgflags), receiver,
+                sysreturn d = scm_deliver(scm, bound(msg), bound(msgflags), receiver, s->passcred,
                                           installed_fds + installed_count, &per_call, dropped, &this_ctrunc);
                 if (this_ctrunc)
                     ctrunc = true;
@@ -822,8 +869,11 @@ closure_function(9, 1, sysreturn, unixsock_read_bh,
             }
         }
     } while ((s->sock.type == SOCK_STREAM) && (length > 0));
-    if (bound(msg))
+    if (bound(msg)) {
+        if (!delivered)
+            bound(msg)->msg_controllen = 0;
         bound(msg)->msg_flags = (truncated ? MSG_TRUNC : 0) | (ctrunc ? MSG_CTRUNC : 0);
+    }
     context_clear_err(ctx);
     read_done = true;
 out:
