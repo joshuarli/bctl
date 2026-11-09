@@ -174,6 +174,32 @@ built with the musl clang. Its `helium-0.20.3.1-r3` arm64 archive (138.4 MB,
 sha256 `a5dcb350…5b60`) bundles 13 libraries, `check-purity.sh` reports 0
 impure across its 23 ELF files and archives, and its acceptance sidecar
 passes all ten checks, headless included. P2 moves to r3.
+P2b (lane `lane/p2b`): the B1 stall was renderers dying with SIGSYS, not bctl.
+A fresh CDP client could not evaluate in the stuck target either, so the
+relay, the gateway, and h12tiny were out; `Target.targetCrashed` events showed
+renderers exiting with SIGSYS (31), uBlock Origin's background page several
+times a minute and, intermittently, the renderer of the page B1 drives, whose
+pending DevTools commands then never answer. gdb in a diagnostic image found
+two seccomp kills, both musl 1.2.6 against Chromium's sandbox: `pwrite` is
+`pwritev2` (syscall 287), which only the GPU policy allowed (renderers died
+writing parked images to disk), and `pthread_getschedparam`, which
+`absl::Mutex` calls on contended locks, blocks all signals around
+`sched_getparam` on a thread id, so the sandbox's SIGSYS rewrite of that call
+killed the process instead of running (hence the load dependence). Fixed in
+chromium-build master (`bb20f58`: allow `pwritev2` wherever `pwrite64` is
+allowed; `4275db8`: allow `sched_getparam` and `sched_getscheduler` for any
+target); the rebuilt archive is
+`helium-0.20.3.1-r5` (SHA-256 `35858f46…`). On r5, B1 passed 150 of 150 runs
+under three concurrent loops with no renderer crash, then `--runs 10` three
+times (30/30), with `ref-scratch-chromium` 10/10. `bctl up` now defaults to
+`helium` (`IMAGE_REQUIRED` is gone); the ref images stay selectable
+diagnostics, and the VM suites default to `BCTL_TEST_IMAGE=helium`. The image
+moved to chromium-build `e9809cb`'s pure-musl closure (census: one gap,
+`libexpat`, 191 KiB; check-purity 0 impure across 27 ELF files), and
+`tinyland`, `seatd`, `bctl-guest`, and kbvm's `libxkbcommon.so.0` are linked by
+llvm-prebuilt-musl's LLVM (`llvm-musl-23.1.5-3afbb74`) with `std` rebuilt, so
+none carries a GCC-compiled object. The image refuses archives older than r5, which still stall. P2b open: WebAudio realtime threads may hit the same blocked-signal kill through
+`pthread_setschedparam` (not observed).
 Next: D2's acceptance on
 `ref-alpine-tinyland`; H3 (failure injection; includes the guest browser
 exiting on its last tab).

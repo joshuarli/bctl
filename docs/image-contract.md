@@ -137,8 +137,8 @@ the receipt: `lib/libxkbcommon.so.0` is deleted, and kbvm's
 
 Helium archives before r5 lack two chromium-build sandbox fixes that musl
 1.2.6 needs (`pwritev2`, and `sched_getparam` on a thread id); their renderers
-die with SIGSYS and the pages they host stop answering CDP. The build does
-not check the revision; use r5 or later.
+die with SIGSYS and the pages they host stop answering CDP. `stage-helium.sh`
+refuses them.
 
 musl's loader comes from the Alpine 3.24.1 image chromium-build builds the
 arm64 archive on (musl 1.2.6), not from Alpine 3.22.
