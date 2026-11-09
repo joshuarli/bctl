@@ -287,6 +287,18 @@ void deliver_signal_to_thread(thread t, struct siginfo *info)
     deliver_pending_to_thread(t);
 }
 
+void raise_sigpipe(context writer)
+{
+    if (!is_syscall_context(writer))
+        return;
+    thread t = ((syscall_context)writer)->t;
+    struct siginfo si;
+    init_siginfo(&si, SIGPIPE, SI_USER);
+    si.sifields.kill.pid = t->p->pid;
+    si.sifields.kill.uid = t->p->uid;
+    deliver_signal_to_thread(t, &si);
+}
+
 closure_function(2, 1, boolean, deliver_signal_handler,
                  thread *, can_wake, u64, sigword,
                  rbnode n)

@@ -189,12 +189,6 @@ closure_function(4, 1, sysreturn, pipe_write_bh,
 {
     sysreturn rv = 0;
     pipe_file pf = bound(pf);
-
-    if (flags & BLOCKQ_ACTION_NULLIFY) {
-        rv = -ERESTARTSYS;
-        goto out;
-    }
-
     u64 length = bound(length);
     pipe p = pf->pipe;
     buffer b = p->data;
@@ -202,11 +196,15 @@ closure_function(4, 1, sysreturn, pipe_write_bh,
     pipe_lock(p);
     u64 avail = p->max_size - buffer_length(b);
 
+    if (pf->pipe->files[PIPE_READ].fd == -1) {
+        rv = -EPIPE;
+        goto unlock;
+    }
+    if (flags & BLOCKQ_ACTION_NULLIFY) {
+        rv = -ERESTARTSYS;
+        goto unlock;
+    }
     if (avail == 0) {
-        if (pf->pipe->files[PIPE_READ].fd == -1) {
-            rv = -EPIPE;
-            goto unlock;
-        }
         if (pf->f.flags & O_NONBLOCK) {
             rv = -EAGAIN;
             goto unlock;
@@ -229,7 +227,8 @@ closure_function(4, 1, sysreturn, pipe_write_bh,
         notify_dispatch(pf->f.ns, 0); /* for edge trigger */
     if (rv > 0)
         pipe_notify_reader(pf, EPOLLIN);
-  out:
+    else if (rv == -EPIPE)
+        raise_sigpipe(ctx);
     apply(bound(completion), rv);
     closure_finish();
     return rv;
