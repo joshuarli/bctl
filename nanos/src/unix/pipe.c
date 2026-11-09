@@ -126,7 +126,10 @@ closure_function(4, 1, sysreturn, pipe_read_bh,
     int rv;
 
     if (flags & BLOCKQ_ACTION_NULLIFY) {
-        rv = -ERESTARTSYS;
+        pipe_lock(pf->pipe);
+        boolean eof = (buffer_length(pf->pipe->data) == 0) && (pf->pipe->files[PIPE_WRITE].fd == -1);
+        pipe_unlock(pf->pipe);
+        rv = eof ? 0 : -ERESTARTSYS;
         goto out;
     }
 

@@ -311,6 +311,22 @@ static void check_blocking_reader_xproc(void)
 	blocking_read_woken("blocking_pipe_reader_xproc", p[0], p[1], p[0], 0);
 	close(p[0]);
 	close(p[1]);
+	pipe2(p, O_CLOEXEC);
+	pid_t pid = fork();
+	if (pid == 0) {
+		close(p[0]);
+		pause_ms(150);
+		_exit(close(p[1]) == 0 ? 0 : 1);
+	}
+	close(p[1]);
+	char c;
+	errno = 0;
+	ssize_t r = read(p[0], &c, 1);
+	int e = errno;
+	int status = reap(pid);
+	record("blocking_pipe_reader_eof_on_last_writer_close", r == 0 && status == 0, "read=%zd,errno=%d,status=0x%x", r, e,
+		status);
+	close(p[0]);
 }
 
 static void check_pipe_sigpipe(void)
