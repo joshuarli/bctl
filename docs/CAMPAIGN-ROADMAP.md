@@ -13,11 +13,12 @@ proves a pure-Rust userland (M4R) whose crates port back into laputa.
 Baseline 2026-11-08: the repo has no commits. Facts below were checked against
 the sibling repos on that date; see **Baseline**.
 
-Accepted: P0 (`feac477`), P1 (`6ad2878`). `guest/tinyland` and `guest/seatd`
+Accepted: P0 (`feac477`), P1 (`6ad2878`), B1 (`c38e9b7`: `cargo run -p
+bctl-proof -- m1 --runs 10`, 10/10 at about 4 s per boot-to-teardown). `guest/tinyland` and `guest/seatd`
 are vendored and pass `cargo check --locked --target
 aarch64-unknown-linux-musl --all-targets`.
-Next: B1, then C1.
-Resume: `implement B1 from docs/CAMPAIGN-ROADMAP.md`.
+Next: C1. Unikernel viability lane (Nanos) running.
+Resume: `implement C1 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
