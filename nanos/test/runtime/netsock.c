@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <errno.h>
@@ -174,7 +175,7 @@ static void netsock_test_basic(int sock_type)
     }
     addr_len = sizeof(addr);
     test_assert((getpeername(tx_fd, FAULT_ADDR, &addr_len) == -1) && (errno == EFAULT));
-    test_assert((getpeername(tx_fd, &addr, FAULT_ADDR) == -1) && (errno == EFAULT));
+    test_assert((getpeername(tx_fd, (struct sockaddr *)&addr, FAULT_ADDR) == -1) && (errno == EFAULT));
     test_assert((write(tx_fd, FAULT_ADDR, sizeof(tx_buf)) == -1) && (errno == EFAULT));
     test_assert((recv(tx_fd, tx_buf, sizeof(tx_buf), MSG_DONTWAIT) == -1) && (errno == EAGAIN));
     test_assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
@@ -803,7 +804,7 @@ static void netsock_test_fault(void)
     msg->msg_iovlen = 1;
     test_assert((recvmsg(fd, msg, 0) == -1) && (errno == EFAULT));
     test_assert(pthread_join(pt, NULL) == 0);
-    test_assert((sendmsg(fd, msg, 0) == -1) && (errno == EFAULT));
+    test_assert((syscall(SYS_sendmsg, fd, msg, 0) == -1) && (errno == EFAULT));
     close(fd);
 
     /* recvmmsg()/sendmmsg() with faulting struct mmsghdr */
@@ -834,7 +835,7 @@ static void netsock_test_fault(void)
     /* recvfrom() with faulting address length */
     fd = netsock_test_fault_udp_setup(&pt, &fault_addr);
     *(socklen_t *)fault_addr = sizeof(addr);
-    test_assert((recvfrom(fd, buf, sizeof(buf), 0, &addr, fault_addr) == -1) && (errno == EFAULT));
+    test_assert((recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&addr, fault_addr) == -1) && (errno == EFAULT));
     test_assert(pthread_join(pt, NULL) == 0);
 
     test_assert((ioctl(fd, SIOCGIFCONF, fault_addr) == -1) && (errno == EFAULT));
@@ -854,7 +855,7 @@ static void netsock_test_fault(void)
     test_assert((ioctl(fd, FIONREAD, fault_addr) == -1) && (errno == EFAULT));
     len = sizeof(addr);
     test_assert((getsockname(fd, fault_addr, &len) == -1) && (errno == EFAULT));
-    test_assert((getsockname(fd, &addr, fault_addr) == -1) && (errno == EFAULT));
+    test_assert((getsockname(fd, (struct sockaddr *)&addr, fault_addr) == -1) && (errno == EFAULT));
     test_assert(setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, fault_addr, sizeof(int)) == -1);
     test_assert(errno == EFAULT);
     len = sizeof(int);

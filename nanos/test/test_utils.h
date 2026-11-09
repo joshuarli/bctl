@@ -3,6 +3,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <limits.h>
 
 #define FAULT_ADDR  ((void *)0xBADF0000)
 #define FAULT_ADDR1 ((void *)0xFFFFFFFFFFFF0000ull)

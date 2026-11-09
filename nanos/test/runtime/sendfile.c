@@ -160,10 +160,10 @@ err_fdin:
     exit(1);
 }
 
-static ssize_t test_copy_op(int fd_in, off64_t *off_in, int fd_out, off64_t *off_out, size_t len)
+static ssize_t test_copy_op(int fd_in, off_t *off_in, int fd_out, off_t *off_out, size_t len)
 {
     off_t off_in_before, off_out_before;
-    off64_t off_in_start, off_out_start;
+    off_t off_in_start, off_out_start;
     ssize_t ret;
     off_t off_in_after, off_out_after;
 
@@ -197,7 +197,7 @@ static void test_copy_file_range(void)
 {
     const int buf_len = 0x100;
     int fd1, fd2;
-    off64_t off_in, off_out;
+    off_t off_in, off_out;
     uint8_t buf1[buf_len], buf2[buf_len];
     int i;
     int offset;

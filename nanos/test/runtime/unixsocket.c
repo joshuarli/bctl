@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <semaphore.h>
@@ -651,7 +652,7 @@ static void uds_fault_test(void)
     test_assert((read(s1, fault_addr, 1) == -1) && (errno == EFAULT));
 
     test_assert(write(s2, buf, sizeof(buf)) == sizeof(buf));
-    test_assert((recvmsg(s1, fault_addr, 0) == -1) && (errno == EFAULT));
+    test_assert((syscall(SYS_recvmsg, s1, fault_addr, 0) == -1) && (errno == EFAULT));
 
     msg.msg_iov = fault_addr;
     msg.msg_iovlen = 1;

@@ -5,6 +5,7 @@
 #include <linux/aio_abi.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 #include <sys/eventfd.h>
 #include <sys/syscall.h>
 #include <unistd.h>

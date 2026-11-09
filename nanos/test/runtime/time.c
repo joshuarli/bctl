@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 
+#define ntp_adjtime adjtimex
 #include "../test_utils.h"
 
 #ifndef TFD_TIMER_CANCEL_ON_SET /* old glibc */
@@ -1115,7 +1116,7 @@ static void test_adjtimex_freq(bool positive)
     test_assert(ntp_adjtime(&tx) >= 0);
     /* allow for some precision loss due to conversion from/to internal format */
     test_assert((tx.freq >= clamped_max - 10) && (tx.freq <= clamped_max + 10));
-    test_assert(tx.tolerance == abs(clamped_max));
+    test_assert(tx.tolerance == labs(clamped_max));
 }
 
 static void test_adjtimex_status(void)

@@ -3,7 +3,6 @@
 #define __USE_GNU
 #include <fcntl.h>
 #include <limits.h>
-#include <linux/stat.h>
 #include <poll.h>
 #include <stdint.h>
 #include <string.h>
