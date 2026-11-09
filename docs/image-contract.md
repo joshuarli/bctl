@@ -157,6 +157,6 @@ imports. Run it on an exported rootfs to read its report.
 
 `/etc/bctl/receipt.json` records the image name, the browser's own version
 string (`helium --version`, run in the assembled rootfs), the archive file
-name and SHA-256, and the replaced file. Helium's
-`/json/version` reports `Chrome/<chromium version>`, so the receipt, not
-CDP, identifies the browser as Helium.
+name and SHA-256, and the replaced file. From r6, Helium's `/json/version`
+and `Browser.getVersion` report `Helium/<helium version>`; the web user agent
+still says `Chrome/<chromium version>`.

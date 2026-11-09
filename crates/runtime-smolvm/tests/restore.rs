@@ -293,7 +293,7 @@ fn a_session_restored_from_a_pre_browser_template_reaches_ready_with_the_sandbox
             eprintln!("restore: waiting at {}", stage.as_str());
         })?;
         assert_eq!(ready.input, InputSupport::Interactive);
-        assert!(ready.browser.starts_with("Chrome/"), "{}", ready.browser);
+        assert!(ready.browser.starts_with("Helium/"), "{}", ready.browser);
 
         let target = targets(&spec.cdp_socket).unwrap_or_else(|e| panic!("list targets: {e}")).into_iter().find(|target| target.kind == "page").expect("the appliance has a page");
         let websocket = target.websocket.expect("the page target has a websocket");

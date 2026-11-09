@@ -202,7 +202,7 @@ moved to chromium-build `e9809cb`'s pure-musl closure (census: one gap,
 `libexpat`, 191 KiB; check-purity 0 impure across 27 ELF files), and
 `tinyland`, `seatd`, `bctl-guest`, and kbvm's `libxkbcommon.so.0` are linked by
 llvm-prebuilt-musl's LLVM (`llvm-musl-23.1.5-3afbb74`) with `std` rebuilt, so
-none carries a GCC-compiled object. The image refuses archives older than r5, which still stall. WebAudio
+none carries a GCC-compiled object. Archives older than r5 still stall. WebAudio
 (`cb0a98d`, `--test media`): audio worklets under load crash no renderer;
 musl answers `sched_setscheduler` with ENOSYS without a syscall, so realtime
 audio priority is never applied and the blocked-signal kill is not reached.
@@ -219,8 +219,18 @@ The shared runtime under `.work/runtime` had been the pause lane's build with
 a GCC-built guest agent (219 of 231 files impure); it is rebuilt from main
 (check-purity: 0 impure), and VM results before that rebuild ran on the
 impure agent.
-Next: X1's SmolVM capability without a `bctl up` switch; Helium r6 (Crashpad
-fix, `Helium/` DevTools product); H1 baselines on an idle host.
+X1 (`fc484eb`, `--test restore` in `bctl-runtime-smolvm`,
+`docs/research/x1-template-restore.md`): a session restored from a checkpoint
+taken at the appliance's pre-browser forkpoint reaches ready with the sandbox
+intact, 1,137 ms against 1,445 ms cold at the median of 10 interleaved runtime
+launches (load 14). Restored sessions have no guest network and no profile
+mount, so `bctl up` does not offer them; X1 open: networked restore, profile
+remount, a public CLI.
+Helium r6 (chromium-build `410801d`, SHA-256 `7289b25b…`, 0 impure, 11/11
+acceptance): starts without `$HOME` and reports `Helium/0.20.3.1` over
+DevTools; the image now refuses archives before r6. On r6 the restore,
+sessions, failures, runs, cdp and dashboard suites pass.
+Next: H1 baselines on an idle host; X1's networked restore.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 ## Charter

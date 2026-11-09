@@ -353,7 +353,7 @@ fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_
     let after = status_of(&status, &session);
     assert_eq!((after.state.as_str(), after.generation), ("ready", generation), "the crawl did not finish in the browser the operator signed in to");
     assert!(browser_answers(&operator_url), "the session's browser did not outlive the run");
-    assert!(done.browser_version.starts_with("Chrome/"), "{}", done.browser_version);
+    assert!(done.browser_version.starts_with("Helium/"), "{}", done.browser_version);
     assert!(done.image_digest.starts_with("sha256:") && done.input_digest.starts_with("sha256:"));
     assert_eq!((done.image.as_str(), done.profile.as_str()), (image().as_str(), session.as_str()));
     assert!(config_field(&done.config, &["grab", "urls"]).is_some_and(|urls| json::to_string(urls).contains(&seed)));
