@@ -221,12 +221,22 @@ only when every slice in it is accepted on `main`.
   (`nanos/src/x86_64/unix_machine.c:260`). Existing Nanos programs that relied
   on the silent success will now see real results. That is intended; list it
   in the final report.
-- **The sandbox layer is the namespace sandbox.** Chromium 156 prefers its
-  unprivileged-user-namespace sandbox when the kernel offers user namespaces,
-  and falls back to the setuid `chrome-sandbox` helper otherwise. Implement
-  user namespaces. The setuid path, and file mode bits as security state, are
-  non-goals. Slice H confirms which path the Helium tree takes; if it says
-  otherwise, H's report reverses this decision before G3.3 starts.
+- **The sandbox layer is the namespace sandbox** (confirmed by H,
+  `docs/chromium-contract.md` §2). Helium selects it whenever unprivileged
+  user namespaces work; the setuid fallback cannot work in this package
+  anyway (it ships `chrome_sandbox`, the browser looks for `chrome-sandbox`).
+  Without user namespaces it dies with "No usable sandbox!". The setuid path
+  and file mode bits as security state are non-goals.
+- **Contract-driven scope** (`docs/chromium-contract.md` §7 is the
+  checklist for G1–G3): `SOCK_SEQPACKET` with `SCM_CREDENTIALS` whose pid is
+  translated into the receiver's PID namespace is required (G2.1); seccomp
+  actions are only `ALLOW`, `ERRNO` and `TRAP`, with the `SPEC_ALLOW` flag
+  accepted and `TSYNC` accepted (renderers only probe it with a NULL program
+  that must give `EFAULT`); `TRACE`, `KILL`, `LOG` and `USER_NOTIF` are not
+  needed and return `EINVAL` (G3.2); user namespaces nest two deep (G3.3);
+  `ptrace`, `setns` and `mount` stay `ENOSYS`, but `PR_SET_PTRACER` must
+  succeed (G3.1/G3.4); `memfd_create("", ~0)` and `eventfd2(0, ~0)` must fail
+  with `EINVAL`; `/proc/self/task` needs `st_nlink == threads + 2`.
 
 ### Delegated (decide within the bound, record in the commit body)
 
