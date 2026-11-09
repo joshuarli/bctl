@@ -312,6 +312,10 @@ static void check_clock_realtime(void)
 	errno = 0;
 	int bitset_timedout = futex(&word, FUTEX_WAIT_BITSET | FUTEX_CLOCK_REALTIME, 0, &past, 0, ~0u) < 0 &&
 		errno == ETIMEDOUT;
+	struct timespec before_boot = { 1, 0 };
+	errno = 0;
+	bitset_timedout = bitset_timedout &&
+		futex(&word, FUTEX_WAIT_BITSET | FUTEX_CLOCK_REALTIME, 0, &before_boot, 0, ~0u) < 0 && errno == ETIMEDOUT;
 	errno = 0;
 	int wait_enosys = futex(&word, FUTEX_WAIT | FUTEX_CLOCK_REALTIME, 0, &rel, 0, 0) < 0 && errno == ENOSYS;
 	errno = 0;

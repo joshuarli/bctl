@@ -102,6 +102,8 @@ static inline timestamp timer_expiry(timer t)
             return expiry;
         case CLOCK_ID_REALTIME:
         case CLOCK_ID_REALTIME_COARSE:
+            if (expiry <= __vdso_dat->rtc_offset)
+                return 0;
             expiry -= __vdso_dat->rtc_offset;
             expiry -= clock_phase_adjust(expiry, interval);
             break;
