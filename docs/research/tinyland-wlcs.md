@@ -4,10 +4,11 @@
 its `wlcs_server_integration` ABI with one library split, one test-only feature,
 and one separate cdylib crate (about 300 lines). No compositor behavior changed
 to make the adapter work. The suite is a weak fit for tinyland's kiosk policy,
-though: of 1228 tests, 162 pass, 770 skip as unsupported protocols, and 293 fail,
+though: of 1228 tests, 163 pass, 770 skip as unsupported protocols, and 292 fail,
 and almost all of those failures come from what WLCS assumes of a compositor,
-not from tinyland defects. The runs found one real bug and one misuse of error
-codes (both fixed below), and one unimplemented request (popup grab).
+not from tinyland defects. The runs found one real bug, one misuse of error
+codes, and one disconnect on an unspecified case (all fixed below), and one
+unimplemented request (popup grab, a known gap).
 
 WLCS is GPL-3 (test files are GPL-3, some build files GPL-2+ or Expat). It is
 used only as a test runner in a container. It is never linked into tinyland or
@@ -88,13 +89,13 @@ updates this document.
 
 | Outcome | Unpatched | Patched |
 |---|---|---|
-| Pass | 79 | 162 |
+| Pass | 79 | 163 |
 | Skip: protocol or version unsupported (WLCS reports "missing extension") | 767 | 770 |
-| Fail | 379 | 293 |
+| Fail | 379 | 292 |
 | Disabled upstream | 3 | 3 |
 | Crash or timeout | 0 | 0 |
 
-The patch turned 83 failures into passes (popup placement, anchor, gravity,
+The patch turned 83 failures into passes (84 with the buffer fix below) (popup placement, anchor, gravity,
 and dismissal cases, plus input and subsurface cases that need no window
 placement). Three tests that used to fail now skip.
 
@@ -117,8 +118,8 @@ the touch and position counts as approximate; the named rows are exact.
 | The toplevel configuration tests: tinyland always configures maximized at the output size, ignores `set_maximized`, `unset_maximized`, `set_fullscreen`, and `unset_fullscreen`, and activates by stacking, not by pointer | 6 | No. Policy mismatch. |
 | Touch | about 93 (12 `TouchTest`, plus touch-parameterized input cases and two toplevel touch tests) | No. No touch capability claimed. |
 | Unmap then re-attach without a new initial commit (WLCS violates xdg-shell) | 8 | No. WLCS bug, left unpatched. |
-| `xdg_popup.grab` does not move keyboard focus to the popup (`grabbed_popup_gets_keyboard_focus`) | 1 | Gap. Tinyland accepts the request and ignores it; outside-click dismissal works without it. |
-| Named cases, below | 12 | See below. |
+| `xdg_popup.grab` does not move keyboard focus to the popup (`grabbed_popup_gets_keyboard_focus`) | 1 | Known gap, left as is: Chromium sends no grab (`docs/compositor-contract.md`). Tinyland accepts the request and ignores it; outside-click dismissal works without it. |
+| Named cases, below | 11 | See below. |
 
 The named cases:
 
@@ -134,13 +135,6 @@ The named cases:
 - `XdgToplevelStableTest.when_parent_is_set_to_self_error_is_raised` and
   `..._to_child_descendant_...`: expect `invalid_parent`, also a later
   version.
-- `FrameSubmission.test_buffer_can_be_deleted_after_attached`: destroying an
-  attached buffer before commit disconnects the client, now with
-  `wl_display.implementation` (see below). The spec leaves the result
-  unspecified. The test accepts either of Weston's (commit a null buffer) or
-  wlroots' (keep the content) behavior and only forbids a crash, but its
-  roundtrip fails on a disconnect, so this stays a failure until tinyland
-  stops disconnecting. Decision for the owner.
 - `FrameSubmission.when_client_endlessly_requests_frame_then_callbacks_are_throttled`:
   the headless pump fires callbacks at once, where real scanout waits for a
   flip. Harness behavior, not tinyland's.
@@ -164,15 +158,24 @@ toplevels, memory budget) and the oversized-buffer check posted code 0 on
 whichever object hit it. A client reads that as the first error of that
 interface: `invalid_scale` on `wl_surface`, `invalid_format` on `wl_shm`,
 `missing_capability` on `wl_seat`. They now post `wl_display.no_memory` on the
-display object. A buffer destroyed after attach and an internal unknown-pool
-lookup post `wl_display.implementation`. Interface-specific codes that were
+display object. An internal unknown-pool lookup posts
+`wl_display.implementation`. Interface-specific codes that were
 already correct are unchanged. The `wayland-server` API cannot name the
 `wl_display` object, so `src/server/display_error.rs` looks it up by protocol
 id 1 with a local `Interface` value named `wl_display`; the pure-Rust backend
 matches interfaces by name. Regression tests assert the object and code on
-the wire: `callback_bound_disconnects_offender_only`,
-`per_client_memory_budget_rejects_without_harming_healthy_client`, and
-`committing_a_buffer_destroyed_after_attach_reports_an_implementation_error_on_the_display`.
+the wire: `callback_bound_disconnects_offender_only`
+and `per_client_memory_budget_rejects_without_harming_healthy_client`.
+
+### Buffer destroyed after attach
+
+Committing a buffer the client destroyed after `wl_surface.attach` used to
+disconnect the client. The protocol leaves the result unspecified; Weston
+commits a null buffer and wlroots keeps the content. Tinyland now follows
+wlroots: the commit behaves as if nothing was attached, the surface keeps its
+current pixels, and frame callbacks still queue. WLCS's
+`test_buffer_can_be_deleted_after_attached` passes. Regression test:
+`committing_a_buffer_destroyed_after_attach_keeps_the_current_content`.
 
 ## Input regressions in tinyland's own suite
 
