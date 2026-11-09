@@ -201,7 +201,7 @@ suite_helium_native() {
 
 suite_helium() {
 	helium_prepare
-	"$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
+	"$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --size 2g --klib tmpfs --klib shmem --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
 		--dir /profile --dir /run/xdg --dir /tmp --dir /dev/shm \
 		--arg --root=/ --arg --profile=/profile --arg --rundir=/run/xdg --arg --logdir=/tmp "$HELIUM_INIT" >/dev/null
 	line=$("$ROOT/dev/run.sh" --mem 2G --smp 2 --timeout 240 --label helium "$IMAGES/helium.img" || :)

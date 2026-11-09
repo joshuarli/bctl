@@ -3,14 +3,14 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--dir GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--trace] BINARY"
+	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--dir GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--size SIZE] [--trace] BINARY"
 }
 
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 invocation=dev/image.sh
 for a in "$@"; do invocation="$invocation $(quote "$a")"; done
 
-out='' root='' trace=0 binary='' klibs=''
+out='' root='' trace=0 binary='' klibs='' size=''
 files=$(mktemp "$WORK/tmp/image-files.XXXXXX")
 args=$(mktemp "$WORK/tmp/image-args.XXXXXX")
 envs=$(mktemp "$WORK/tmp/image-envs.XXXXXX")
@@ -35,6 +35,7 @@ while [ $# -gt 0 ]; do
 	--arg) printf '%s\n' "$2" >>"$args"; shift 2 ;;
 	--env) printf '%s\n' "$2" >>"$envs"; shift 2 ;;
 	--klib) klibs="$klibs $2"; shift 2 ;;
+	--size) size=$2; shift 2 ;;
 	--trace) trace=1; shift ;;
 	-*) usage ;;
 	*) [ -z "$binary" ] || usage; binary=$1; shift ;;
@@ -118,12 +119,12 @@ trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 	while IFS= read -r e; do printf ' %s:%s' "${e%%=*}" "${e#*=}"; done <"$envs"
 	printf ')\n'
 	printf 'debug_exit:t\nfault:t\n'
-	[ "$trace" -eq 0 ] || printf 'trace:t\ndebugsyscalls:t\n'
+	[ "$trace" -eq 0 ] || printf 'trace:t\n'
 	printf ')\n'
 } >"$manifest"
 
 mkdir -p "$(dirname -- "$out")"
-"$NANOS_OUT/tools/bin/mkfs" -k "$NANOS_OUT/platform/pc/bin/kernel.img" -b "$NANOS_OUT/platform/pc/boot/boot.img" "$out" <"$manifest" >"$out.mkfs.log" 2>&1 ||
+"$NANOS_OUT/tools/bin/mkfs" ${size:+-s "$size"} -k "$NANOS_OUT/platform/pc/bin/kernel.img" -b "$NANOS_OUT/platform/pc/boot/boot.img" "$out" <"$manifest" >"$out.mkfs.log" 2>&1 ||
 	{ cat "$out.mkfs.log" >&2; die "mkfs failed"; }
 cp "$manifest" "$out.manifest"
 printf '%s\n' "$invocation" >"$out.reproduce"
