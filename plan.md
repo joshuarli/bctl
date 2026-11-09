@@ -37,13 +37,20 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   session; `scm_rights` 20/20 on 1 and 2 vCPUs; gVisor cmsg 18/18).
   Realtime timers with a deadline before boot now fire (they wrapped to a
   far-future expiry and hung `shmem_xproc` intermittently).
-  **Red:** none.
-- **Running lane:** none.
-- **Next:** G3.4 by `nanos/docs/sandbox-design.md` §5. The headless switch is
-  staged in `.work/wt/agent-a96d4fa7dc419bc95` (uncommitted) until
-  chromium-build produces a headless archive
-  (`docs/handoff-helium-headless-ozone.md`).
-- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1, G3.2, G3.3 accepted) · G4 NOT RUN · G5 NOT RUN (Wayland stopgap until headless Ozone) · P NOT RUN.
+  G3.4 network half (net namespaces with isolated inet sockets; `netns`
+  fixture on 1 and 2 vCPUs and native). Abstract and autobound `AF_UNIX`
+  addresses (gVisor peercred 3/3). Cross-process `tkill`/`tgkill`/
+  `sigqueueinfo` (crashpad can re-raise a crash). G5 runs the headless
+  archive `helium-0.20.3.1-r5` with `--headless=new`; the Wayland stopgap
+  is gone. Native helium 10/10; on Nanos the browser dies at zygote launch
+  because `clone(CLONE_NEWPID)` is EINVAL.
+  **Red:** `userns` `chroot_fs` failed once at smp 1 under host load
+  (stage 9, the `/proc/<pid>/root` link); 0/25 in isolation.
+- **Running lane:** G3.4 PID namespaces (`.work/wt/g3.4-pidns`, branch
+  `lane/g3.4-pidns`).
+- **Next:** land PID namespaces; then the owner's session maps
+  `process_visible_pid` through `pid_nr_ns`; then rerun `dev/test.sh helium`.
+- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1, G3.2, G3.3 accepted; G3.4 network half landed) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
@@ -142,13 +149,10 @@ only when every slice in it is accepted on `main`.
    G1.1 design note. The owner then delegated the G1 go/no-go to the
    executor (2026-11-09): start G1 unless the design note proves a hard
    blocker.
-8. **G5 display** (owner, 2026-11-09). Stopgap: run Helium against a
-   headless Wayland compositor as a separate userspace process in the guest
-   (`wl_shm` over memfd and `SCM_RIGHTS`; no DRM, KMS, evdev, virtio-gpu or
-   kernel graphics). The "no Wayland" non-goal is narrowed to kernel and
-   device work. The owner is getting a Helium build with headless Ozone from
-   `docs/handoff-helium-headless-ozone.md`; when it arrives, G5 switches to
-   `--headless=new` and the stopgap is deleted.
+8. **G5 display** (owner, 2026-11-09). Helium runs with `--headless=new`
+   from the headless-Ozone archive `helium-0.20.3.1-r5` (sha256
+   `f4b06e80a097587e508982a3c73f043dbd80e3660aab6d47f72648b6ffc36a05`). No
+   compositor, DRM, KMS, evdev, virtio-gpu or kernel graphics.
 
 ### Prescribed
 
@@ -454,7 +458,7 @@ corroboration, never as proof.
 
 | ID | Slice | Owns | Prereq | Acceptance |
 | --- | --- | --- | --- | --- |
-| G5.1 | Package `~/d/chromium-build/.work/artifacts/helium-0.20.3.1/helium-0.20.3.1-linux-x86_64-musl.tar.xz` (verify sha256 `6853af22b60345c92e0cbe69181aebd8af3fa79842c7f0135d20c9656c5918c6`; copy it, never modify it in place) with its runtime closure from Alpine 3.24.2 (`~/d/chromium-build/config/helium.packages.amd64.lock`; pinned `.apk` files under `.work/dl/`), plus the smallest headless Wayland compositor available as pinned Alpine 3.24.2 packages (delegated: weston with its headless backend unless a smaller packaged one works; record the choice and its closure size). `tests/helium/guest_init.c` is the Nanos program: it starts the compositor, waits for `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, starts Helium with `--ozone-platform=wayland --remote-debugging-port=9222 --user-data-dir=/profile` and the sandbox on (no `--no-sandbox`, `--single-process` or `--no-zygote`), then reports each process's role from `/proc/<pid>/cmdline` and its `/proc/<pid>/status`. When the headless-Ozone archive arrives (owner decision 8), the compositor is removed and Helium runs with `--headless=new`. | `tests/helium/`, `dev/image.sh` (rootfs input) | G4 | `dev/test.sh helium boot` reaches a live browser process plus separate zygote and renderer processes on serial, or stops with the earliest causal failure written in the slice's commit body |
+| G5.1 | Package `~/d/chromium-build/.work/artifacts/helium-0.20.3.1-r5/helium-0.20.3.1-r5-linux-x86_64-musl.tar.xz` (verify sha256 `f4b06e80a097587e508982a3c73f043dbd80e3660aab6d47f72648b6ffc36a05`; copy it, never modify it in place) with its musl runtime from Alpine 3.24.2 (pinned `.apk` files under `.work/dl/`). `tests/helium/guest_init.c` is the Nanos program: it starts Helium with `--headless=new --remote-debugging-port=9222 --user-data-dir=/profile` and the sandbox on (no `--no-sandbox`, `--single-process` or `--no-zygote`), then reports each process's role from `/proc/<pid>/cmdline` and its `/proc/<pid>/status`. | `tests/helium/`, `dev/image.sh` (rootfs input) | G4 | `dev/test.sh helium boot` reaches a live browser process plus separate zygote and renderer processes on serial, or stops with the earliest causal failure written in the slice's commit body |
 | G5.2+ | One slice per causal failure Helium hits, with the root cause found by tracing (`--trace`, guest `strace` klib, Helium's `--enable-logging=stderr --v=1`): the smallest kernel fix plus a standalone regression test in `nanos/test/runtime/`. Never patch Helium to hide unsupported kernel semantics. | the kernel area at fault, `nanos/test/runtime/` | G5.1 | that test, plus `dev/test.sh probe` and `dev/test.sh helium boot` progressing past the failure |
 | G5.N | Full validation over CDP from the host (QEMU user network, dynamically chosen forwarded port): `/json/version`; navigate to an HTTP fixture served by the host harness; `Runtime.evaluate` returns the fixture's computed value; `DOM.getDocument` contains its marker; `guest_init` reports `NoNewPrivs: 1` and `Seccomp: 2` for every renderer; a sandbox confinement check, where the fixture page triggers a renderer-side operation the policy forbids and the browser keeps running while the denied action does not occur; `Browser.close`, and then `guest_init` sees every child reaped and guest free memory back to within 5% of its pre-launch value before it exits with code 0. | `tests/helium/` | G5.1… | `dev/test.sh helium` passes 5 consecutive cold boots |
 
@@ -507,9 +511,7 @@ record, on Nanos and natively.
 
 ## Needs environment
 
-- **Headless-Ozone Helium.** The owner is obtaining it through
-  `docs/handoff-helium-headless-ozone.md`. Until then G5 uses the Wayland
-  stopgap (owner decision 8).
+None.
 
 ## Execution boundary and non-goals
 
@@ -532,7 +534,7 @@ fake sandbox state or syscalls that report success without effect; Nix,
 systemd, Ansible or other heavy orchestration; `ops` (`mkfs` from the fork
 builds images); glibc in any form.
 
-**Non-goals:** kernel or device graphics: DRM/KMS, evdev, seatd and virtio-gpu/input (a userspace headless Wayland compositor is allowed as the G5 stopgap);
+**Non-goals:** kernel or device graphics: DRM/KMS, evdev, seatd and virtio-gpu/input and any Wayland compositor;
 aarch64, macOS and HVF; the setuid `chrome-sandbox` layer and filesystem
 mode-bit security; general process management beyond what the probe and
 Helium require; a kernel build with LLVM; PCID and other performance work

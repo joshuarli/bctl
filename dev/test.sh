@@ -194,7 +194,7 @@ suite_helium_native() {
 	rm -rf "$run"
 	mkdir -p "$run"
 	line=$("$ROOT/dev/run.sh" --native --timeout 180 --label helium "$HELIUM_INIT" --root="$HELIUM_ROOT" \
-		--profile="$run/profile" --rundir="$run/xdg" --logdir="$run/logs" || :)
+		--profile="$run/profile" --logdir="$run/logs" || :)
 	case $line in
 	"RUN verdict=PASS "*) printf 'PASS      helium             native  %s\n' "$(jaq -r '[.tests[] | .name] | join(",")' "${line##* dir=}/result.json")" ;;
 	*) failures=$((failures + 1)); printf 'FAIL      helium             native  %s\n' "$line" ;;
@@ -204,14 +204,14 @@ suite_helium_native() {
 suite_helium() {
 	helium_prepare
 	"$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --size 2g --klib tmpfs --klib shmem --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
-		--dir /profile --dir /run/xdg --dir /tmp --dir /dev/shm \
-		--arg --root=/ --arg --profile=/profile --arg --rundir=/run/xdg --arg --logdir=/tmp "$HELIUM_INIT" >/dev/null
+		--dir /profile --dir /tmp --dir /dev/shm \
+		--arg --root=/ --arg --profile=/profile --arg --logdir=/tmp "$HELIUM_INIT" >/dev/null
 	line=$("$ROOT/dev/run.sh" --mem 2G --smp 2 --timeout 240 --label helium "$IMAGES/helium.img" || :)
 	dir=${line##* dir=}
 	pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
 	case $line in
 	"RUN verdict=PASS "*) failures=$((failures + 1)); printf 'FAIL      helium             nanos   known-red case now passes: delete its known-red marker\n' ;;
-	*) printf 'KNOWN-RED helium             nanos   %s/11 records pass; the browser crashes at zygote launch without PID namespaces\n          log: %s\n' "$pass" "$dir" ;;
+	*) printf 'KNOWN-RED helium             nanos   %s/10 records pass; the browser crashes at zygote launch without PID namespaces\n          log: %s\n' "$pass" "$dir" ;;
 	esac
 }
 

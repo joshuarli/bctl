@@ -29,7 +29,7 @@
 #define WS_MAX_MESSAGE (8u << 20)
 
 static const char *const TEST_NAMES[] = {
-	"wayland_socket", "fixture_server", "helium_browser_up", "cdp_version", "cdp_navigate", "cdp_evaluate", "cdp_dom",
+	"fixture_server", "helium_browser_up", "cdp_version", "cdp_navigate", "cdp_evaluate", "cdp_dom",
 	"helium_zygote", "helium_renderer_sandboxed", "sandbox_confinement", "clean_exit",
 };
 #define NTESTS (sizeof TEST_NAMES / sizeof TEST_NAMES[0])
@@ -37,9 +37,7 @@ static const char *const TEST_NAMES[] = {
 static struct {
 	const char *root;
 	const char *profile;
-	const char *rundir;
 	const char *logdir;
-	const char *display;
 	int cdp_port;
 	int fixture_port;
 	int timeout_s;
@@ -48,9 +46,7 @@ static struct {
 } opt = {
 	.root = "",
 	.profile = "/profile",
-	.rundir = "/run/xdg",
 	.logdir = "/tmp",
-	.display = "wayland-0",
 	.cdp_port = 9222,
 	.fixture_port = 18080,
 	.timeout_s = 240,
@@ -61,7 +57,6 @@ static struct {
 static int done[NTESTS];
 static int passed;
 static int failed;
-static pid_t compositor_pid = -1;
 static pid_t fixture_pid = -1;
 static pid_t helium_pid = -1;
 
@@ -748,8 +743,6 @@ static void reap_children(long timeout_ms, int *remaining)
 		int st;
 		pid_t r = waitpid(-1, &st, WNOHANG);
 		if (r > 0) {
-			if (r == compositor_pid)
-				compositor_pid = -1;
 			if (r == fixture_pid)
 				fixture_pid = -1;
 			if (r == helium_pid)
@@ -785,8 +778,6 @@ static void parse_args(int argc, char **argv)
 			opt.root = !strcmp(v, "/") ? "" : v;
 		} else if (arg_str(argv[i], "--profile", &v)) {
 			opt.profile = v;
-		} else if (arg_str(argv[i], "--rundir", &v)) {
-			opt.rundir = v;
 		} else if (arg_str(argv[i], "--logdir", &v)) {
 			opt.logdir = v;
 		} else if (arg_str(argv[i], "--cdp-port", &v)) {
@@ -807,8 +798,8 @@ static void parse_args(int argc, char **argv)
 
 static int prepare_dirs(void)
 {
-	const char *dirs[] = { opt.rundir, opt.profile, opt.logdir };
-	for (size_t i = 0; i < 3; i++) {
+	const char *dirs[] = { opt.profile, opt.logdir };
+	for (size_t i = 0; i < 2; i++) {
 		if (mkdir_p(dirs[i], 0700) < 0) {
 			note("guest_init: cannot create %s: %s", dirs[i], strerror(errno));
 			return -1;
@@ -818,47 +809,7 @@ static int prepare_dirs(void)
 			return -1;
 		}
 	}
-	chmod(opt.rundir, 0700);
 	return 0;
-}
-
-static int start_compositor(void)
-{
-	static char weston[PATH_MAX], socket_arg[128];
-	char env_lib[PATH_MAX * 4], env_map[PATH_MAX * 3];
-	static char e_lib[PATH_MAX * 4 + 32], e_map[PATH_MAX * 3 + 32], e_xdg[PATH_MAX + 32], e_home[PATH_MAX + 16];
-	join_path(weston, sizeof weston, "/usr/bin/weston");
-	snprintf(socket_arg, sizeof socket_arg, "--socket=%s", opt.display);
-	snprintf(env_lib, sizeof env_lib, "%s/usr/lib/weston:%s/usr/lib:%s/lib:%s/opt/helium/lib", opt.root, opt.root, opt.root,
-		opt.root);
-	snprintf(env_map, sizeof env_map, "headless-backend.so=%s/usr/lib/libweston-14/headless-backend.so;kiosk-shell.so=%s/usr/lib/weston/kiosk-shell.so",
-		opt.root, opt.root);
-	snprintf(e_lib, sizeof e_lib, "LD_LIBRARY_PATH=%s", env_lib);
-	snprintf(e_map, sizeof e_map, "WESTON_MODULE_MAP=%s", env_map);
-	snprintf(e_xdg, sizeof e_xdg, "XDG_RUNTIME_DIR=%s", opt.rundir);
-	snprintf(e_home, sizeof e_home, "HOME=%s", opt.profile);
-	char *const argv[] = { weston, "--backend=headless", "--renderer=pixman", "--shell=kiosk", socket_arg, "--no-config", NULL };
-	const char *const env[] = { e_lib, e_map, e_xdg, e_home, NULL };
-	compositor_pid = spawn("weston.log", argv, env, NULL);
-	return compositor_pid < 0 ? -1 : 0;
-}
-
-static int wait_wayland_socket(long timeout_ms)
-{
-	char path[PATH_MAX];
-	snprintf(path, sizeof path, "%s/%s", opt.rundir, opt.display);
-	long deadline = now_ms() + timeout_ms;
-	while (now_ms() < deadline) {
-		struct stat st;
-		if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode))
-			return 0;
-		if (!child_alive(compositor_pid, NULL)) {
-			compositor_pid = -1;
-			return -2;
-		}
-		sleep_ms(100);
-	}
-	return -1;
 }
 
 static int start_fixture(void)
@@ -887,20 +838,18 @@ static int start_fixture(void)
 static int start_helium(void)
 {
 	static char helium[PATH_MAX], user_data[PATH_MAX + 32], port_arg[64];
-	static char e_lib[PATH_MAX * 2 + 32], e_xdg[PATH_MAX + 32], e_wl[128], e_home[PATH_MAX + 16];
+	static char e_lib[PATH_MAX * 2 + 32], e_home[PATH_MAX + 16];
 	static char e_fc[PATH_MAX + 32], e_fcp[PATH_MAX + 32];
 	join_path(helium, sizeof helium, "/opt/helium/helium");
 	snprintf(user_data, sizeof user_data, "--user-data-dir=%s", opt.profile);
 	snprintf(port_arg, sizeof port_arg, "--remote-debugging-port=%d", opt.cdp_port);
 	snprintf(e_lib, sizeof e_lib, "LD_LIBRARY_PATH=%s/opt/helium/lib", opt.root);
-	snprintf(e_xdg, sizeof e_xdg, "XDG_RUNTIME_DIR=%s", opt.rundir);
-	snprintf(e_wl, sizeof e_wl, "WAYLAND_DISPLAY=%s", opt.display);
 	snprintf(e_home, sizeof e_home, "HOME=%s", opt.profile);
 	snprintf(e_fc, sizeof e_fc, "FONTCONFIG_FILE=%s/opt/helium/fontconfig/fonts.conf", opt.root);
 	snprintf(e_fcp, sizeof e_fcp, "FONTCONFIG_PATH=%s/opt/helium/fontconfig", opt.root);
-	char *const argv[] = { helium, "--ozone-platform=wayland", port_arg, user_data, "--no-first-run",
+	char *const argv[] = { helium, "--headless=new", port_arg, user_data, "--no-first-run",
 		"--no-default-browser-check", "--disable-gpu", "--enable-logging=stderr", "about:blank", NULL };
-	const char *const env[] = { e_lib, e_xdg, e_wl, e_home, e_fc, e_fcp, "GDK_BACKEND=wayland", "GTK_USE_PORTAL=0",
+	const char *const env[] = { e_lib, e_home, e_fc, e_fcp, "GTK_USE_PORTAL=0",
 		"NO_AT_BRIDGE=1", NULL };
 	helium_pid = spawn("helium.log", argv, env, opt.profile);
 	return helium_pid < 0 ? -1 : 0;
@@ -1098,9 +1047,11 @@ static int run_cdp(void)
 {
 	int status = 0;
 	char *ver = http_request("GET", "/json/version", &status);
-	char browser_ver[128] = "", browser_url[256] = "";
+	char browser_ver[128] = "", user_agent[256] = "", browser_url[256] = "";
 	int ok = ver && status == 200 && json_string(ver, "Browser", browser_ver, sizeof browser_ver) == 0 &&
-		json_string(ver, "webSocketDebuggerUrl", browser_url, sizeof browser_url) == 0 && strstr(browser_ver, "156.");
+		json_string(ver, "User-Agent", user_agent, sizeof user_agent) == 0 &&
+		json_string(ver, "webSocketDebuggerUrl", browser_url, sizeof browser_url) == 0 &&
+		!strcmp(browser_ver, "Helium/0.20.3.1") && strstr(user_agent, "Chrome/156.");
 	record("cdp_version", ok, "browser=%s", ok ? browser_ver : "unparsed");
 	free(ver);
 	if (!ok)
@@ -1182,8 +1133,6 @@ static void reap_available(void)
 	int st;
 	pid_t r;
 	while ((r = waitpid(-1, &st, WNOHANG)) > 0) {
-		if (r == compositor_pid)
-			compositor_pid = -1;
 		if (r == fixture_pid)
 			fixture_pid = -1;
 	}
@@ -1227,15 +1176,11 @@ static void stop_all_and_check(int closed_by_cdp)
 		sleep_ms(300);
 	}
 
-	if (compositor_pid > 0)
-		kill(compositor_pid, SIGTERM);
 	if (fixture_pid > 0)
 		kill(fixture_pid, SIGTERM);
 	int children_left = 0;
 	reap_children(5000, &children_left);
 	if (children_left) {
-		if (compositor_pid > 0)
-			kill(compositor_pid, SIGKILL);
 		if (fixture_pid > 0)
 			kill(fixture_pid, SIGKILL);
 		reap_children(5000, &children_left);
@@ -1251,8 +1196,6 @@ static void on_alarm(int sig)
 	static const char msg[] = "guest_init: overall timeout\n";
 	(void)!write(2, msg, sizeof msg - 1);
 	kill_profile_procs(SIGKILL);
-	if (compositor_pid > 0)
-		kill(compositor_pid, SIGKILL);
 	if (fixture_pid > 0)
 		kill(fixture_pid, SIGKILL);
 	_exit(124);
@@ -1272,14 +1215,6 @@ int main(int argc, char **argv)
 		return 2;
 
 	int closed = 0;
-	if (start_compositor() < 0) {
-		record("wayland_socket", 0, "stage=spawn");
-		goto finish;
-	}
-	int w = wait_wayland_socket(30000);
-	record("wayland_socket", w == 0, "path=%s/%s%s", opt.rundir, opt.display, w == -2 ? ",compositor-exited" : "");
-	if (w != 0)
-		goto finish;
 
 	int f = start_fixture();
 	record("fixture_server", f == 0, "port=%d", opt.fixture_port);

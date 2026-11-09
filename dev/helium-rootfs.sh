@@ -2,13 +2,13 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-ARCHIVE=${HELIUM_ARCHIVE:-/home/josh/d/chromium-build/.work/artifacts/helium-0.20.3.1/helium-0.20.3.1-linux-x86_64-musl.tar.xz}
-ARCHIVE_SHA256=6853af22b60345c92e0cbe69181aebd8af3fa79842c7f0135d20c9656c5918c6
-ARCHIVE_ROOT=helium-0.20.3.1-linux-x86_64-musl
+ARCHIVE=${HELIUM_ARCHIVE:-/home/josh/d/chromium-build/.work/artifacts/helium-0.20.3.1-r5/helium-0.20.3.1-r5-linux-x86_64-musl.tar.xz}
+ARCHIVE_SHA256=f4b06e80a097587e508982a3c73f043dbd80e3660aab6d47f72648b6ffc36a05
+ARCHIVE_ROOT=helium-0.20.3.1-r5-linux-x86_64-musl
 MIRROR=https://dl-cdn.alpinelinux.org/alpine/v3.24
 MAIN_INDEX_SHA256=e43a5514fbef0c34f74c68992a8d110fd4e525cf1eb7e114f8d93b800407c9d4
 COMMUNITY_INDEX_SHA256=470c4f89b42a9118b3d0dfd81215f0b925271b23ee6996eeb2ea44d50e1205ba
-ROOTS='musl weston weston-backend-headless weston-shell-desktop'
+ROOTS='musl'
 
 DL=$WORK/dl/apk-3.24.2
 OUT=$WORK/helium
