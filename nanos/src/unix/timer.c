@@ -419,7 +419,8 @@ closure_func_basic(timer_handler, void, posix_timer_expire,
         timer_debug("id %d, interval %ld, +%d -> %d\n",
                     ut->info.posix.id, ut->t.interval, overruns, ut->overruns);
 
-        sigev_deliver(ut);
+        if (ut->p)
+            sigev_deliver(ut);
         boolean interval = ut->interval;
         spin_unlock(&ut->lock);
         if (interval)
@@ -679,7 +680,8 @@ closure_func_basic(timer_handler, void, itimer_expire,
         timer_debug("which %d, interval %ld, overruns (ignored) %d\n",
                     ut->info.itimer.which, ut->t.interval, overruns);
 
-        deliver_signal_to_process(ut->p, &ut->info.itimer.si);
+        if (ut->p)
+            deliver_signal_to_process(ut->p, &ut->info.itimer.si);
 
         boolean interval = ut->interval;
         spin_unlock(&ut->lock);
@@ -820,10 +822,15 @@ void unix_timers_process_exit(process p)
         if (!ut)
             continue;
         spin_lock(&ut->lock);
-        if (ut->info.posix.cputime_thread != INVALID_ADDRESS)
+        ut->p = 0;
+        if (ut->info.posix.cputime_thread != INVALID_ADDRESS) {
             thread_release(ut->info.posix.cputime_thread);
-        if (ut->info.posix.recipient != INVALID_ADDRESS)
+            ut->info.posix.cputime_thread = INVALID_ADDRESS;
+        }
+        if (ut->info.posix.recipient != INVALID_ADDRESS) {
             thread_release(ut->info.posix.recipient);
+            ut->info.posix.recipient = INVALID_ADDRESS;
+        }
         remove_unix_timer(ut);
         spin_unlock(&ut->lock);
         release_unix_timer(ut);
@@ -837,6 +844,7 @@ void unix_timers_process_exit(process p)
         if (!ut)
             continue;
         spin_lock(&ut->lock);
+        ut->p = 0;
         remove_unix_timer(ut);
         spin_unlock(&ut->lock);
         release_unix_timer(ut);

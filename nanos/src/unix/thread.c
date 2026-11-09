@@ -412,6 +412,7 @@ closure_func_basic(thunk, void, free_thread)
     if (t->cpu_timers)
         deallocate_timerqueue(t->cpu_timers);
     deallocate_bitmap(t->task.affinity);
+    destruct_context(&t->context);
     /* XXX only free tids from non-leader threads. Leader threads will
      * need different handling */
     process p = t->p;
