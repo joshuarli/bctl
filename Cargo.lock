@@ -99,6 +99,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bctl-automation"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "bctl-cdp",
+ "h12tiny",
+ "laputa-async-channel",
+ "laputa-async-io",
+ "laputa-async-net",
+ "laputa-futures-lite",
+ "miniserde",
+]
+
+[[package]]
 name = "bctl-cdp"
 version = "0.1.0"
 dependencies = [

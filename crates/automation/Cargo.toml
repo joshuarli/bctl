@@ -1,0 +1,22 @@
+[package]
+name = "bctl-automation"
+description = "Native automation over one CDP connection per browser generation: page targets, the selected target, and the scopes element refs hang off"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bctl-cdp = { path = "../cdp" }
+miniserde = "0.1"
+
+[dev-dependencies]
+async-channel = { package = "laputa-async-channel", version = "0.3" }
+async-io = { package = "laputa-async-io", version = "0.3" }
+async-lock = "3"
+async-net = { package = "laputa-async-net", version = "0.3" }
+futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
+h12tiny = { version = "0.9", default-features = false, features = ["server", "http1", "web", "websocket", "websocket-client"] }
+
+[lints]
+workspace = true

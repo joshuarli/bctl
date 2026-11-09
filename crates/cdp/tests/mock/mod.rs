@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -90,11 +91,15 @@ impl Mock {
     }
 
     pub fn next(&self) -> Inbound {
+        self.next_within(WAIT).expect("the client sent nothing")
+    }
+
+    pub fn next_within(&self, wait: Duration) -> Option<Inbound> {
         let received = async { self.inbound.recv().await.ok() }.or(async {
-            Timer::after(WAIT).await;
+            Timer::after(wait).await;
             None
         });
-        block_on(received).expect("the client sent nothing")
+        block_on(received)
     }
 
     pub fn request(&self) -> Request {
