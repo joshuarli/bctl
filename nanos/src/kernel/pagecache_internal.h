@@ -71,6 +71,7 @@ typedef struct pagecache_node {
     /* shared and private mappings associated with this node, in any address space; protected by
        pagecache global lock */
     struct list mappings;
+    s64 writable_maps;
 
     sg_io cache_read;
     sg_io cache_write;

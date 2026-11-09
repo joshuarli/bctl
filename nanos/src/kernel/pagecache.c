@@ -2401,6 +2401,55 @@ static int pagecache_node_collect_maps(pagecache_node pn, range q /* node offset
     return count;
 }
 
+void pagecache_node_unmap_range(pagecache_node pn, range q /* bytes */)
+{
+    struct pagecache_unmap_range maps[16];
+    u64 cursor = 0;
+    while (cursor != infinity) {
+        int count = pagecache_node_collect_maps(pn, q, &cursor, maps, _countof(maps));
+        for (int i = 0; i < count; i++) {
+            /* Synchronous, because the asynchronous variant drops the reference each mapping
+               holds on a page from a completion that runs after this returns: a caller freeing
+               the pages would then find every page still referenced, and zero it instead of
+               giving it back. */
+            pagecache_node_unmap_pages_sync(pn, maps[i].as, maps[i].v, maps[i].node_offset, false);
+            address_space_release(maps[i].as);
+        }
+    }
+}
+
+boolean pagecache_node_map_writable(pagecache_node pn)
+{
+    s64 n = __atomic_load_n(&pn->writable_maps, __ATOMIC_RELAXED);
+    do {
+        if (n < 0)
+            return false;
+    } while (!__atomic_compare_exchange_n(&pn->writable_maps, &n, n + 1, false, __ATOMIC_SEQ_CST,
+                                          __ATOMIC_RELAXED));
+    return true;
+}
+
+void pagecache_node_unmap_writable(pagecache_node pn)
+{
+    assert(__atomic_fetch_sub(&pn->writable_maps, 1, __ATOMIC_SEQ_CST) > 0);
+}
+
+boolean pagecache_node_deny_writable(pagecache_node pn)
+{
+    s64 n = __atomic_load_n(&pn->writable_maps, __ATOMIC_RELAXED);
+    do {
+        if (n > 0)
+            return false;
+    } while (!__atomic_compare_exchange_n(&pn->writable_maps, &n, n - 1, false, __ATOMIC_SEQ_CST,
+                                          __ATOMIC_RELAXED));
+    return true;
+}
+
+void pagecache_node_allow_writable(pagecache_node pn)
+{
+    assert(__atomic_fetch_add(&pn->writable_maps, 1, __ATOMIC_SEQ_CST) < 0);
+}
+
 /* Drops the pages within a node range, after unmapping them from any mapping of the node. A page
    that is still referenced when the range is punched (because a fault is racing with us, or
    because a private copy is mapped elsewhere) cannot be freed: it is zeroed instead, so that the
@@ -2415,19 +2464,7 @@ static void pagecache_node_free_pages(pagecache_node pn, range q /* bytes */)
     assert((q.end & MASK(page_order)) == 0);
     pagecache_debug("%s: pn %p, q %R\n", func_ss, pn, q);
 
-    struct pagecache_unmap_range maps[16];
-    u64 cursor = 0;
-    while (cursor != infinity) {
-        int count = pagecache_node_collect_maps(pn, q, &cursor, maps, _countof(maps));
-        for (int i = 0; i < count; i++) {
-            /* Synchronous, because the asynchronous variant drops the reference each mapping
-               holds on a page from a completion that runs after this returns: the loop below
-               would then find every page still referenced, and zero it instead of giving it
-               back. */
-            pagecache_node_unmap_pages_sync(pn, maps[i].as, maps[i].v, maps[i].node_offset, false);
-            address_space_release(maps[i].as);
-        }
-    }
+    pagecache_node_unmap_range(pn, q);
 
     range pages = range_rshift(q, page_order);
     pagecache_lock_node(pn);
@@ -2594,6 +2631,7 @@ pagecache_node pagecache_allocate_node(pagecache_volume pv, sg_io fs_read, sg_io
         return pn;
     pn->pv = pv;
     list_init(&pn->mappings);
+    pn->writable_maps = 0;
     spin_lock_init(&pn->pages_lock);
     list_init_member(&pn->l);
     init_rangemap(&pn->dirty, h);

@@ -693,9 +693,17 @@ static void vmap_paranoia_locked(rangemap pvmap)
 #endif
 
 /* TODO maybe refcount makes more sense now that we have asynchronous faults */
+static boolean vmap_may_write_cache_node(vmap vm)
+{
+    return (vm->flags & VMAP_FLAG_SHARED) && (vm->allowed_flags & VMAP_FLAG_WRITABLE) &&
+        vm->cache_node;
+}
+
 static void deallocate_vmap_locked(rangemap rm, vmap vm)
 {
     vmap_debug("%s: vm %p %R\n", func_ss, vm, vm->node.r);
+    if (vmap_may_write_cache_node(vm))
+        pagecache_node_unmap_writable(vm->cache_node);
     if (!(vm->flags & VMAP_FLAG_TAIL_BSS) && vm->fd)
         fdesc_put(vm->fd);
     if (vm->shared_anon)
@@ -771,6 +779,8 @@ static vmap allocate_vmap_locked(rangemap rm, struct vmap *k)
         fetch_and_add(&vm->fd->refcnt, 1);
     if (vm->shared_anon)
         refcount_reserve(&vm->shared_anon->refcount);
+    if (vmap_may_write_cache_node(vm))
+        vmap_assert(pagecache_node_map_writable(vm->cache_node));
     vmap_paranoia_locked(rm);
     return vm;
 }
@@ -781,10 +791,14 @@ static void vmap_hold_backing(vmap k)
         fetch_and_add(&k->fd->refcnt, 1);
     if (k->shared_anon)
         refcount_reserve(&k->shared_anon->refcount);
+    if (vmap_may_write_cache_node(k))
+        vmap_assert(pagecache_node_map_writable(k->cache_node));
 }
 
 static void vmap_release_backing(vmap k)
 {
+    if (vmap_may_write_cache_node(k))
+        pagecache_node_unmap_writable(k->cache_node);
     if (k->shared_anon)
         refcount_release(&k->shared_anon->refcount);
     if (k->fd && !(k->flags & VMAP_FLAG_TAIL_BSS))
@@ -1352,29 +1366,9 @@ static void process_remove_range_locked(process p, range q, boolean unmap)
                           (rmnode_handler)stack_closure(vmap_remove_intersection, p->vm->vmaps, q, vh));
 }
 
-/* don't truncate vmap; just unmap truncated pages */
-void truncate_file_maps(process p, fsfile f, u64 new_length)
+void truncate_file_maps(fsfile f, u64 new_length)
 {
-    vmap_lock(p);
-    u64 padlen = pad(new_length, PAGESIZE);
-    pagecache_node pn = fsfile_get_cachenode(f);
-    rangemap_foreach(p->vm->vmaps, n) {
-        vmap vm = (vmap)n;
-        /* an invalidate would be preferable to a sync... */
-        if (vm->cache_node != pn)
-            continue;
-        u64 vm_extent = vm->node_offset + range_span(n->r);
-        s64 delta = vm_extent - padlen;
-        if (delta <= 0)
-            continue;
-        range v = irange(n->r.end - delta, n->r.end);
-        vmap_assert(v.start <= v.end);
-        u64 node_offset = vm->node_offset + (v.start - n->r.start);
-        pf_debug("%s: vmap %p, %R, delta 0x%lx, remove v %R, node_offset 0x%lx\n",
-                 func_ss, vm, n->r, delta, v, node_offset);
-        pagecache_node_unmap_pages(pn, p->vm->as, v, node_offset, false);
-    }
-    vmap_unlock(p);
+    pagecache_node_unmap_range(fsfile_get_cachenode(f), irange(pad(new_length, PAGESIZE), infinity));
 }
 
 closure_func_basic(vmap_handler, boolean, msync_vmap,
@@ -1466,6 +1460,7 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
     /* handle fixed address or hint */
     fdesc desc = 0;
     shared_anon sa = 0;
+    pagecache_node writable_node = 0;
     sysreturn ret = -EINVAL;
     boolean fixed = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) != 0;
     range q = irangel(u64_from_pointer(addr), len);
@@ -1526,14 +1521,17 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
                     allowed_flags |= VMAP_FLAG_WRITABLE;
             } else {
                 filesystem fs = fsf->fs;
-                if (fs->get_seals) {
-                    u64 seals;
-                    if ((fs->get_seals(fs, fsf, &seals) == 0) &&
-                        (seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE))) {
-                        if (vmflags & VMAP_FLAG_WRITABLE) {
-                            ret = -EPERM;
-                            goto out_unlock;
-                        }
+                u64 seals;
+                boolean sealed = fs->get_seals && (fs->get_seals(fs, fsf, &seals) == 0) &&
+                    (seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE));
+                if (allowed_flags & VMAP_FLAG_WRITABLE) {
+                    pagecache_node pn = fsfile_get_cachenode(fsf);
+                    if (!sealed && pagecache_node_map_writable(pn)) {
+                        writable_node = pn;
+                    } else if (vmflags & VMAP_FLAG_WRITABLE) {
+                        ret = -EPERM;
+                        goto out_unlock;
+                    } else {
                         allowed_flags &= ~VMAP_FLAG_WRITABLE;
                     }
                 }
@@ -1609,6 +1607,8 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
     }
     ret = q.start;
   out:
+    if (writable_node)
+        pagecache_node_unmap_writable(writable_node);
     if (desc)
         fdesc_put(desc);
     if (sa)

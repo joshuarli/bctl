@@ -967,7 +967,7 @@ vmap vmap_from_vaddr(process p, u64 vaddr);
 boolean mmap_cow_page(process_vm pvm, vmap vm, u64 vaddr);
 void vmap_iterator(process p, vmap_handler vmh);
 boolean vmap_validate_range(process p, range q, u32 flags);
-void truncate_file_maps(process p, fsfile f, u64 new_length);
+void truncate_file_maps(fsfile f, u64 new_length);
 sstring string_from_mmap_type(int type);
 
 void thread_log_internal(thread t, sstring desc, ...);

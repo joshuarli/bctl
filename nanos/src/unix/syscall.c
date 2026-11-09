@@ -881,7 +881,7 @@ int file_open(filesystem fs, tuple n, tuple parent, int flags, fsfile fsf)
         if (type == FDESC_TYPE_REGULAR) {
             assert(fsf);
             if (flags & O_TRUNC)
-                truncate_file_maps(p, fsf, 0);
+                truncate_file_maps(fsf, 0);
         }
     }
 
@@ -1292,7 +1292,7 @@ static sysreturn truncate_internal(filesystem fs, fsfile fsf, inode n, inode par
     }
     int s = filesystem_truncate(fs, fsf, length);
     if (s == 0) {
-        truncate_file_maps(current->p, fsf, length);
+        truncate_file_maps(fsf, length);
         tuple md = filesystem_get_meta(fs, n);
         if (md) {
           fs_notify_event(md, parent ? fs->get_meta(fs, parent) : 0, IN_MODIFY);
@@ -2100,7 +2100,7 @@ sysreturn fcntl(int fd, int cmd, s64 arg)
         break;
     case F_ADD_SEALS:
         if (f->type == FDESC_TYPE_REGULAR)
-            rv = fsfile_add_seals(((file)f)->fsf, (int)arg);
+            rv = file_add_seals((file)f, (unsigned int)arg);
         else
             rv = -EINVAL;
         break;

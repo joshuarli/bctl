@@ -77,7 +77,7 @@ fsfile fsfile_open(sstring file_path);
 fsfile fsfile_open_or_create(sstring file_path, boolean truncate);
 int fsfile_truncate(fsfile f, u64 len);
 
-sysreturn fsfile_add_seals(fsfile f, u64 seals);
+sysreturn file_add_seals(file f, u64 seals);
 sysreturn fsfile_get_seals(fsfile f, u64 *seals);
 
 notify_entry fs_watch(heap h, tuple n, u64 eventmask, event_handler eh, notify_set *s);

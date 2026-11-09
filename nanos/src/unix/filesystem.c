@@ -1023,43 +1023,36 @@ int fsfile_truncate(fsfile f, u64 len)
     return ret;
 }
 
-closure_function(2, 1, boolean, fsfile_seal_vmap_handler,
-                 pagecache_node, pn, boolean *, writable,
-                 vmap vm)
+sysreturn file_add_seals(file f, u64 seals)
 {
-    if ((vm->cache_node == bound(pn)) && (vm->allowed_flags & VMAP_FLAG_WRITABLE)) {
-        *bound(writable) = true;
-        return false;
-    }
-    return true;
-}
-
-sysreturn fsfile_add_seals(fsfile f, u64 seals)
-{
+    if (!fdesc_is_writable(&f->f))
+        return -EPERM;
     if (seals & ~FS_KNOWN_SEALS)
         return -EINVAL;
-    filesystem fs = f->fs;
+    fsfile fsf = f->fsf;
+    filesystem fs = fsf->fs;
     if (!fs->set_seals)
         return -EINVAL;
     filesystem_lock(fs);
     u64 current_seals;
-    int fss = fs->get_seals(fs, f, &current_seals);
+    int fss = fs->get_seals(fs, fsf, &current_seals);
     sysreturn rv;
+    boolean denied = false;
     if (fss == 0) {
         if (current_seals & F_SEAL_SEAL) {
             rv = -EPERM;
             goto out;
         }
-        if (seals & F_SEAL_WRITE) {
-            pagecache_node pn = fsfile_get_cachenode(f);
-            boolean writable_maps = false;
-            vmap_iterator(current->p, stack_closure(fsfile_seal_vmap_handler, pn, &writable_maps));
-            if (writable_maps) {
+        if ((seals & F_SEAL_WRITE) && !(current_seals & F_SEAL_WRITE)) {
+            if (!pagecache_node_deny_writable(fsfile_get_cachenode(fsf))) {
                 rv = -EBUSY;
                 goto out;
             }
+            denied = true;
         }
-        fss = fs->set_seals(fs, f, current_seals | seals);
+        fss = fs->set_seals(fs, fsf, current_seals | seals);
+        if (fss && denied)
+            pagecache_node_allow_writable(fsfile_get_cachenode(fsf));
     }
     rv = fss;
   out:

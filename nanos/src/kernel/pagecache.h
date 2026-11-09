@@ -62,8 +62,16 @@ boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physic
 
 void pagecache_node_unmap_pages(pagecache_node pn, address_space as, range v /* bytes */,
                                 u64 node_offset, boolean del_mappings);
+void pagecache_node_unmap_range(pagecache_node pn, range q /* bytes */);
 void pagecache_node_move_mapping(pagecache_node pn, address_space as, range from, range to,
                                  u64 node_offset, boolean shared);
+
+/* Counts the shared mappings that may write to a node, as Linux's i_mmap_writable: positive
+   while any exist, negative once they are denied (a write seal denies them for good). */
+boolean pagecache_node_map_writable(pagecache_node pn);
+void pagecache_node_unmap_writable(pagecache_node pn);
+boolean pagecache_node_deny_writable(pagecache_node pn);
+void pagecache_node_allow_writable(pagecache_node pn);
 
 pagecache_volume pagecache_allocate_volume(u64 length, int block_order);
 
