@@ -1,4 +1,5 @@
 #include <unix_internal.h>
+#include <seccomp.h>
 #include <filesystem.h>
 #include <storage.h>
 
@@ -430,7 +431,15 @@ static void procfs_status(buffer b, process p, int tid)
     procfs_cap_line(b, ss("CapEff"), eff);
     procfs_cap_line(b, ss("CapBnd"), bnd);
     procfs_cap_line(b, ss("CapAmb"), amb);
-    bprintf(b, "NoNewPrivs:\t%d\nSeccomp:\t0\nSeccomp_filters:\t0\n", nnp ? 1 : 0);
+    u8 sec_mode = 0;
+    u32 sec_filters = 0;
+    thread tt = thread_from_tid(p, tid);
+    if (tt != INVALID_ADDRESS) {
+        sec_mode = tt->seccomp_mode;
+        sec_filters = seccomp_filter_count(tt->seccomp);
+        thread_release(tt);
+    }
+    bprintf(b, "NoNewPrivs:\t%d\nSeccomp:\t%d\nSeccomp_filters:\t%d\n", nnp ? 1 : 0, sec_mode, sec_filters);
 }
 
 static void procfs_stat(buffer b, process p)

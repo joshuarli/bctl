@@ -203,6 +203,7 @@ typedef struct user_cap_data {
 #define CAP_SETUID      7
 #define CAP_SETPCAP     8
 #define CAP_SYS_PTRACE  19
+#define CAP_SYS_ADMIN   21
 #define CAP_SYS_RESOURCE 24
 #define CAP_LAST_CAP    40
 #define CAP_FULL_SET    ((1ull << (CAP_LAST_CAP + 1)) - 1)
@@ -384,6 +385,7 @@ pending_fault new_pending_fault_locked(process p, context ctx, u64 addr);
 
 #define thread_frame(t) ((t)->context.frame)
 
+typedef struct seccomp_filter *seccomp_filter;
 typedef struct thread {
     struct context context;
 
@@ -431,6 +433,8 @@ typedef struct thread {
     boolean interrupting_syscall;
     void *signal_stack;
     u64 signal_stack_length;
+    u8 seccomp_mode;
+    seccomp_filter seccomp;
 
     struct spinlock lock;   /* generic lock for struct members without a specific lock */
 
@@ -947,6 +951,7 @@ static inline sigaction sigaction_from_sig(thread t, int signum)
 boolean dispatch_signals(thread t);
 void deliver_signal_to_thread(thread t, struct siginfo *);
 void deliver_signal_to_process(process p, struct siginfo *);
+void force_signal(thread t, struct siginfo *);
 void raise_sigpipe(context writer);
 boolean thread_has_dispatchable_signal(thread t);
 void deliver_fault_signal(u32 signo, thread t, u64 vaddr, s32 si_code);

@@ -1,4 +1,5 @@
 #include "strace.h"
+#include <seccomp.h>
 
 #define STRACE_SC_F_NOTRACE     (1 << 0)
 
@@ -614,7 +615,6 @@ static void strace_syscall(thread t)
     context ctx = get_current_context(ci);
     boolean trace = strace.do_sc_trace &&
                     ((call >= SYS_MAX) || !(strace_syscalls[call].flags & STRACE_SC_F_NOTRACE));
-    sysreturn rv;
     if (!strace.do_sc_stats && !trace)
         goto call_handler;
     strace_sc_ctx sc_ctx = allocate(strace.h, sizeof(*sc_ctx));
@@ -667,18 +667,7 @@ static void strace_syscall(thread t)
     table_set(strace.sc_contexts, ctx, sc_ctx);
     spin_unlock(&strace.lock);
   call_handler:
-    rv = -ENOSYS;
-    if (call < SYS_MAX) {
-        u64 *h_addr = (u64 *)(t->p->syscalls) + call;
-        sysreturn (*h)(u64, u64, u64, u64, u64, u64) = pointer_from_u64(*h_addr);
-        if (h) {
-            t->syscall_complete = false;
-            context_reserve_refcount(ctx);
-            rv = h(sc_arg0(t), sc_arg1(t), sc_arg2(t), sc_arg3(t), sc_arg4(t), sc_arg5(t));
-            context_release_refcount(ctx);
-        }
-    }
-    set_syscall_return(t, rv);
+    syscall_dispatch(t, (syscall_context)ctx, f);
     t->syscall = 0;
     schedule_thread(t);
   out:

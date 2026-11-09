@@ -70,6 +70,7 @@ SRCS-kernel.elf= \
 	$(SRCDIR)/unix/notify.c \
 	$(SRCDIR)/unix/poll.c \
 	$(SRCDIR)/unix/procfs.c \
+	$(SRCDIR)/unix/seccomp.c \
 	$(SRCDIR)/unix/signal.c \
 	$(SRCDIR)/unix/socket.c \
 	$(SRCDIR)/unix/special.c \

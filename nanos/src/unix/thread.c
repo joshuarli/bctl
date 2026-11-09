@@ -1,4 +1,5 @@
 #include <unix_internal.h>
+#include <seccomp.h>
 #include <ftrace.h>
 #include <gdb.h>
 
@@ -106,6 +107,9 @@ static sysreturn clone_internal(struct clone_args_internal *args)
 
      clone_frame_pstate(f, thread_frame(current));
      thread_clone_sigmask(t, current);
+     spin_lock(&current->p->threads_lock);
+     seccomp_fork(t, current);
+     spin_unlock(&current->p->threads_lock);
 
      set_syscall_return(t, 0);
      f[SYSCALL_FRAME_SP] = (u64)stack + stack_size;
@@ -566,6 +570,8 @@ thread create_thread(process p, u64 tid)
 
     t->signal_stack = 0;
     t->signal_stack_length = 0;
+    t->seccomp_mode = 0;
+    t->seccomp = 0;
     bitmap affinity = allocate_bitmap(h, h, total_processors);
     if (affinity == INVALID_ADDRESS)
         goto fail_affinity;
@@ -647,6 +653,7 @@ boolean exit_thread(thread t)
 
     wake_robust_list(t);
     t->robust_list = 0;
+    seccomp_thread_exit(t);
 
     blockq_flush(t->thread_bq);
     deallocate_blockq(t->thread_bq);

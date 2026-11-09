@@ -1,4 +1,5 @@
 #include <unix_internal.h>
+#include <seccomp.h>
 #include <filesystem.h>
 #include <lwip.h>
 #include <storage.h>
@@ -2932,6 +2933,10 @@ static sysreturn prctl(int option, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
         return 0;
     case PR_SET_PTRACER:
         return prctl_set_ptracer(arg2);
+    case PR_SET_SECCOMP:
+        return seccomp_prctl(arg2, (void *)arg3);
+    case PR_GET_SECCOMP:
+        return current->seccomp_mode;
     default:
         return -EINVAL;
     }
@@ -3093,6 +3098,7 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, capget, capget);
     register_syscall(map, capset, capset);
     register_syscall(map, prctl, prctl);
+    register_syscall(map, seccomp, seccomp);
     register_syscall(map, wait4, wait4);
     register_syscall(map, waitid, waitid);
     register_syscall(map, sysinfo, sysinfo);
@@ -3154,6 +3160,33 @@ syscall_context allocate_syscall_context(cpuinfo ci)
     return sc;
 }
 
+void syscall_dispatch(thread t, syscall_context sc, context_frame f)
+{
+    if (shutting_down & SHUTDOWN_ONGOING)
+        return;
+    context ctx = &sc->uc.kc.context;
+    sysreturn rv = -ENOSYS;
+    boolean skip = seccomp_check(t, f, &rv);
+    if (!skip) {
+        u64 call = (u64)(u32)f[FRAME_VECTOR];
+        if (call < SYS_MAX) {
+            struct syscall *s = t->p->syscalls + call;
+            sysreturn (*h)(u64, u64, u64, u64, u64, u64) = s->handler;
+            if (h) {
+                t->syscall_complete = false;
+                context_reserve_refcount(ctx);
+                u64 arg0 = f[SYSCALL_FRAME_ARG0];
+                rv = h(arg0, f[SYSCALL_FRAME_ARG1], f[SYSCALL_FRAME_ARG2],
+                       f[SYSCALL_FRAME_ARG3], f[SYSCALL_FRAME_ARG4], f[SYSCALL_FRAME_ARG5]);
+                assert(ctx->refcount.c > 1);
+                context_release_refcount(ctx);
+                set_syscall_return(t, rv);
+                return;
+            }
+        }
+    }
+    set_syscall_return(t, rv);
+}
 void syscall_handler(thread t)
 {
     /* The syscall_context stored in ci was set as current on syscall entry in
@@ -3165,11 +3198,8 @@ void syscall_handler(thread t)
     context_frame f = thread_frame(t);
     f[FRAME_FULL] = true;
     thread_reserve(t); /* frame save reference */
-    u64 call = f[FRAME_VECTOR];
-    u64 arg0 = f[SYSCALL_FRAME_ARG0]; /* aliases retval on arm; cache arg */
+    u64 call = (u64)(u32)f[FRAME_VECTOR];
     syscall_restart_arch_setup(f);
-    set_syscall_return(t, -ENOSYS);
-
     syscall_context sc = (syscall_context)get_current_context(ci);
     context ctx = &sc->uc.kc.context;
     assert(is_syscall_context(ctx));
@@ -3177,33 +3207,13 @@ void syscall_handler(thread t)
     ctx->fault_handler = t->context.fault_handler;
     ctx->as = t->context.as;
     sc->start_time = 0;
-    sc->call = call;
+    sc->call = (int)call;
     assert(ctx->refcount.c == 1);
     t->syscall = sc;
     context_pause(&t->context);
     context_release(&t->context);
     context_resume(ctx);
-
-    if (shutting_down & SHUTDOWN_ONGOING)
-        goto out;
-
-    if (call >= sizeof(_linux_syscalls) / sizeof(_linux_syscalls[0])) {
-        goto out;
-    }
-
-    /* In the future, interrupt enable can go here. */
-    struct syscall *s = t->p->syscalls + call;
-    sysreturn (*h)(u64, u64, u64, u64, u64, u64) = s->handler;
-    if (h) {
-        t->syscall_complete = false;
-        context_reserve_refcount(ctx);
-        sysreturn rv = h(arg0, f[SYSCALL_FRAME_ARG1], f[SYSCALL_FRAME_ARG2],
-                         f[SYSCALL_FRAME_ARG3], f[SYSCALL_FRAME_ARG4], f[SYSCALL_FRAME_ARG5]);
-        assert(ctx->refcount.c > 1);
-        context_release_refcount(ctx);
-        set_syscall_return(t, rv);
-    }
-  out:
+    syscall_dispatch(t, sc, f);
     t->syscall = 0;
     schedule_thread(t);
     kern_yield();

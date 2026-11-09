@@ -1,4 +1,5 @@
 #include <unix_internal.h>
+#include <seccomp.h>
 #include <ftrace.h>
 #include <gdb.h>
 #include <filesystem.h>
@@ -1011,6 +1012,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     context_frame f = thread_frame(ct);
     clone_frame_pstate(f, thread_frame(t));
     thread_clone_sigmask(ct, t);
+    seccomp_fork(ct, t);
     runtime_memcpy(ct->name, t->name, sizeof(ct->name));
     ct->signal_stack = t->signal_stack;
     ct->signal_stack_length = t->signal_stack_length;

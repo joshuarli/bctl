@@ -287,6 +287,16 @@ void deliver_signal_to_thread(thread t, struct siginfo *info)
     deliver_pending_to_thread(t);
 }
 
+void force_signal(thread t, struct siginfo *info)
+{
+    unblock_signals(t, mask_from_sig(info->si_signo));
+    process p = t->p;
+    int signum = info->si_signo;
+    void *handler = p->sigactions[signum - 1].sa_handler;
+    if (handler == SIG_IGN)
+        p->sigactions[signum - 1].sa_handler = SIG_DFL;
+    deliver_signal_to_thread(t, info);
+}
 void raise_sigpipe(context writer)
 {
     if (!is_syscall_context(writer))
