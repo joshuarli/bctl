@@ -472,13 +472,6 @@ sysreturn rt_sigaction(int signum,
     if (act->sa_flags & SA_RESETHAND)
         msg_warn("sigaction flag SA_RESETHAND unsupported");
 
-#ifdef __x86_64__
-    /* libc should always set this on x64 ... */
-    if (!(act->sa_flags & SA_RESTORER)) {
-        msg_err("sigaction without SA_RESTORER not supported");
-        return -EINVAL;
-    }
-#endif
 
     sig_debug("installing sigaction: handler %p, sa_mask 0x%lx, sa_flags 0x%lx\n",
               act->sa_handler, act->sa_mask.sig[0], act->sa_flags);
@@ -1176,10 +1169,11 @@ boolean dispatch_signals(thread t)
     if (!setup_sigframe(t, signum, si)) {
         /* force an uncatchable SIGSEGV */
         sig_debug("failed to setup sigframe for tid %d\n", t->tid);
-        struct queued_signal qs = {};
-        qs.si.si_signo = SIGSEGV;
-        default_signal_action(t, &qs);
-        assert(0); // should not get here
+        struct queued_signal segv = {};
+        segv.si.si_signo = SIGSEGV;
+        default_signal_action(t, &segv);
+        free_queued_signal(qs);
+        return false;
     }
 
     ltrace_signal(si->si_signo);
