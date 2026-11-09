@@ -28,13 +28,21 @@ J1 (shadowdriver `6568107`). T1 (`7418ce2`). R0 (`8ea5874`, on
 `ref-alpine-chromium` only: 207 gaps, `docs/userland.md`). H2's CDP gateway
 (`c931e2f`, `cargo test -p bctl --test cdp -- --ignored`): capabilities,
 revocation, and refusal of new attachments while a person holds the lease.
-H2 still open: SmolVM publishes the raw guest CDP port on host loopback with
-no bind option, so it bypasses the capability; and egress, which SmolVM's
-`--block-private`/`--allow-private` flags can cover.
-Running lanes: J3, T3, N1, each in `.work/wt/<item>`, on `ref-alpine-chromium`.
-Next: D2's run views after J3; then M3N (native automation), whose N1
-transport has no bctl prereq and can start now.
-Resume: `implement M3N from docs/CAMPAIGN-ROADMAP.md`.
+H2's socket and egress (`60d977c`): CDP reaches the guest only over a Unix
+socket, and guests launch with `--block-private` (`--test egress`); a session
+re-opens a private range only with `bctl up --allow-private CIDR`, which is
+H2's explicit allow. T3 (`28544a6`: B1 with pointer `<select>` and
+`window.open` focus on `ref-alpine-tinyland`). N1 (`21b26c7`, `crates/cdp`).
+J3 (`92c4b1b`, `cargo test -p bctl --test runs -- --ignored` with `BCTL_GRAB`
+set: exec outcomes, cancel, kill -9 to Interrupted, login wall to
+NeedsInteraction to resume and a verified mirror, resume from `state.db`).
+X2 Unikraft (`c2e9501`): not viable, not self-hostable and no sandbox.
+J3 open: Grab has no pause or login classifier (pause is cancel at a page
+boundary plus a new attempt; `login-required` needs Grab to report it); Grab's
+events file and own log are not capped by bctl; the guest Chromium exits when
+its last tab closes (H3).
+Next: D2's run views; N2 (targets); D2's acceptance on `ref-alpine-tinyland`.
+Resume: `implement D2 and N2 from docs/CAMPAIGN-ROADMAP.md`.
 
 ## Charter
 
