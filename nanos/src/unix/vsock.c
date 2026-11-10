@@ -41,6 +41,7 @@ typedef struct vsock {
     int listen_backlog;
     int so_error;
     int flags;
+    int peer_shutdown;
     ringbuf incoming;
 } *vsock;
 
@@ -146,10 +147,12 @@ static void vsock_add_connection(vsock_connection conn)
 }
 
 /* Must be called with connection locked. */
-static void vsock_remove_connection(vsock_connection conn)
+void vsock_remove_connection(vsock_connection conn)
 {
     spin_lock(&vsock_priv.lock);
-    table_set(vsock_priv.connections, &conn->id, 0);
+    boolean registered = table_find(vsock_priv.connections, &conn->id) == conn;
+    if (registered)
+        table_set(vsock_priv.connections, &conn->id, 0);
     vsock_bound bound = conn->bound;
     if (bound) {
         table_set(vsock_priv.bound, pointer_from_u64((u64)conn->id.local_port), 0);
@@ -157,7 +160,8 @@ static void vsock_remove_connection(vsock_connection conn)
         conn->bound = 0;
     }
     spin_unlock(&vsock_priv.lock);
-    refcount_release(&conn->refc);
+    if (registered)
+        refcount_release(&conn->refc);
 }
 
 static vsock_connection vsock_get_connection(struct vsock_conn_id *id)
@@ -398,10 +402,10 @@ closure_func_basic(fdesc_close, sysreturn, vsock_close,
             conn->vsock = 0;
             conn->bound = bound;
             int shutdown_flags = VSOCK_SHUTDOWN_TX | VSOCK_SHUTDOWN_RX;
-            if ((s->flags & shutdown_flags) != shutdown_flags) {
-                if (!virtio_sock_shutdown(conn, shutdown_flags))
-                    vsock_remove_connection(conn);
-            }
+            boolean shutdown_sent = (s->flags & shutdown_flags) == shutdown_flags ||
+                                    virtio_sock_shutdown(conn, shutdown_flags);
+            if (!shutdown_sent || (s->peer_shutdown & VSOCK_SHUTDOWN_RX))
+                vsock_remove_connection(conn);
             vsock_conn_unlock(conn);
             vsock_conn_release(conn);
             struct vsock_rxbuf rxbuf;
@@ -793,6 +797,7 @@ static sysreturn vsock_alloc(heap h, int type, int flags, boolean alloc_fd, vsoc
     s->bound = 0;
     s->conn = 0;
     s->flags = 0;
+    s->peer_shutdown = 0;
     s->state = VSOCK_STATE_INIT;
     s->so_error = 0;
     if (alloc_fd) {
@@ -988,6 +993,7 @@ vsock_connection vsock_shutdown_request(struct vsock_conn_id *conn_id, int flags
     if (s) {
         vsock_lock(s);
         s->flags |= flags;
+        s->peer_shutdown |= flags;
         *conn_close = (s->flags & VSOCK_SHUTDOWN_TX) && (s->flags & VSOCK_SHUTDOWN_RX);
         vsock_unlock(s);
         blockq_wake_one(s->sock.txbq);
@@ -996,8 +1002,6 @@ vsock_connection vsock_shutdown_request(struct vsock_conn_id *conn_id, int flags
     } else {
         *conn_close = true;
     }
-    if (*conn_close)
-        vsock_remove_connection(conn);
     return conn;
 }
 
@@ -1021,6 +1025,7 @@ void vsock_conn_reset(struct vsock_conn_id *conn_id)
         } else {
             connect_failed = false;
             s->flags |= VSOCK_SHUTDOWN_TX | VSOCK_SHUTDOWN_RX;
+            s->peer_shutdown |= VSOCK_SHUTDOWN_TX | VSOCK_SHUTDOWN_RX;
         }
         vsock_unlock(s);
         blockq_wake_one(s->sock.txbq);

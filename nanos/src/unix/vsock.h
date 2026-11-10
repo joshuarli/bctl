@@ -41,4 +41,5 @@ vsock_connection vsock_rx(struct vsock_conn_id *conn_id, void *data, u64 len);
 void vsock_buf_space_notify(vsock_connection conn, u64 buf_space);
 vsock_connection vsock_shutdown_request(struct vsock_conn_id *conn_id, int flags,
                                         boolean *conn_close);
+void vsock_remove_connection(vsock_connection conn);
 void vsock_conn_reset(struct vsock_conn_id *conn_id);

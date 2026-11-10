@@ -317,8 +317,10 @@ closure_func_basic(vqfinish, void, virtio_sock_rx_complete,
             flags |= VSOCK_SHUTDOWN_RX;
         boolean conn_close;
         conn = (virtio_sock_connection)vsock_shutdown_request(&conn_id, flags, &conn_close);
-        if (conn && conn_close)
+        if (conn && conn_close) {
             virtio_sock_tx_hdr(vs, conn, VIRTIO_VSOCK_OP_RST, 0);
+            vsock_remove_connection(&conn->vsock_conn);
+        }
         break;
     }
     case VIRTIO_VSOCK_OP_RW:
