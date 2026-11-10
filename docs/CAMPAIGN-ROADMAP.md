@@ -302,6 +302,13 @@ Needs the owner: the public restore CLI (`bctl template` / `bctl up
 --template`). `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
+M8C external-client compatibility is **proposed** (not qualified): prove
+browser-use 1.0.0 and agent-browser v0.42.0 against the existing Helium CDP
+gateway, then add external-controller ownership, managed jobs, file transfer,
+and optionally an agent-browser provider. See [research](research/external-clients.md)
+and the new M8C sequence. Work can start alongside M7N without changing its
+active acceptance or introducing a third browser engine.
+
 ## Charter
 
 - Decide and keep going. Record a decision only when a later item depends on
@@ -472,7 +479,19 @@ Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 - Delegated: Rust crates (CLI parsing, HTTP, SQLite, WebSocket). Each needs a
   one-line reason in its commit body and must fit H1's binary-size gate.
 
-## Baseline
+- Owner 2026-11-09: extend bctl's *consumer compatibility* to released
+  browser-use 1.0.0 and agent-browser v0.42.0, through existing CDP
+  attachment and an optional agent-browser provider plugin (M8C). This
+  does **not** change the earlier M3N rule that agent-browser is behavior
+  reference only for bctl's native implementation: no code, dependency,
+  launcher, or daemon is copied. Client automation runs on the host; bctl
+  remains the single owner of Helium, profile, VM and run state. Release
+  pins and proof gates live in `docs/research/external-clients.md`.
+  During human control, existing external CDP connections are **not**
+  currently gated; do not claim exclusive takeover until M8C's
+  controller ownership tests pass. External bctl clients remain
+  unqualified until a real pinned-client test passes.
+\n## Baseline
 
 Checked 2026-11-08, read-only, nothing built or run.
 
@@ -1115,6 +1134,169 @@ Slices, in order, one writer:
   labelled so, and a Nanos column in `docs/performance.md`. The SmolVM
   numbers are from the Mac until SmolVM runs on Linux, and the table says so.
 
+### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
+
+**Status: proposed, source-reviewed; no upstream-client VM acceptance yet.** This
+extends bctl's *consumer* surface; it does not replace M3N's native automation,
+Shadowdriver, Grab, or the active M7N work. See
+[the pinned integration research](research/external-clients.md). The initial
+release target is compatible **external CDP attachment**, not upstream feature
+parity, a substitute browser, a new agent framework, or a hosted service. A
+source-reviewed integration is not "supported" until its real-client tests pass.
+
+**Ownership boundary.** bctl alone owns Helium, the VM, profiles, readiness,
+CDP capabilities, run records, retained artifacts, and reconciliation.
+browser-use and agent-browser own their automation, REPL/model loops, page
+bindings, selectors, and element references. They run on the host, not inside
+the appliance. `exec` runs have the **host user's authority**; a sandboxed
+browser does not sandbox model-written Python or another host-side agent.
+Nothing from these clients is linked into the Rust daemon or guest image.
+
+**Fixed upstream pins for first qualification:**
+
+| Consumer | Revision | Connection |
+| --- | --- | --- |
+| browser-use 1.0.0 | `070be98109c03f04a95f704533e8f6e9868d0525` | `Browser(cdp_url=...)`, explicitly passed to `Agent` |
+| browser-harness 0.1.13 | pinned by browser-use 1.0.0 | owns the client-side persistent CDP/REPL daemon |
+| agent-browser v0.42.0 | `e7519957b9067c541825afa21a792fbe1f483047` | generic `--cdp`, then optional `browser.provider` plugin |
+
+Upgrade pins only as deliberate, separately evidenced compatibility work.
+Tests use Helium, with reference Chrome permitted only as a labelled diagnostic
+control. An agent may run the independently scoped research/attachment proofs
+alongside M7N; do not interrupt its active implementation or shared host bench.
+
+**E0 — Contract census and compatibility matrix (documentation only).**
+Own `docs/research/external-clients.md`. Read the exact upstream release sources
+and bctl's gateway, authority, jobs, and runtime code; document HTTP discovery,
+advertised WebSocket URL, Origin/Host handling, client cleanup, tab ownership,
+file paths, additional CDP sockets, and runtime-specific limitations. Confirm
+which CLI/client packages actually install on macOS arm64 and Linux x86_64/musl.
+A Rust binary being statically linked is *not* evidence it satisfies the
+project's no-libgcc/compiler-purity requirements. Record a matrix of
+source-verified, runtime-verified, blocked, and unsupported features.
+**Acceptance:** source permalinks, exact pins, identified call sites,
+correct capability claims, and no fabricated proof results.
+
+**E1 — Released-client endpoint proof.** Prereq E0, existing H2 gateway.
+Own a small `tests/interop/` harness and only the gateway fixes required by
+failing tests. Run each released client against a real bctl session; exercise
+`/json/version` HTTP discovery, the advertised browser WS URL, access to
+`Browser.getVersion`/Target APIs, tab navigation, a fixture form fill/click,
+accessibility, actual screenshot bytes, browser dialog, popup, same- and
+cross-origin iframe, and client detach followed by another attach. For
+browser-use run both `mode="default"` and `mode="ultrafast"`; its domain policy
+adds a second CDP connection, which must also attach and detach. Prefer the
+pinned upstream scripted Pydantic-AI `FunctionModel` test technique to avoid
+paid model calls. Agent-browser runs deterministic CLI commands without an LLM.
+Do not infer interoperability from bctl's own `Endpoint::dial_target`:
+its special `*.localhost` mapping may not exist in Python or upstream Rust.
+Verify DNS, proxy variables/NO_PROXY, Host header, Origin rejection and
+capability revocation on each supported host. If resolution fails, add the
+smallest safe loopback CDP URL representation that works with both consumers
+(e.g. a scoped path/query token). Preserve revocation; never expose guest CDP
+or silently disable auth. HTTP-discovery path mangling is not repaired by
+adding only a browser-WS endpoint, and a WS endpoint does not cure DNS.
+**Acceptance:** exact bctl/image/runtime/upstream version receipts; 10/10
+repeated connections and reconnects per consumer on qualified runtime,
+consistent successful real-page operations, and an invalid/revoked endpoint
+cannot attach. A missing test host is "unverified", not "passed".
+
+**E2 — External controller leases and lifecycle.** Prereq E1. Own
+`crates/core/`, `crates/bctl/src/{gateway,authority,runs}.rs`, and corresponding
+tests. Start with one active *logical controlling owner* per session; allow
+multiple CDP WebSockets for the same owner (browser-use's domain guard needs
+one). Do not confuse a capability with an owned session: distinguish
+`borrowed/attach-existing` (client disconnect leaves the browser alive)
+from `managed-ephemeral` (bctl owns and eventually reclaims the exact
+session generation). Track client/attempt/generation, capability issuance,
+release and expiry; serialize competing native mutations and external clients.
+Today human takeover only blocks **new** CDP attachments and cannot stop
+commands on pre-existing sockets; until a correct cooperative protocol exists,
+**refuse takeover while an external controller owns a live lease**, with a
+remedy to release/cancel it. Existing untracked CDP attachments must be
+documented as unsafe for exclusive handoff, not silently treated as lease
+holders. Forced revocation, if implemented, shuts *all* of the owner's CDP
+sockets, reports interrupted/unknown-outcome effects, and never retries
+dispatched input. Noncooperative `exec` is not pausible. Client failure, host
+job cancellation, daemon `kill -9`, VM crash, double close and stale cleanup
+must never kill a newer generation or leak a permanent lease. Do not rely
+on agent-browser's best-effort `browser.close` plugin callback alone.
+**Acceptance:** deterministic ownership/authority transition tests, two
+client sockets under one lease, competing client refused, human takeover
+refused until release, idempotent cleanup, no browser termination for a borrowed
+session, and proper reconciliation after crashes.
+
+**E3 — Host-side managed recipes and run evidence.** Prereq E1 (managed
+ownership uses E2). Own `docs/jobs.md`, focused `examples/` or `tests/interop/`,
+and only justified `exec` adapter changes. Reuse `BCTL_CDP_URL`,
+`BCTL_OUTPUT_DIR`, `BCTL_RUN`, ordinary programs, and run outcomes; do not
+invent a workflow DSL, Python binding to bctl, new scheduler, or second job DB.
+Browser-use requires explicit `Browser(cdp_url=...)`, not the default cloud
+`Browser()`. Test whether its `Agent` actually runs without provisioned
+Browser Use Cloud credentials using a scripted model. Agent-browser uses a
+unique client-side session per run and an explicit CDP endpoint. A connection
+failure cannot fall back to Chrome, a different profile, or a paid provider.
+For both, report exact image/runtime provenance and ensure closing the host
+client is not equivalent to `bctl down`. Keep endpoints and tokens out of logs,
+artifacts, and UI. bctl's existing run-output bounds apply.
+**Acceptance:** each pinned client completes a deterministic bctl `exec`
+job, gets a typed result/correct output and cleanup evidence; interrupted
+clients do not restart side-effectful operations automatically.
+
+**E4 — Files, profiles, and capability receipts.** Prereq E1; profile work
+may depend on M7N. Host workspace and browser filesystem are distinct.
+Screenshots returned over CDP are already host-side bytes; browser downloads
+are guest-side files and do not automatically appear under
+`BCTL_OUTPUT_DIR`. browser-use's `remote_upload.py` already sends bytes
+through the page as a fallback: verify before reinventing. agent-browser
+currently passes local file paths to `DOM.setFileInputFiles`, so an upload
+needs guest-readable staging or an explicit transfer. Plan narrow per-run
+file APIs with byte bounds, path and symlink validation, content checksums,
+collision handling, partial-file cleanup, and completion before teardown.
+Never mount the user's home or add a generic guest shell. Record Nanos's
+headless, no-input, no-VM-pause and currently nonpersistent-profile behavior
+as independent capability fields; CDP screenshots remain viable without
+VNC. Do not claim persisted identity because the config has a profile name.
+**Acceptance:** upload a nonempty binary and verify SHA-256 on the fixture
+server; collect a downloaded binary with verified digest and no path escape;
+assert correct unsupported errors for missing runtime transport/profile
+capabilities; no accidental profile sharing.
+
+**E5 — Optional agent-browser provider.** Prereq E1–E2. Keep it a separate,
+tiny Rust executable/subcommand implementing upstream
+`agent-browser.plugin.v1`: `plugin.manifest`, `browser.launch`, and
+`browser.close` with a single JSON stdin/stdout exchange. Return a reachable
+browser-level `cdpUrl`, `directPage:false`, nonsecret metadata and an opaque
+cleanup handle. Only the matching owned generation may be destroyed.
+A borrowed lease is released, never treated as owned. Reject unsupported
+launch options (including non-Helium engines and unsupported headed requests)
+rather than promising their effects. Upstream plugin providers cannot supply
+headers in the plugin result, and their launch/close calls have timeouts;
+record these limits. Use an explicit trusted plugin config, not automatic
+installation or a dependency on npm at bctl runtime.
+**Acceptance:** pinned plugin manifest, launch and cleanup protocol fixtures,
+real `--provider bctl` navigation, failed-launch cleanup, repeated close and
+owner-death reclamation. Generic CDP attachment remains usable without plugin.
+
+**E6 — Cross-runtime regression and measurement.** Prereq E1–E5 according
+to each feature. Add interop to the existing acceptance/bench discipline:
+per-client connection startup p50/p95, screenshot/AX/navigation latency,
+CDP call and byte counts where available, external process resource use,
+cleanup time, and completed fixture results; no unverified comparisons.
+Exercise headed SmolVM/macOS and headless Nanos/Linux separately, never
+claim equivalent display or profile behavior. Upgrade gates are pinned to
+client releases, not their moving main branches. Store version receipts,
+failures and any reason a test was skipped.
+**Acceptance:** an explicit supported-feature matrix for each verified
+(client, version, host, runtime, Helium image) tuple with reproducible
+commands, failing cases, and a maintained compatibility suite.
+
+**Stop conditions:** uncertain authority, unexpected automatic browser
+provisioning or billing, sandbox being disabled, unbounded file access,
+capability leakage, arbitrary profile deletion, or a misleading "passed"
+result must stop that slice. Publish supported claims only after actual
+released-client integration tests pass.
+
 ## Acceptance
 
 - A1 Observable browser: on an Apple Silicon Mac, `bctl up s && bctl serve
@@ -1148,6 +1330,25 @@ Slices, in order, one writer:
   same headed browser stays observable and controllable in the dashboard.
   Failure: an action lands on a different tab, element, or document than
   the one named, or a stale ref is re-resolved instead of failing.
+
+- A12 External client CDP: browser-use 1.0.0 and agent-browser v0.42.0
+  individually attach through bctl's authenticated, revocable gateway to
+  the **same** Helium session, perform the E1 fixture suite and detach
+  without shutting down the browser. No cloud fallback, raw guest CDP,
+  or silently substituted browser. Record verified host/runtime tuple.
+- A13 External ownership: two CDP connections belonging to one logical
+  controller are allowed, conflicting controllers refused; dashboard
+  takeover cannot grant misleading exclusivity while an external
+  controller continues sending commands. Revocation/cleanup cannot kill
+  a newer generation; an unknown-outcome action is never retried by bctl.
+- A14 External artifacts: uploads and downloads are verified byte-for-byte,
+  bounded and stored under the correct run, not guessed from the host
+  workspace. Unsupported guest file paths/transport fail visibly.
+- A15 Provider and claims: the optional agent-browser plugin implements
+  its exact pinned protocol and the managed/borrowed cleanup distinction.
+  Client support is labelled "unverified" unless real pinned-client
+  acceptance passed on that runtime; Nanos does not claim headed input,
+  VM pause/resume or persistent profiles without new evidence.
 
 ## Needs environment
 

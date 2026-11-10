@@ -212,3 +212,29 @@ the host's loopback, which the guest reaches at `100.96.0.1`.
 Reach a host service there rather than at the host's LAN address: SmolVM
 dials a LAN address as an ordinary host connection, which a macOS content
 filter can stall mid-response, while it dials `100.96.0.1` as `127.0.0.1`.
+
+## External client jobs (planned M8C)
+
+Existing `kind = "exec"` runs are the intended host-side integration
+point for browser-use 1.0.0 and agent-browser. The daemon supplies
+`BCTL_CDP_URL` (a sensitive capability), `BCTL_OUTPUT_DIR` and `BCTL_RUN`
+and starts the program **on the host as the invoking user**, not inside
+the VM. This is not a sandbox for model-written Python or an agent-browser
+process. No new job kind is proposed.
+
+The browser-use 1.0 attachment must construct
+`Browser(cdp_url=os.environ["BCTL_CDP_URL"])` and supply it to `Agent`.
+Bare `Browser()` provisions Browser Use Cloud in 1.0 and is **not**
+a safe equivalent. agent-browser should use its explicit `--cdp`
+attachment and a unique client-side session per run. The precise
+released-client command lines and endpoint host resolution remain
+unqualified; do not advertise examples as working until the M8C E1 tests
+pass. See [source-pinned research](research/external-clients.md).
+
+Client shutdown closes its own CDP connection/harness; `bctl down` remains
+an explicit browser lifecycle operation. The current run process-group
+cleanup does not yet establish that every detached external client daemon
+is reclaimed. Similarly, files downloaded **inside the guest** do not
+automatically appear in `BCTL_OUTPUT_DIR`. E2 and E4 define the required
+ownership and artifact gates. No external run can claim cooperative
+pause or dashboard takeover until proven.

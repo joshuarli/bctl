@@ -4,7 +4,11 @@
 Silicon Mac, shows each one live in a local dashboard, and lets automation
 attach to it over CDP. See [the campaign](docs/CAMPAIGN-ROADMAP.md) for the
 design and its status, and [the image contract](docs/image-contract.md) for
-what an appliance image provides.
+what an appliance image provides. The [external browser-client campaign](docs/CAMPAIGN-ROADMAP.md#m8c-external-browser-clients-browser-use-100-and-agent-browser-v0420)
+proposes source-pinned compatibility with browser-use 1.0.0 and
+agent-browser v0.42.0; it is **not yet qualified**. See the
+[interop research](docs/research/external-clients.md) for the intended CDP
+contract, ownership limits, and acceptance tests.
 
 ## Build
 
