@@ -122,6 +122,7 @@ fn reply(home: &Home, args: &[&str]) -> Reply {
     json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap_or_else(|_| panic!("bctl {argv:?}: {output:?}"))
 }
 
+#[track_caller]
 fn snapshot(home: &Home, session: &str, flags: &[&str]) -> SnapshotView {
     let mut args = vec!["page", "snapshot", session];
     args.extend_from_slice(flags);
@@ -131,6 +132,7 @@ fn snapshot(home: &Home, session: &str, flags: &[&str]) -> SnapshotView {
     }
 }
 
+#[track_caller]
 fn text_snapshot(home: &Home, session: &str, flags: &[&str]) -> String {
     let mut args = vec!["page", "snapshot", session];
     args.extend_from_slice(flags);

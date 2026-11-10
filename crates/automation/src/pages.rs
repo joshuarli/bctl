@@ -364,7 +364,19 @@ impl Pages {
             let host = &hosts[&job.host];
             let Some(document) = host.documents.get(&job.frame).cloned() else { continue };
             let session = host.session.clone();
-            let tree: AxTree = cdp.session(&session, &GetFullAxTree { frame_id: job.frame.clone() }).await?;
+            let tree: AxTree = match cdp.session(&session, &GetFullAxTree { frame_id: job.frame.clone() }).await {
+                Ok(tree) => tree,
+                Err(error @ CallError::Protocol { .. }) if job.owner.is_some() => {
+                    let current = frames(&cdp, &session).await?;
+                    let left = current.documents.get(&job.frame) != Some(&document);
+                    hosts.insert(job.host.clone(), current);
+                    if left {
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+                Err(error) => return Err(error.into()),
+            };
             let index = documents.len();
             documents.push(Document {
                 scope: DocumentScope { target: target.clone(), frame: job.frame.clone(), document },
