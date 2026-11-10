@@ -3,7 +3,7 @@ format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
 source_identity = "sha256:44d7e0aa11f446be58c2000c7f6f034b4cd7e70294ee98052587163daf20e896"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -64,3 +64,8 @@ sha256 = "6c2e2c6ea0f0e163c8457a03d06a9719d633fa43ca7134bda3a04a2d94bdf546"
 path = "libkrun-0004-arm-efi-acpi.patch"
 tree = "libkrun"
 sha256 = "d0bbba60c44e4066ecf5644f1a6433928a0d58a4bbb055722b5c1e2a7ba035c6"
+
+[[patch]]
+path = "libkrun-0005-vsock-release.patch"
+tree = "libkrun"
+sha256 = "2f9dcea1edda09a50ff6fa2b2a4d9faaf3069490b82a31e6a02c374c94a9af7d"

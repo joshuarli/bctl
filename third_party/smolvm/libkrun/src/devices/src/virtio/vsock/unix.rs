@@ -675,7 +675,7 @@ impl Proxy for UnixProxy {
         }
 
         ProxyUpdate {
-            remove_proxy: ProxyRemoval::Deferred,
+            remove_proxy: if self.tx_buf.is_empty() && self.status != ProxyStatus::Closed { ProxyRemoval::Immediate } else { ProxyRemoval::Deferred },
             ..Default::default()
         }
     }
