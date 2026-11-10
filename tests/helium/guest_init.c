@@ -536,17 +536,8 @@ static const char FIXTURE_PAGE[] =
 	"var o=document.getElementById('out');o.setAttribute('data-marker','" FIXTURE_MARKER "');"
 	"o.textContent='sum-squares='+s;</script></body></html>";
 
-static void fixture_serve(void)
+static void fixture_serve(int ls)
 {
-	int ls = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-	int one = 1;
-	setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-	struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons((uint16_t)opt.fixture_port) };
-	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	if (bind(ls, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(ls, 16) < 0) {
-		note("fixture: bind or listen failed: %s", strerror(errno));
-		_exit(2);
-	}
 	signal(SIGPIPE, SIG_IGN);
 	for (;;) {
 		int c = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
@@ -812,27 +803,33 @@ static int prepare_dirs(void)
 	return 0;
 }
 
-static int start_fixture(void)
+static int start_fixture(char *error, size_t n)
 {
-	fixture_pid = fork();
-	if (fixture_pid < 0)
+	int ls = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	int one = 1;
+	struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons((uint16_t)opt.fixture_port) };
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (ls < 0 || setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0 ||
+	    bind(ls, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(ls, 16) < 0) {
+		snprintf(error, n, "%s", strerror(errno));
+		if (ls >= 0)
+			close(ls);
 		return -1;
+	}
+	fixture_pid = fork();
+	if (fixture_pid < 0) {
+		snprintf(error, n, "fork:%s", strerror(errno));
+		close(ls);
+		return -1;
+	}
 	if (fixture_pid == 0) {
 		if (getuid() == 0 && (setgroups(0, NULL) < 0 || setgid(opt.gid) < 0 || setuid(opt.uid) < 0))
 			_exit(125);
-		fixture_serve();
+		fixture_serve(ls);
 		_exit(0);
 	}
-	long deadline = now_ms() + 10000;
-	while (now_ms() < deadline) {
-		int fd = tcp_connect(opt.fixture_port);
-		if (fd >= 0) {
-			close(fd);
-			return 0;
-		}
-		sleep_ms(50);
-	}
-	return -1;
+	close(ls);
+	return 0;
 }
 
 static int start_helium(void)
@@ -1228,8 +1225,9 @@ int main(int argc, char **argv)
 
 	int closed = 0;
 
-	int f = start_fixture();
-	record("fixture_server", f == 0, "port=%d", opt.fixture_port);
+	char fixture_error[96] = "none";
+	int f = start_fixture(fixture_error, sizeof fixture_error);
+	record("fixture_server", f == 0, "port=%d,error=%s", opt.fixture_port, fixture_error);
 	if (f != 0)
 		goto finish;
 
