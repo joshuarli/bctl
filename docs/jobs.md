@@ -137,6 +137,11 @@ Standard input is empty. `timeout` and `bctl cancel` send the whole process
 group `SIGTERM`, then `SIGKILL` 5 seconds later. When the program exits, any
 process left in its group is killed. An exec run cannot be paused or resumed.
 
+While the program holds a socket open through `BCTL_CDP_URL`, it is the
+session's external controller (see [automation](automation.md#external-controllers)):
+other CDP URLs and dashboard takeovers are refused until it closes. Its own
+`bctl page` calls still run.
+
 ### Grab runs
 
 bctl runs Shadowdriver's Grab, `BCTL_GRAB` or `grab` from `PATH` as the daemon

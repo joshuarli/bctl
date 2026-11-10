@@ -1,9 +1,10 @@
 mod common;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Fixture, Home, assert_ok, attach, dashboard_viewer, evaluate_outside, eventually, http, outside_client, status_of, up_with_fixtures};
+use common::{Fixture, Home, assert_ok, dashboard_viewer, eventually, http, status_of, up_with_fixtures};
 use miniserde::{Deserialize, json};
 
 const PAGE: &str = r#"<!doctype html><title>Authority</title>
@@ -27,17 +28,26 @@ const PHASES: &str = r#"<!doctype html><title>Phases</title>
 <button id=covered>Covered</button>
 <button id=late disabled>Late</button>
 <div id=cover></div>
+<p id=count style="position: absolute; right: 0; bottom: 0">0</p>
 <script>
 window.seen = [];
 for (const type of ['mousedown', 'mouseup', 'click', 'keydown', 'input']) {
-  addEventListener(type, event => seen.push({ what: type, on: event.target.id || event.target.localName, at: performance.now() }), true);
+  addEventListener(type, event => {
+    seen.push({ what: type, on: event.target.id || event.target.localName });
+    document.getElementById('count').textContent = String(seen.length);
+  }, true);
 }
 let pending;
+function watch() {
+  fetch('/armed').then(r => r.text()).then(t => t === 'yes' ? enableLater(0) : setTimeout(watch, 2), () => setTimeout(watch, 2));
+}
 function reset() {
   clearTimeout(pending);
+  watch();
   document.getElementById('late').disabled = true;
   if (!document.getElementById('cover')) document.body.append(Object.assign(document.createElement('div'), { id: 'cover' }));
   seen.length = 0;
+  document.getElementById('count').textContent = '0';
   return 'reset';
 }
 function enableLater(after) {
@@ -46,9 +56,14 @@ function enableLater(after) {
 }
 </script>"#;
 
+/// Whether the `/phases` page, polling `/armed`, should enable `#late`: the test arms it without a CDP connection,
+/// which would hold the session and refuse the takeover under test.
+static ARMED: AtomicBool = AtomicBool::new(false);
+
 fn site(path: &str, _port: u16) -> String {
     match path {
         "/phases" => PHASES.to_string(),
+        "/armed" => if ARMED.load(Ordering::SeqCst) { "yes" } else { "no" }.to_string(),
         _ => PAGE.to_string(),
     }
 }
@@ -57,7 +72,6 @@ fn site(path: &str, _port: u16) -> String {
 struct Seen {
     what: String,
     on: String,
-    at: f64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -219,11 +233,9 @@ fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_foll
     let session = format!("{}-s", home.prefix());
     let s = session.as_str();
     up_with_fixtures(&home, s, "n7-a");
-    let tab = reply(&home, &["tab", "new", s, &fixture.url("/phases")]).tabs.and_then(|t| t.selected).expect("a new tab is selected");
+    reply(&home, &["tab", "new", s, &fixture.url("/phases")]).tabs.and_then(|t| t.selected).expect("a new tab is selected");
     acted(&home, &["page", "wait", s, "--url", &fixture.url("/phases")]);
     acted(&home, &["page", "wait", s, "--load", "load"]);
-    let outside = outside_client(&home, s);
-    let page = attach(&outside, &tab);
     let (port, address, as_viewer) = dashboard_viewer(&home);
     let control = |method: &str, path: &str| -> ControlState {
         let (status, response) = http(port, &address, &format!("{method} /api/sessions/{s}/control{path}"), &as_viewer);
@@ -262,6 +274,7 @@ fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_foll
     }
 
     for delay in [0, 10, 20, 25, 30, 35, 40, 45, 50, 60, 80, 120] {
+        ARMED.store(false, Ordering::SeqCst);
         acted(&home, &["page", "eval", s, "reset()"]);
         let running = bctl_in_background(&home, click("#late"));
         let started = Instant::now();
@@ -272,16 +285,13 @@ fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_foll
             assert!(started.elapsed() < Duration::from_secs(20), "the click never started");
             thread::sleep(Duration::from_millis(20));
         }
-        evaluate_outside(&outside, &page, "enableLater(0)");
+        ARMED.store(true, Ordering::SeqCst);
         thread::sleep(Duration::from_millis(delay));
         control("POST", "");
         let (_, outcome) = running.join().unwrap();
         eventually("the takeover to hand over", || (control("GET", "").authority == "human").then_some(()));
-        let human_at = match evaluate_outside(&outside, &page, "performance.now()") {
-            json::Value::Number(json::Number::F64(at)) => at,
-            json::Value::Number(json::Number::U64(at)) => at as f64,
-            other => panic!("performance.now() is {}", json::to_string(&other)),
-        };
+        let count = acted(&home, &["page", "get", s, "text", "--css", "#count"]).text.expect("the page counts its inputs");
+        let seen_by_human: usize = count.parse().unwrap_or_else(|_| panic!("the input count reads {count}"));
         assert_eq!(control("POST", "/resume").authority, "automation");
         let record = seen(&home, s);
         eprintln!("n7 takeover race: taken {delay} ms after the click could proceed: {}", outcome.error.as_ref().map_or("clicked", |e| e.code.as_str()));
@@ -292,7 +302,7 @@ fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_foll
             }
             None => assert!(record.iter().any(|r| r.what == "click" && r.on == "late"), "{record:?}"),
         }
-        assert!(record.iter().all(|r| r.at < human_at), "no input arrived once the person had control: {record:?} after {human_at}");
+        assert_eq!(record.len(), seen_by_human, "no input arrived once the person had control: {record:?}, {seen_by_human} when control was handed over");
     }
     assert_ok(&home.bctl(&["down", s]));
 }

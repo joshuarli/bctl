@@ -148,3 +148,111 @@ fn a_person_holding_the_input_lease_blocks_new_cdp_attachments() {
     let (status, response) = http(port, &host, "GET /json/version", "");
     assert_eq!(status, 200, "{response}");
 }
+
+/// Opens a CDP WebSocket through the gateway and keeps it open; returns the HTTP status and the socket.
+fn open_socket(port: u16, host: &str, path: &str) -> (u16, TcpStream) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\n{UPGRADE}\r\n").unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+        head.push(byte[0]);
+    }
+    let status = String::from_utf8_lossy(&head).split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, stream)
+}
+
+/// Whether the gateway closed the socket within `wait`.
+fn closed_within(stream: &mut TcpStream, wait: Duration) -> bool {
+    stream.set_read_timeout(Some(wait)).unwrap();
+    let mut buf = [0u8; 256];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => return true,
+            Ok(_) => continue,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => return false,
+            Err(_) => return true,
+        }
+    }
+}
+
+fn eventually_status(port: u16, host: &str, request_line: &str, extra: &str, want: u16) -> (u16, String) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, response) = http(port, host, request_line, extra);
+        if status == want || std::time::Instant::now() > deadline {
+            return (status, response);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
+fn e2_one_controller_holds_the_session_across_its_sockets_until_the_last_closes() {
+    let home = Home::new("e2c");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    assert_ok(&home.up(s, "e2c"));
+    let generation = common::status_of(&home.json(&["inspect", s]), s).generation;
+    let interactive = common::status_of(&home.json(&["inspect", s]), s).vnc_port.is_some();
+    let (a, b) = (home.cdp_url(s), home.cdp_url(s));
+    let port = gateway_port(&a);
+    let (status, version) = http(port, host_of(&a), "GET /json/version", "");
+    assert_eq!(status, 200, "{version}");
+    let browser_path = version.split("ws://").nth(1).and_then(|r| r.find('/').map(|i| r[i..].split('"').next().unwrap().to_string())).unwrap();
+    let (dashboard_port, dashboard, as_viewer) = common::dashboard_viewer(&home);
+    let take = || http(dashboard_port, &dashboard, &format!("POST /api/sessions/{s}/control"), &as_viewer);
+
+    let (first, first_socket) = open_socket(port, host_of(&a), &browser_path);
+    let (second, second_socket) = open_socket(port, host_of(&a), &browser_path);
+    assert_eq!((first, second), (101, 101), "two sockets through one CDP URL belong to one controller");
+    let (status, refusal) = http(port, host_of(&b), "GET /json/version", "");
+    assert_eq!(status, 409, "another CDP URL is a competing controller: {refusal}");
+    assert!(refusal.contains("Another CDP controller is attached"), "{refusal}");
+    assert_eq!(open_socket(port, host_of(&b), &browser_path).0, 409, "a competing websocket attach is refused");
+
+    let (status, refusal) = take();
+    assert_eq!(status, 409, "{refusal}");
+    if interactive {
+        assert!(refusal.contains("external CDP controller is attached (2 open connections)"), "{refusal}");
+    }
+    assert_ok(&home.bctl(&["tab", "new", s]));
+
+    drop(second_socket);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(http(port, host_of(&b), "GET /json/version", "").0, 409, "one socket still holds the session");
+    drop(first_socket);
+    let (status, response) = eventually_status(port, host_of(&b), "GET /json/version", "", 200);
+    assert_eq!(status, 200, "the controller released the session when its last socket closed: {response}");
+
+    let (status, mut held) = open_socket(port, host_of(&b), &browser_path);
+    assert_eq!(status, 101);
+    let revoked = home.bctl(&["cdp-revoke", s]);
+    assert_ok(&revoked);
+    assert!(closed_within(&mut held, Duration::from_secs(3)), "revocation closes the controller's open socket");
+    let c = home.cdp_url(s);
+    let (status, response) = eventually_status(port, host_of(&c), "GET /json/version", "", 200);
+    assert_eq!(status, 200, "a revoked controller no longer holds the session: {response}");
+    if interactive {
+        let (status, response) = take();
+        assert_eq!(status, 200, "a person can take control once no controller is attached: {response}");
+        let (status, response) = http(dashboard_port, &dashboard, &format!("POST /api/sessions/{s}/control/resume"), &as_viewer);
+        assert_eq!(status, 200, "{response}");
+    }
+
+    let (status, _held) = open_socket(port, host_of(&c), &browser_path);
+    assert_eq!(status, 101);
+    let daemon = home.daemon_pid();
+    assert!(std::process::Command::new("kill").args(["-9", &daemon]).status().unwrap().success());
+    let after = common::status_of(&home.json(&["inspect", s]), s).clone();
+    assert_eq!((after.state.as_str(), after.generation), ("ready", generation), "the browser outlives the controller and the daemon");
+    let d = home.cdp_url(s);
+    let restarted = gateway_port(&d);
+    let (status, response) = eventually_status(restarted, host_of(&d), "GET /json/version", "", 200);
+    assert_eq!(status, 200, "no attachment survives a daemon restart: {response}");
+    assert_eq!(open_socket(restarted, host_of(&d), &browser_path).0, 101);
+    assert_ok(&home.bctl(&["tab", "list", s]));
+    assert_ok(&home.bctl(&["down", s]));
+}

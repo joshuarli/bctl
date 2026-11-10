@@ -22,7 +22,7 @@ use h12tiny::web::{Request, Router, WebSocketFrame, WebSocketOpCode, WebSocketPa
 use http::{HeaderValue, Method, Response, StatusCode, header};
 use miniserde::{Deserialize, Serialize, json};
 
-use crate::authority::{Authority, Contested, Control, Viewer};
+use crate::authority::{AttachRefused, Attachment, Authority, Contested, Control, Controller, TakeRefused, Viewer};
 use crate::daemon::Daemon;
 use crate::protocol::Request as DaemonRequest;
 
@@ -330,8 +330,9 @@ fn handle_cdp(daemon: &Arc<Daemon>, host: &str, token: &str, request: &mut Reque
     let Some(session) = session else {
         return text(StatusCode::UNAUTHORIZED, "This CDP URL is invalid or revoked. Run `bctl cdp-url SESSION`.");
     };
-    if daemon.authority.of(&session, |control| *control.authority() != Authority::Automation) {
-        return text(StatusCode::CONFLICT, "A person has control of this browser, or is taking it; new CDP attachments are refused until automation resumes.");
+    let controller = Controller::new(token);
+    if let Err(refused) = daemon.authority.of(&session, |control| control.admits(&controller)) {
+        return attach_refused(refused);
     }
     let Some(cdp_socket) = daemon.cdp_socket(&session) else {
         return text(StatusCode::CONFLICT, "That session is not running.");
@@ -345,8 +346,21 @@ fn handle_cdp(daemon: &Arc<Daemon>, host: &str, token: &str, request: &mut Reque
                 Err(e) => text(StatusCode::BAD_GATEWAY, &e),
             }
         }
-        (&Method::GET, _) if upgrading && is_devtools_path(&path) => proxy_cdp_socket(daemon, token, &cdp_socket, &path, request),
+        (&Method::GET, _) if upgrading && is_devtools_path(&path) => match Attachment::open(daemon, &session, controller) {
+            Ok(attachment) => proxy_cdp_socket(daemon, token, attachment, &cdp_socket, &path, request),
+            Err(refused) => attach_refused(refused),
+        },
         _ => text(StatusCode::NOT_FOUND, "Not found."),
+    }
+}
+
+fn attach_refused(refused: AttachRefused) -> Response<BoxBody> {
+    match refused {
+        AttachRefused::Person => text(StatusCode::CONFLICT, "A person has control of this browser, or is taking it; new CDP attachments are refused until automation resumes."),
+        AttachRefused::OtherController => text(
+            StatusCode::CONFLICT,
+            "Another CDP controller is attached to this browser; new attachments through other CDP URLs are refused until its connections close.",
+        ),
     }
 }
 
@@ -404,7 +418,7 @@ fn guest_websocket(cdp_socket: &Path, path: &str, key: &str) -> Result<(StdUnixS
     Ok((stream, accept))
 }
 
-fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, cdp_socket: &Path, path: &str, request: &mut Request) -> Response<BoxBody> {
+fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, attachment: Attachment, cdp_socket: &Path, path: &str, request: &mut Request) -> Response<BoxBody> {
     let key = header_str(request, header::SEC_WEBSOCKET_KEY).unwrap_or("");
     if header_str(request, header::SEC_WEBSOCKET_VERSION) != Some("13") || key.len() != 24 || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)) {
         return text(StatusCode::BAD_REQUEST, "Not a WebSocket upgrade.");
@@ -444,6 +458,7 @@ fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, cdp_socket: &Path, path: 
     });
     thread::spawn(move || {
         futures_lite::future::block_on(async move {
+            let _attachment = attachment;
             if let Ok(upgraded) = on_upgrade.await {
                 let (mut client_read, mut client_write) = futures_lite::io::split(HyperIo::new(upgraded));
                 let (mut guest_read, mut guest_write) = (guest.clone(), guest);
@@ -581,8 +596,15 @@ fn control(daemon: &Arc<Daemon>, name: &str, viewer: &str, request: ControlReque
             if daemon.vnc_target(&session).is_none_or(|(_, interactive)| !interactive) {
                 return text(StatusCode::CONFLICT, "This runtime is view-only: it has no input devices.");
             }
-            if let Err(Contested) = daemon.authority.of(&session, |control| control.take(&viewer)) {
-                return contested();
+            match daemon.authority.of(&session, |control| control.take(&viewer)) {
+                Ok(()) => {}
+                Err(TakeRefused::Contested) => return contested(),
+                Err(TakeRefused::ControllerAttached { connections }) => {
+                    return text(
+                        StatusCode::CONFLICT,
+                        &format!("An external CDP controller is attached ({connections} open connections). Close it, or end its access with `bctl cdp-revoke {session}`, then take control."),
+                    );
+                }
             }
         }
         ControlRequest::Resume => {

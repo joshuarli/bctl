@@ -306,9 +306,8 @@ check that `/json/version` reports `Helium/`. Unmerged lane branches
 `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
-M8C (external clients) is active: E1 passed on the Mac with SmolVM and
-Nanos (`tests/interop/run.sh`); the Linux x86_64 Nanos run of E1 is next,
-then E2.
+M8C (external clients) is active: E1 and E2 passed on the Mac with SmolVM and
+Nanos; their Linux x86_64 Nanos runs are pending, and E3 is next.
 
 ## Charter
 
@@ -1296,7 +1295,7 @@ Helium works.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
-**Status: E1 passed on macOS arm64, 2026-11-10; Linux x86_64 unverified.** This
+**Status: E1 and E2 passed on macOS arm64, 2026-11-10; Linux x86_64 unverified.** This
 extends bctl's *consumer* surface; it does not replace M3N's native automation,
 Shadowdriver, Grab, or the active M7N work. See
 [the pinned integration research](research/external-clients.md). The initial
@@ -1392,6 +1391,20 @@ on agent-browser's best-effort `browser.close` plugin callback alone.
 client sockets under one lease, competing client refused, human takeover
 refused until release, idempotent cleanup, no browser termination for a borrowed
 session, and proper reconciliation after crashes.
+**E2 result, 2026-11-10:** the session's authority holds at most one
+external controller, named by its capability token, from its first gateway
+socket to its last (`docs/automation.md`, External controllers). Another
+URL's attach and a dashboard takeover get 409 while it is attached. Native
+commands still run: refusing them broke existing users of an observing CDP
+client, and bctl cannot order them against an opaque socket anyway.
+`authority::tests` cover the transitions. `cdp::e2_one_controller_holds_the_session_across_its_sockets_until_the_last_closes`
+passed on SmolVM and Nanos on the Mac. It covers two sockets under one lease,
+a refused competitor and takeover, release on the last close, revocation,
+and a `kill -9` daemon restart with the browser kept. The interop suite
+still passes all 55 checks. `authority` n7 now watches inputs through the page
+instead of an outside CDP client, which would hold the session. Only the
+borrowed kind exists: a managed-ephemeral session arrives with its first user
+(E3 or E5). Linux x86_64 is unverified.
 
 **E3 — Host-side managed recipes and run evidence.** Prereq E1 (managed
 ownership uses E2). Own `docs/jobs.md`, focused `examples/` or `tests/interop/`,

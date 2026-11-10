@@ -173,10 +173,51 @@ taking it, is refused with HTTP 409 and changes nothing. A native command is
   with the number of commands it waits for.
 - **CDP attachments.** Under `yielding` and `human` the gateway refuses new
   attachments through `bctl cdp-url` capabilities with HTTP 409. Connections
-  already open, such as a run's, are not cut.
+  already open are not cut, but none can be: a takeover is refused while an
+  external controller is attached (below).
 - **Runs.** Resuming automation also resumes the session's run if it is in
   `needs-interaction`. A takeover does not wait for a running run: neither
   Grab nor an exec job has a boundary to pause at without ending the attempt.
+
+## External controllers
+
+A program that opens a CDP WebSocket through a `bctl cdp-url` URL is an
+*external controller*, such as a browser-use agent, agent-browser, or an exec
+run through `BCTL_CDP_URL`. The capability is the controller: every socket
+opened through one URL belongs to one controller, so a client that keeps
+several sockets, such as browser-use with a domain guard, holds the session
+once. A session has at most one controller at a time, and it holds the session
+from its first socket until its last one closes.
+
+While a controller is attached:
+
+- A WebSocket or `/json` request through any other URL of the session is
+  refused with HTTP 409. The other client can retry after the controller
+  detaches.
+- Taking control in the dashboard is refused with HTTP 409, which names the
+  number of open connections. bctl cannot stop commands a controller has
+  already written to its sockets, so a person's input and those commands
+  would interleave.
+- Native commands still run: they are automation too. bctl does not order
+  them against the commands on the controller's sockets, so a program that
+  uses both decides their order itself.
+
+To release the session, close the client. Ending a run (`bctl cancel`) or
+running `bctl cdp-revoke NAME` closes every open socket of the session's URLs
+within about a second. A command the gateway had already passed on to the
+browser may or may not have run; bctl does not retry it, and a client that
+retries does so on its own account.
+
+Closing a controller never stops the browser: the session stays `ready`, and
+only `bctl down` stops it. Attachments live in the daemon's memory. A daemon
+that restarts, even after `kill -9`, starts with no controller attached and
+no capability URLs; clients mint new ones. `bctl down` and a failed session
+revoke their URLs, which closes their sockets. A socket that closes late
+releases only the controller that opened it, never one attached since.
+
+Connections that do not go through the gateway are not controllers and are
+not counted: bctl's own native commands, and anything that reaches the guest's
+CDP socket directly. Such a connection is not safe to hand over exclusively.
 
 ## The Rust API
 

@@ -150,9 +150,9 @@ E1 qualified the first row on macOS arm64; the other rows are not qualified.
 | --- | --- | --- | --- |
 | Attach and detach existing Helium | `Browser(cdp_url=...)` | generic `--cdp` | reachable, revocable gateway URL |
 | Navigate / JS / AX / screenshot | direct CDP + REPL | native CDP CLI | correct target and event routing |
-| Multiple CDP sockets | domain guard uses extra one | client may create many sessions | single *logical* controlling lease |
+| Multiple CDP sockets | domain guard uses extra one | client may create many sessions | single *logical* controlling lease (E2: done) |
 | Browser survives client close | externally owned semantics | external process is not launched by client | bctl owns `down` |
-| Human takeover | no cooperative contract | no bctl-specific cooperative contract | refuse until controller releases |
+| Human takeover | no cooperative contract | no bctl-specific cooperative contract | refuse until controller releases (E2: done) |
 | File upload | existing remote-byte fallback, test it | host path cannot work remotely | staged or streamed guest bytes |
 | File download | external-CDP uses browser's download directory | guest-side download paths | bounded artifact collection |
 | Named provider | external `Browser(...)` recipe first | `browser.provider` plugin | managed launch + opaque cleanup |
