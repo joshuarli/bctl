@@ -53,8 +53,8 @@ else
     image_file=$root/.work/images/nanos-helium.img
 fi
 [ -e "$image_file" ] || fail "missing $image_file: build the $runtime image first"
-export BCTL BCTL_HOME BCTL_RUNTIME AGENT_BROWSER
-BCTL=$bctl BCTL_HOME=$home BCTL_RUNTIME=$runtime AGENT_BROWSER=$agent_browser
+export BCTL BCTL_HOME BCTL_RUNTIME BCTL_IMAGE AGENT_BROWSER
+BCTL=$bctl BCTL_HOME=$home BCTL_RUNTIME=$runtime BCTL_IMAGE=$image AGENT_BROWSER=$agent_browser
 session=interop
 
 fixture_pid=''

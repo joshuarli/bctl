@@ -61,9 +61,12 @@ def session_ready() -> bool:
 	return listed['sessions'][0]['state'] == 'ready'
 
 
+gateway_port = urllib.parse.urlsplit(cdp_url).port
+
+
 def client_sockets() -> int:
 	"""Established host connections to the gateway port, counted at the client end."""
-	port = urllib.parse.urlsplit(cdp_url).port
+	port = gateway_port
 	out = subprocess.run(['lsof', '-nP', f'-iTCP:{port}', '-sTCP:ESTABLISHED', '-Fn'], capture_output=True, text=True).stdout
 	return sum(1 for line in out.splitlines() if line.startswith('n') and line.endswith(f'->127.0.0.1:{port}'))
 
@@ -308,6 +311,148 @@ def agent_browser_checks(scratch: Path) -> None:
 	check(c, 'proxy set, NO_PROXY=localhost', 'form' in title, title)
 
 
+HERE = Path(__file__).resolve().parent
+TOKEN = re.compile(r'[0-9a-f]{48}\.localhost')
+
+
+def write_jobs(scratch: Path) -> Path:
+	"""A bctl.toml whose exec jobs run the recipes' test programs in this session, with its profile and image."""
+	python, form = sys.executable, SITE + '/form'
+
+	def job(name: str, program: str, who: str, hold: int) -> str:
+		argv = json.dumps([python, str(HERE / 'jobs' / program), form, who, str(hold)])
+		return f'[jobs.{name}]\nkind = "exec"\nbrowser = "interop"\nprofile = "{SESSION}"\nargv = {argv}\ntimeout = "3m"\n'
+
+	config = scratch / 'bctl.toml'
+	config.write_text(
+		f'version = 1\n\n[browsers.interop]\nimage = "{os.environ["BCTL_IMAGE"]}"\n\n'
+		+ job('bu-form', 'browser_use_form.py', 'Ada job', 0)
+		+ job('ab-form', 'agent_browser_form.py', 'Lin job', 0)
+		+ job('bu-hold', 'browser_use_form.py', 'Ada hold', 120)
+		+ job('ab-hold', 'agent_browser_form.py', 'Lin hold', 120)
+		+ job('bu-kill', 'browser_use_form.py', 'Ada kill', 120)
+	)
+	return config
+
+
+def run_record(run: int) -> dict:
+	return json.loads(bctl('runs', str(run), '--json').stdout)['runs'][0]
+
+
+def start_job(config: Path, name: str) -> int:
+	started = json.loads(bctl('run', name, '--session', SESSION, '--config', str(config), '--json').stdout)
+	if started.get('error'):
+		raise RuntimeError(f'bctl run {name}: {started["error"]}')
+	return started['runs'][0]['id']
+
+
+def wait_run(run: int, until, timeout: float = 180) -> dict:
+	deadline = time.monotonic() + timeout
+	while True:
+		record = run_record(run)
+		if until(record) or time.monotonic() > deadline:
+			return record
+		time.sleep(0.5)
+
+
+def ended(record: dict) -> bool:
+	return record['state'] in ('succeeded', 'failed', 'cancelled', 'interrupted')
+
+
+def leftovers(marker: str) -> list[str]:
+	"""Processes other than this one and the fixture whose command line contains `marker`."""
+	out = subprocess.run(['ps', '-Ao', 'pid=,command='], capture_output=True, text=True).stdout
+	return [line.strip() for line in out.splitlines() if marker in line and 'checks.py' not in line and 'fixture.py' not in line]
+
+
+def leaks(run: int, record: dict) -> list[str]:
+	"""Places a capability URL appears in: the run's log, its record, or its output files."""
+	found = [where for where, text in (('log', bctl('logs', str(run)).stdout), ('record', json.dumps(record))) if TOKEN.search(text)]
+	for path in Path(record['output_dir']).rglob('*'):
+		if path.is_file() and TOKEN.search(path.read_bytes().decode(errors='replace')):
+			found.append(str(path.relative_to(record['output_dir'])))
+	return found
+
+
+def controller_free() -> bool:
+	"""Whether a newly minted URL attaches, which no other controller may hold; follows the gateway's current port."""
+	global gateway_port
+	fresh = bctl('cdp-url', SESSION).stdout.strip()
+	gateway_port = urllib.parse.urlsplit(fresh).port
+	status, _ = get(f'{fresh}/json/version')
+	return status == 200
+
+
+def job_checks(scratch: Path) -> None:
+	config = write_jobs(scratch)
+	venv = str(Path(sys.executable).parent.parent)
+	for job, client, who in (('bu-form', 'browser-use', 'Ada job'), ('ab-form', 'agent-browser', 'Lin job')):
+		c = f'job/{client}'[:13]
+		before = records()
+		run = start_job(config, job)
+		record = wait_run(run, ended)
+		result_file = Path(record['output_dir']) / 'result.json'
+		result = json.loads(result_file.read_text()) if result_file.exists() else {}
+		check(c, 'run succeeded', (record['state'], record['outcome']) == ('succeeded', 'succeeded'), f'{record["state"]}/{record["outcome"]} {record.get("detail")}')
+		check(c, 'typed result.json', result.get('success') is True and result.get('result') == f'sent {who}' and result.get('run') == str(run), result)
+		check(c, 'fixture saw one submission', records()[len(before):].count('name=' + who.replace(' ', '%20')) == 1, records()[len(before):])
+		check(c, 'record names image and browser', bool(record['image_digest']) and record['browser_version'].startswith('Helium/'), f'{record["image"]} {record["browser_version"]}')
+		if client == 'agent-browser':
+			shot = Path(record['output_dir']) / 'form.png'
+			check(c, 'screenshot in the output', shot.exists() and shot.read_bytes()[:8] == PNG)
+		check(c, 'no capability URL in log or files', not leaks(run, record), leaks(run, record))
+		check(c, 'session still ready', session_ready())
+		check(c, 'controller released', controller_free() and client_sockets() == 0)
+		marker = os.environ['AGENT_BROWSER'] if client == 'agent-browser' else venv
+		check(c, 'no client process left', not leftovers(marker), leftovers(marker))
+
+	for job, client, who in (('bu-hold', 'browser-use', 'Ada hold'), ('ab-hold', 'agent-browser', 'Lin hold')):
+		c = f'job/{client}'[:13]
+		key = 'name=' + who.replace(' ', '%20')
+		run = start_job(config, job)
+		deadline = time.monotonic() + 120
+		while key not in records() and time.monotonic() < deadline:
+			time.sleep(0.2)
+		bctl('cancel', str(run))
+		record = wait_run(run, ended, timeout=60)
+		time.sleep(3)
+		check(c, 'cancel ends the run once', (record['outcome'], len(record['attempts'])) == ('cancelled', 1), f'{record["outcome"]} attempts={len(record["attempts"])}')
+		check(c, 'side effect not repeated', records().count(key) == 1, records().count(key))
+		marker = os.environ['AGENT_BROWSER'] if client == 'agent-browser' else venv
+		check(c, 'no client process left', not leftovers(marker), leftovers(marker))
+		check(c, 'controller released', controller_free() and client_sockets() == 0)
+
+	key = 'name=Ada%20kill'
+	run = start_job(config, 'bu-kill')
+	deadline = time.monotonic() + 120
+	while key not in records() and time.monotonic() < deadline:
+		time.sleep(0.2)
+	daemon = subprocess.run(['lsof', '-t', str(Path(os.environ['BCTL_HOME']) / 'daemon.lock')], capture_output=True, text=True).stdout.strip()
+	subprocess.run(['kill', '-9', daemon])
+	record = wait_run(run, ended, timeout=60)
+	time.sleep(3)
+	check('job/daemon', 'kill -9 interrupts, no retry', (record['outcome'], len(record['attempts'])) == ('interrupted', 1), f'{record["outcome"]} attempts={len(record["attempts"])}')
+	check('job/daemon', 'side effect not repeated', records().count(key) == 1, records().count(key))
+	check('job/daemon', 'session still ready', session_ready())
+	time.sleep(17)
+	check('job/daemon', 'no client process left', not leftovers(venv), leftovers(venv))
+	check('job/daemon', 'controller released', controller_free() and client_sockets() == 0)
+
+	with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as isolated:
+		for client, program in (('browser-use', 'browser_use_form.py'), ('agent-browser', 'agent_browser_form.py')):
+			c = f'job/{client}'[:13]
+			out = Path(isolated) / client
+			out.mkdir()
+			env = {**os.environ, 'TMPDIR': isolated, 'BCTL_CDP_URL': f'http://{secrets.token_hex(24)}.localhost:{urllib.parse.urlsplit(cdp_url).port}',
+				   'BCTL_OUTPUT_DIR': str(out), 'BCTL_RUN': '0'}  # fmt: skip
+			done = subprocess.run([sys.executable, str(HERE / 'jobs' / program), SITE + '/form', 'Nobody', '0'], capture_output=True, text=True, env=env, timeout=120)
+			result = json.loads((out / 'result.json').read_text()) if (out / 'result.json').exists() else {}
+			made = [p.name for p in Path(isolated).iterdir() if p.name not in ('browser-use', 'agent-browser')]
+			check(c, 'bad URL fails the job', done.returncode != 0 and result.get('success') is False, f'exit {done.returncode} {result.get("errors")}')
+			check(c, 'bad URL starts no browser', not made and not leftovers(isolated), made or leftovers(isolated))
+			check(c, 'bad URL redacted in output', not TOKEN.search(done.stdout + done.stderr + json.dumps(result)))
+
+
 async def revocation_checks() -> None:
 	held = f'interop{os.getpid()}held'
 	agent_browser(held, 'open', SITE + '/form')
@@ -337,6 +482,7 @@ async def main() -> None:
 	await browser_use_checks(scratch)
 	agent_browser_checks(scratch)
 	await revocation_checks()
+	job_checks(scratch)
 	print(json.dumps({'helium': helium}))
 
 

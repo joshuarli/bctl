@@ -142,6 +142,45 @@ session's external controller (see [automation](automation.md#external-controlle
 other CDP URLs and dashboard takeovers are refused until it closes. Its own
 `bctl page` calls still run.
 
+#### browser-use and agent-browser
+
+`tests/interop/recipes/` holds an exec program for each of the two external
+clients bctl is tested with: browser-use 1.0.0 and agent-browser 0.42.0. Both
+run on the host with the user's authority, and attach only through
+`BCTL_CDP_URL`. Each writes `result.json` to `BCTL_OUTPUT_DIR` with `run`,
+`success`, `result` and `errors`, and exits 0 only on success. Both remove the
+capability URL from everything they print or write, because each client puts
+it in its connection errors.
+
+```toml
+[jobs.research]
+kind = "exec"
+browser = "default"
+argv = ["python3", "browser_use_job.py", "--model", "anthropic:claude-sonnet-5-5", "Find the opening hours"]
+timeout = "10m"
+```
+
+- **browser-use** (`browser_use_job.py`) runs one `Agent` with
+  `Browser(cdp_url=BCTL_CDP_URL)`. `--model` is required: browser-use's
+  default model is Browser Use's paid gateway. Its plain `Browser()` is a
+  cloud browser, which the recipe never uses. An unreachable URL fails the job
+  and starts no other browser. `Agent.run()` reports a refused attach as a
+  failed history rather than raising, so the recipe checks
+  `is_successful()`.
+- **agent-browser** (`agent_browser_job.py`) gives a Python program an
+  `AgentBrowser` that runs CLI commands in the client session
+  `bctl-run-BCTL_RUN`, with the URL in `AGENT_BROWSER_CDP` rather than in any
+  argv. It opens its own tab first, because an attached client otherwise
+  drives whichever tab it finds, possibly a hidden one where clicks are
+  dropped. agent-browser's daemon leaves the run's process group, so the
+  recipe closes it on exit and on `SIGTERM`. An unreachable URL fails the job
+  and starts no local Chrome.
+
+Closing either client leaves the session `ready`; only `bctl down` stops the
+browser. A cancelled, timed-out or interrupted attempt is not retried, so an
+action the client had already performed is not performed again. Run
+`tests/interop/run.sh` to check both recipes against a real session.
+
 ### Grab runs
 
 bctl runs Shadowdriver's Grab, `BCTL_GRAB` or `grab` from `PATH` as the daemon

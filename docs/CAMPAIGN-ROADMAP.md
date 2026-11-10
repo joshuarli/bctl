@@ -306,8 +306,8 @@ check that `/json/version` reports `Helium/`. Unmerged lane branches
 `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
-M8C (external clients) is active: E1 and E2 passed on the Mac with SmolVM and
-Nanos; their Linux x86_64 Nanos runs are pending, and E3 is next.
+M8C (external clients) is active: E1 to E3 passed on the Mac with SmolVM and
+Nanos; their Linux x86_64 Nanos runs are pending, and E4 is next.
 
 ## Charter
 
@@ -1295,7 +1295,7 @@ Helium works.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
-**Status: E1 and E2 passed on macOS arm64, 2026-11-10; Linux x86_64 unverified.** This
+**Status: E1 to E3 passed on macOS arm64, 2026-11-10; Linux x86_64 unverified.** This
 extends bctl's *consumer* surface; it does not replace M3N's native automation,
 Shadowdriver, Grab, or the active M7N work. See
 [the pinned integration research](research/external-clients.md). The initial
@@ -1422,6 +1422,19 @@ artifacts, and UI. bctl's existing run-output bounds apply.
 **Acceptance:** each pinned client completes a deterministic bctl `exec`
 job, gets a typed result/correct output and cleanup evidence; interrupted
 clients do not restart side-effectful operations automatically.
+**E3 result, 2026-11-10:** `tests/interop/recipes/` holds a browser-use and an
+agent-browser exec program, documented in `docs/jobs.md`. On the Mac,
+`tests/interop/run.sh` runs each pinned client as a `bctl run` job against the
+fixture, with every proxy pointed at a closed port and no Browser Use key.
+Both runs succeeded with a typed `result.json`, one fixture submission, a
+record naming the image and Helium version, and no capability URL in the
+log, record or files. Afterwards the session stayed `ready`, the controller
+was released, and no client process was left. `bctl cancel` and a `kill -9`
+of the daemon after the side effect each ended the attempt once, with no
+retry and the side effect seen once. With an unreachable URL, each recipe
+failed without starting a browser and redacted the URL. agent-browser's
+daemon detaches from the job's process group, so its recipe closes it on exit
+and on `SIGTERM`. The suite has 91 checks. Linux x86_64 is unverified.
 
 **E4 — Files, profiles, and capability receipts.** Prereq E1; profile work
 may depend on M7N. Host workspace and browser filesystem are distinct.
