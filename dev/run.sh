@@ -121,7 +121,7 @@ if [ "$native" -eq 1 ]; then
 	program=$(basename -- "$image") host=$program_host
 	binary_sha=$(sha256sum "$host" | cut -d' ' -f1)
 elif [ -n "$program" ]; then
-	host=$(sed -n "s/^ *$program:(contents:(host:\([^)]*\)))/\1/p" "$manifest" | head -n 1)
+	host=$(sed -n "s/^ *\"$program\":(contents:(host:\"\([^\"]*\)\"))/\1/p" "$manifest" | head -n 1)
 	[ -n "$host" ] && [ -f "$host" ] && binary_sha=$(sha256sum "$host" | cut -d' ' -f1)
 fi
 
