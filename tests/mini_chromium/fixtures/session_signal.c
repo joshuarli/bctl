@@ -404,6 +404,25 @@ static void check_group_exit_many_threads(void)
 	record("group_exit_many_threads", bad == 0, detail);
 }
 
+static void check_sched_queries(void)
+{
+	char detail[128];
+	int policy = -1;
+	struct sched_param sp = { .sched_priority = -1 };
+	int self = pthread_getschedparam(pthread_self(), &policy, &sp);
+	int sched = (int)syscall(SYS_sched_getscheduler, 0);
+	errno = 0;
+	int missing = syscall(SYS_sched_getparam, 999999, &sp) == -1 && errno == ESRCH;
+	errno = 0;
+	int bad_policy = sched_get_priority_max(42) == -1 && errno == EINVAL;
+	int ranges = sched_get_priority_max(SCHED_FIFO) == 99 && sched_get_priority_min(SCHED_FIFO) == 1 &&
+		sched_get_priority_max(SCHED_OTHER) == 0 && sched_get_priority_min(SCHED_OTHER) == 0;
+	snprintf(detail, sizeof detail, "self=%d,policy=%d,prio=%d,sched=%d,missing=%d,bad_policy=%d,ranges=%d", self,
+		policy, sp.sched_priority, sched, missing, bad_policy, ranges);
+	record("sched_queries", !self && policy == SCHED_OTHER && sp.sched_priority == 0 && sched == SCHED_OTHER && missing &&
+		bad_policy && ranges, detail);
+}
+
 int main(void)
 {
 	check_setsid();
@@ -415,6 +434,7 @@ int main(void)
 	check_thread_target();
 	check_exit_unmapped_clear_tid();
 	check_group_exit_many_threads();
+	check_sched_queries();
 	printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", passed, failed);
 	return failed ? 1 : 0;
 }

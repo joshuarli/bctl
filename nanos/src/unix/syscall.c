@@ -2896,6 +2896,65 @@ static thread lookup_thread(int pid)
     return t;
 }
 
+#define SCHED_POLICY_OTHER  0
+#define SCHED_POLICY_FIFO   1
+#define SCHED_POLICY_RR     2
+#define SCHED_POLICY_BATCH  3
+#define SCHED_POLICY_IDLE   5
+
+static sysreturn sched_getscheduler(int pid)
+{
+    if (pid < 0)
+        return -EINVAL;
+    thread t = lookup_thread(pid);
+    if (!t)
+        return -ESRCH;
+    thread_release(t);
+    return SCHED_POLICY_OTHER;
+}
+
+static sysreturn sched_getparam(int pid, int *param)
+{
+    if ((pid < 0) || !param)
+        return -EINVAL;
+    thread t = lookup_thread(pid);
+    if (!t)
+        return -ESRCH;
+    thread_release(t);
+    int priority = 0;
+    return set_user_value(param, priority) ? 0 : -EFAULT;
+}
+
+static sysreturn sched_get_priority_max(int policy)
+{
+    switch (policy) {
+    case SCHED_POLICY_FIFO:
+    case SCHED_POLICY_RR:
+        return 99;
+    case SCHED_POLICY_OTHER:
+    case SCHED_POLICY_BATCH:
+    case SCHED_POLICY_IDLE:
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
+static sysreturn sched_get_priority_min(int policy)
+{
+    switch (policy) {
+    case SCHED_POLICY_FIFO:
+    case SCHED_POLICY_RR:
+        return 1;
+    case SCHED_POLICY_OTHER:
+    case SCHED_POLICY_BATCH:
+    case SCHED_POLICY_IDLE:
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
 sysreturn sched_setaffinity(int pid, u64 cpusetsize, u64 *mask)
 {
     context ctx = get_current_context(current_cpu());
@@ -3338,8 +3397,10 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, fgetxattr, fgetxattr);
     register_syscall(map, sched_getaffinity, sched_getaffinity);
     register_syscall(map, sched_setaffinity, sched_setaffinity);
-    register_syscall(map, sched_get_priority_min, syscall_ignore);
-    register_syscall(map, sched_get_priority_max, syscall_ignore);
+    register_syscall(map, sched_get_priority_min, sched_get_priority_min);
+    register_syscall(map, sched_get_priority_max, sched_get_priority_max);
+    register_syscall(map, sched_getscheduler, sched_getscheduler);
+    register_syscall(map, sched_getparam, sched_getparam);
     register_syscall(map, sched_setscheduler, syscall_ignore);
     register_syscall(map, getuid, getuid);
     register_syscall(map, geteuid, geteuid);
