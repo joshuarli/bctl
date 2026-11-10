@@ -262,6 +262,8 @@ void register_thread_syscalls(struct syscall *map)
     register_syscall(map, arch_prctl, arch_prctl);
     register_syscall(map, fork, fork);
     register_syscall(map, vfork, vfork);
+#endif
+#if defined(__x86_64__) || defined(__aarch64__)
     register_syscall(map, execve, execve);
     register_syscall(map, execveat, execveat);
 #endif

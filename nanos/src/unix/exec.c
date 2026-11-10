@@ -621,7 +621,7 @@ void exec_elf(process kp, string program_path, status_handler complete)
     filesystem_read_linear(f, buffer_ref(b, 0), irange(0, length), sh);
 }
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 
 #define EXEC_ARG_STRLEN_MAX     (32 * PAGESIZE)
 #define EXEC_PHDRS_MAX_SIZE     PAGESIZE
@@ -666,10 +666,15 @@ static sysreturn exec_read(fsfile f, buffer b, u64 length)
 
 static boolean exec_ehdr_valid(Elf64_Ehdr *e)
 {
+#ifdef __aarch64__
+    const u16 machine = EM_AARCH64;
+#else
+    const u16 machine = EM_X86_64;
+#endif
     return (e->e_ident[EI_MAG0] == ELFMAG0) && (e->e_ident[EI_MAG1] == ELFMAG1) &&
         (e->e_ident[EI_MAG2] == ELFMAG2) && (e->e_ident[EI_MAG3] == ELFMAG3) &&
         (e->e_ident[EI_CLASS] == ELFCLASS64) && (e->e_ident[EI_DATA] == ELFDATA2LSB) &&
-        (e->e_ident[EI_VERSION] == EV_CURRENT) && (e->e_machine == EM_X86_64) &&
+        (e->e_ident[EI_VERSION] == EV_CURRENT) && (e->e_machine == machine) &&
         ((e->e_type == ET_EXEC) || (e->e_type == ET_DYN)) &&
         (e->e_phentsize == sizeof(Elf64_Phdr)) && (e->e_phnum > 0) &&
         (e->e_phnum * sizeof(Elf64_Phdr) <= EXEC_PHDRS_MAX_SIZE);
@@ -963,6 +968,18 @@ static void exec_reset_frame(thread t, void *entry)
 {
     context_frame f = thread_frame(t);
     u64 sp = f[SYSCALL_FRAME_SP];
+#ifdef __aarch64__
+    for (int i = FRAME_X0; i <= FRAME_X30; i++)
+        f[i] = 0;
+    f[SYSCALL_FRAME_SP] = sp;
+    f[SYSCALL_FRAME_PC] = u64_from_pointer(entry);
+    f[FRAME_EL] = 0;
+    f[FRAME_ESR_SPSR] = 0;
+    f[FRAME_TPIDR_EL0] = 0;
+    f[FRAME_SAVED_X0] = 0;
+    f[FRAME_TXCTX_FLAGS] = FRAME_TXCTX_TPIDR_EL0_SAVED | FRAME_TXCTX_FPSIMD_SAVED;
+    zero(frame_extended(f), FRAME_EXTENDED_MAX * sizeof(u64));
+#else
     for (int i = FRAME_RAX; i <= FRAME_R15; i++)
         f[i] = 0;
     f[SYSCALL_FRAME_SP] = sp;
@@ -975,6 +992,7 @@ static void exec_reset_frame(thread t, void *entry)
     zero(x, extended_frame_size);
     *(u16 *)(x + FXSAVE_FCW_OFFSET) = X87_FCW_RESET;
     *(u32 *)(x + FXSAVE_MXCSR_OFFSET) = MXCSR_RESET;
+#endif
 }
 
 static void exec_reset_signals(thread t)
