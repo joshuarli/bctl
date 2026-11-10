@@ -319,8 +319,13 @@ static int body_unshare(void)
 	if (getpid() != before)
 		return 5;
 	int ptid = -1, ctid = -1;
+#if defined(__aarch64__)
+	long c = syscall(SYS_clone, CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | SIGCHLD, 0,
+		&ptid, 0, &ctid);
+#else
 	long c = syscall(SYS_clone, CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | SIGCHLD, 0,
 		&ptid, &ctid, 0);
+#endif
 	if (c < 0)
 		return 6;
 	if (c == 0) {

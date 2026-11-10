@@ -172,9 +172,13 @@ static void check_sigaction_without_restorer(void)
 	if (pid == 0)
 		_exit(child_no_restorer_handler());
 	int st = child_status(pid);
-	int segv = WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV;
+#if defined(__aarch64__)
+	int expected_outcome = WIFEXITED(st) && WEXITSTATUS(st) == 3;
+#else
+	int expected_outcome = WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV;
+#endif
 	snprintf(detail, sizeof detail, "set_dfl=%d,set_ign=%d,ignored=%d,handler_status=0x%x", set_dfl, set_ign, ignored, st);
-	record("sigaction_without_restorer", set_dfl && set_ign && ignored && segv, detail);
+	record("sigaction_without_restorer", set_dfl && set_ign && ignored && expected_outcome, detail);
 }
 
 static volatile sig_atomic_t got_sig, got_code, got_tid;
