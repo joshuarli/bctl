@@ -274,6 +274,55 @@ every script and asset of the site takes.
 
 The `bctl` binary is 0.7 percent under its 5,200,000-byte gate.
 
+## Results on Nanos (Linux amd64, headless)
+
+The same suites on `nanos-helium` under hydrogen's Nanos, beside the Mac
+numbers above. The Mac column is SmolVM on the M5 Max, headed; the Nanos
+column is a different machine, a different VMM and a headless browser, so a
+row compares the two products as shipped, not the VMMs alone. Nanos has no
+pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
+
+| | |
+| --- | --- |
+| Host | MS-A1, AMD Ryzen 9 9950X, 32 CPUs, 60 GiB, Alpine Linux edge (7.2.9) |
+| Runtime | hydrogen `24355d89`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 |
+| Guest | `nanos-helium` (Helium 0.20.3.1 r5), 2 CPUs, 4096 MiB, headless |
+| Tree | main `5dd8a92`, release build; every sample passed the quiet-host check |
+
+| Measure | Nanos | Mac |
+| --- | --- | --- |
+| Cold `up` to ready | 5193 ms (4940 to 5839) | 1466 ms |
+| Of which CDP answers (first seen at `filters`) | 1043 ms (978 to 1077) | |
+| Warm `up` to ready | 5189 ms (4966 to 5883) | 1455 ms |
+| `down` | 165 ms (155 to 168) | 112.8 ms |
+| Daemon start | 100.7 ms | 114.8 ms |
+| TodoMVC workflow | 144 ms (120 to 283) | 277 ms |
+| `goto`, `fill`, `press`, `check`, `snapshot` p50 | 38.8, 4.2, 4.3, 41.9, 3.5 ms | 39.5, 14.3, 15.4, 65.7, 11.9 ms |
+| `Runtime.evaluate` p50 direct / gateway | 281 / 289 us | 170 / 256 us |
+| Speedometer 3.1 score (6 of 7 runs) | 24.1 (23.2 to 25.2) | 31.4 |
+| News site `loadEventEnd` / LCP | 148 / 232 ms | 71.9 / 140 ms |
+| VMM RSS 30 s after ready | 1696 MiB (1670 to 1722) | 458 MiB footprint |
+| VMM idle CPU | 7.6 percent of a core (6.5 to 9.3) | 3.6 |
+| Machine disk (qcow2 overlay) | 205 MiB (141 to 226) | 683 MiB |
+| Daemon RSS, one session | 5.0 MiB | 12.6 MiB |
+
+- **Four of the five seconds of `up` are uBlock Origin.** CDP answers about
+  1 s after `up`; the daemon then waits in the `filters` stage until the
+  bundled uBlock Origin has compiled its filter lists, which a fresh profile
+  does every boot. The Nanos profile lives on the disposable disk overlay, so
+  warm `up` pays it again; a persisted profile would keep uBlock's compiled
+  lists.
+- **The Nanos VMM's RSS is guest memory touched, not a footprint.** QEMU's
+  memfd backing counts every page the guest has touched; there is no balloon
+  or free-page reporting, so it does not shrink after idle.
+- **One Speedometer run of seven stalled at 0 tests** (the first after `up`),
+  and one lifecycle attempt before this run failed at the guest stage; both
+  are open.
+- **The page actions were 300 to 1000 ms before hydrogen `2c46223e`.** A
+  message one byte past a full 1460-byte segment on the guest's loopback TCP
+  waited for a delayed ACK that a timer queued and nothing delivered. Every
+  locator query crossed that path through the guest's CDP relay.
+
 ## Findings
 
 - **The first action after a navigation waited out a 200 ms quiet interval
