@@ -491,7 +491,8 @@ active acceptance or introducing a third browser engine.
   currently gated; do not claim exclusive takeover until M8C's
   controller ownership tests pass. External bctl clients remain
   unqualified until a real pinned-client test passes.
-\n## Baseline
+
+## Baseline
 
 Checked 2026-11-08, read-only, nothing built or run.
 
@@ -1217,7 +1218,7 @@ remedy to release/cancel it. Existing untracked CDP attachments must be
 documented as unsafe for exclusive handoff, not silently treated as lease
 holders. Forced revocation, if implemented, shuts *all* of the owner's CDP
 sockets, reports interrupted/unknown-outcome effects, and never retries
-dispatched input. Noncooperative `exec` is not pausible. Client failure, host
+dispatched input. Noncooperative `exec` is not pausable. Client failure, host
 job cancellation, daemon `kill -9`, VM crash, double close and stale cleanup
 must never kill a newer generation or leak a permanent lease. Do not rely
 on agent-browser's best-effort `browser.close` plugin callback alone.
