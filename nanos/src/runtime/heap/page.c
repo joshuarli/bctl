@@ -39,6 +39,7 @@ static struct page_heap {
     struct rangemap ranges;
     u64 total;
     u64 allocated;
+    u64 freed;
     void *virt_base;
     int max_order;
     /* A page area is inserted in the list corresponding to the order of the largest free page
@@ -329,6 +330,7 @@ static void pageheap_dealloc(heap h, u64 p, bytes size)
         }
     }
     page_heap.allocated -= size;
+    page_heap.freed += size;
     spin_unlock(&page_heap.lock);
 }
 
@@ -461,6 +463,11 @@ void pageheap_range_foreach(range_handler rh)
 {
     rangemap_range_lookup(&page_heap.ranges, irange(0, infinity),
                           stack_closure(pageheap_rmnode_handler, rh));
+}
+
+u64 pageheap_freed(void)
+{
+    return page_heap.freed;
 }
 
 bytes pageheap_max_pagesize(void)

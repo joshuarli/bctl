@@ -43,6 +43,7 @@
 #define VIRTIO_BALLOON_REPORT_SIZE          U64_FROM_BIT(VIRTIO_BALLOON_REPORT_ORDER)
 #define VIRTIO_BALLOON_REPORT_DESCS         16
 #define VIRTIO_BALLOON_REPORT_INTERVAL_SEC  5
+#define VIRTIO_BALLOON_REPORT_MIN_FREED     (32 * MB)
 
 struct virtio_balloon_stat {
 #define VIRTIO_BALLOON_S_SWAP_IN      0
@@ -84,6 +85,7 @@ struct virtio_balloon {
         u64 held_count;
         u64 capacity;
         boolean running;
+        u64 freed_at_last_round;
         struct timer timer;
         closure_struct(timer_handler, timer_task);
         closure_struct(vqfinish, reported);
@@ -399,6 +401,7 @@ static void release_reported(void)
     virtio_balloon_debug("%s: reported %ld MB\n", func_ss,
                          (virtio_balloon.reporting.held_count * VIRTIO_BALLOON_REPORT_SIZE) >> 20);
     virtio_balloon.reporting.held_count = 0;
+    virtio_balloon.reporting.freed_at_last_round = pageheap_freed();
     virtio_balloon.reporting.running = false;
 }
 
@@ -449,6 +452,9 @@ closure_func_basic(timer_handler, void, virtio_balloon_report_task,
 {
     if ((overruns == timer_disabled) || virtio_balloon.reporting.running)
         return;
+    if (pageheap_freed() - virtio_balloon.reporting.freed_at_last_round <
+        VIRTIO_BALLOON_REPORT_MIN_FREED)
+        return;
     virtio_balloon.reporting.running = true;
     report_next();
 }
@@ -464,6 +470,7 @@ static boolean virtio_balloon_init_reporting(heap general)
     virtio_balloon.reporting.capacity = capacity;
     virtio_balloon.reporting.held_count = 0;
     virtio_balloon.reporting.running = false;
+    virtio_balloon.reporting.freed_at_last_round = 0;
     init_closure_func(&virtio_balloon.reporting.reported, vqfinish, virtio_balloon_reported);
     init_closure_func(&virtio_balloon.reporting.timer_task, timer_handler,
                       virtio_balloon_report_task);

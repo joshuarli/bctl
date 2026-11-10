@@ -140,7 +140,8 @@ https://github.com/qemu/qemu/blob/master/docs/virtio-balloon-stats.txt
 Free page reporting
 
 With "-device virtio-balloon-pci,free-page-reporting=on,vectors=5" the driver
-also negotiates VIRTIO_BALLOON_F_REPORTING. Every 5 seconds it allocates every
+also negotiates VIRTIO_BALLOON_F_REPORTING. Every 5 seconds, if at least
+32 MB went back to the page heap since the last round, it allocates every
 free 2 MB block it can while keeping twice the memory cleaner's threshold free,
 reports the blocks to the host, which discards their backing, and frees them
 again once the host has answered. Memory that guest programs touched and then
