@@ -794,6 +794,7 @@ static sysreturn vsock_alloc(heap h, int type, int flags, boolean alloc_fd, vsoc
     s->conn = 0;
     s->flags = 0;
     s->state = VSOCK_STATE_INIT;
+    s->so_error = 0;
     if (alloc_fd) {
         s->sock.fd = allocate_fd(current->p, s, fd_flags_from_open_flags(s->sock.f.flags));
         if (s->sock.fd == INVALID_PHYSICAL) {
