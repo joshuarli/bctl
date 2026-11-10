@@ -181,14 +181,11 @@ boolean sg_fault_in(sg_list sg, u64 n)
     if (context_set_err(ctx))
         return false;
     while (n > 0 && (sgb = sg_list_peek_at(sg, sgb_index)) != INVALID_ADDRESS) {
-        s64 len = MIN(n, sg_buf_len(sgb));
+        u64 len = MIN(n, sg_buf_len(sgb));
         n -= len;
-        volatile u8 *bp = sgb->buf + sgb->offset;
-        while (len > 0) {
-            (void)*bp;
-            bp += PAGESIZE;
-            len -= PAGESIZE;
-        }
+        u64 start = u64_from_pointer(sgb->buf + sgb->offset);
+        for (u64 p = start; p < start + len; p = (p & ~MASK(PAGELOG)) + PAGESIZE)
+            (void)*(volatile u8 *)pointer_from_u64(p);
         sgb_index++;
     }
     context_clear_err(ctx);

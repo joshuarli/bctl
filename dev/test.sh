@@ -89,6 +89,7 @@ suite_harness() {
 		case_verdict netlink_route "$smp" 30 PASS '' "$FIXTURES/netlink_route"
 		case_verdict tcp_loopback "$smp" 180 PASS '' "$FIXTURES/tcp_loopback"
 		case_verdict unix_cow_read "$smp" 60 PASS '' "$FIXTURES/unix_cow_read"
+		case_verdict write_from_mapped_file "$smp" 30 PASS '' --klib tmpfs --dir /tmp "$FIXTURES/write_from_mapped_file"
 	done
 	fixture_native userns unshare -Ur
 	fixture_native pidns env
