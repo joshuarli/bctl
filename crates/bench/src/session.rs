@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use miniserde::{Deserialize, json};
 
-use crate::host::{self, Fallible, output_of};
+use crate::host::{self, Fallible, Runtime, output_of};
 
 #[derive(Deserialize, Clone)]
 pub struct SessionView {
@@ -40,6 +40,7 @@ pub struct UpTiming {
 pub struct Home {
     pub path: PathBuf,
     bctl: PathBuf,
+    runtime: Runtime,
 }
 
 pub fn session_name(tag: &str) -> String {
@@ -49,20 +50,37 @@ pub fn session_name(tag: &str) -> String {
 impl Home {
     pub fn new(tag: &str) -> Fallible<Home> {
         let root = host::root();
+        let runtime = Runtime::current()?;
         let path = root.join(format!(".work/tmp/h1-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(path.join("runtime")).and_then(|()| std::fs::create_dir_all(path.join("images"))).map_err(|e| e.to_string())?;
         let link = |from: PathBuf, to: PathBuf| std::os::unix::fs::symlink(from, to).map_err(|e| e.to_string());
-        link(root.join(".work/runtime/smolvm"), path.join("runtime/smolvm"))?;
-        let tar = root.join(".work/images/helium.tar");
-        if !tar.exists() {
-            return Err(format!("no {}; run BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium", tar.display()));
+        let image = runtime.image();
+        let extension = match runtime {
+            Runtime::SmolVm => {
+                link(root.join(".work/runtime/smolvm"), path.join("runtime/smolvm"))?;
+                "tar"
+            }
+            Runtime::Nanos => {
+                std::fs::create_dir_all(path.join("runtime/nanos")).map_err(|e| e.to_string())?;
+                let built = root.join(".work/runtime/nanos");
+                link(built.join("hydrogen/nanos/output/platform/pc/bin/kernel.img"), path.join("runtime/nanos/kernel.img"))?;
+                link(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock"))?;
+                "img"
+            }
+        };
+        let source = root.join(format!(".work/images/{image}.{extension}"));
+        if !source.exists() {
+            return Err(match runtime {
+                Runtime::SmolVm => format!("no {}; run BCTL_BROWSER_ARCHIVE=DIR images/build.sh {image}", source.display()),
+                Runtime::Nanos => format!("no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img there", source.display()),
+            });
         }
-        link(tar, path.join("images/helium.tar"))?;
+        link(source, path.join(format!("images/{image}.{extension}")))?;
         let bctl = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("bctl");
         if !bctl.exists() {
             return Err(format!("no {}; run cargo build --release -p bctl -p bctl-bench", bctl.display()));
         }
-        Ok(Home { path, bctl })
+        Ok(Home { path, bctl, runtime })
     }
 
     pub fn smolvm(&self) -> PathBuf {
@@ -71,7 +89,7 @@ impl Home {
 
     pub fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(&self.bctl);
-        command.args(args).env("BCTL_HOME", &self.path);
+        command.args(args).env("BCTL_HOME", &self.path).env("BCTL_RUNTIME", self.runtime.name());
         command
     }
 
@@ -115,12 +133,13 @@ impl Home {
             let done = Arc::clone(&done);
             let command_path = self.bctl.clone();
             let bctl_home = self.path.clone();
+            let runtime = self.runtime.name();
             let name = name.to_string();
             thread::spawn(move || {
                 let started = Instant::now();
                 let mut seen: Vec<(String, Duration)> = Vec::new();
                 while !done.load(Ordering::Relaxed) {
-                    let output = Command::new(&command_path).args(["status", "--json"]).env("BCTL_HOME", &bctl_home).stderr(Stdio::null()).output();
+                    let output = Command::new(&command_path).args(["status", "--json"]).env("BCTL_HOME", &bctl_home).env("BCTL_RUNTIME", runtime).stderr(Stdio::null()).output();
                     let at = started.elapsed();
                     if let Ok(output) = output
                         && let Ok(reply) = json::from_str::<Reply>(&String::from_utf8_lossy(&output.stdout))
@@ -197,16 +216,30 @@ impl Home {
     }
 
     pub fn vmm_pids(&self) -> Fallible<Vec<u32>> {
-        host::pids_matching(&format!("{}/runtime/smolvm/smolvm-bin", self.path.display()))
+        match self.runtime {
+            Runtime::SmolVm => host::pids_matching(&format!("{}/runtime/smolvm/smolvm-bin", self.path.display())),
+            Runtime::Nanos => host::pids_matching(&format!("{}/machines/", self.path.display())),
+        }
     }
 
     pub fn machine_pid(&self, machine: &str) -> Fallible<u32> {
-        let status = output_of(self.smolvm().to_str().expect("utf-8 path"), &["machine", "status", "--name", machine, "--json"])?;
-        #[derive(Deserialize)]
-        struct Status {
-            pid: u32,
+        match self.runtime {
+            Runtime::SmolVm => {
+                let status = output_of(self.smolvm().to_str().expect("utf-8 path"), &["machine", "status", "--name", machine, "--json"])?;
+                #[derive(Deserialize)]
+                struct Status {
+                    pid: u32,
+                }
+                json::from_str::<Status>(&status).map(|s| s.pid).map_err(|_| format!("machine status of {machine} has no pid"))
+            }
+            Runtime::Nanos => {
+                let mut pids = host::pids_matching(&format!("{}/machines/{machine}/qmp.sock", self.path.display()))?;
+                match pids.len() {
+                    1 => Ok(pids.remove(0)),
+                    count => Err(format!("{count} processes hold {machine}'s qmp socket")),
+                }
+            }
         }
-        json::from_str::<Status>(&status).map(|s| s.pid).map_err(|_| format!("machine status of {machine} has no pid"))
     }
 }
 

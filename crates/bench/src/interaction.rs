@@ -7,7 +7,7 @@ use miniserde::{Deserialize, json};
 
 use crate::cdp::Endpoint;
 use crate::browser::{HOST_FROM_GUEST, HOST_RANGE};
-use crate::host::{self, Fallible, Verdict};
+use crate::host::{self, Fallible, Runtime, Verdict};
 use crate::net::{self, WebSocket};
 use crate::report::Samples;
 use crate::rfb::{Probe, Viewer};
@@ -16,7 +16,6 @@ use crate::serve;
 use crate::stats::Statistic;
 use crate::{Context, Outcome};
 
-const IMAGE: &str = "helium";
 const TODOS: usize = 5;
 const TODO_APP: &str = "speedometer/resources/todomvc/architecture-examples/react/dist/index.html";
 const NEW_TODO: &str = "What needs to be done?";
@@ -192,14 +191,18 @@ fn input_block(viewer: &mut Viewer, probe: &Probe, click: (u16, u16)) -> Fallibl
 }
 
 pub fn run(ctx: &Context) -> Fallible<Outcome> {
-    let mut outcome = Outcome { images: vec![IMAGE], ..Outcome::default() };
+    let runtime = Runtime::current()?;
+    let image = runtime.image();
+    let mut outcome = Outcome { images: vec![image], ..Outcome::default() };
     let home = Home::new("inter")?;
     home.start_daemon()?;
     let session = session_name("inter");
     let server = serve::start(host::root().join(crate::browser::SPEEDOMETER_DIR))?;
-    home.up(&session, &session, IMAGE, &[HOST_RANGE.to_string()])?;
-    let view = home.session(&session)?;
-    let vnc_port = view.vnc_port.ok_or("session has no VNC port")?;
+    home.up(&session, &session, image, &[HOST_RANGE.to_string()])?;
+    let vnc_port = if runtime == Runtime::SmolVm { Some(home.session(&session)?.vnc_port.ok_or("session has no VNC port")?) } else { None };
+    if runtime == Runtime::Nanos {
+        outcome.notes.push("input to pixel needs a display; the nanos runtime is headless".into());
+    }
     let gateway_url = home.cdp_url(&session)?;
     let host = gateway_url.strip_prefix("http://").ok_or("cdp url is not http")?.to_string();
     let port: u16 = host.rsplit(':').next().and_then(|p| p.parse().ok()).ok_or("cdp url has no port")?;
@@ -259,48 +262,51 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         }
     }
 
-    let (_, mut page) = gateway.attach_first_page()?;
-    page.call("Page.bringToFront", "{}")?;
-    page.navigate(&format!("data:text/html;charset=utf-8,{}", PAGE.replace('#', "%23")))?;
-    drop(page);
-    thread::sleep(Duration::from_secs(2));
-    let origin = {
-        let mut client = Client::connect(("127.0.0.1", vnc_port), Duration::from_secs(10)).map_err(|e| e.to_string())?;
-        client.refresh().map_err(|e| e.to_string())?.find(MARKER).ok_or("the fixture marker is not on screen")?
-    };
-    let click = (origin.0 + 100, origin.1 + 100);
-    let probe = Probe { x: origin.0 + 300, y: origin.1 + 300 };
-    let dashboard = sign_in(&home, &session)?;
-    let mut failures = 0;
-    for round in 0..ctx.rounds {
-        if ctx.gate.gave_up() {
-            outcome.notes.push(format!("perf gate deferred: host busy; input blocks stopped before round {round} of {}", ctx.rounds));
-            break;
-        }
-        for path in paths(round) {
-            let mut viewer = connect_viewer(path, vnc_port, &dashboard, &session)?;
-            let block = ctx.gate.run(|| input_block(&mut viewer, &probe, click));
-            drop(viewer);
-            thread::sleep(Duration::from_secs(1));
-            match block {
-                Ok(((pointer, key, failed), _, verdict)) => {
-                    eprintln!("interaction round {round}: input {} {} pointer / {} key ({verdict:?})", path.name(), pointer.len(), key.len());
-                    failures += failed;
-                    for (label, values) in [("pointer", pointer), ("key", key)] {
-                        let samples = find(&mut latency, path, label);
-                        for value in values {
-                            samples.record(value, verdict);
+    if runtime == Runtime::SmolVm {
+        let vnc_port = vnc_port.ok_or("smolvm reports a VNC port")?;
+        let (_, mut page) = gateway.attach_first_page()?;
+        page.call("Page.bringToFront", "{}")?;
+        page.navigate(&format!("data:text/html;charset=utf-8,{}", PAGE.replace('#', "%23")))?;
+        drop(page);
+        thread::sleep(Duration::from_secs(2));
+        let origin = {
+            let mut client = Client::connect(("127.0.0.1", vnc_port), Duration::from_secs(10)).map_err(|e| e.to_string())?;
+            client.refresh().map_err(|e| e.to_string())?.find(MARKER).ok_or("the fixture marker is not on screen")?
+        };
+        let click = (origin.0 + 100, origin.1 + 100);
+        let probe = Probe { x: origin.0 + 300, y: origin.1 + 300 };
+        let dashboard = sign_in(&home, &session)?;
+        let mut failures = 0;
+        for round in 0..ctx.rounds {
+            if ctx.gate.gave_up() {
+                outcome.notes.push(format!("perf gate deferred: host busy; input blocks stopped before round {round} of {}", ctx.rounds));
+                break;
+            }
+            for path in paths(round) {
+                let mut viewer = connect_viewer(path, vnc_port, &dashboard, &session)?;
+                let block = ctx.gate.run(|| input_block(&mut viewer, &probe, click));
+                drop(viewer);
+                thread::sleep(Duration::from_secs(1));
+                match block {
+                    Ok(((pointer, key, failed), _, verdict)) => {
+                        eprintln!("interaction round {round}: input {} {} pointer / {} key ({verdict:?})", path.name(), pointer.len(), key.len());
+                        failures += failed;
+                        for (label, values) in [("pointer", pointer), ("key", key)] {
+                            let samples = find(&mut latency, path, label);
+                            for value in values {
+                                samples.record(value, verdict);
+                            }
                         }
                     }
+                    Err(e) => outcome.notes.push(format!("input block {} round {round} failed: {e}", path.name())),
                 }
-                Err(e) => outcome.notes.push(format!("input block {} round {round} failed: {e}", path.name())),
             }
         }
+        let (_, mut page) = direct.attach_first_page()?;
+        let flips = page.evaluate("window.flips")?;
+        let attempted = ctx.rounds * 2 * TRIALS_PER_BLOCK * 2;
+        outcome.notes.push(format!("the page counted {flips} toggles for {attempted} attempted input trials; {failures} trials saw no pixel change within 3 s and are excluded"));
     }
-    let (_, mut page) = direct.attach_first_page()?;
-    let flips = page.evaluate("window.flips")?;
-    let attempted = ctx.rounds * 2 * TRIALS_PER_BLOCK * 2;
-    outcome.notes.push(format!("the page counted {flips} toggles for {attempted} attempted input trials; {failures} trials saw no pixel change within 3 s and are excluded"));
 
     for series in &rtt {
         let name = format!("interaction.cdp_rtt.{}.{}", series.path.name(), series.label);
@@ -314,11 +320,13 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         outcome.measures.push(samples.finish(&format!("interaction.automation.{step}.p95"), "ms", Statistic::P95, &automation));
     }
     outcome.measures.push(workflow.finish("interaction.automation.todo_workflow", "ms", Statistic::Median, &automation));
-    for series in &latency {
-        let name = format!("interaction.input_to_pixel.{}.{}", series.path.name(), series.label);
-        let conditions = "RFB pointer press or key tap written to the stream until an update repaints a probe pixel of a full-viewport color toggle; helium 1280x800; direct = the VMM's VNC port, gateway = dashboard WebSocket with the input lease; 400 ms between trials";
-        outcome.measures.push(series.samples.finish(&format!("{name}.p50"), "ms", Statistic::Median, conditions));
-        outcome.measures.push(series.samples.finish(&format!("{name}.p95"), "ms", Statistic::P95, conditions));
+    if runtime == Runtime::SmolVm {
+        for series in &latency {
+            let name = format!("interaction.input_to_pixel.{}.{}", series.path.name(), series.label);
+            let conditions = format!("RFB pointer press or key tap written to the stream until an update repaints a probe pixel of a full-viewport color toggle; {image} 1280x800; direct = the VMM's VNC port, gateway = dashboard WebSocket with the input lease; 400 ms between trials");
+            outcome.measures.push(series.samples.finish(&format!("{name}.p50"), "ms", Statistic::Median, &conditions));
+            outcome.measures.push(series.samples.finish(&format!("{name}.p95"), "ms", Statistic::P95, &conditions));
+        }
     }
     Ok(outcome)
 }

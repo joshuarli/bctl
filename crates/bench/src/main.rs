@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use host::{Fallible, QuietGate};
+use host::{Fallible, QuietGate, Runtime};
 use report::{ImageIdentity, Measure, Report};
 use session::Home;
 
@@ -104,14 +104,15 @@ fn run() -> Fallible<()> {
     outcome.notes.push(format!("waited {:.0} s in total for a quiet host", ctx.gate.waited().as_secs_f64()));
     let started = host::utc_now()?;
     let (commit, dirty) = host::commit()?;
-    let images: Fallible<Vec<ImageIdentity>> = outcome.images.iter().map(|name| host::image_identity(name)).collect();
+    let runtime = Runtime::current()?;
+    let images: Fallible<Vec<ImageIdentity>> = outcome.images.iter().map(|name| runtime.image_identity(name)).collect();
     let report = Report {
         suite: suite.clone(),
         started: started.clone(),
         host: host::host()?,
         commit,
         dirty,
-        smolvm: host::smolvm_version(&host::root().join(".work/runtime/smolvm/smolvm"))?,
+        runtime: format!("{} {}", runtime.name(), runtime.version()?),
         images: images?,
         browser_versions: outcome.browser_versions,
         measures: outcome.measures,

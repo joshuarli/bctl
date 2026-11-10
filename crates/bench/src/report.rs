@@ -91,7 +91,7 @@ pub struct Host {
     pub chip: String,
     pub cpus: u32,
     pub memory_gib: u64,
-    pub macos: String,
+    pub os: String,
     pub load_average_start: String,
 }
 
@@ -109,7 +109,7 @@ pub struct Report {
     pub host: Host,
     pub commit: String,
     pub dirty: bool,
-    pub smolvm: String,
+    pub runtime: String,
     pub images: Vec<ImageIdentity>,
     pub browser_versions: Vec<String>,
     pub measures: Vec<Measure>,

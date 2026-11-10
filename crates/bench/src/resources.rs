@@ -1,13 +1,12 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::host::{self, Fallible, footprint_mib, output_of, process_stats};
+use crate::host::{self, Fallible, Runtime, footprint_mib, output_of, process_stats};
 use crate::report::{Samples, fact};
 use crate::session::{Home, session_name};
 use crate::stats::Statistic;
 use crate::{Context, Outcome};
 
-const IMAGES: [&str; 1] = ["helium"];
 const SETTLE: Duration = Duration::from_secs(30);
 const IDLE_WINDOW: Duration = Duration::from_secs(60);
 
@@ -31,24 +30,31 @@ fn disk_kib(path: &str) -> Fallible<u64> {
 }
 
 pub fn run(ctx: &Context) -> Fallible<Outcome> {
-    let mut outcome = Outcome { images: IMAGES.to_vec(), ..Outcome::default() };
+    let runtime = Runtime::current()?;
+    let image = runtime.image();
+    let mut outcome = Outcome { images: vec![image], ..Outcome::default() };
     let root = host::root();
     let bctl = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("bctl");
     let binary_bytes = std::fs::metadata(&bctl).map_err(|e| format!("{}: {e}", bctl.display()))?.len();
     outcome.measures.push(fact("resources.bctl_binary", "bytes", binary_bytes as f64, "target/release/bctl as built by cargo build --release -p bctl, unstripped, default release profile"));
-    for image in IMAGES {
-        if let Ok(meta) = std::fs::metadata(root.join(format!(".work/images/{image}.tar"))) {
-            outcome.measures.push(fact(&format!("resources.image_tar.{image}"), "bytes", meta.len() as f64, "docker save archive handed to smolvm"));
+    match runtime {
+        Runtime::SmolVm => {
+            if let Ok(meta) = std::fs::metadata(root.join(format!(".work/images/{image}.tar"))) {
+                outcome.measures.push(fact(&format!("resources.image_tar.{image}"), "bytes", meta.len() as f64, "docker save archive handed to smolvm"));
+            }
+        }
+        Runtime::Nanos => {
+            let disk = root.join(format!(".work/images/{image}.img"));
+            let meta = std::fs::metadata(&disk).map_err(|e| format!("{}: {e}", disk.display()))?;
+            outcome.measures.push(fact(&format!("resources.image_disk.{image}"), "bytes", meta.len() as f64, "Nanos disk image (2 GiB sparse)"));
+            outcome.measures.push(fact(&format!("resources.image_disk_allocated.{image}"), "KiB", disk_kib(disk.to_str().expect("utf-8 path"))? as f64, "du -k of the Nanos disk image, allocated blocks only"));
         }
     }
 
     let mut daemon_empty = Samples::new();
     let mut daemon_with_session = Samples::new();
     let mut daemon_cpu = Samples::new();
-    let mut per_image = Vec::new();
-    for image in IMAGES {
-        per_image.push((image, [Samples::new(), Samples::new(), Samples::new(), Samples::new(), Samples::new(), Samples::new()]));
-    }
+    let mut per_image = vec![(image, [Samples::new(), Samples::new(), Samples::new(), Samples::new(), Samples::new(), Samples::new()])];
 
     for round in 0..ctx.rounds {
         for (image, [vmm_rss, vmm_rss_after, vmm_cpu, disk, profile, vmm_footprint]) in &mut per_image {
@@ -92,19 +98,36 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                 vmm_rss_after.push(kib_to_mib(tree_stats(&vmm)?.0));
             }
 
-            let data_dir = output_of(home.smolvm().to_str().expect("utf-8 path"), &["machine", "data-dir", "--name", &machine])?;
-            disk.push(disk_kib(&data_dir)? as f64 / 1024.0);
+            match runtime {
+                Runtime::SmolVm => {
+                    let data_dir = output_of(home.smolvm().to_str().expect("utf-8 path"), &["machine", "data-dir", "--name", &machine])?;
+                    disk.push(disk_kib(&data_dir)? as f64 / 1024.0);
+                }
+                Runtime::Nanos => {
+                    let machine_dir = home.path.join("machines").join(&machine);
+                    disk.push(disk_kib(machine_dir.to_str().expect("utf-8 path"))? as f64 / 1024.0);
+                }
+            }
             profile.push(disk_kib(home.path.join("profiles").to_str().expect("utf-8 path"))? as f64 / 1024.0);
         }
     }
 
     for (image, [vmm_rss, vmm_rss_after, vmm_cpu, disk, profile, vmm_footprint]) in &per_image {
-        let conditions = format!("{image}, 2 CPUs, 4096 MiB guest, 1280x800; summed over the VMM process and its video encoder helper");
+        let summed = match runtime {
+            Runtime::SmolVm => "summed over the VMM process and its video encoder helper",
+            Runtime::Nanos => "summed over qemu, vhost-device-vsock and the bctl nanos-vm supervisor",
+        };
+        let conditions = format!("{image}, 2 CPUs, 4096 MiB guest, 1280x800; {summed}");
+        let footprint = if cfg!(target_os = "linux") { "PSS from /proc/<pid>/smaps_rollup" } else { "macOS physical footprint (includes compressed pages)" };
+        let machine_disk = match runtime {
+            Runtime::SmolVm => "du of the machine data directory after ready; sparse files count only allocated blocks",
+            Runtime::Nanos => "du of the machine directory after ready; sparse files count only allocated blocks",
+        };
         outcome.measures.push(vmm_rss.finish(&format!("resources.vmm_rss.{image}"), "MiB", Statistic::Median, &format!("{conditions}; {} s after ready, browser on about:blank", SETTLE.as_secs())));
-        outcome.measures.push(vmm_footprint.finish(&format!("resources.vmm_footprint.{image}"), "MiB", Statistic::Median, &format!("{conditions}; macOS physical footprint (includes compressed pages), same moment as vmm_rss")));
+        outcome.measures.push(vmm_footprint.finish(&format!("resources.vmm_footprint.{image}"), "MiB", Statistic::Median, &format!("{conditions}; {footprint}, same moment as vmm_rss")));
         outcome.measures.push(vmm_rss_after.finish(&format!("resources.vmm_rss_after_idle.{image}"), "MiB", Statistic::Median, &format!("{conditions}; after a further {} s idle", IDLE_WINDOW.as_secs())));
-        outcome.measures.push(vmm_cpu.finish(&format!("resources.vmm_idle_cpu.{image}"), "percent of one core", Statistic::Median, &format!("{conditions}; CPU time over a {} s window starting {} s after ready, from ps", IDLE_WINDOW.as_secs(), SETTLE.as_secs())));
-        outcome.measures.push(disk.finish(&format!("resources.machine_disk.{image}"), "MiB", Statistic::Median, "du of the machine data directory after ready; sparse files count only allocated blocks"));
+        outcome.measures.push(vmm_cpu.finish(&format!("resources.vmm_idle_cpu.{image}"), "percent of one core", Statistic::Median, &format!("{conditions}; CPU time over a {} s window starting {} s after ready, from process CPU time", IDLE_WINDOW.as_secs(), SETTLE.as_secs())));
+        outcome.measures.push(disk.finish(&format!("resources.machine_disk.{image}"), "MiB", Statistic::Median, machine_disk));
         outcome.measures.push(profile.finish(&format!("resources.profile_disk.{image}"), "MiB", Statistic::Median, "du of the profiles directory after ready, before any browsing"));
     }
     outcome.measures.push(daemon_empty.finish("resources.daemon_rss.no_session", "MiB", Statistic::Median, "bctl daemon 2 s after start, no session"));

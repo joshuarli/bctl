@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use miniserde::{Deserialize, json};
 
 use crate::cdp::{Cdp, Endpoint};
-use crate::host::{self, Fallible};
+use crate::host::{self, Fallible, Runtime};
 use crate::report::{Samples, fact};
 use crate::serve;
 use crate::session::{Home, session_name};
@@ -17,7 +17,6 @@ const LOADS_PER_BATCH: usize = 5;
 pub const SPEEDOMETER_DIR: &str = ".work/dl/speedometer/src";
 pub const HOST_RANGE: &str = "100.96.0.0/30";
 pub const HOST_FROM_GUEST: &str = "100.96.0.1";
-const IMAGE: &str = "helium";
 const NEWS_SITE: &str = "speedometer/resources/newssite/news-next/dist/index.html";
 
 struct Target {
@@ -37,13 +36,14 @@ fn wait_for_cdp(endpoint: &Endpoint) -> Fallible<String> {
     }
 }
 
-fn guest_target(home: &Home, server_port: u16, notes: &mut Vec<String>) -> Fallible<Target> {
-    let name = session_name(&format!("br-{IMAGE}"));
-    home.up(&name, &name, IMAGE, &[HOST_RANGE.to_string()])?;
+fn guest_target(home: &Home, runtime: Runtime, server_port: u16, notes: &mut Vec<String>) -> Fallible<Target> {
+    let image = runtime.image();
+    let name = session_name(&format!("br-{image}"));
+    home.up(&name, &name, image, &[HOST_RANGE.to_string()])?;
     let url = home.cdp_url(&name)?;
     let host = url.strip_prefix("http://").ok_or("cdp url is not http")?.to_string();
     let port: u16 = host.rsplit(':').next().and_then(|p| p.parse().ok()).ok_or("cdp url has no port")?;
-    notes.push(format!("{IMAGE}: guest reaches the benchmark server at {HOST_FROM_GUEST}:{server_port}, SmolVM's gateway to the host loopback, through --allow-private {HOST_RANGE}"));
+    notes.push(format!("{image}: guest reaches the benchmark server at {HOST_FROM_GUEST}:{server_port}, the {} runtime's gateway to the host loopback, through --allow-private {HOST_RANGE}", runtime.name()));
     let endpoint = Endpoint::Tcp { port, host };
     let version = wait_for_cdp(&endpoint)?;
     let (_, mut page) = endpoint.attach_first_page()?;
@@ -121,7 +121,9 @@ fn page_load(target: &mut Target, nonce: usize) -> Fallible<Timing> {
 }
 
 pub fn run(ctx: &Context) -> Fallible<Outcome> {
-    let mut outcome = Outcome { images: vec![IMAGE], ..Outcome::default() };
+    let runtime = Runtime::current()?;
+    let image = runtime.image();
+    let mut outcome = Outcome { images: vec![image], ..Outcome::default() };
     let speedometer_dir = host::root().join(SPEEDOMETER_DIR);
     if !speedometer_dir.join("index.html").exists() {
         return Err(format!("no Speedometer checkout at {}; see docs/performance.md for the pinned release/3.1 commit", speedometer_dir.display()));
@@ -129,7 +131,7 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let server = serve::start(speedometer_dir)?;
     let home = Home::new("browser")?;
     home.start_daemon()?;
-    let mut target = guest_target(&home, server.port, &mut outcome.notes)?;
+    let mut target = guest_target(&home, runtime, server.port, &mut outcome.notes)?;
     outcome.browser_versions.push(target.version.clone());
 
     let mut scores = Samples::new();
@@ -184,7 +186,8 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         target.page.navigate("about:blank")?;
     }
 
-    let conditions = format!("Speedometer 3.1 (WebKit/Speedometer release/3.1), iterationCount={}, headed, 1280x800 viewport, {}", ctx.iterations, target.version);
+    let mode = if runtime == Runtime::Nanos { "headless (--headless=new)" } else { "headed" };
+    let conditions = format!("Speedometer 3.1 (WebKit/Speedometer release/3.1), iterationCount={}, {mode}, 1280x800 viewport, {}", ctx.iterations, target.version);
     outcome.measures.push(scores.finish("browser.speedometer.score", "score", Statistic::Median, &conditions));
     outcome.measures.push(iteration_scores.finish("browser.speedometer.iteration_score", "score", Statistic::Median, &format!("all iteration scores of every clean run, pooled; {conditions}")));
     let page = "Speedometer 3.1's news-next site (a Next.js static build, about 1 MiB of JS, CSS and images, rendered on the client) from the host over HTTP/1.1 keep-alive, cache disabled, from a fresh about:blank; a load counts once the articles are in the DOM";
