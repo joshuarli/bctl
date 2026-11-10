@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::layout;
+use crate::vsock::{VsockListener, VsockStream};
 
 #[derive(Clone)]
 pub struct Log(Arc<Mutex<File>>);
@@ -46,6 +47,22 @@ impl Stream for TcpStream {
     fn close_write(&self) -> io::Result<()> {
         self.shutdown(Shutdown::Write)
     }
+}
+
+impl Stream for VsockStream {
+    fn duplicate(&self) -> io::Result<Self> {
+        self.try_clone()
+    }
+    fn close_write(&self) -> io::Result<()> {
+        self.shutdown_write()
+    }
+}
+
+pub fn start_vsock(port: u32, log: &Log) -> Result<(), String> {
+    let listener = VsockListener::bind(port).map_err(|e| format!("listen on vsock port {port}: {e}"))?;
+    let log = log.clone();
+    thread::spawn(move || serve(listener.incoming(), &log));
+    Ok(())
 }
 
 pub fn start(unix: &Path, tcp_port: Option<u16>, log: &Log) -> Result<(), String> {

@@ -239,7 +239,13 @@ quiet interval (`759b308`, TodoMVC workflow 450.6 to 277.2 ms, gate 470 ms);
 n3's snapshot no longer fails when an iframe moves process mid-read
 (`b895525`, 8 of 8 against about half). Stopped for a noisy host and the
 Helium-on-Nanos comparison on a Linux host.
-M7N (Helium on Nanos, Linux amd64) is the active milestone; its slices are
+M7N L0 and L1 (Helium on Nanos, Linux amd64): `runtime/build-nanos.sh` and
+`images/nanos-helium/build.sh` boot Helium r5 headless with its sandbox on;
+through the vsock Unix socket `/json/version` answers `Helium/0.20.3.1` and
+the check port reports `browser ok`, `sandbox ok`, `input absent`. Getting
+there fixed hydrogen's unprivileged `gid_map` check (it compared the group
+with the euid, so Chromium's namespace probe failed for `browser`, 1000:27).
+M7N is the active milestone; its slices are
 under **Sequence**. After it, the Mac performance queue: (1) on an idle host, find what switches input to pixel between
 9 and 22 ms; the timer-coalescing test is in `docs/performance.md` Findings;
 (2) pause 1.8 s and resume 2.3 s against a 1.5 s cold `up`, where the time goes

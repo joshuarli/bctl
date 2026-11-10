@@ -26,6 +26,15 @@ pub fn run() -> Result<ExitCode, String> {
     Ok(if complete { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
+pub fn headless_report() -> String {
+    let mut report = String::new();
+    for (stage, ok) in [("browser", cdp_answers()), ("sandbox", renderer_sandboxed())] {
+        report.push_str(&format!("{stage} {}\n", if ok { "ok" } else { "missing" }));
+    }
+    report.push_str("input absent\n");
+    report
+}
+
 pub fn is_socket(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.file_type().is_socket())
 }

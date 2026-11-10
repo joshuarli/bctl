@@ -160,3 +160,39 @@ string (`helium --version`, run in the assembled rootfs), the archive file
 name and SHA-256, and the replaced file. From r6, Helium's `/json/version`
 and `Browser.getVersion` report `Helium/<helium version>`; the web user agent
 still says `Chrome/<chromium version>`.
+
+## The nanos-helium image
+
+`sh runtime/build-nanos.sh` builds the Nanos runtime on a Linux x86_64 host
+with `/dev/kvm` and QEMU: it exports hydrogen at the commit the script pins
+(`git archive`, no write into the hydrogen checkout), builds its kernel and
+`mkfs`, builds `vhost-device-vsock` 0.3.0, and fetches hydrogen's pinned
+llvm-prebuilt-musl LLVM, all under `.work/runtime/nanos`. Then
+`BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build.sh` builds
+`.work/images/nanos-helium.img`, a Nanos disk image, from one
+`helium-<version>-r<N>-linux-x86_64-musl.tar.xz` with N of 5 or more and the
+same sidecar and chromium-build installer checks as the arm64 image
+(architecture `amd64`). r5 is accepted on amd64: it already reports
+`Helium/<version>` over DevTools, and the image ships `/home/browser`, so the
+missing `$HOME` crash r6 fixes is not reached.
+
+The image is hydrogen's Helium rootfs (Alpine's musl 1.2.6 and the archive
+at `/opt/browser`) with the Rust `bctl-guest`, built for
+`x86_64-unknown-linux-musl` by that LLVM with `std` rebuilt, as the Nanos
+program. Nanos runs `bctl-guest run-headless`, which:
+
+- starts the browser as `browser` (uid 1000, gid 27) through `bctl-guest
+  browser` with `BCTL_BROWSER_DISPLAY=headless`, so Helium runs with
+  `--headless=new --disable-gpu`, the sandbox on, and the profile at
+  `/profile`;
+- once CDP answers on the guest loopback, relays vsock port 9222 to it and
+  answers vsock port 9223 with `browser ok|missing`, `sandbox ok|missing`
+  and `input absent`, then prints `bctl-guest: ready`;
+- if the browser exits or never answers, prints the last 16 KiB of
+  `/run/bctl/browser.log` on the console and exits non-zero, which ends the
+  VM.
+
+The host reaches those ports through `vhost-device-vsock`'s Unix socket with
+the hybrid `CONNECT <port>` handshake, so no TCP port reaches CDP. There is
+no seat, compositor, display or input on Nanos.
+
