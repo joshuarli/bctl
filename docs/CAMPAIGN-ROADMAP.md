@@ -1229,22 +1229,31 @@ Slices, in order, one writer, each gated on the one before:
   with the `efi` feature, and bsdkrun used libkrun's `KRUN_EFI.silent.fd`
   and `--no-net --mem 1024`. The local arm64 musl Helium archive has an acceptance
   record, but has not been tested with hydrogen on arm64.
-- **MM1 progress.** Hydrogen `0702048a` contains the kernel boot fixes.
+- **MM1, 2026-11-10: passed.** Hydrogen `0702048a` contains the kernel boot fixes.
   The x86-64 KVM harness passed on Lisa, and an arm64 seccomp probe passed
   under QEMU with PCI and modern MMIO disks. Three HVF boots of that probe
-  passed with bctl's patched libkrun and the reference EFI firmware. The
-  production firmware and arm64 build path remain to be integrated.
-- **MM2 progress, 2026-11-10.** Hydrogen `c19d26f0` and `25b59205` add
+  passed with bctl's patched libkrun and the reference EFI firmware. The SPI
+  de-assert is `runtime/patches/libkrun-0003-arm-mmio-interrupts.patch`.
+  `runtime/build-nanos-krun.sh` bundles the pinned EFI firmware, and
+  `runtime/build-nanos-arm64.sh` builds the pinned kernel. Known limitation:
+  under QEMU with `-accel hvf`, a virtio-PCI disk reaches the EFI loader and
+  stalls; the same image boots with virtio-PCI under TCG and with modern
+  virtio-mmio under HVF. bctl's libkrun path uses virtio-mmio.
+- **MM2, 2026-11-10: passed.** Hydrogen `c19d26f0` and `25b59205` add
   arm64 fork and exec; `134bef82` fixes seccomp trap delivery. The arm64
   Chromium probes passed 55 and 6 checks on native Linux and on HVF with
   one, two and four configured vCPUs. A diagnostic image booted Helium
   0.20.3.1-r6 on HVF and passed all 10 Hydrogen Helium checks, including
   renderer seccomp, PID namespaces, confinement and CDP navigation.
-  These runs used a scratch launcher, reference EFI firmware and a locally
-  assembled image. The full arm64 harness, production image and backend
-  remain unqualified. The x86 Chromium, seccomp, fork and exec checks passed
-  on threadripper.
-- **MM3 progress, 2026-11-10.** Nanos profiles on macOS persist on a
+  Hydrogen `f5098a77` makes `dev/test.sh` run on the Mac: builds and native
+  oracles run in an arm64 Linux container, and images boot through bctl's
+  libkrun under HVF. There, `harness` passed all 85 checks, `probe` passed
+  55 and 6 checks natively and at one, two and four vCPUs, and `helium` and
+  `helium-native` passed all 10 records with Helium 0.20.3.1-r6, including
+  `sandbox_confinement`. On threadripper the x86 `harness`, `probe` and
+  `helium` suites passed at the same commit; `helium-native` fails there on
+  `main` as well (`cdp_evaluate`, `cdp_dom`, `sandbox_confinement`).
+- **MM3, 2026-11-10: passed.** Nanos profiles on macOS persist on a
   per-profile disk that the VM locks, and stopping a session waits for the
   guest to flush it. Persistent boots stalled intermittently: two threads
   faulting the same writable program page left the page cache's node lock
@@ -1253,8 +1262,8 @@ Slices, in order, one writer, each gated on the one before:
   vCPUs after it. Hydrogen's x86 harness passed on threadripper. On an Apple
   M5 Max with that kernel, `BCTL_TEST_RUNTIME=nanos` passed the sessions,
   tabs, actions, snapshots, failures, egress, host_http and profiles suites
-  (24 tests) and the runtime-nanos lifecycle suite. The `docs/performance.md`
-  column remains.
+  (24 tests) and the runtime-nanos lifecycle suite. The owner waived the
+  `docs/performance.md` column. M7M is complete.
 - **MM0 Native boot (needs the Mac).** Reproduce bsdkrun's `nanos-hello`
   on Apple Silicon with acceleration confirmed (HVF, not TCG) before any
   port. Acceptance: three consecutive boots print the hello line, and the
@@ -1317,7 +1326,7 @@ never overlap a timed bench on the same host. The clients are host-side test
 tooling under `.work/interop/`, never product dependencies, so the guest purity
 rules do not apply to them: browser-use 1.0.0 in a virtualenv, agent-browser
 built from its pinned tag with `cargo`. Linux x86_64 with Nanos qualifies first;
-the macOS arm64 and SmolVM leg is under **Needs environment**.
+the macOS arm64 and SmolVM leg follows on the Apple Silicon Mac.
 
 **E0 — Contract census (done).** `docs/research/external-clients.md` at
 `bc6462a` is the census: pins, call sites, and the source-verified matrix. E1
@@ -1510,10 +1519,9 @@ Owner-provided; never blocks other items.
 - The Linux arm64 Helium artifact (P2, T0, and everything after M3 on the
   product image).
 - A Linux KVM host for X3's remote context and amd64 parity.
-- An Apple Silicon Mac for M8C's macOS and SmolVM leg (E1 to E6 on headed
-  Helium); until then those tuples are reported unverified.
-- An Apple Silicon Mac for M7M (Nanos on macOS); MM0 needs it before any
-  porting starts.
+- The Apple Silicon Mac is available (Apple M5 Max, macOS 27.0.1); M8C's
+  macOS and SmolVM leg (E1 to E6 on headed Helium) runs on it when M8C
+  reaches it.
 
 ## Out of scope
 
