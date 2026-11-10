@@ -329,9 +329,15 @@ pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
   lists load without a per-profile compile, such as Brave's `adblock-rs`
   (Rust, with a serialized engine format) built into Helium; that is a Helium
   change, not a bctl one. Sessions block no ads until then.
-- **The Nanos VMM's RSS is guest memory touched, not a footprint.** QEMU's
-  memfd backing counts every page the guest has touched; there is no balloon
-  or free-page reporting, so it does not shrink after idle.
+- **The Nanos VMM's RSS now shrinks when the guest frees memory.** QEMU's
+  memfd backing kept every page the guest had ever touched. Since hydrogen
+  `868726ad` the guest reports free 2 MiB blocks through virtio-balloon free
+  page reporting once 32 MiB has been freed. A tab that touched 768 MiB took
+  the VMM from 504 to 1281 MiB, and 5 s after the tab closed it was at
+  533 MiB; without reporting it stayed at 1291 MiB. Idle RSS (514 MiB) and
+  idle CPU (0.32 percent of a core) are unchanged, because an idle session
+  frees nothing. A first version that reported every 5 s regardless cost
+  0.42 percent.
 - **Before uBlock was disabled (`5dd8a92`)** the same suites measured cold
   `up` 5193 ms (CDP answered at 1043 ms), Speedometer 24.1, news site
   `loadEventEnd` 148 ms and LCP 232 ms, VMM RSS 1696 MiB, idle CPU 7.6

@@ -153,6 +153,7 @@ fn qemu_command(config: &Config) -> Result<Command, String> {
         .args(["-serial", &format!("file:{}", serial.display())])
         .args(["-qmp", &format!("unix:{},server=on,wait=off", dir.join(QMP_SOCKET).display())])
         .args(["-device", "isa-debug-exit", "-device", "virtio-rng-pci"])
+        .args(["-device", "virtio-balloon-pci,free-page-reporting=on,vectors=5"])
         .args(["-drive", &format!("if=none,id=hd0,format=qcow2,file={}", dir.join(DISK).display())])
         .args(["-device", "virtio-scsi-pci,id=scsi0", "-device", "scsi-hd,bus=scsi0.0,drive=hd0"])
         .args(["-nic", "none"])
