@@ -135,6 +135,13 @@ fn a_person_holding_the_input_lease_blocks_new_cdp_attachments() {
     let as_viewer = format!("Cookie: {cookie}\r\nOrigin: http://{dashboard}\r\nContent-Length: 0\r\n");
 
     let (status, response) = http(port, &dashboard, &format!("POST /api/sessions/{session}/control"), &as_viewer);
+    if common::nanos() {
+        assert_eq!(status, 409, "a headless session refuses a takeover: {response}");
+        assert!(response.contains("no input devices"), "{response}");
+        let (status, response) = http(port, &host, "GET /json/version", "");
+        assert_eq!(status, 200, "a refused takeover leaves CDP attachments open: {response}");
+        return;
+    }
     assert_eq!(status, 200, "{response}");
     let (status, response) = http(port, &host, "GET /json/version", "");
     assert_eq!(status, 409, "{response}");

@@ -143,6 +143,12 @@ fn n6_taking_control_yields_to_a_native_wait_which_ends_taken_over_and_resuming_
     let generation = status_of(&home.json(&["inspect", s]), s).generation;
 
     let (port, address, as_viewer) = dashboard_viewer(&home);
+    if common::nanos() {
+        let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control"), &as_viewer);
+        assert_eq!(status, 409, "a headless session refuses a takeover: {response}");
+        assert!(response.contains("no input devices"), "{response}");
+        return;
+    }
     let control = |method: &str, path: &str| {
         let (status, response) = http(port, &address, &format!("{method} /api/sessions/{s}/control{path}"), &as_viewer);
         let body = response.split_once("\r\n\r\n").map(|(_, body)| body.to_string()).unwrap_or_default();
@@ -237,6 +243,12 @@ fn n7_a_takeover_ends_an_action_in_any_part_of_its_preparation_and_no_input_foll
     acted(&home, &["page", "wait", s, "--url", &fixture.url("/phases")]);
     acted(&home, &["page", "wait", s, "--load", "load"]);
     let (port, address, as_viewer) = dashboard_viewer(&home);
+    if common::nanos() {
+        let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control"), &as_viewer);
+        assert_eq!(status, 409, "a headless session refuses a takeover: {response}");
+        assert!(response.contains("no input devices"), "{response}");
+        return;
+    }
     let control = |method: &str, path: &str| -> ControlState {
         let (status, response) = http(port, &address, &format!("{method} /api/sessions/{s}/control{path}"), &as_viewer);
         let body = response.split_once("\r\n\r\n").map(|(_, body)| body.to_string()).unwrap_or_default();
