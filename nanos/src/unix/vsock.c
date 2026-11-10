@@ -19,6 +19,7 @@ static struct {
     void *transport;
     table bound;
     table connections;
+    u32 next_port;
     struct spinlock lock;
 } vsock_priv;
 
@@ -103,7 +104,10 @@ static sysreturn vsock_bind_internal(vsock s, u32 cid, u32 port)
     init_refcount(&bound->refc, 1, init_closure_func(&bound->free, thunk, vsock_bound_free));
     spin_lock_init(&bound->lock);
     if (port == VMADDR_PORT_ANY) {
-        for (u32 p = VSOCK_PORT_LAST_PRIVILEGED + 1; p != 0; p++) {
+        for (u64 n = 0; n < (1ull << 32); n++) {
+            u32 p = __atomic_fetch_add(&vsock_priv.next_port, 1, __ATOMIC_RELAXED);
+            if ((p <= VSOCK_PORT_LAST_PRIVILEGED) || (p == VMADDR_PORT_ANY))
+                continue;
             if (vsock_add_bound(bound, p)) {
                 port = p;
                 s->state = VSOCK_STATE_BOUND;
@@ -827,6 +831,7 @@ void vsock_init(void)
     assert(connections != INVALID_ADDRESS);
     spin_lock(&vsock_priv.lock);
     vsock_priv.h = h;
+    vsock_priv.next_port = VSOCK_PORT_LAST_PRIVILEGED + 1;
     vsock_priv.bound = bound;
     vsock_priv.connections = connections;
     spin_unlock(&vsock_priv.lock);
