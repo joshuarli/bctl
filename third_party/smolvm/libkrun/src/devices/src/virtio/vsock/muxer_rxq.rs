@@ -99,6 +99,7 @@ impl MuxerRxQ {
 }
 
 pub fn rx_to_pkt(cid: u64, rx: MuxerRx, pkt: &mut VsockPacket) {
+    pkt.hdr_mut().fill(0);
     match rx {
         MuxerRx::Reset {
             local_port,
@@ -276,6 +277,37 @@ pub fn rx_to_pkt(cid: u64, rx: MuxerRx, pkt: &mut VsockPacket) {
                 0
             };
             pkt.set_len(len as u32);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::virtio::queue::tests::VirtQueue as TestQueue;
+    use crate::virtio::vsock::packet::VSOCK_PKT_HDR_SIZE;
+    use vm_memory::{GuestAddress, GuestMemoryMmap};
+
+    #[test]
+    fn credit_packets_do_not_reuse_guest_buffer_header_fields() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x20000)]).unwrap();
+        let rx = TestQueue::new(GuestAddress(0x4000), &mem, 8);
+        rx.dtable[0].set(0x10000, (VSOCK_PKT_HDR_SIZE + 64) as u32, 2, 0);
+        rx.avail.ring[0].set(0);
+        rx.avail.idx.set(1);
+        let mut queue = rx.create_queue();
+        let head = queue.pop(&mem).unwrap();
+        let mut packet = VsockPacket::from_rx_virtq_head(&head).unwrap();
+        for event in [
+            MuxerRx::CreditRequest { local_port: 123, peer_port: 456, fwd_cnt: 789 },
+            MuxerRx::CreditUpdate { local_port: 123, peer_port: 456, fwd_cnt: 789 },
+        ] {
+            packet.hdr_mut().fill(0xff);
+            rx_to_pkt(3, event, &mut packet);
+            assert_eq!(packet.len(), 0);
+            assert_eq!(packet.flags(), 0);
+            assert_eq!(packet.fwd_cnt(), 789);
+            assert_eq!((packet.src_port(), packet.dst_port()), (123, 456));
         }
     }
 }
