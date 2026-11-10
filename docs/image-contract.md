@@ -171,7 +171,12 @@ still says `Chrome/<chromium version>`.
 with `/dev/kvm` and QEMU: it exports hydrogen at the commit the script pins
 (`git archive`, no write into the hydrogen checkout), builds its kernel and
 `mkfs`, builds `vhost-device-vsock` 0.3.0, and fetches hydrogen's pinned
-llvm-prebuilt-musl LLVM, all under `.work/runtime/nanos`. Then
+llvm-prebuilt-musl LLVM, all under `.work/runtime/nanos`. It reuses a part
+when that part's stamp and the SHA-256 of its outputs are unchanged,
+rebuilds only the changed part, and prints `kernel:`, `vhost-device-vsock:`,
+and `llvm:` lines with `built` or `reused`; `FORCE=1` rebuilds all three, and
+the kernel builds with `ccache gcc` (`docs/build-loop.md` has the inputs and
+timings). Then
 `BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build.sh` builds
 `.work/images/nanos-helium.img`, a Nanos disk image, from one
 `helium-<version>-r<N>-linux-x86_64-musl.tar.xz` with N of 5 or more and the
