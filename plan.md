@@ -46,17 +46,19 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   512). procfs numbers pids in its mount namespace and unlinks dead file
   nodes. Re-exec through `/proc/self/exe` keeps the real exe name. G5
   runs the headless archive `helium-0.20.3.1-r5` with `--headless=new`;
-  native helium 10/10.
-  **Red:** helium on Nanos: the browser, both zygotes, the GPU process and
-  the network service start, but the network service exits after 15 s
-  with "no connection" although Mojo messages flow both ways on its
-  channel, and DevTools never listens. `process_visible_pid` still
-  reports root-namespace pids (probe `scm_credentials_translated` only
-  checks `pid > 1`).
+  native helium 10/10. Helium on Nanos passes all 10 records (CDP,
+  navigate/evaluate/DOM, zygotes, sandboxed renderers, confinement, clean
+  exit), 10/10 runs and 12/12 under 12 parallel VMs, after fixes to netlink
+  `MSG_DONTWAIT`, thread exit, `/proc/<pid>/cmdline`, per-process
+  `RLIMIT_DATA` (V8 code range), stream-socket `EPOLLOUT` wakeups, and brk
+  over mprotect-split heaps.
+  **Red:** `process_visible_pid` still reports root-namespace pids (probe
+  `scm_credentials_translated` only checks `pid > 1`). setrlimit accepts
+  and drops resources it does not model (`RLIMIT_AS`, `RLIMIT_CPU`, ...),
+  `RLIMIT_DATA` bounds brk but not private writable mmaps, and
+  `prlimit64` on another pid reads and writes the caller's limits.
 - **Running lane:** none.
-- **Next:** find why the network service's Mojo connection never
-  completes (compare the native strace of the utility's channel with the
-  Nanos trace); the owner's session maps `process_visible_pid` through
+- **Next:** G4; the owner's session maps `process_visible_pid` through
   `pid_nr_ns`.
 - **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1–G3.4 accepted; process_visible_pid translation open) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
