@@ -349,11 +349,17 @@ pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
   a TLB flush rendezvous while the other vCPU spun on that socket's lock
   with interrupts off. CDP, the guest check and egress all stopped, so
   Speedometer stalled at 0 tests, a CDP connection died with a broken pipe,
-  `bctl up` failed at the guest stage, or a module script failed with
-  `ERR_SOCKS_CONNECTION_FAILED`. gdb on a stalled no-KASLR kernel showed
+  or `bctl up` failed at the guest stage. gdb on a stalled no-KASLR kernel showed
   both stacks; hydrogen's `unix_cow_read` case reproduces it, and 80
   boots after the fix showed no stall. All 7 Speedometer runs above
   finished, the first one after `up` included.
+- **About 1 in 1,500 fresh egress connections still fails** with
+  `ERR_SOCKS_CONNECTION_FAILED` when Helium opens several at once (2 of
+  2,880 parallel fetches, before and after the deadlock fix). The host proxy
+  accepts the connection and reads end of stream before the first byte of
+  the SOCKS greeting, while the guest relay has read Chrome's greeting and
+  written it to vsock. Rotating the guest's vsock ports did not change the
+  rate. Open.
 - **The page actions were 300 to 1000 ms before hydrogen `2c46223e`.** A
   message one byte past a full 1460-byte segment on the guest's loopback TCP
   waited for a delayed ACK that a timer queued and nothing delivered. Every
