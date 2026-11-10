@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use bctl_rfb::Client;
 use bctl_core::{Endpoints, Generation, MachineName, SessionName};
-use bctl_runtime_smolvm::{LaunchSource, LaunchSpec, SmolVm, TemplateSpec, cdp_socket_browser};
+use bctl_runtime::cdp_socket_browser;
+use bctl_runtime_smolvm::{LaunchSource, LaunchSpec, SmolVm, TemplateSpec};
 
 use crate::host::{self, Fallible};
 use crate::report::{Samples, fact};

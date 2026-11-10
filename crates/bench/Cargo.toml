@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 bctl-core = { path = "../core" }
 bctl-rfb = { path = "../rfb" }
+bctl-runtime = { path = "../runtime" }
 bctl-runtime-smolvm = { path = "../runtime-smolvm" }
 miniserde = "0.1"
 

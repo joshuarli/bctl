@@ -22,6 +22,7 @@ bytes = "1"
 futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
 h12tiny = { version = "0.9", default-features = false, features = ["server", "http1", "web", "websocket"] }
 http = "1"
+bctl-runtime = { path = "../runtime" }
 bctl-runtime-smolvm = { path = "../runtime-smolvm" }
 lexopt = "0.3"
 miniserde = "0.1"

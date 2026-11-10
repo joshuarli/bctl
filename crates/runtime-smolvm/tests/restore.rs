@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use bctl_core::{Endpoints, Generation, MachineName, SessionName};
 use bctl_rfb::{Buttons, Client};
-use bctl_runtime_smolvm::{InputSupport, LaunchSource, LaunchSpec, SmolVm, TemplateSpec};
+use bctl_runtime::InputSupport;
+use bctl_runtime_smolvm::{LaunchSource, LaunchSpec, SmolVm, TemplateSpec};
 use miniserde::{Deserialize, json};
 
 const PAGE: &str = r#"<!doctype html><title>X1 template</title>
@@ -318,8 +319,8 @@ fn a_session_restored_from_a_pre_browser_template_reaches_ready_with_the_sandbox
 
         let report = runtime.guest_check(&spec.machine)?;
         assert_eq!(report.first_missing(), None);
-        assert!(report.stages.iter().any(|(stage, ok)| *stage == bctl_runtime_smolvm::Stage::Browser && *ok), "browser ok");
-        assert!(report.stages.iter().any(|(stage, ok)| *stage == bctl_runtime_smolvm::Stage::Sandbox && *ok), "sandbox ok");
+        assert!(report.stages.iter().any(|(stage, ok)| *stage == bctl_runtime::Stage::Browser && *ok), "browser ok");
+        assert!(report.stages.iter().any(|(stage, ok)| *stage == bctl_runtime::Stage::Sandbox && *ok), "sandbox ok");
         assert_eq!(report.input, InputSupport::Interactive, "input ok");
         Ok::<(), bctl_runtime_smolvm::RuntimeError>(())
     }));

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bctl_core::{Endpoints, Generation, MachineName, MachineState, SessionName};
-use bctl_runtime_smolvm::{InputSupport, LaunchSource, LaunchSpec, RuntimeError, SmolVm};
+use bctl_runtime::InputSupport;
+use bctl_runtime_smolvm::{LaunchSource, LaunchSpec, RuntimeError, SmolVm};
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 bctl-core = { path = "../core" }
 bctl-rfb = { path = "../rfb" }
+bctl-runtime = { path = "../runtime" }
 miniserde = "0.1"
 
 [lints]

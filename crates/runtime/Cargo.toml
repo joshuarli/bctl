@@ -1,0 +1,13 @@
+[package]
+name = "bctl-runtime"
+description = "What every appliance runtime reports to the daemon: readiness stages, input support, and the CDP version probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+miniserde = "0.1"
+
+[lints]
+workspace = true

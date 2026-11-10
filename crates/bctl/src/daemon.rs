@@ -13,7 +13,8 @@ use bctl_core::{
     Action, AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Generation, Interaction, LiveState, MachineName, MachineState, NewRun,
     Outcome as RunOutcome, ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
 };
-use bctl_runtime_smolvm::{InputSupport, LaunchSource, LaunchSpec, RuntimeError, SmolVm, cdp_socket_browser};
+use bctl_runtime::{InputSupport, cdp_socket_browser};
+use bctl_runtime_smolvm::{LaunchSource, LaunchSpec, RuntimeError, SmolVm};
 use miniserde::json;
 
 use crate::authority::{Authorities, Control};

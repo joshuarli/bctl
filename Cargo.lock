@@ -86,6 +86,7 @@ dependencies = [
  "bctl-core",
  "bctl-jobs",
  "bctl-rfb",
+ "bctl-runtime",
  "bctl-runtime-smolvm",
  "bytes",
  "h12tiny",
@@ -119,6 +120,7 @@ version = "0.1.0"
 dependencies = [
  "bctl-core",
  "bctl-rfb",
+ "bctl-runtime",
  "bctl-runtime-smolvm",
  "miniserde",
 ]
@@ -169,11 +171,19 @@ name = "bctl-rfb"
 version = "0.1.0"
 
 [[package]]
+name = "bctl-runtime"
+version = "0.1.0"
+dependencies = [
+ "miniserde",
+]
+
+[[package]]
 name = "bctl-runtime-smolvm"
 version = "0.1.0"
 dependencies = [
  "bctl-core",
  "bctl-rfb",
+ "bctl-runtime",
  "miniserde",
 ]
 
