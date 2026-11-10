@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
+#include <grp.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
@@ -324,6 +325,58 @@ static void check_map_rules(void)
 {
 	int status = run_child(child_map_rules);
 	record("userns_map_rules", child_exit_code(status) == 0, "stage=%d", child_exit_code(status));
+}
+
+static int nested_own_maps(const char *gid_map, const char *uid_map)
+{
+	pid_t p = fork();
+	if (p == 0) {
+		if (unshare(CLONE_NEWUSER))
+			_exit(2);
+		if (write_file("/proc/self/setgroups", "deny\n"))
+			_exit(3);
+		int g = write_file("/proc/self/gid_map", gid_map);
+		if (g == -EPERM)
+			_exit(4);
+		if (g || write_file("/proc/self/uid_map", uid_map))
+			_exit(5);
+		_exit(getuid() == 5 && getgid() == 7 ? 0 : 6);
+	}
+	return child_exit_code(wait_status(p));
+}
+
+static int child_map_own_gid(void)
+{
+	char map[64];
+	if (getuid() == 0 && setgroups(0, 0) == 0 && setgid(27) == 0 && setuid(1000))
+		return 1;
+	uid_t uid = getuid();
+	gid_t gid = getgid();
+	if (unshare(CLONE_NEWUSER))
+		return 2;
+	if (write_file("/proc/self/setgroups", "deny\n"))
+		return 3;
+	snprintf(map, sizeof map, "7 %u 1\n", (unsigned)gid);
+	if (write_file("/proc/self/gid_map", map))
+		return 4;
+	snprintf(map, sizeof map, "5 %u 1\n", (unsigned)uid);
+	if (write_file("/proc/self/uid_map", map))
+		return 5;
+	if (getuid() != 5 || getgid() != 7)
+		return 6;
+	if (capset_v3(0, 0, 0))
+		return 7;
+	int own = nested_own_maps("7 7 1\n", "5 5 1\n");
+	if (own)
+		return 10 + own;
+	int euid_as_gid = nested_own_maps("5 5 1\n", "5 5 1\n");
+	return euid_as_gid == 4 ? 0 : 20 + euid_as_gid;
+}
+
+static void check_map_own_gid(void)
+{
+	int status = run_child(child_map_own_gid);
+	record("userns_map_own_gid", child_exit_code(status) == 0, "stage=%d", child_exit_code(status));
 }
 
 static int child_nested(void)
@@ -741,6 +794,7 @@ int main(int argc, char **argv)
 	signal(SIGALRM, deadline);
 	run_check("userns_clone_map", check_clone_userns);
 	run_check("userns_map_rules", check_map_rules);
+	run_check("userns_map_own_gid", check_map_own_gid);
 	run_check("userns_nested", check_nested);
 	run_check("userns_caps_scope", check_caps_scope);
 	run_check("chroot_denied", check_chroot_denied);

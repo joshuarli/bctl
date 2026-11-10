@@ -844,7 +844,7 @@ static sysreturn userns_map_write(procfs_file pf, const u8 *src, u64 len, u64 of
     process p = current->p;
     process_lock(p);
     user_namespace cur = p->creds.user_ns;
-    u32 euid = p->creds.euid;
+    u32 writer_id = group ? p->creds.egid : p->creds.euid;
     process_unlock(p);
     if (cur != ns && cur != ns->parent)
         return -EPERM;
@@ -858,7 +858,7 @@ static sysreturn userns_map_write(procfs_file pf, const u8 *src, u64 len, u64 of
         if (!(group ? user_ns_to_kgid(ns->parent, newmap.e[0].lower_first, &lower)
                     : user_ns_to_kuid(ns->parent, newmap.e[0].lower_first, &lower)))
             return -EPERM;
-        if (lower != euid)
+        if (lower != writer_id)
             return -EPERM;
         spin_lock(&ns->lock);
         boolean groups_allowed = ns->setgroups_allowed;
