@@ -83,7 +83,10 @@ fn disable_bundled_ublock_origin(profile: &Path) -> Result<(), String> {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    write!(preferences, r#"{{"extensions":{{"settings":{{"{BUNDLED_UBLOCK_ORIGIN}":{{"disable_reasons":[{DISABLE_REASON_USER_ACTION}]}}}}}}}}"#)
+    write!(
+        preferences,
+        r#"{{"extensions":{{"settings":{{"{BUNDLED_UBLOCK_ORIGIN}":{{"disable_reasons":[{DISABLE_REASON_USER_ACTION}]}}}}}},"helium":{{"adblock":{{"enabled":true}}}}}}"#
+    )
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -116,7 +119,10 @@ mod tests {
         let profile = scratch("new-profile");
         disable_bundled_ublock_origin(&profile).unwrap();
         let written = fs::read_to_string(profile.join("Default/Preferences")).unwrap();
-        assert_eq!(written, r#"{"extensions":{"settings":{"blockjmkbacgjkknlgpkjjiijinjdanf":{"disable_reasons":[1]}}}}"#);
+        assert_eq!(
+            written,
+            r#"{"extensions":{"settings":{"blockjmkbacgjkknlgpkjjiijinjdanf":{"disable_reasons":[1]}}},"helium":{"adblock":{"enabled":true}}}"#
+        );
     }
 
     #[test]
