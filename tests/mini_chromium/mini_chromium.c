@@ -1161,6 +1161,7 @@ struct zygote_report {
 	int uid_map_once;
 	int chroot_helper;
 	int proc_hidden;
+	int browser_pid;
 };
 
 struct sandboxed_renderer_report {
@@ -1261,6 +1262,11 @@ static int role_zygote(int argc, char **argv)
 	struct stat st;
 	rep.proc_hidden = stat("/proc", &st) < 0 || !S_ISDIR(st.st_mode);
 
+	char ping[8];
+	struct ucred pc;
+	ssize_t pn = recv_with_creds(ctl, ping, sizeof ping - 1, &pc, 0, 0, 0);
+	rep.browser_pid = (pn == 5 && !strcmp(ping, "PING")) ? pc.pid : -1;
+
 	pid_t real = fork();
 	if (real != 0) {
 		struct sigaction sa = { .sa_handler = SIG_IGN };
@@ -1315,6 +1321,7 @@ static void check_zygote_sandbox(void)
 	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ctl) || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, oracle) ||
 		socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, mojo) || shm < 0 || notify < 0 || ftruncate(shm, 8192) ||
 		setsockopt(ctl[0], SOL_SOCKET, SO_PASSCRED, &one, sizeof one) ||
+		setsockopt(ctl[1], SOL_SOCKET, SO_PASSCRED, &one, sizeof one) ||
 		setsockopt(oracle[0], SOL_SOCKET, SO_PASSCRED, &one, sizeof one)) {
 		record("zygote_launch", 0, "setup errno=%d", errno);
 		return;
@@ -1363,6 +1370,7 @@ static void check_zygote_sandbox(void)
 	struct ucred boot_cred, ok_cred, ping_cred;
 	ssize_t n = recv_with_creds(ctl[0], buf, sizeof buf, &boot_cred, 0, 0, 0);
 	int boot = n == 12 && !strcmp(buf, "ZYGOTE_BOOT") && boot_cred.pid == zygote;
+	(void)send_message(ctl[0], "PING", 0, 0);
 	struct zygote_report zrep = { 0 };
 	n = recv_with_creds(ctl[0], buf, sizeof buf, &ok_cred, 0, 0, 0);
 	int zygote_ok = n == (ssize_t)(10 + sizeof zrep) && !strcmp(buf, "ZYGOTE_OK") && ok_cred.pid > 1 && ok_cred.pid != zygote;
@@ -1396,8 +1404,8 @@ static void check_zygote_sandbox(void)
 	int clean = got == sizeof rrep && reaped && outside_reaped;
 	record("zygote_launch", boot && zygote_ok && reaped && outside_reaped, "boot=%d ok=%d zygote_status=0x%x outside_status=0x%x",
 		boot, zygote_ok, status, outside_status);
-	record("scm_credentials_translated", boot && zygote_ok && ping, "boot_pid=%d ok_pid=%d ping_pid=%d", boot_cred.pid,
-		ok_cred.pid, ping_cred.pid);
+	record("scm_credentials_translated", boot && zygote_ok && ping && zrep.browser_pid == 0,
+		"boot_pid=%d ok_pid=%d ping_pid=%d browser_pid=%d", boot_cred.pid, ok_cred.pid, ping_cred.pid, zrep.browser_pid);
 	record("seccomp_null_probes", zygote_ok && zrep.seccomp_null_probes, 0);
 	record("userns_map", zygote_ok && zrep.nested_userns && zrep.uid_map_once, "nested=%d second_write_eperm=%d",
 		zrep.nested_userns, zrep.uid_map_once);

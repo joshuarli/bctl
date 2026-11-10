@@ -107,10 +107,9 @@ typedef struct unixsock {
 
 int process_visible_pid(process target, process viewer)
 {
-    (void)viewer;
-    if (!target || target->pid <= 0)
+    if (!target || !viewer)
         return 0;
-    return target->pid;
+    return pid_nr_ns(target, viewer->pid_ns);
 }
 
 static void scm_release(unixsock_scm scm)
