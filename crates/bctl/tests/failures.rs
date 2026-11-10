@@ -431,7 +431,20 @@ fn killing_the_daemon_during_a_run_interrupts_it_and_the_adopted_vm_is_later_rel
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn filling_the_guest_disk_during_a_run_reaches_named_states_and_leaves_no_leak() {
     let _serial = serial();
+    let fixture = if common::nanos() && cfg!(target_os = "macos") {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let output = Command::new("sh").arg(root.join("tests/runtime-nanos/full-disk-image.sh")).output().unwrap();
+        assert_ok(&output);
+        Some(PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+    } else {
+        None
+    };
     let home = Home::new("h3-guest-disk");
+    if let Some(fixture) = &fixture {
+        let image_link = home.path.join("images").join(format!("{}.img", image()));
+        std::fs::remove_file(&image_link).unwrap();
+        std::os::unix::fs::symlink(fixture, image_link).unwrap();
+    }
     let session_name = format!("{}-guest-disk", home.prefix());
     let s = session_name.as_str();
     let config = write_config(&home, s, "idle", "sleep");
@@ -439,21 +452,36 @@ fn filling_the_guest_disk_during_a_run_reaches_named_states_and_leaves_no_leak()
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let record = session(&home, s);
     let machine = record.machine.clone().unwrap();
-    let vnc_port = record.vnc_port.unwrap();
+    let vnc_port = record.vnc_port;
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
 
-    let filled = home.guest_shell(&machine, "/tmp/busybox dd if=/dev/zero of=/tmp/fill.bin bs=1M 2>&1; echo dd_status=$?; /tmp/busybox df -h /");
-    let text = format!("{}{}", String::from_utf8_lossy(&filled.stdout), String::from_utf8_lossy(&filled.stderr));
-    assert!(text.contains("No space left on device"), "the guest disk never filled: {text}");
-    assert!(text.contains("100%"), "the guest filesystem is not full: {text}");
+    if fixture.is_some() {
+        assert_ok(&home.bctl(&["tab", "new", s, "http://127.0.0.1:47217/"]));
+        let deadline = Instant::now() + Duration::from_secs(180);
+        loop {
+            let title = home.bctl(&["page", "get", s, "title"]);
+            let text = String::from_utf8_lossy(&title.stdout);
+            if text.contains("disk full") { break; }
+            assert!(!text.contains("disk fill failed"), "the guest could not fill its disk: {text}");
+            assert!(Instant::now() < deadline, "the guest did not report a full disk: {text}");
+            thread::sleep(Duration::from_secs(1));
+        }
+    } else {
+        let filled = home.guest_shell(&machine, "/tmp/busybox dd if=/dev/zero of=/tmp/fill.bin bs=1M 2>&1; echo dd_status=$?; /tmp/busybox df -h /");
+        let text = format!("{}{}", String::from_utf8_lossy(&filled.stdout), String::from_utf8_lossy(&filled.stderr));
+        assert!(text.contains("No space left on device"), "the guest disk never filled: {text}");
+        assert!(text.contains("100%"), "the guest filesystem is not full: {text}");
+    }
 
     let after_fill = one_run(&home, run.id);
     assert_eq!(after_fill.state, "running", "a full guest disk left the run in no named state: {after_fill:?}");
     let session_after = session(&home, s);
     assert_eq!(session_after.state, "ready", "a full guest disk failed the session instead of naming a survived state");
     assert!(browser_answers(&home, s), "the appliance stopped answering CDP with a full writable disk");
-    let (port, address, as_viewer) = dashboard_viewer(&home);
-    assert_control(port, &address, &as_viewer, s, "automation");
+    if !common::nanos() {
+        let (port, address, as_viewer) = dashboard_viewer(&home);
+        assert_control(port, &address, &as_viewer, s, "automation");
+    }
 
     assert_ok(&home.bctl(&["cancel", &run.id.to_string()]));
     let cancelled = ended(&home, run.id, Duration::from_secs(60));
@@ -461,7 +489,7 @@ fn filling_the_guest_disk_during_a_run_reaches_named_states_and_leaves_no_leak()
     assert!(!process_alive(leader));
 
     assert_ok(&home.bctl(&["down", s]));
-    assert_cleaned(&home, s, Some(vnc_port));
+    assert_cleaned(&home, s, vnc_port);
 }
 
 #[test]
@@ -562,7 +590,7 @@ fn closing_the_last_tab_keeps_headless_or_names_the_headed_failure() {
     let run = started(&home, s, "idle", &config);
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let record = session(&home, s);
-    let vnc_port = record.vnc_port.unwrap();
+    let vnc_port = record.vnc_port;
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
 
     let listing = tabs(&home, s);
@@ -588,7 +616,7 @@ fn closing_the_last_tab_keeps_headless_or_names_the_headed_failure() {
         assert_eq!((cancelled.state.as_str(), cancelled.outcome.as_deref()), ("cancelled", Some("cancelled")));
         assert!(!process_alive(leader));
         assert_ok(&home.bctl(&["down", s]));
-        assert_cleaned(&home, s, Some(vnc_port));
+        assert_cleaned(&home, s, vnc_port);
         return;
     }
 
@@ -602,7 +630,7 @@ fn closing_the_last_tab_keeps_headless_or_names_the_headed_failure() {
     let failure = failed_session.failure.unwrap_or_default();
     assert!(failure.contains("browser exited unexpectedly"), "{failure}");
     assert_control(port, &address, &as_viewer, s, "automation");
-    assert_cleaned(&home, s, Some(vnc_port));
+    assert_cleaned(&home, s, vnc_port);
     assert_ok(&home.bctl(&["down", s]));
     assert!(home.bctl_machines().is_empty());
 }
