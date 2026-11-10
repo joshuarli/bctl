@@ -91,11 +91,14 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                     let (_, daemon_after) = tree_stats(&[daemon_pid])?;
                     Ok(((vmm_after - vmm_before) / elapsed * 100.0, (daemon_after - daemon_before) / elapsed * 100.0))
                 })?;
-                let ((vmm_percent, daemon_percent), _, verdict) = window;
-                eprintln!("resources round {round}: {image} idle vmm {vmm_percent:.2}% daemon {daemon_percent:.2}% of one core ({verdict:?})");
-                vmm_cpu.record(vmm_percent, verdict);
-                daemon_cpu.record(daemon_percent, verdict);
-                vmm_rss_after.push(kib_to_mib(tree_stats(&vmm)?.0));
+                if let Some(((vmm_percent, daemon_percent), _, verdict)) = window {
+                    eprintln!("resources round {round}: {image} idle vmm {vmm_percent:.2}% daemon {daemon_percent:.2}% of one core ({verdict:?})");
+                    vmm_cpu.record(vmm_percent, verdict);
+                    daemon_cpu.record(daemon_percent, verdict);
+                    vmm_rss_after.push(kib_to_mib(tree_stats(&vmm)?.0));
+                } else {
+                    outcome.notes.push(format!("perf gate deferred: host busy; idle CPU window skipped for {image} round {round}"));
+                }
             }
 
             match runtime {

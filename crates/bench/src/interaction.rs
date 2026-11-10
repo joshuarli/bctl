@@ -228,13 +228,17 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         for path in paths(round) {
             let endpoint = if path == Path::Direct { &direct } else { &gateway };
             match ctx.gate.run(|| cdp_block(endpoint)) {
-                Ok((calls, _, verdict)) => {
+                Ok(Some((calls, _, verdict))) => {
                     eprintln!("interaction round {round}: cdp {} {} calls ({verdict:?})", path.name(), calls.len());
                     let samples = find(&mut rtt, path, "Runtime.evaluate");
                     match verdict {
                         Verdict::Clean => calls.into_iter().for_each(|c| samples.push(c)),
                         other => samples.discard(None, format!("{other:?}: block of {} calls dropped", calls.len())),
                     }
+                }
+                Ok(None) => {
+                    outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                    break;
                 }
                 Err(e) => outcome.notes.push(format!("cdp block {} round {round} failed: {e}", path.name())),
             }
@@ -251,12 +255,16 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
             break;
         }
         match ctx.gate.run(|| todo_workflow(&home, &session, &todo_url)) {
-            Ok(((timings, total), _, verdict)) => {
+            Ok(Some(((timings, total), _, verdict))) => {
                 eprintln!("interaction round {round}: todo workflow {total:.0} ms ({verdict:?})");
                 workflow.record(total, verdict);
                 for (samples, values) in steps.iter_mut().zip(timings) {
                     values.into_iter().for_each(|v| samples.record(v, verdict));
                 }
+            }
+            Ok(None) => {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                break;
             }
             Err(e) => outcome.notes.push(format!("todo workflow round {round} failed: {e}")),
         }
@@ -288,7 +296,7 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                 drop(viewer);
                 thread::sleep(Duration::from_secs(1));
                 match block {
-                    Ok(((pointer, key, failed), _, verdict)) => {
+                    Ok(Some(((pointer, key, failed), _, verdict))) => {
                         eprintln!("interaction round {round}: input {} {} pointer / {} key ({verdict:?})", path.name(), pointer.len(), key.len());
                         failures += failed;
                         for (label, values) in [("pointer", pointer), ("key", key)] {
@@ -297,6 +305,10 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                                 samples.record(value, verdict);
                             }
                         }
+                    }
+                    Ok(None) => {
+                        outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                        break;
                     }
                     Err(e) => outcome.notes.push(format!("input block {} round {round} failed: {e}", path.name())),
                 }

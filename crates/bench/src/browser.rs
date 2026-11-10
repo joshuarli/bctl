@@ -148,13 +148,17 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
             break;
         }
         match ctx.gate.run(|| speedometer(&mut target, ctx.iterations)) {
-            Ok((iterations, _, verdict)) => {
+            Ok(Some((iterations, _, verdict))) => {
                 let mean = iterations.iter().sum::<f64>() / iterations.len() as f64;
                 eprintln!("browser round {round}: speedometer {mean:.2} ({verdict:?})");
                 scores.record(mean, verdict);
                 if verdict == crate::host::Verdict::Clean {
                     iterations.iter().for_each(|v| iteration_scores.push(*v));
                 }
+            }
+            Ok(None) => {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                break;
             }
             Err(e) => {
                 outcome.notes.push(format!("speedometer round {round} failed: {e}"));
@@ -170,13 +174,17 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                 .collect::<Fallible<Vec<Timing>>>()
         });
         match batch {
-            Ok((timings, _, verdict)) => {
+            Ok(Some((timings, _, verdict))) => {
                 for timing in timings {
                     load.record(timing.load, verdict);
                     dcl.record(timing.dcl, verdict);
                     response.record(timing.response, verdict);
                     lcp.record(timing.lcp, verdict);
                 }
+            }
+            Ok(None) => {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                break;
             }
             Err(e) => {
                 outcome.notes.push(format!("page load round {round} failed: {e}"));

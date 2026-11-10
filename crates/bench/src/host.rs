@@ -150,11 +150,57 @@ pub struct QuietGate {
     gave_up: Cell<bool>,
 }
 
+#[cfg(test)]
+mod quiet_gate_tests {
+    use super::*;
+
+    #[test]
+    fn busy_host_does_not_start_a_measurement() {
+        let started = Cell::new(false);
+        let checked_after = Cell::new(false);
+        let result = measure_when_quiet(false, || { checked_after.set(true); true }, || {
+            started.set(true);
+            Ok(())
+        }).unwrap();
+        assert!(result.is_none());
+        assert!(!started.get());
+        assert!(!checked_after.get());
+    }
+
+    #[test]
+    fn a_failed_measurement_still_checks_for_overlapping_load() {
+        let checked_after = Cell::new(false);
+        let result: Fallible<Option<((), Duration, Verdict)>> = measure_when_quiet(true, || {
+            checked_after.set(true);
+            true
+        }, || Err("measurement failed".into()));
+        assert!(result.is_err());
+        assert!(checked_after.get());
+    }
+
+    #[test]
+    fn load_after_a_measurement_marks_it_discarded() {
+        let result = measure_when_quiet(true, || false, || Ok(42)).unwrap().unwrap();
+        assert_eq!(result.0, 42);
+        assert_eq!(result.2, Verdict::OverlappedLoad);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Clean,
     OverlappedLoad,
-    HostBusy,
+}
+
+fn measure_when_quiet<T>(quiet: bool, check_after: impl FnOnce() -> bool, action: impl FnOnce() -> Fallible<T>) -> Fallible<Option<(T, Duration, Verdict)>> {
+    if !quiet {
+        return Ok(None);
+    }
+    let started = Instant::now();
+    let value = action();
+    let elapsed = started.elapsed();
+    let verdict = if check_after() { Verdict::Clean } else { Verdict::OverlappedLoad };
+    Ok(Some((value?, elapsed, verdict)))
 }
 
 impl QuietGate {
@@ -185,17 +231,8 @@ impl QuietGate {
         }
     }
 
-    pub fn run<T>(&self, action: impl FnOnce() -> Fallible<T>) -> Fallible<(T, Duration, Verdict)> {
-        let quiet_before = self.wait_quiet();
-        let started = Instant::now();
-        let value = action()?;
-        let elapsed = started.elapsed();
-        let verdict = match (quiet_before, Self::ready(&["-1"])) {
-            (false, _) => Verdict::HostBusy,
-            (true, false) => Verdict::OverlappedLoad,
-            (true, true) => Verdict::Clean,
-        };
-        Ok((value, elapsed, verdict))
+    pub fn run<T>(&self, action: impl FnOnce() -> Fallible<T>) -> Fallible<Option<(T, Duration, Verdict)>> {
+        measure_when_quiet(self.wait_quiet(), || Self::ready(&["-1"]), action)
     }
 
     pub fn gave_up(&self) -> bool {

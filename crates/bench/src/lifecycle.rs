@@ -35,19 +35,25 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let mut kept = 0;
     let mut browser = None;
 
-    for round in 0..ctx.rounds {
+    'rounds: for round in 0..ctx.rounds {
         if ctx.gate.gave_up() {
             outcome.notes.push(format!("perf gate deferred: host busy; stopped before round {round} of {}", ctx.rounds));
             break;
         }
         let home = Home::new("life")?;
-        let (spawn, _, verdict) = ctx.gate.run(|| home.start_daemon())?;
+        let Some((spawn, _, verdict)) = ctx.gate.run(|| home.start_daemon())? else {
+            outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+            break;
+        };
         daemon.record(ms(spawn), verdict);
 
         let name = session_name("life");
         let profile = format!("h1-life-{round}");
         for (label, total, stages, first, rest) in [("cold", &mut cold_total, &mut cold_stages, &mut cold_first, &mut cold_rest), ("warm", &mut warm_total, &mut warm_stages, &mut warm_first, &mut warm_rest)] {
-            let (timing, _, verdict) = ctx.gate.run(|| home.up(&name, &profile, image, &[]))?;
+            let Some((timing, _, verdict)) = ctx.gate.run(|| home.up(&name, &profile, image, &[]))? else {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                break 'rounds;
+            };
             total.record(ms(timing.total), verdict);
             if let Some((_, at)) = timing.stages.first() {
                 first.record(ms(*at), verdict);
@@ -65,15 +71,24 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
             if label == "cold" && runtime == Runtime::SmolVm {
                 let title = format!("kept-{round}");
                 home.open_tab(&name, &format!("data:text/html,<title>{title}</title>"))?;
-                let (paused, _, verdict) = ctx.gate.run(|| home.pause(&name))?;
+                let Some((paused, _, verdict)) = ctx.gate.run(|| home.pause(&name))? else {
+                    outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                    break 'rounds;
+                };
                 pause.record(ms(paused), verdict);
-                let (resumed, _, verdict) = ctx.gate.run(|| home.resume(&name))?;
+                let Some((resumed, _, verdict)) = ctx.gate.run(|| home.resume(&name))? else {
+                    outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                    break 'rounds;
+                };
                 resume.record(ms(resumed), verdict);
                 if home.page(&["get", &name, "title"])? == title {
                     kept += 1;
                 }
             }
-            let (stopped, _, verdict) = ctx.gate.run(|| home.down(&name))?;
+            let Some((stopped, _, verdict)) = ctx.gate.run(|| home.down(&name))? else {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                break 'rounds;
+            };
             down.record(ms(stopped), verdict);
         }
         home.remove(&name)?;

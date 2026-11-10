@@ -128,7 +128,6 @@ impl Samples {
         match verdict {
             Verdict::Clean => self.push(value),
             Verdict::OverlappedLoad => self.discard(Some(value), "host load overlapped the sample"),
-            Verdict::HostBusy => self.discard(Some(value), "host busy before the sample"),
         }
     }
 }

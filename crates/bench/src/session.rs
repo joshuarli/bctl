@@ -262,6 +262,10 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
+        if !self.path.join("daemon.lock").exists() {
+            let _ = std::fs::remove_dir_all(&self.path);
+            return;
+        }
         if let Ok(sessions) = self.status() {
             for session in sessions {
                 let _ = self.down(&session.name);

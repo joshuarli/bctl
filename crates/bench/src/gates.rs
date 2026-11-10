@@ -63,14 +63,14 @@ pub fn check(results: &[String]) -> Fallible<()> {
             println!("not measured  {}", gate.measure);
             continue;
         };
-        let Some(value) = measure.value else {
-            println!("no value      {}", gate.measure);
-            continue;
-        };
         if gate.kind == "time" && measure.status != "clean" {
             println!("deferred      {} (samples are {})", gate.measure, measure.status);
             continue;
         }
+        let Some(value) = measure.value else {
+            println!("no value      {}", gate.measure);
+            continue;
+        };
         let over = gate.max.is_some_and(|max| value > max);
         let under = gate.min.is_some_and(|min| value < min);
         if over || under {

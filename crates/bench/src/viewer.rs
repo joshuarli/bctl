@@ -245,7 +245,6 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                     outcome.notes.push(format!("perf gate deferred: host busy; viewer windows stopped before {scenario} round {round} of {}", ctx.rounds));
                     break 'rounds;
                 }
-                attempted += 1;
                 let result = ctx.gate.run(|| {
                     page.evaluate(&format!("window.mode='{scenario}'"))?;
                     thread::sleep(SETTLE);
@@ -261,7 +260,8 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                     thread::sleep(Duration::from_secs(1));
                 }
                 match result {
-                    Ok((window, _, verdict)) => {
+                    Ok(Some((window, _, verdict))) => {
+                        attempted += 1;
                         completed += 1;
                         let fps = median(&window.per_second);
                         let worst = window.per_second.iter().copied().fold(f64::INFINITY, f64::min);
@@ -281,7 +281,14 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
                         cell.bandwidth.record(window.bandwidth, verdict);
                         cell.missed.record(window.missed, verdict);
                     }
-                    Err(e) => outcome.notes.push(format!("viewer {scenario} {} round {round} failed: {e}", path.name())),
+                    Ok(None) => {
+                        outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                        break 'rounds;
+                    }
+                    Err(e) => {
+                        attempted += 1;
+                        outcome.notes.push(format!("viewer {scenario} {} round {round} failed: {e}", path.name()));
+                    }
                 }
             }
         }

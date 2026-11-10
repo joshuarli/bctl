@@ -134,14 +134,17 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
 
     let mut cold = Samples::new();
     let mut restored = Samples::new();
-    for round in 0..ctx.rounds {
+    'rounds: for round in 0..ctx.rounds {
         if ctx.gate.gave_up() {
             outcome.notes.push(format!("perf gate deferred: host busy; stopped before round {round} of {}", ctx.rounds));
             break;
         }
         let order = if round % 2 == 0 { [Kind::Cold, Kind::Template] } else { [Kind::Template, Kind::Cold] };
         for kind in order {
-            let (elapsed, gate_elapsed, verdict) = ctx.gate.run(|| launch(&runtime, &root, kind, round + 1, &spec.checkpoint))?;
+            let Some((elapsed, gate_elapsed, verdict)) = ctx.gate.run(|| launch(&runtime, &root, kind, round + 1, &spec.checkpoint))? else {
+                outcome.notes.push(format!("perf gate deferred: host busy; stopped during round {round}"));
+                break 'rounds;
+            };
             let load = load()?;
             outcome.notes.push(format!("round {round} {}: launch {:.0} ms (gate {:.0} ms), load {load}, {verdict:?}", kind.label(), ms(elapsed), ms(gate_elapsed)));
             match kind {
