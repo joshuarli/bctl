@@ -1213,22 +1213,27 @@ empty interrupts a second. The boot implementation is
 
 Slices, in order, one writer, each gated on the one before:
 
-- **MM0 attempt, 2026-11-10: open.** On an Apple M5 Max, macOS 27.0.1
+- **MM0, 2026-11-10: passed with an additional kernel fix.** On an Apple M5 Max, macOS 27.0.1
   (26A434), bsdkrun `b31ff8ebed68d0ea9cba88345f4a99dc13c01fb7`,
   Nanos `96d7959482110b5715f0762d806f308994f72d12`, and libkrun
   `c9a695a88d6240214fafbfbd438bfc2851d24ccc` produced one hello line
-  under Hypervisor.framework. The next two boots stopped after EFI started
-  the disk loader; neither reached the hello line within ten seconds. The
-  three-consecutive-boot gate remains open. The cause is unconfirmed.
+  under Hypervisor.framework. The next two boots failed. The kernel enabled
+  its MMU before translation invalidation completed, causing an instruction
+  permission fault. Adding the missing completion barrier produced ten
+  consecutive hello boots without diagnostic instrumentation.
   The arm64 kernel and EFI loader were built in Debian bookworm on Docker;
   the hello disk used Nanos `mkfs` and the bsdkrun example's static hello.
   The fork's `mkfs` reads `SCTLR_EL1` from userspace and faults on arm64.
   For this attempt only, its scratch build assumed the MMU was enabled;
   the guest kernel and loader used the unmodified fork. libkrun was built
   with the `efi` feature, and bsdkrun used libkrun's `KRUN_EFI.silent.fd`
-  and `--no-net --mem 1024`. Investigate the EFI handoff and repeat MM0
-  before porting. The local arm64 musl Helium archive has an acceptance
+  and `--no-net --mem 1024`. The local arm64 musl Helium archive has an acceptance
   record, but has not been tested with hydrogen on arm64.
+- **MM1 progress.** Hydrogen `0702048a` contains the kernel boot fixes.
+  The x86-64 KVM harness passed on Lisa, and an arm64 seccomp probe passed
+  under QEMU with PCI and modern MMIO disks. Three HVF boots of that probe
+  passed with bctl's patched libkrun and the reference EFI firmware. The
+  production firmware and arm64 build path remain to be integrated.
 - **MM0 Native boot (needs the Mac).** Reproduce bsdkrun's `nanos-hello`
   on Apple Silicon with acceleration confirmed (HVF, not TCG) before any
   port. Acceptance: three consecutive boots print the hello line, and the
