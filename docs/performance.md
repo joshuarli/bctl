@@ -328,7 +328,9 @@ pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
   it. Content blocking without that cost would need an engine whose compiled
   lists load without a per-profile compile, such as Brave's `adblock-rs`
   (Rust, with a serialized engine format) built into Helium; that is a Helium
-  change, not a bctl one. Sessions block no ads until then.
+  change, not a bctl one. Helium has an experimental integration on Chromium
+  155; chromium-build's `docs/helium-adblock-rust.md` (CHB-9) audits
+  forward-porting it to our 156 pin. Sessions block no ads until then.
 - **The Nanos VMM's RSS now shrinks when the guest frees memory.** QEMU's
   memfd backing kept every page the guest had ever touched. Since hydrogen
   `868726ad` the guest reports free 2 MiB blocks through virtio-balloon free
