@@ -177,11 +177,11 @@ closure_function(0, 0, void, netsock_poll) {
     }
 }
 
-static void netsock_check_loop(void)
+void netsock_check_loop(void)
 {
     /* Not race-free, but the worst that can happen is that the thunk is
      * enqueued more than once. */
-    if (!net_loop_poll_queued) {
+    if (net_loop_poll && !net_loop_poll_queued) {
         net_loop_poll_queued = true;
         async_apply(net_loop_poll);
     }

@@ -1,0 +1,14 @@
+diff --git a/src/include/lwip/priv/tcp_priv.h b/src/include/lwip/priv/tcp_priv.h
+index ee2eeb4..31135b6 100644
+--- a/src/include/lwip/priv/tcp_priv.h
++++ b/src/include/lwip/priv/tcp_priv.h
+@@ -452,7 +452,8 @@ struct tcp_seg *tcp_seg_copy(struct tcp_seg *seg);
+ 
+ #define tcp_ack(pcb)                               \
+   do {                                             \
+-    if((pcb)->flags & TF_ACK_DELAY) {              \
++    if(((pcb)->flags & TF_ACK_DELAY) ||            \
++       ip_addr_isloopback(&(pcb)->remote_ip)) {    \
+       tcp_clear_flags(pcb, TF_ACK_DELAY);          \
+       tcp_ack_now(pcb);                            \
+     }                                              \

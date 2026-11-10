@@ -78,6 +78,7 @@ suite_harness() {
 		case_verdict netns "$smp" 60 PASS '' "$FIXTURES/netns"
 		case_verdict unix_abstract "$smp" 30 PASS '' "$FIXTURES/unix_abstract"
 		case_verdict netlink_route "$smp" 30 PASS '' "$FIXTURES/netlink_route"
+		case_verdict tcp_loopback "$smp" 180 PASS '' "$FIXTURES/tcp_loopback"
 	done
 	fixture_native userns unshare -Ur
 	fixture_native pidns env
@@ -85,6 +86,7 @@ suite_harness() {
 	fixture_native netns env
 	fixture_native unix_abstract env
 	fixture_native netlink_route env
+	fixture_native tcp_loopback env
 	want_frame=' main at .*fixtures/crash.c:' case_verdict crash 1 20 CRASH '' "$FIXTURES/crash"
 	case_verdict silent_exit 1 20 'FAIL detail=missing-record' '' "$FIXTURES/silent_exit"
 	case_verdict duplicate_result 1 20 'FAIL detail=duplicate-record' '' "$FIXTURES/duplicate_result"

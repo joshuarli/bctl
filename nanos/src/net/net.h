@@ -8,6 +8,7 @@
 void init_net(kernel_heaps kh);
 void init_network_iface(tuple root, merge m);
 status listen_port(heap h, u16 port, connection_handler c);
+void netsock_check_loop(void);
 
 static inline int net_get_napi_id(u8 iface_id, u16 queue_id)
 {
