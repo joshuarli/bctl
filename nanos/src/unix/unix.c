@@ -1136,7 +1136,7 @@ sysreturn setpgid(int pid, int pgid)
     return rv;
 }
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 static u64 processes_of_uid_locked(u32 uid)
 {
     u64 n = 0;
@@ -1170,7 +1170,7 @@ void process_vfork_release(process c)
 
 sysreturn fork_process(thread t, struct clone_args_internal *args)
 {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
     u64 flags = args->flags;
     process parent = t->p;
     pid_namespace child_ns;

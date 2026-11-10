@@ -52,6 +52,7 @@ suite_harness() {
 		case_verdict writev_iov "$smp" 20 PASS '' "$FIXTURES/writev_iov"
 		case_verdict wait_nochild "$smp" 20 PASS '' "$FIXTURES/wait_nochild"
 		case_verdict low_user_va "$smp" 20 PASS '' "$FIXTURES/low_user_va"
+		case_verdict fork_isolation "$smp" 20 PASS '' "$FIXTURES/fork_isolation"
 		case_verdict process_stress "$smp" 120 PASS '' "$FIXTURES/process_stress"
 		case_verdict vm_isolation "$smp" 60 PASS '' "$FIXTURES/vm_isolation"
 		case_verdict vm_isolation_dyn "$smp" 60 PASS '' "$FIXTURES/vm_isolation_dyn"

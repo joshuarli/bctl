@@ -151,6 +151,8 @@ static void child(int from_parent, int to_parent)
 int main(void)
 {
 	char detail[128];
+	if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0))
+		return 1;
 	struct sigaction sa = { 0 };
 	sa.sa_handler = on_segv;
 	sa.sa_flags = SA_NODEFER;

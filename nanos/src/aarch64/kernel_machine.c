@@ -86,6 +86,9 @@ void init_cpuinfo_machine(cpuinfo ci, heap backed)
 void clone_frame_pstate(context_frame dest, context_frame src)
 {
     runtime_memcpy(dest, src, sizeof(u64) * FRAME_N_PSTATE);
+    dest[FRAME_SAVED_X0] = src[FRAME_SAVED_X0];
+    dest[FRAME_TXCTX_FLAGS] = src[FRAME_TXCTX_FLAGS];
+    runtime_memcpy(frame_extended(dest), frame_extended(src), FRAME_EXTENDED_MAX * sizeof(u64));
 }
 
 boolean insn_emulate(context_frame f)
