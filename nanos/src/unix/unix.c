@@ -1958,7 +1958,7 @@ process init_unix(kernel_heaps kh, tuple root, filesystem fs)
     spin_lock_init(&processes_lock);
     fs_set_path_root(filesystem_path_root);
     init_address_spaces(h);
-    init_shared_pages(h);
+    init_shared_pages(kh->vmem);
     mmap_init(root);
 #ifdef __x86_64__
     init_vsyscall();

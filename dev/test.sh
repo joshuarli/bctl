@@ -13,7 +13,7 @@ case_verdict() {
 	shift 5
 	image=$IMAGES/$name.img
 	"$ROOT/dev/image.sh" -o "$image" "$@" >/dev/null
-	line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout "$timeout" --label "$name-smp$smp" "$image" || :)
+	line=$("$ROOT/dev/run.sh" --smp "$smp" --mem "${case_mem:-1G}" --timeout "$timeout" --label "$name-smp$smp" "$image" || :)
 	got=${line%% dir=*}
 	got=${got#RUN verdict=}
 	dir=${line##* dir=}
@@ -58,6 +58,9 @@ suite_harness() {
 		case_verdict poll_xproc "$smp" 20 PASS '' "$FIXTURES/poll_xproc"
 		case_verdict cow_stress "$smp" 60 PASS '' "$FIXTURES/cow_stress"
 		case_verdict cow_stress_dyn "$smp" 60 PASS '' "$FIXTURES/cow_stress_dyn"
+		case_mem=6G
+		case_verdict cow_stress_6g "$smp" 60 PASS '' "$FIXTURES/cow_stress"
+		case_mem=
 		case_verdict kill_race "$smp" 200 PASS '' "$FIXTURES/kill_race"
 		case_verdict exec_contract "$smp" 60 PASS '' --file "$FIXTURES/exec_contract_helper:/exec_contract_helper" \
 			--file "$SYSROOT/lib/ld-musl-x86_64.so.1:/lib/ld-musl-x86_64.so.1" "$FIXTURES/exec_contract"
