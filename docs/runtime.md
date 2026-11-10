@@ -210,7 +210,7 @@ fails with both paths and the build command.
 On Apple Silicon, the experimental Nanos backend uses libkrun and an EFI disk
 image containing its own kernel. Run `runtime/guest.sh` and
 `runtime/build-nanos-krun.sh`, then install `.work/runtime/nanos-krun` as
-`<BCTL_HOME>/runtime/nanos`. The bundle includes the signed runner, libkrun,
+`<BCTL_HOME>/runtime/nanos`. The bundle includes the signed runner, optimized libkrun,
 EFI firmware and its license. Run `runtime/build-nanos-arm64.sh`, then
 `BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build-macos.sh`, and copy
 `.work/images/nanos-helium.img` to `<BCTL_HOME>/images`. The image embeds the

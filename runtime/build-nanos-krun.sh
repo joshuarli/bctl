@@ -15,11 +15,11 @@ fail() { echo "runtime/build-nanos-krun.sh: $*" >&2; exit 1; }
 [ "$(uname -s)/$(uname -m)" = Darwin/arm64 ] || fail "Apple Silicon macOS is required"
 [ -x "$runtime/guest/krun-init" ] || fail "run runtime/guest.sh first"
 KRUN_INIT_BINARY_PATH="$runtime/guest/krun-init" CARGO_TARGET_DIR="$target" \
-    cargo +stable build --locked --manifest-path "$root/third_party/smolvm/libkrun/Cargo.toml" \
+    cargo +stable build --release --locked --manifest-path "$root/third_party/smolvm/libkrun/Cargo.toml" \
     -p libkrun --no-default-features --features blk,net || fail "cannot build libkrun"
 rm -rf "$next"
 mkdir -p "$next/lib"
-cp "$target/debug/libkrun.dylib" "$next/lib/libkrun.dylib"
+cp "$target/release/libkrun.dylib" "$next/lib/libkrun.dylib"
 install_name_tool -id @rpath/libkrun.dylib "$next/lib/libkrun.dylib" || fail "cannot set libkrun install name"
 codesign --force --sign - "$next/lib/libkrun.dylib" 2>/dev/null || fail "cannot sign libkrun"
 codesign --verify --strict "$next/lib/libkrun.dylib" || fail "invalid libkrun signature"
