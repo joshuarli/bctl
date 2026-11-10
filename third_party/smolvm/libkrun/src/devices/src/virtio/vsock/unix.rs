@@ -51,6 +51,8 @@ pub struct UnixProxy {
     /// the shutdown and marks that host→guest is done while guest→host still
     /// flows.
     local_read_shutdown: bool,
+    guest_shutdown: u32,
+    host_write_shutdown: bool,
     /// Guest->host bytes buffered because the host socket was full (a stalled
     /// remote peer — #1093). Drained on EPOLLOUT; bounded by the guest's own
     /// vsock window since `tx_cnt` advances only for flushed bytes.
@@ -111,6 +113,8 @@ impl UnixProxy {
             rx_cnt: Wrapping(0),
             connect_retries: 0,
             local_read_shutdown: false,
+            guest_shutdown: 0,
+            host_write_shutdown: false,
             tx_buf: VecDeque::new(),
             rx_paused: false,
         })
@@ -150,6 +154,8 @@ impl UnixProxy {
             path: Default::default(),
             connect_retries: 0,
             local_read_shutdown: false,
+            guest_shutdown: 0,
+            host_write_shutdown: false,
             tx_buf: VecDeque::new(),
             rx_paused: false,
         }
@@ -347,6 +353,17 @@ impl UnixProxy {
 
     fn repoll(&self) -> Option<(u64, ProxyRawHandle, EventSet)> {
         Some((self.id, raw_handle(&self.sock), self.conn_evset()))
+    }
+
+    fn finish_guest_shutdown(&mut self) {
+        if self.guest_shutdown & uapi::VSOCK_FLAGS_SHUTDOWN_SEND != 0
+            && self.tx_buf.is_empty() && !self.host_write_shutdown
+        {
+            if let Err(e) = self.sock.shutdown(Shutdown::Write) {
+                warn!("error sending write shutdown to socket: {e}");
+            }
+            self.host_write_shutdown = true;
+        }
     }
 
     fn flush_tx(&mut self) -> Result<bool, ()> {
@@ -612,21 +629,15 @@ impl Proxy for UnixProxy {
     }
 
     fn shutdown(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
-        let recv_off = pkt.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_RCV != 0;
-        let send_off = pkt.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_SEND != 0;
-
-        let how = if recv_off && send_off {
-            Shutdown::Both
-        } else if recv_off {
-            Shutdown::Read
-        } else {
-            Shutdown::Write
-        };
-
-        if let Err(e) = self.sock.shutdown(how) {
-            warn!("error sending shutdown to socket: {e}");
+        let added = pkt.flags() & !self.guest_shutdown;
+        self.guest_shutdown |= pkt.flags();
+        if added & uapi::VSOCK_FLAGS_SHUTDOWN_RCV != 0 {
+            if let Err(e) = self.sock.shutdown(Shutdown::Read) {
+                warn!("error sending read shutdown to socket: {e}");
+            }
         }
-        ProxyUpdate::default()
+        self.finish_guest_shutdown();
+        ProxyUpdate { polling: self.repoll(), ..Default::default() }
     }
 
     fn release(&mut self) -> ProxyUpdate {
@@ -779,6 +790,7 @@ impl Proxy for UnixProxy {
                             update.signal_queue = true;
                         }
                         update.polling = self.repoll();
+                        self.finish_guest_shutdown();
                     }
                     Err(()) => {
                         self.push_reset();
@@ -940,7 +952,7 @@ mod tests {
     use super::*;
     use crate::virtio::queue::tests::VirtQueue as TestQueue;
     use crate::virtio::vsock::packet::VSOCK_PKT_HDR_SIZE;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use vm_memory::{Bytes, GuestAddress};
 
     const HDR: u64 = 0x10000;
@@ -1014,5 +1026,46 @@ mod tests {
             );
         }
         assert_eq!(proxy.status, ProxyStatus::Closed);
+    }
+
+    #[test]
+    fn guest_close_drains_buffered_data_before_host_eof() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+        let (tx, rx) = (
+            TestQueue::new(GuestAddress(0x1000), &mem, 8),
+            TestQueue::new(GuestAddress(0x4000), &mem, 8),
+        );
+        let (mut proxy, mut peer) = proxy_with_peer(&mem, &rx);
+        proxy.status = ProxyStatus::Connected;
+        proxy.tx_buf.extend(b"pending");
+        let mut pkt = tx_packet(&mem, &tx, 0, 0);
+        pkt.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_RCV | uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
+
+        proxy.shutdown(&pkt);
+        proxy.process_event(EventSet::OUT);
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"pending");
+    }
+
+    #[test]
+    fn guest_write_shutdown_keeps_host_reply_open() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+        let (tx, rx) = (
+            TestQueue::new(GuestAddress(0x1000), &mem, 8),
+            TestQueue::new(GuestAddress(0x4000), &mem, 8),
+        );
+        let (mut proxy, mut peer) = proxy_with_peer(&mem, &rx);
+        proxy.status = ProxyStatus::Connected;
+        let mut pkt = tx_packet(&mem, &tx, 0, 0);
+        pkt.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
+        proxy.shutdown(&pkt);
+
+        let mut eof = [0; 1];
+        assert_eq!(peer.read(&mut eof).unwrap(), 0);
+        peer.write_all(b"reply").unwrap();
+        let mut reply = [0; 5];
+        (&proxy.sock).read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"reply");
     }
 }

@@ -3,7 +3,7 @@ format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
 source_identity = "sha256:44d7e0aa11f446be58c2000c7f6f034b4cd7e70294ee98052587163daf20e896"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -74,3 +74,8 @@ sha256 = "2f9dcea1edda09a50ff6fa2b2a4d9faaf3069490b82a31e6a02c374c94a9af7d"
 path = "libkrun-0006-vsock-rx-header.patch"
 tree = "libkrun"
 sha256 = "8461ed8e03426cede02976c8275877623746bbddfe9e7650c38f90671661864a"
+
+[[patch]]
+path = "libkrun-0007-vsock-shutdown.patch"
+tree = "libkrun"
+sha256 = "e397624702e20fe5ef1abd1a1a1e6e64144087e7a37f71c6ad837fa5ba477840"
