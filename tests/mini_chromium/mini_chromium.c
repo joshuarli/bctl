@@ -65,7 +65,13 @@ enum {
 #define SECCOMP_RET_TRAP 0x00030000U
 #define SECCOMP_RET_ERRNO 0x00050000U
 #define SECCOMP_RET_ALLOW 0x7fff0000U
-#define AUDIT_ARCH_X86_64 0xc000003eU
+#if defined(__aarch64__)
+#define AUDIT_ARCH_NATIVE 0xc00000b7U
+#elif defined(__x86_64__)
+#define AUDIT_ARCH_NATIVE 0xc000003eU
+#else
+#error unsupported architecture
+#endif
 #define X32_SYSCALL_BIT 0x40000000U
 #define SYS_SECCOMP_SI_CODE 1
 #define TRAPPED_SYSCALL_RESULT 4242
@@ -776,19 +782,25 @@ static void on_sigsys(int sig, siginfo_t *info, void *ctx)
 	(void)sig;
 	ucontext_t *uc = ctx;
 	trapped_syscall = info->si_syscall;
-	trapped_arch_ok = info->si_code == SYS_SECCOMP_SI_CODE && info->si_arch == AUDIT_ARCH_X86_64;
+	trapped_arch_ok = info->si_code == SYS_SECCOMP_SI_CODE && info->si_arch == AUDIT_ARCH_NATIVE;
+#if defined(__aarch64__)
+	uc->uc_mcontext.regs[0] = TRAPPED_SYSCALL_RESULT;
+#else
 	uc->uc_mcontext.gregs[REG_RAX] = TRAPPED_SYSCALL_RESULT;
+#endif
 }
 
 static int install_renderer_policy(unsigned flags)
 {
 	struct sock_filter filter[] = {
 		STMT(BPF_LD_W_ABS, offsetof(struct seccomp_data, arch)),
-		JUMP(BPF_JMP_JEQ_K, AUDIT_ARCH_X86_64, 1, 0),
+		JUMP(BPF_JMP_JEQ_K, AUDIT_ARCH_NATIVE, 1, 0),
 		STMT(BPF_RET_K, SECCOMP_RET_KILL_PROCESS),
 		STMT(BPF_LD_W_ABS, offsetof(struct seccomp_data, nr)),
+#if defined(__x86_64__)
 		JUMP(BPF_JMP_JSET_K, X32_SYSCALL_BIT, 0, 1),
 		STMT(BPF_RET_K, SECCOMP_RET_KILL_PROCESS),
+#endif
 		JUMP(BPF_JMP_JEQ_K, SYS_socket, 0, 1),
 		STMT(BPF_RET_K, SECCOMP_RET_ERRNO | EACCES),
 		JUMP(BPF_JMP_JEQ_K, SYS_ptrace, 0, 1),
