@@ -395,8 +395,8 @@ boolean seccomp_check(thread t, context_frame f, sysreturn *rv)
         return false;
     struct seccomp_data sd;
     sd.nr = nr;
-    sd.arch = AUDIT_ARCH_X86_64;
-    sd.instruction_pointer = f[FRAME_RIP];
+    sd.arch = AUDIT_ARCH_NATIVE;
+    sd.instruction_pointer = f[SYSCALL_FRAME_PC];
     sd.args[0] = f[SYSCALL_FRAME_ARG0];
     sd.args[1] = f[SYSCALL_FRAME_ARG1];
     sd.args[2] = f[SYSCALL_FRAME_ARG2];
@@ -416,15 +416,15 @@ boolean seccomp_check(thread t, context_frame f, sysreturn *rv)
         return true;
     }
     if (action == SECCOMP_RET_TRAP) {
-        f[FRAME_RAX] = (u64)(s64)nr;
+        f[SYSCALL_FRAME_RETVAL1] = (u64)(s64)nr;
         struct siginfo si;
         zero(&si, sizeof(si));
         si.si_signo = SIGSYS;
         si.si_errno = data;
         si.si_code = SYS_SECCOMP_SI_CODE;
-        si.sifields.sigsys.call_addr = f[FRAME_RIP];
+        si.sifields.sigsys.call_addr = f[SYSCALL_FRAME_PC];
         si.sifields.sigsys.syscall = nr;
-        si.sifields.sigsys.arch = AUDIT_ARCH_X86_64;
+        si.sifields.sigsys.arch = AUDIT_ARCH_NATIVE;
         force_signal(t, &si);
         *rv = nr;
         return true;

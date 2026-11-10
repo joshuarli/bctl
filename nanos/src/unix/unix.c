@@ -1136,6 +1136,7 @@ sysreturn setpgid(int pid, int pgid)
     return rv;
 }
 
+#ifdef __x86_64__
 static u64 processes_of_uid_locked(u32 uid)
 {
     u64 n = 0;
@@ -1146,6 +1147,7 @@ static u64 processes_of_uid_locked(u32 uid)
     }
     return n;
 }
+#endif
 
 static void process_unlink_child_locked(process c)
 {

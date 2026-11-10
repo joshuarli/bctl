@@ -3384,7 +3384,9 @@ void register_file_syscalls(struct syscall *map)
     register_syscall(map, getsid, getsid);
     register_syscall(map, setpgid, setpgid);
     register_syscall(map, getpgid, getpgid);
+#ifdef SYS_getpgrp
     register_syscall(map, getpgrp, getpgrp);
+#endif
     register_syscall(map, exit_group, exit_group);
     register_syscall(map, exit, (sysreturn (*)())exit);
     register_syscall(map, getdents64, getdents64);

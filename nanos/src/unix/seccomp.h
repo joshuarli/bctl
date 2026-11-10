@@ -21,7 +21,15 @@
 #define SECCOMP_RET_ACTION 0x7fff0000U
 #define SECCOMP_RET_DATA 0x0000ffffU
 #define SYS_SECCOMP_SI_CODE 1
-#define AUDIT_ARCH_X86_64 0xc000003eU
+#if defined(__x86_64__)
+#define AUDIT_ARCH_NATIVE 0xc000003eU
+#elif defined(__aarch64__)
+#define AUDIT_ARCH_NATIVE 0xc00000b7U
+#elif defined(__riscv)
+#define AUDIT_ARCH_NATIVE 0xc00000f3U
+#else
+#error unsupported seccomp architecture
+#endif
 #define BPF_MAXINSNS 4096
 #define BPF_MEMWORDS 16
 struct sock_filter {

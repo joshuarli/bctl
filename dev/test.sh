@@ -68,6 +68,7 @@ suite_harness() {
 		case_verdict ipc_xproc "$smp" 60 PASS '' "$FIXTURES/ipc_xproc"
 		case_verdict creds_procfs "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/creds_procfs"
 		case_verdict seccomp "$smp" 60 PASS '' "$FIXTURES/seccomp"
+		case_verdict seccomp_arch "$smp" 20 PASS '' "$FIXTURES/seccomp_arch"
 		case_verdict seccomp_strace "$smp" 60 PASS '' --klib strace "$FIXTURES/seccomp"
 		case_verdict userns "$smp" 90 PASS '' "$FIXTURES/userns"
 		case_verdict pidns "$smp" 90 PASS '' "$FIXTURES/pidns"
