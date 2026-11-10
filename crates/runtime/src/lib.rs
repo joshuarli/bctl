@@ -47,6 +47,12 @@ pub struct Ready {
     pub browser: String,
 }
 
+/// A stable short directory name for a machine's Unix sockets.
+pub fn machine_socket_key(machine: &str) -> String {
+    let hash = machine.bytes().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3));
+    format!("{hash:016x}")
+}
+
 /// The `Browser` field of `/json/version` on a host loopback port, if CDP answers there.
 pub fn cdp_browser(port: u16) -> Option<String> {
     let stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
@@ -86,5 +92,15 @@ fn version_browser(mut stream: impl Read + Write, host: &str) -> Option<String> 
         if body.len() >= length {
             return json::from_str::<Version>(&body[..length]).ok().map(|v| v.browser);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::machine_socket_key;
+
+    #[test]
+    fn socket_keys_remain_stable_across_restarts() {
+        assert_eq!(machine_socket_key("bctl-debug-1"), "8cdb0e09353032ca");
     }
 }

@@ -19,6 +19,7 @@ const TICK: Duration = Duration::from_millis(50);
 
 struct Config {
     dir: PathBuf,
+    socket_dir: PathBuf,
     image: PathBuf,
     cdp_socket: PathBuf,
     memory_mib: u32,
@@ -56,6 +57,7 @@ impl Config {
         let path = |name: &str| value(name).map(PathBuf::from);
         Ok(Self {
             dir: path("--dir")?,
+            socket_dir: path("--socket-dir")?,
             image: path("--image")?,
             cdp_socket: path("--cdp-socket")?,
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
@@ -71,7 +73,7 @@ pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     let result = match args.split_first() {
         Some((command, rest)) if command == "launch" => Config::parse(rest).and_then(|config| launch(prefix, &config, rest)),
         Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)),
-        _ => Err("usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]...".into()),
+        _ => Err("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]...".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -102,7 +104,9 @@ fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Strin
     match receiver.recv_timeout(START_TIMEOUT) {
         Ok(line) if line.trim() == "ready" => Ok(()),
         outcome => {
-            let _ = Command::new("/bin/kill").arg("-TERM").arg("--").arg(format!("-{}", child.id())).status();
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = Command::new("/bin/kill").arg("-TERM").arg("--").arg(format!("-{}", child.id())).status();
+            }
             let _ = child.kill();
             let _ = child.wait();
             let log = fs::read_to_string(config.dir.join(SUPERVISOR_LOG)).unwrap_or_default();
@@ -122,7 +126,7 @@ fn bind(path: &Path) -> Result<UnixListener, String> {
 
 fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
     let deadline = Instant::now() + START_TIMEOUT;
-    while !socket(&config.dir, GUEST_CDP_PORT).exists() || !socket(&config.dir, GUEST_CHECK_PORT).exists() {
+    while !socket(&config.socket_dir, GUEST_CDP_PORT).exists() || !socket(&config.socket_dir, GUEST_CHECK_PORT).exists() {
         if let Some(status) = child.try_wait().map_err(|error| format!("libkrun: {error}"))? {
             return Err(format!("libkrun exited before creating its sockets: {status}"));
         }
@@ -139,21 +143,29 @@ fn serve(config: &Config) -> Result<(), String> {
     let disk = config.dir.join("disk.img");
     fs::copy(&config.image, &disk).map_err(|error| format!("copy {} to {}: {error}", config.image.display(), disk.display()))?;
     let mut cleanup = SocketCleanup(Vec::new());
-    let control_path = config.dir.join(CONTROL_SOCKET);
+    let control_path = config.socket_dir.join(CONTROL_SOCKET);
     let control = bind(&control_path)?;
     cleanup.0.push(control_path);
     let cdp = bind(&config.cdp_socket)?;
     cleanup.0.push(config.cdp_socket.clone());
-    let egress_path = socket(&config.dir, GUEST_EGRESS_PORT);
+    let egress_path = socket(&config.socket_dir, GUEST_EGRESS_PORT);
     let egress = bind(&egress_path)?;
     cleanup.0.push(egress_path);
+    for port in [GUEST_CDP_PORT, GUEST_CHECK_PORT] {
+        let path = socket(&config.socket_dir, port);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Err(format!("{} already exists", path.display())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        }
+    }
     let mut child = Vm(Command::new(&config.runner).arg(&disk).arg(&config.firmware)
-        .arg(socket(&config.dir, GUEST_CDP_PORT)).arg(socket(&config.dir, GUEST_CHECK_PORT))
-        .arg(socket(&config.dir, GUEST_EGRESS_PORT)).arg(config.cpus.to_string()).arg(config.memory_mib.to_string())
+        .arg(socket(&config.socket_dir, GUEST_CDP_PORT)).arg(socket(&config.socket_dir, GUEST_CHECK_PORT))
+        .arg(socket(&config.socket_dir, GUEST_EGRESS_PORT)).arg(config.cpus.to_string()).arg(config.memory_mib.to_string())
         .stdin(Stdio::null()).stdout(log_file(&config.dir, CONSOLE_LOG)?).stderr(log_file(&config.dir, SUPERVISOR_LOG)?)
         .spawn().map_err(|error| format!("{}: {error}", config.runner.display()))?);
-    cleanup.0.push(socket(&config.dir, GUEST_CDP_PORT));
-    cleanup.0.push(socket(&config.dir, GUEST_CHECK_PORT));
+    cleanup.0.push(socket(&config.socket_dir, GUEST_CDP_PORT));
+    cleanup.0.push(socket(&config.socket_dir, GUEST_CHECK_PORT));
     wait_for_runner(&mut child.0, config)?;
     let stop = Arc::new(AtomicBool::new(false));
     let control_stop = Arc::clone(&stop);
@@ -184,7 +196,7 @@ fn serve(config: &Config) -> Result<(), String> {
             thread::spawn(move || egress::serve(client, &policy));
         }
     });
-    let vsock = config.dir.join(VSOCK_SOCKET);
+    let vsock = config.socket_dir.join(VSOCK_SOCKET);
     thread::spawn(move || {
         for client in cdp.incoming() {
             let client = match client {
@@ -243,7 +255,7 @@ mod tests {
         let cdp_socket = dir.join("cdp.sock");
         let listener = UnixListener::bind(&cdp_socket).unwrap();
         let config = Config {
-            dir: dir.clone(), image, cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
+            dir: dir.clone(), socket_dir: dir.clone(), image, cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
             runner: dir.join("runner"), firmware: dir.join("firmware"), allow_private: Vec::new(),
         };
         assert!(serve(&config).is_err());

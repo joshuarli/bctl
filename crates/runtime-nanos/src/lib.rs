@@ -1,6 +1,8 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -174,8 +176,18 @@ impl Nanos {
         self.root.join(machine)
     }
 
+    #[cfg(target_os = "macos")]
+    fn socket_dir(&self, machine: &str) -> PathBuf {
+        self.root.parent().unwrap_or(&self.root).join("ns").join(bctl_runtime::machine_socket_key(machine))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn socket_dir(&self, machine: &str) -> PathBuf {
+        self.machine_dir(machine)
+    }
+
     fn control(&self, machine: &str, command: &str) -> io::Result<String> {
-        let mut stream = UnixStream::connect(self.machine_dir(machine).join(CONTROL_SOCKET))?;
+        let mut stream = UnixStream::connect(self.socket_dir(machine).join(CONTROL_SOCKET))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.write_all(format!("{command}\n").as_bytes())?;
         let mut line = String::new();
@@ -209,6 +221,17 @@ impl Nanos {
             return Err(RuntimeError::Supervisor { operation: "launch", message: format!("{} already exists", dir.display()) });
         }
         fs::create_dir_all(&dir).map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", dir.display()) })?;
+        #[cfg(target_os = "macos")]
+        let socket_dir = {
+            let path = self.socket_dir(&spec.machine);
+            let created = fs::create_dir_all(path.parent().expect("socket directory has a parent"))
+                .and_then(|()| fs::DirBuilder::new().mode(0o700).create(&path));
+            if let Err(error) = created {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(RuntimeError::Spawn { message: format!("{}: {error}", path.display()) });
+            }
+            path
+        };
         let mut command = Command::new(&self.tools.supervisor);
         command.args(&self.tools.supervisor_args)
             .arg("launch")
@@ -222,6 +245,8 @@ impl Nanos {
             .arg(spec.memory_mib.to_string())
             .arg("--cpus")
             .arg(spec.cpus.to_string());
+        #[cfg(target_os = "macos")]
+        command.arg("--socket-dir").arg(&socket_dir);
         match &self.tools.backend {
             #[cfg(not(target_os = "macos"))]
             Backend::Qemu { qemu, qemu_img, vsock_backend } => {
@@ -233,15 +258,23 @@ impl Nanos {
                 command.arg("--runner").arg(runner).arg("--firmware").arg(firmware);
             }
         }
-        let output = command
-            .args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()]))
-            .output()
-            .map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", self.tools.supervisor.display()) })?;
+        let output = command.args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()])).output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&dir);
+                #[cfg(target_os = "macos")]
+                let _ = fs::remove_dir_all(&socket_dir);
+                return Err(RuntimeError::Spawn { message: format!("{}: {error}", self.tools.supervisor.display()) });
+            }
+        };
         if output.status.success() {
             return Ok(());
         }
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let _ = fs::remove_dir_all(&dir);
+        #[cfg(target_os = "macos")]
+        let _ = fs::remove_dir_all(&socket_dir);
         Err(RuntimeError::Supervisor { operation: "launch", message })
     }
 
@@ -253,11 +286,18 @@ impl Nanos {
         }
         if self.control(machine, "stop").is_ok() {
             let deadline = Instant::now() + Duration::from_secs(20);
-            while self.machine_dir(machine).join(CONTROL_SOCKET).exists() && Instant::now() < deadline {
+            while self.socket_dir(machine).join(CONTROL_SOCKET).exists() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(50));
             }
             if self.is_running(machine) {
                 return Err(RuntimeError::Supervisor { operation: "remove", message: format!("{machine} did not stop within 20 s") });
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let sockets = self.socket_dir(machine);
+            if sockets.exists() {
+                fs::remove_dir_all(&sockets).map_err(|e| RuntimeError::Supervisor { operation: "remove", message: format!("{}: {e}", sockets.display()) })?;
             }
         }
         fs::remove_dir_all(&dir).map_err(|e| RuntimeError::Supervisor { operation: "remove", message: format!("{}: {e}", dir.display()) })
@@ -279,7 +319,7 @@ impl Nanos {
     }
 
     pub fn check(&self, machine: &str) -> Result<HeadlessReport, RuntimeError> {
-        let vsock = self.machine_dir(machine).join(VSOCK_SOCKET);
+        let vsock = self.socket_dir(machine).join(VSOCK_SOCKET);
         let not_ready = |detail: String| RuntimeError::NotReady { stage: Stage::Guest, detail };
         let mut stream = connect_guest(&vsock, GUEST_CHECK_PORT, Duration::from_secs(5)).map_err(|e| not_ready(e.to_string()))?;
         stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| not_ready(e.to_string()))?;
@@ -361,5 +401,32 @@ mod tests {
         server.join().unwrap();
         fs::remove_file(path).unwrap();
         fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_long_machine_name_can_reach_its_control_socket() {
+        use std::os::unix::net::UnixListener;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let dir = root.join(".work/tmp").join(format!("nanos-long-{}", std::process::id()));
+        let runtime = Nanos::new(dir.join("machines"), Toolchain {
+            supervisor: PathBuf::new(), supervisor_args: Vec::new(),
+            backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
+        });
+        let machine = "long-machine-name-".repeat(3);
+        let socket_dir = runtime.socket_dir(&machine);
+        fs::create_dir_all(&socket_dir).unwrap();
+        let listener = UnixListener::bind(socket_dir.join(CONTROL_SOCKET)).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            assert_eq!(line, "status\n");
+            stream.write_all(b"running\n").unwrap();
+        });
+        assert!(runtime.is_running(&machine));
+        server.join().unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 }
