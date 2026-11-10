@@ -489,7 +489,7 @@ fn dropping_the_viewer_releases_the_input_lease_and_the_run_keeps_its_named_end(
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
-fn closing_the_last_tab_exits_the_browser_and_names_the_session_failed() {
+fn closing_the_last_tab_keeps_headless_or_names_the_headed_failure() {
     let _serial = serial();
     let home = Home::new("h3-last-tab");
     let session_name = format!("{}-last-tab", home.prefix());
@@ -512,6 +512,21 @@ fn closing_the_last_tab_exits_the_browser_and_names_the_session_failed() {
     let outside = outside_client(&home, s);
     let closed = block_on(outside.call(Scope::Browser, &CloseTarget { target_id: target }, common::soon())).unwrap();
     assert!(closed.success, "the outside CDP client closed the only page");
+
+    if common::nanos() {
+        eventually("the last page to close", || tabs(&home, s).targets.is_empty().then_some(()));
+        assert_eq!(session(&home, s).state, "ready");
+        assert_eq!(one_run(&home, run.id).state, "running");
+        assert!(browser_answers(&home, s));
+        assert_control(port, &address, &as_viewer, s, "automation");
+        assert_ok(&home.bctl(&["cancel", &run.id.to_string()]));
+        let cancelled = ended(&home, run.id, Duration::from_secs(60));
+        assert_eq!((cancelled.state.as_str(), cancelled.outcome.as_deref()), ("cancelled", Some("cancelled")));
+        assert!(!process_alive(leader));
+        assert_ok(&home.bctl(&["down", s]));
+        assert_cleaned(&home, s, Some(vnc_port));
+        return;
+    }
 
     let failed = ended(&home, run.id, Duration::from_secs(60));
     assert_eq!((failed.state.as_str(), failed.outcome.as_deref()), ("failed", Some("browser-crashed")), "{failed:?}");
