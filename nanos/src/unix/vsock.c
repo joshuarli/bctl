@@ -163,7 +163,7 @@ static void vsock_remove_connection(vsock_connection conn)
 static vsock_connection vsock_get_connection(struct vsock_conn_id *id)
 {
     spin_lock(&vsock_priv.lock);
-    vsock_connection conn = table_find(vsock_priv.connections, id);
+    vsock_connection conn = vsock_priv.connections ? table_find(vsock_priv.connections, id) : 0;
     if (conn)
         refcount_reserve(&conn->refc);
     spin_unlock(&vsock_priv.lock);
@@ -771,11 +771,16 @@ err_incoming:
 
 void vsock_init(void)
 {
-    vsock_priv.h = heap_locked(get_kernel_heaps());
-    vsock_priv.bound = allocate_table(vsock_priv.h, identity_key, pointer_equal);
-    assert(vsock_priv.bound != INVALID_ADDRESS);
-    vsock_priv.connections = allocate_table(vsock_priv.h, vsock_conn_key, vsock_conn_equals);
-    assert(vsock_priv.connections != INVALID_ADDRESS);
+    heap h = heap_locked(get_kernel_heaps());
+    table bound = allocate_table(h, identity_key, pointer_equal);
+    assert(bound != INVALID_ADDRESS);
+    table connections = allocate_table(h, vsock_conn_key, vsock_conn_equals);
+    assert(connections != INVALID_ADDRESS);
+    spin_lock(&vsock_priv.lock);
+    vsock_priv.h = h;
+    vsock_priv.bound = bound;
+    vsock_priv.connections = connections;
+    spin_unlock(&vsock_priv.lock);
 }
 
 sysreturn vsock_open(int type, int protocol) {
@@ -805,7 +810,8 @@ u32 vsock_get_buf_size(void)
 boolean vsock_connect_request(vsock_connection conn)
 {
     spin_lock(&vsock_priv.lock);
-    vsock_bound bound = table_find(vsock_priv.bound, pointer_from_u64((u64)conn->id.local_port));
+    vsock_bound bound = vsock_priv.bound ?
+                        table_find(vsock_priv.bound, pointer_from_u64((u64)conn->id.local_port)) : 0;
     if (bound)
         refcount_reserve(&bound->refc);
     spin_unlock(&vsock_priv.lock);
