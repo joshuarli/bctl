@@ -1234,6 +1234,16 @@ Slices, in order, one writer, each gated on the one before:
   under QEMU with PCI and modern MMIO disks. Three HVF boots of that probe
   passed with bctl's patched libkrun and the reference EFI firmware. The
   production firmware and arm64 build path remain to be integrated.
+- **MM2 progress, 2026-11-10.** Hydrogen `c19d26f0` and `25b59205` add
+  arm64 fork and exec; `134bef82` fixes seccomp trap delivery. The arm64
+  Chromium probes passed 55 and 6 checks on native Linux and on HVF with
+  one, two and four configured vCPUs. A diagnostic image booted Helium
+  0.20.3.1-r6 on HVF and passed all 10 Hydrogen Helium checks, including
+  renderer seccomp, PID namespaces, confinement and CDP navigation.
+  These runs used a scratch launcher, reference EFI firmware and a locally
+  assembled image. The full arm64 harness, production image and backend
+  remain unqualified. The x86 Chromium, seccomp, fork and exec checks passed
+  on threadripper.
 - **MM0 Native boot (needs the Mac).** Reproduce bsdkrun's `nanos-hello`
   on Apple Silicon with acceleration confirmed (HVF, not TCG) before any
   port. Acceptance: three consecutive boots print the hello line, and the
