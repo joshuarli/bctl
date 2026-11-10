@@ -49,6 +49,7 @@ pub(crate) enum RuntimeError {
     SmolVm(bctl_runtime_smolvm::RuntimeError),
     Nanos(bctl_runtime_nanos::RuntimeError),
     Unsupported { runtime: RuntimeKind, operation: &'static str },
+    ContentFilter(String),
 }
 
 impl fmt::Display for RuntimeError {
@@ -57,6 +58,7 @@ impl fmt::Display for RuntimeError {
             RuntimeError::SmolVm(error) => error.fmt(f),
             RuntimeError::Nanos(error) => error.fmt(f),
             RuntimeError::Unsupported { runtime, operation } => write!(f, "the {} runtime cannot {operation}", runtime.as_str()),
+            RuntimeError::ContentFilter(detail) => write!(f, "not ready at the filters stage: {detail}"),
         }
     }
 }

@@ -46,6 +46,11 @@ in the Alpine images.
   process runs with `NoNewPrivs: 1` and `Seccomp: 2`. A last line,
   `input ok` or `input absent`, reports whether both VNC input devices exist;
   `input absent` means a view-only runtime and does not fail the check.
+- After the guest checks and CDP answer, the daemon reports the `filters`
+  stage until the bundled uBlock Origin's background page reads
+  `µBlock.readyToFilter`: until then uBlock holds every request and then
+  reloads the tabs it held. A browser without that extension skips the
+  stage after 3 s.
 
 ## Browser
 

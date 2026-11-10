@@ -7,7 +7,7 @@ use crate::session::{Home, session_name};
 use crate::stats::Statistic;
 use crate::{Context, Outcome};
 
-const STAGES: [&str; 8] = ["machine", "guest", "seat", "compositor", "browser", "sandbox", "cdp", "display"];
+const STAGES: [&str; 9] = ["machine", "guest", "seat", "compositor", "browser", "sandbox", "cdp", "display", "filters"];
 
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0

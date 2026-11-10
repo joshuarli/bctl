@@ -4,7 +4,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Home, assert_ok, image, status_of};
+use common::{Home, assert_ok, image, nanos, status_of};
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
@@ -32,7 +32,7 @@ fn the_daemon_owns_sessions_across_restarts() {
         assert!(Instant::now() < deadline, "status never named a readiness stage for a starting session");
         thread::sleep(Duration::from_millis(50));
     };
-    assert!(["machine", "guest", "seat", "compositor", "browser", "sandbox", "cdp", "display"].contains(&seen_stage.as_str()));
+    assert!(["machine", "guest", "seat", "compositor", "browser", "sandbox", "cdp", "display", "filters"].contains(&seen_stage.as_str()));
     assert_ok(&starting.join().unwrap());
 
     let ups: Vec<_> = [(a.clone(), "pa"), (b.clone(), "pb")]
@@ -53,9 +53,10 @@ fn the_daemon_owns_sessions_across_restarts() {
     }
 
     let before = home.json(&["status"]);
+    let input = if nanos() { "headless" } else { "interactive" };
     for name in [&a, &b, &c] {
         let s = status_of(&before, name);
-        assert_eq!((s.state.as_str(), s.generation, s.input.as_deref()), ("ready", 1, Some("interactive")), "{name}");
+        assert_eq!((s.state.as_str(), s.generation, s.input.as_deref()), ("ready", 1, Some(input)), "{name}");
     }
 
     assert_ok(&home.up(&a, "pa"));

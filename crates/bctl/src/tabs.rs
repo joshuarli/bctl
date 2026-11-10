@@ -170,7 +170,7 @@ pub(crate) fn browser(daemon: &Daemon, session: &SessionName) -> Result<Browser,
     Ok(opened)
 }
 
-fn open(socket: &Path, generation: bctl_cdp::Generation) -> Result<Connection, String> {
+pub(crate) fn open(socket: &Path, generation: bctl_cdp::Generation) -> Result<Connection, String> {
     #[derive(Deserialize)]
     struct Version {
         #[serde(rename = "webSocketDebuggerUrl")]

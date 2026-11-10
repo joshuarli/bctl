@@ -17,6 +17,7 @@ pub enum Stage {
     Sandbox,
     Cdp,
     Display,
+    Filters,
 }
 
 impl Stage {
@@ -30,6 +31,7 @@ impl Stage {
             Stage::Sandbox => "sandbox",
             Stage::Cdp => "cdp",
             Stage::Display => "display",
+            Stage::Filters => "filters",
         }
     }
 }
