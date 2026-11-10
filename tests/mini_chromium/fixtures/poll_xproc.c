@@ -6,7 +6,9 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -62,6 +64,59 @@ static void drain(int fd)
 {
 	char c;
 	read(fd, &c, 1);
+}
+
+static void check_unix_stream_writable(const char *name, int use_poll)
+{
+	char detail[128];
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sv)) {
+		snprintf(detail, sizeof detail, "socketpair-errno=%d", errno);
+		record(name, 0, detail);
+		return;
+	}
+	static char chunk[65536];
+	long filled = 0;
+	ssize_t w;
+	while ((w = write(sv[0], chunk, sizeof chunk)) > 0)
+		filled += w;
+	int full = w < 0 && errno == EAGAIN && filled > 0;
+	long pid = syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0);
+	if (pid == 0) {
+		struct timespec delay = { 0, 100 * 1000 * 1000 };
+		nanosleep(&delay, 0);
+		long drained = 0;
+		while (drained < filled) {
+			ssize_t r = read(sv[1], chunk, sizeof chunk);
+			if (r > 0)
+				drained += r;
+			else if (r < 0 && errno != EAGAIN)
+				_exit(1);
+		}
+		pause();
+		_exit(0);
+	}
+	int n, revents;
+	if (use_poll) {
+		struct pollfd pfd = { .fd = sv[0], .events = POLLIN | POLLOUT };
+		n = poll(&pfd, 1, 5000);
+		revents = pfd.revents;
+	} else {
+		int ep = epoll_create1(0);
+		struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT, .data.u64 = 9 }, got = { 0 };
+		epoll_ctl(ep, EPOLL_CTL_ADD, sv[0], &ev);
+		n = epoll_wait(ep, &got, 1, 5000);
+		revents = (int)got.events;
+		close(ep);
+	}
+	if (pid > 0) {
+		kill((pid_t)pid, SIGKILL);
+		waitpid((pid_t)pid, 0, 0);
+	}
+	close(sv[0]);
+	close(sv[1]);
+	snprintf(detail, sizeof detail, "filled=%ld,full=%d,child=%ld,n=%d,revents=0x%x", filled, full, pid, n, revents);
+	record(name, full && pid > 0 && n == 1 && (revents & EPOLLOUT), detail);
 }
 
 int main(void)
@@ -126,6 +181,8 @@ int main(void)
 	int got = read(report[0], clean, sizeof clean) == (ssize_t)sizeof clean;
 	snprintf(detail, sizeof detail, "report=%d,epoll=%d,select=%d,poll=%d", got, clean[0], clean[1], clean[2]);
 	record("poll_xproc_writer_memory_untouched", got && clean[0] && clean[1] && clean[2], detail);
+	check_unix_stream_writable("poll_xproc_unix_stream_epollout", 0);
+	check_unix_stream_writable("poll_xproc_unix_stream_pollout", 1);
 out:;
 	char line[96];
 	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS",

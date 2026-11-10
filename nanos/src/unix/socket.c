@@ -287,6 +287,17 @@ static inline void unixsock_notify_writer(unixsock s)
 {
     blockq_wake_one(s->sock.txbq);
     fdesc_notify_events(&s->sock.f);
+    if (!unixsock_is_conn_oriented(s))
+        return;
+    unixsock_lock(s);
+    unixsock peer = s->peer;
+    if (peer)
+        refcount_reserve(&peer->refcount);
+    unixsock_unlock(s);
+    if (peer) {
+        fdesc_notify_events(&peer->sock.f);
+        refcount_release(&peer->refcount);
+    }
 }
 
 static sysreturn scm_parse(const struct msghdr *m, unixsock sender, unixsock dest, unixsock_scm *out)
