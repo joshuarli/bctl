@@ -61,3 +61,64 @@ fn the_guest_reaches_the_public_internet_but_not_private_or_loopback_addresses()
         eprintln!("skipped: the host has no internet");
     }
 }
+
+fn goto(home: &Home, session: &str, url: &str) -> Result<(), String> {
+    for _ in 0..5 {
+        let output = home.bctl(&["page", "goto", session, url, "--json"]);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        if output.status.success() {
+            return Ok(());
+        }
+        if !stdout.contains("ERR_ABORTED") {
+            return Err(stdout);
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    Err(format!("{url} kept aborting"))
+}
+
+fn count_requests(listener: TcpListener) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&hits);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut stream = stream;
+            let _ = std::io::Write::write_all(&mut stream, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        }
+    });
+    hits
+}
+
+#[test]
+#[ignore = "boots real VMs: needs the runtime and the BCTL_TEST_IMAGE image (default for the runtime) in .work/images"]
+fn the_browser_reaches_the_public_internet_but_not_the_host_or_private_addresses() {
+    let home = Home::new("h2b");
+    let session = format!("{}-s", home.prefix());
+    assert_ok(&home.up(&session, "h2b"));
+    assert_ok(&home.bctl(&["tab", "new", &session, "about:blank"]));
+
+    let loopback = TcpListener::bind("127.0.0.1:0").unwrap();
+    let loopback_port = loopback.local_addr().unwrap().port();
+    let loopback_hits = count_requests(loopback);
+    assert!(goto(&home, &session, &format!("http://100.96.0.1:{loopback_port}/")).is_err(), "the browser reached host loopback without an allowed range");
+
+    let lan = TcpListener::bind("0.0.0.0:0").unwrap();
+    let lan_port = lan.local_addr().unwrap().port();
+    let lan_hits = count_requests(lan);
+    match host_private_address() {
+        Some(ip) => assert!(goto(&home, &session, &format!("http://{ip}:{lan_port}/")).is_err(), "the browser reached the host at {ip}"),
+        None => eprintln!("skipped: the host has no RFC 1918 address to listen on"),
+    }
+    for private in ["10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "[fd00::1]"] {
+        assert!(goto(&home, &session, &format!("http://{private}/")).is_err(), "the browser reached {private}");
+    }
+    assert_eq!(loopback_hits.load(std::sync::atomic::Ordering::SeqCst), 0, "a request reached the host loopback service");
+    assert_eq!(lan_hits.load(std::sync::atomic::Ordering::SeqCst), 0, "a request reached the host LAN service");
+
+    if host_reaches_internet() {
+        goto(&home, &session, "http://example.com/").unwrap_or_else(|error| panic!("the browser cannot reach the public internet: {error}"));
+    } else {
+        eprintln!("skipped: the host has no internet");
+    }
+}

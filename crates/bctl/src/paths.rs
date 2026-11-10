@@ -1,8 +1,5 @@
 use std::path::PathBuf;
 
-/// The image `bctl up` starts when neither the command nor the session names one.
-pub const DEFAULT_IMAGE: &str = "helium";
-
 /// Where one bctl installation keeps its state. `BCTL_HOME` overrides the per-user default so independent
 /// installations (tests, a second checkout) never share a daemon, database, or socket.
 #[derive(Debug, Clone)]
@@ -15,8 +12,15 @@ impl Paths {
         if let Some(home) = std::env::var_os("BCTL_HOME") {
             return Ok(Paths { home: PathBuf::from(home) });
         }
+        if cfg!(target_os = "macos") {
+            let user_home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+            return Ok(Paths { home: PathBuf::from(user_home).join("Library/Application Support/bctl") });
+        }
+        if let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
+            return Ok(Paths { home: PathBuf::from(state).join("bctl") });
+        }
         let user_home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-        Ok(Paths { home: PathBuf::from(user_home).join("Library/Application Support/bctl") })
+        Ok(Paths { home: PathBuf::from(user_home).join(".local/state/bctl") })
     }
 
     pub fn socket(&self) -> PathBuf {
@@ -37,6 +41,10 @@ impl Paths {
 
     pub fn runtime(&self) -> PathBuf {
         self.home.join("runtime/smolvm/smolvm")
+    }
+
+    pub fn nanos_runtime(&self) -> PathBuf {
+        self.home.join("runtime/nanos")
     }
 
     pub fn images(&self) -> PathBuf {

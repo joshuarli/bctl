@@ -5,6 +5,7 @@ mod page;
 mod paths;
 mod protocol;
 mod runs;
+mod runtime;
 mod tabs;
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -419,6 +420,10 @@ fn resolve_job(config: Option<&std::path::Path>, job: &str) -> Result<JobRequest
 }
 
 fn main() -> ExitCode {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some(runtime::NANOS_SUPERVISOR_COMMAND) {
+        return bctl_runtime_nanos::supervisor::main(&[runtime::NANOS_SUPERVISOR_COMMAND], &raw[1..]);
+    }
     let cli = match parse() {
         Ok(cli) => cli,
         Err(e) => {

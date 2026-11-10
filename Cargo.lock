@@ -87,6 +87,7 @@ dependencies = [
  "bctl-jobs",
  "bctl-rfb",
  "bctl-runtime",
+ "bctl-runtime-nanos",
  "bctl-runtime-smolvm",
  "bytes",
  "h12tiny",

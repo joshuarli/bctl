@@ -253,7 +253,26 @@ readiness is machine, guest check, browser, sandbox, then `/json/version`
 through the host socket. Launch to ready 1.2 to 5.8 s, median 1.8 s
 (unloaded host not checked). It found a second hydrogen bug: a host vsock
 connect during early boot asserted the guest kernel before the socket layer
-existed. M7N is the active milestone; its slices are
+existed. L3 and L4 (`BCTL_TEST_RUNTIME=nanos`, the default on Linux): on Nanos the
+`snapshots` (2/2), `batches` (1/1), `native_cdp` (1/1), `host_http` (1/1)
+suites pass, plus `egress`'s browser-level test (host loopback, the host's
+LAN address, RFC 1918, link-local and unique-local IPv6 refused and never
+reached, the public internet reached); `tabs`, `cdp` and `actions` pass
+except the tests that need a person to take input (headless has none).
+`native_cdp` had asserted a `Chrome/` product, stale since Helium reports
+`Helium/`. Open on Nanos: `actions`' 10 back-to-back navigations right
+after `up` hit `ERR_ABORTED` on the fifth, because the bundled uBlock
+Origin cancels requests until its filter lists compile and then reloads
+the tabs it held back, and that window is longer on Nanos; `actions`'
+lost-input test sees `Input.dispatchMouseEvent` answer although the page
+busy-waits 13 s (the guest clock is exact; a headless input difference is
+suspected, not shown); the guest-shell `egress` test and the `failures`
+suite need `machine exec`, which Nanos has no equivalent for; the profile
+lives on the machine's disk overlay and does not outlive the session; one
+start stalled at the guest stage for 180 s and did not recur (the daemon
+now logs the machine's console when a start fails). It found a third
+hydrogen bug: guests with more than 2 GiB asserted at boot, so the
+default 4 GiB session never started. M7N is the active milestone; its slices are
 under **Sequence**. After it, the Mac performance queue: (1) on an idle host, find what switches input to pixel between
 9 and 22 ms; the timer-coalescing test is in `docs/performance.md` Findings;
 (2) pause 1.8 s and resume 2.3 s against a 1.5 s cold `up`, where the time goes
@@ -1053,15 +1072,27 @@ Decisions (prescribed; the owner may overrule):
 - **Profile.** virtio-9p (`-virtfs`, tag `profile`) mounted at `/profile`;
   if hydrogen's 9p cannot carry a Chromium profile, the profile lives on the
   image's disk and does not outlive the session, recorded as a gap.
-- **Egress.** QEMU's user network with `restrict=on`, so the guest reaches
-  nothing directly. Helium gets `--proxy-server` pointing at a `guestfwd`
-  endpoint served by a bctl egress proxy on the host that resolves names
-  itself and refuses private and loopback ranges unless `--allow-private`
-  allows them, which keeps H2's egress rule.
-- **Selection.** `bctl up --runtime nanos|smolvm`; the default is `smolvm` on
-  macOS and `nanos` on Linux. The session record stores its runtime (a
-  store migration); pause, resume and templates answer
-  `UNSUPPORTED_BY_RUNTIME` on Nanos until a slice adds them.
+- **Egress.** The guest has no network device. Helium uses
+  `--proxy-server=socks5://127.0.0.1:1080`; `bctl-guest` relays that port
+  over vsock to the host, where the machine's supervisor answers SOCKS5
+  CONNECT, resolves names itself, maps `100.96.0.1` to host loopback as
+  SmolVM's gateway does, and refuses every non-public address (loopback,
+  RFC 1918, link-local, CGNAT, unique-local IPv6 and the rest) unless an
+  `--allow-private` range covers it, which keeps H2's egress rule.
+  (Superseded 2026-11-10: QEMU's user network with `guestfwd` would have
+  needed a per-connection process and an HTTP proxy that tracks keep-alive
+  requests; SOCKS5 over vsock is one tunnel per connection and leaves the
+  guest no NIC.)
+- **Selection.** A host runs one runtime: `BCTL_RUNTIME=smolvm|nanos`, else
+  SmolVM on macOS and Nanos elsewhere. No `--runtime` flag and no store
+  migration until SmolVM runs on Linux too (superseded 2026-11-10: a
+  per-session flag had no host that could use both). Pause, resume and
+  templates answer `UNSUPPORTED_BY_RUNTIME` on Nanos; the viewer answers
+  that a headless session has no display. On Linux the default `BCTL_HOME`
+  is `$XDG_STATE_HOME/bctl` or `~/.local/state/bctl`, and the Nanos runtime
+  lives in `$BCTL_HOME/runtime/nanos` (`kernel.img`, `vhost-device-vsock`);
+  `bctl` itself is the supervisor (`bctl nanos-vm`), and the default image
+  is `nanos-helium` (`$BCTL_HOME/images/nanos-helium.img`).
 
 Slices, in order, one writer:
 

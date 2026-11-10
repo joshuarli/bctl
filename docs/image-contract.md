@@ -193,6 +193,9 @@ program. Nanos runs `bctl-guest run-headless`, which:
   VM.
 
 The host reaches those ports through `vhost-device-vsock`'s Unix socket with
-the hybrid `CONNECT <port>` handshake, so no TCP port reaches CDP. There is
-no seat, compositor, display or input on Nanos.
+the hybrid `CONNECT <port>` handshake, so no TCP port reaches CDP. The guest
+has no network device: the headless browser uses
+`--proxy-server=socks5://127.0.0.1:1080`, and `bctl-guest` relays that port
+to host vsock port 1080, where the machine's supervisor applies the egress
+policy. There is no seat, compositor, display or input on Nanos.
 

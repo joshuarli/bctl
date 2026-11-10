@@ -46,9 +46,18 @@ pub struct MachineStatus {
     pub pid: Option<u32>,
 }
 
-/// The image every VM test boots: `BCTL_TEST_IMAGE`, or helium, the default image.
+/// The runtime every VM test boots: `BCTL_TEST_RUNTIME`, else SmolVM on macOS and Nanos elsewhere.
+pub fn runtime() -> String {
+    std::env::var("BCTL_TEST_RUNTIME").unwrap_or_else(|_| if cfg!(target_os = "macos") { "smolvm" } else { "nanos" }.to_string())
+}
+
+pub fn nanos() -> bool {
+    runtime() == "nanos"
+}
+
+/// The image every VM test boots: `BCTL_TEST_IMAGE`, or the runtime's default image.
 pub fn image() -> String {
-    std::env::var("BCTL_TEST_IMAGE").unwrap_or_else(|_| "helium".to_string())
+    std::env::var("BCTL_TEST_IMAGE").unwrap_or_else(|_| if nanos() { "nanos-helium" } else { "helium" }.to_string())
 }
 
 pub struct Home {
@@ -62,14 +71,23 @@ impl Home {
         let path = workspace.join(format!(".work/tmp/bctl-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(path.join("runtime")).unwrap();
         std::fs::create_dir_all(path.join("images")).unwrap();
-        std::os::unix::fs::symlink(workspace.join(".work/runtime/smolvm"), path.join("runtime/smolvm")).unwrap();
-        let image = format!("{}.tar", image());
+        let image = if nanos() {
+            let built = workspace.join(".work/runtime/nanos");
+            std::fs::create_dir_all(path.join("runtime/nanos")).unwrap();
+            let kernel = built.join("hydrogen/nanos/output/platform/pc/bin/kernel.img");
+            std::os::unix::fs::symlink(kernel, path.join("runtime/nanos/kernel.img")).unwrap();
+            std::os::unix::fs::symlink(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock")).unwrap();
+            format!("{}.img", image())
+        } else {
+            std::os::unix::fs::symlink(workspace.join(".work/runtime/smolvm"), path.join("runtime/smolvm")).unwrap();
+            format!("{}.tar", image())
+        };
         std::os::unix::fs::symlink(workspace.join(".work/images").join(&image), path.join("images").join(&image)).unwrap();
         Home { path, tag: tag.to_string() }
     }
 
     pub fn bctl(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_bctl")).args(args).env("BCTL_HOME", &self.path).output().unwrap()
+        Command::new(env!("CARGO_BIN_EXE_bctl")).args(args).env("BCTL_HOME", &self.path).env("BCTL_RUNTIME", runtime()).output().unwrap()
     }
 
     pub fn json(&self, args: &[&str]) -> Response {
@@ -99,10 +117,14 @@ impl Home {
     }
 
     pub fn bctl_machines(&self) -> Vec<String> {
+        let prefix = format!("bctl-{}-", self.prefix());
+        if nanos() {
+            let Ok(entries) = std::fs::read_dir(self.path.join("machines")) else { return Vec::new() };
+            return entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| n.starts_with(&prefix)).collect();
+        }
         let smolvm = self.path.join("runtime/smolvm/smolvm");
         let output = Command::new(smolvm).args(["machine", "ls", "--json"]).output().unwrap();
         let machines: Vec<Machine> = json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
-        let prefix = format!("bctl-{}-", self.prefix());
         machines.into_iter().map(|m| m.name).filter(|n| n.starts_with(&prefix)).collect()
     }
 

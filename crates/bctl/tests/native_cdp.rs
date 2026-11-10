@@ -43,7 +43,7 @@ fn the_cdp_transport_drives_a_ready_session() {
     let driving = std::thread::spawn(move || block_on(driver));
     let deadline = || Instant::now() + Duration::from_secs(10);
     let version = block_on(connection.call(Scope::Browser, &GetVersion {}, deadline())).unwrap();
-    assert!(version.product.contains("Chrome"), "{}", version.product);
+    assert!(version.product.starts_with("Helium/") || version.product.starts_with("Chrome/"), "{}", version.product);
     let targets = block_on(connection.call(Scope::Browser, &GetTargets {}, deadline())).unwrap();
     let page = targets.target_infos.into_iter().find(|t| t.kind == "page").expect("a ready session shows a page");
 

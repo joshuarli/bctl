@@ -65,6 +65,27 @@ pub fn start_vsock(port: u32, log: &Log) -> Result<(), String> {
     Ok(())
 }
 
+pub fn start_egress(log: &Log) -> Result<(), String> {
+    let port = layout::EGRESS_PROXY_PORT;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(|e| format!("listen on TCP {port}: {e}"))?;
+    let log = log.clone();
+    thread::spawn(move || {
+        for client in listener.incoming() {
+            match client {
+                Ok(client) => {
+                    let log = log.clone();
+                    thread::spawn(move || match VsockStream::connect(layout::VSOCK_HOST_CID, layout::VSOCK_EGRESS_PORT) {
+                        Ok(host) => pipe(client, host, &log),
+                        Err(error) => log.line(&format!("connect to the host egress proxy: {error}")),
+                    });
+                }
+                Err(error) => log.line(&format!("egress accept: {error}")),
+            }
+        }
+    });
+    Ok(())
+}
+
 pub fn start(unix: &Path, tcp_port: Option<u16>, log: &Log) -> Result<(), String> {
     match fs::remove_file(unix) {
         Ok(()) => {}
@@ -95,17 +116,20 @@ fn serve<S: Stream>(incoming: impl Iterator<Item = io::Result<S>>, log: &Log) {
 }
 
 fn bridge<S: Stream>(client: S, log: &Log) {
-    let upstream = match TcpStream::connect((Ipv4Addr::LOCALHOST, layout::BROWSER_CDP_PORT)) {
-        Ok(upstream) => upstream,
-        Err(error) => return log.line(&format!("connect to the browser: {error}")),
-    };
-    let (mut client_reader, mut upstream_writer) = match (client.duplicate(), upstream.try_clone()) {
+    match TcpStream::connect((Ipv4Addr::LOCALHOST, layout::BROWSER_CDP_PORT)) {
+        Ok(upstream) => pipe(client, upstream, log),
+        Err(error) => log.line(&format!("connect to the browser: {error}")),
+    }
+}
+
+fn pipe<S: Stream, U: Stream>(client: S, upstream: U, log: &Log) {
+    let (mut client_reader, mut upstream_writer) = match (client.duplicate(), upstream.duplicate()) {
         (Ok(reader), Ok(writer)) => (reader, writer),
         (Err(error), _) | (_, Err(error)) => return log.line(&format!("duplicate a relay stream: {error}")),
     };
     let forward = thread::spawn(move || {
         let copied = io::copy(&mut client_reader, &mut upstream_writer);
-        let closed = upstream_writer.shutdown(Shutdown::Write);
+        let closed = upstream_writer.close_write();
         copied.and(closed)
     });
     let (mut upstream_reader, mut client_writer) = (upstream, client);

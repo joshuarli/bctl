@@ -24,6 +24,7 @@ fn nanos(root: &Path) -> Nanos {
         root,
         Toolchain {
             supervisor: PathBuf::from(env!("CARGO_BIN_EXE_bctl-nanos-vm")),
+            supervisor_args: Vec::new(),
             qemu: which("qemu-system-x86_64"),
             qemu_img: which("qemu-img"),
             kernel,
@@ -58,7 +59,7 @@ fn launch_ready_and_remove_ten_times() {
     for round in 0..rounds {
         let machine = format!("lifecycle-{round}");
         let cdp_socket = dir.join("cdp").join(format!("{round}.sock"));
-        let spec = LaunchSpec { machine: machine.clone(), image: image.clone(), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2 };
+        let spec = LaunchSpec { machine: machine.clone(), image: image.clone(), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
         let start = Instant::now();
         runtime.launch(&spec).unwrap_or_else(|e| panic!("round {round}: {e}"));
         let mut stages = Vec::new();
@@ -87,10 +88,34 @@ fn a_machine_name_cannot_be_launched_twice_and_remove_is_idempotent() {
     let dir = scratch("nanos-twice");
     let runtime = nanos(&dir.join("machines"));
     let cdp_socket = dir.join("cdp/s");
-    let spec = LaunchSpec { machine: "twice".into(), image: image(), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2 };
+    let spec = LaunchSpec { machine: "twice".into(), image: image(), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
     runtime.launch(&spec).unwrap();
     assert!(matches!(runtime.launch(&spec), Err(RuntimeError::Supervisor { operation: "launch", .. })));
     runtime.wait_ready("twice", &cdp_socket, Duration::from_secs(90), |_| {}).unwrap();
     runtime.remove("twice").unwrap();
     runtime.remove("twice").unwrap();
+}
+
+#[test]
+#[ignore = "boots a Nanos VM: needs /dev/kvm, QEMU, runtime/build-nanos.sh and the nanos-helium image"]
+fn the_guest_check_answers_every_time() {
+    let dir = scratch("nanos-check");
+    let runtime = nanos(&dir.join("machines"));
+    let cdp_socket = dir.join("cdp/s");
+    let spec = LaunchSpec { machine: "check".into(), image: image(), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
+    runtime.launch(&spec).unwrap();
+    runtime.wait_ready("check", &cdp_socket, Duration::from_secs(90), |_| {}).unwrap();
+    let mut failures = Vec::new();
+    let mut slowest = Duration::ZERO;
+    for round in 0..300 {
+        let start = Instant::now();
+        if let Err(error) = runtime.check("check") {
+            failures.push(format!("{round}: {error}"));
+        }
+        slowest = slowest.max(start.elapsed());
+    }
+    let logs = runtime.logs("check", 20).unwrap();
+    runtime.remove("check").unwrap();
+    assert!(failures.is_empty(), "{} of 300 checks failed, slowest {slowest:?}: {failures:?}\n{logs}", failures.len());
+    eprintln!("300 checks, slowest {slowest:?}");
 }

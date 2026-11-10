@@ -40,6 +40,23 @@ impl VsockListener {
 }
 
 impl VsockStream {
+    pub fn connect(cid: u32, port: u32) -> io::Result<VsockStream> {
+        let fd = check(unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) })?;
+        let socket = unsafe { File::from_raw_fd(fd) };
+        let mut address: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+        address.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+        address.svm_cid = cid;
+        address.svm_port = port;
+        let length = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
+        loop {
+            match check(unsafe { libc::connect(socket.as_raw_fd(), (&raw const address).cast(), length) }) {
+                Ok(_) => return Ok(VsockStream(socket)),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub fn try_clone(&self) -> io::Result<VsockStream> {
         self.0.try_clone().map(VsockStream)
     }

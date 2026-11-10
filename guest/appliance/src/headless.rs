@@ -86,7 +86,9 @@ fn bring_up(signals: &Signals, child: &mut Child) -> Result<(), String> {
             return Err(format!("timed out after {BROWSER_TIMEOUT:?} waiting for CDP"));
         }
     }
-    relay::start_vsock(layout::VSOCK_CDP_PORT, &Log::open(&layout::log("relay.log"))?)?;
+    let relay_log = Log::open(&layout::log("relay.log"))?;
+    relay::start_vsock(layout::VSOCK_CDP_PORT, &relay_log)?;
+    relay::start_egress(&relay_log)?;
     start_check_server()?;
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "bctl-guest: ready").and_then(|()| stdout.flush()).map_err(io_error("stdout"))

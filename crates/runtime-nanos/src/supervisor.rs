@@ -11,9 +11,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
+use crate::egress::{self, Policy};
+use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
-const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH";
+const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH [--allow-private CIDR]...";
 const VHOST_SOCKET: &str = "vhost.sock";
 const QMP_SOCKET: &str = "qmp.sock";
 const DISK: &str = "disk.qcow2";
@@ -33,6 +34,7 @@ struct Config {
     qemu_img: PathBuf,
     kernel: PathBuf,
     vsock_backend: PathBuf,
+    allow_private: Vec<String>,
 }
 
 impl Config {
@@ -52,14 +54,16 @@ impl Config {
             qemu_img: path("--qemu-img")?,
             kernel: path("--kernel")?,
             vsock_backend: path("--vsock-backend")?,
+            allow_private: args.windows(2).filter(|pair| pair[0] == "--allow-private").map(|pair| pair[1].clone()).collect(),
         })
     }
 }
 
-pub fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// Runs the supervisor with `args` (`launch ...` or `serve ...`); `prefix` is what the executable needs before
+/// those to reach this function again, so `launch` can start `serve` from the same binary.
+pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     let result = match args.split_first() {
-        Some((command, rest)) if command == "launch" => Config::parse(rest).and_then(|config| launch(&config, rest)),
+        Some((command, rest)) if command == "launch" => Config::parse(rest).and_then(|config| launch(prefix, &config, rest)),
         Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)),
         _ => Err(USAGE.to_string()),
     };
@@ -81,9 +85,10 @@ fn log_file(dir: &Path, name: &str) -> Result<File, String> {
     OpenOptions::new().create(true).append(true).open(&path).map_err(io_error(&path))
 }
 
-fn launch(config: &Config, args: &[String]) -> Result<(), String> {
+fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(io_error("current executable"))?;
     let mut serve = Command::new(&exe)
+        .args(prefix)
         .arg("serve")
         .args(args)
         .process_group(0)
@@ -243,8 +248,18 @@ fn serve(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+fn egress_socket(dir: &Path) -> PathBuf {
+    dir.join(format!("{VSOCK_SOCKET}_{GUEST_EGRESS_PORT}"))
+}
+
 fn cleanup(config: &Config) {
-    for path in [config.dir.join(CONTROL_SOCKET), config.cdp_socket.clone(), config.dir.join(VHOST_SOCKET), config.dir.join(VSOCK_SOCKET)] {
+    for path in [
+        config.dir.join(CONTROL_SOCKET),
+        config.cdp_socket.clone(),
+        config.dir.join(VHOST_SOCKET),
+        config.dir.join(VSOCK_SOCKET),
+        egress_socket(&config.dir),
+    ] {
         let _ = fs::remove_file(path);
     }
 }
@@ -255,6 +270,21 @@ fn listen(config: &Config, vsock: &Path, stop: Arc<AtomicBool>) -> Result<(), St
     let control = UnixListener::bind(&control_path).map_err(io_error(&control_path))?;
     remove_stale(&config.cdp_socket)?;
     let cdp = UnixListener::bind(&config.cdp_socket).map_err(io_error(&config.cdp_socket))?;
+    let policy = Policy::new(&config.allow_private)?;
+    let egress_path = egress_socket(&config.dir);
+    remove_stale(&egress_path)?;
+    let egress = UnixListener::bind(&egress_path).map_err(io_error(&egress_path))?;
+    thread::spawn(move || {
+        for client in egress.incoming() {
+            match client {
+                Ok(client) => {
+                    let policy = policy.clone();
+                    thread::spawn(move || egress::serve(client, &policy));
+                }
+                Err(error) => eprintln!("bctl-nanos-vm: egress accept: {error}"),
+            }
+        }
+    });
     thread::spawn(move || {
         for client in control.incoming().flatten() {
             serve_control(client, &stop);

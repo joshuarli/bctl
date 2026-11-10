@@ -14,12 +14,12 @@ use bctl_core::{
     Outcome as RunOutcome, ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
 };
 use bctl_runtime::{InputSupport, cdp_socket_browser};
-use bctl_runtime_smolvm::{LaunchSource, LaunchSpec, RuntimeError, SmolVm};
 use miniserde::json;
 
 use crate::authority::{Authorities, Control};
 use crate::gateway::{self, SharedGateway};
-use crate::paths::{DEFAULT_IMAGE, Paths};
+use crate::paths::Paths;
+use crate::runtime::{MachineLaunch, Runtime, RuntimeError, RuntimeKind};
 use crate::protocol::{
     AttemptView, ErrorCode, InteractionView, JobRequest, LogView, Op, ProfileView, ProgressView, Request, ResourcesView, Response, RunView, SessionView, SessionsPayload,
 };
@@ -43,7 +43,7 @@ struct Observed {
 pub(crate) struct Daemon {
     paths: Paths,
     store: Mutex<Store>,
-    runtime: SmolVm,
+    runtime: Runtime,
     observed: Mutex<HashMap<SessionName, Observed>>,
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
     busy: Mutex<HashSet<SessionName>>,
@@ -77,8 +77,9 @@ pub fn run(paths: Paths) -> Result<(), String> {
     }
 
     let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
+    let runtime = Runtime::new(RuntimeKind::for_host()?, &paths)?;
     let daemon = Arc::new(Daemon {
-        runtime: SmolVm::new(paths.runtime()),
+        runtime,
         paths,
         store: Mutex::new(store),
         observed: Mutex::default(),
@@ -88,10 +89,13 @@ pub fn run(paths: Paths) -> Result<(), String> {
         browsers: Mutex::default(),
         authority: Authorities::default(),
     });
-    if daemon.paths.runtime().exists() {
-        daemon.restore()?;
-    } else {
-        eprintln!("bctl daemon: no runtime at {}; sessions cannot start until it exists", daemon.paths.runtime().display());
+    match daemon.runtime.installed(&daemon.paths) {
+        Ok(()) => daemon.restore()?,
+        Err((missing, _)) => eprintln!(
+            "bctl daemon: the {} runtime has no {}; sessions cannot start until it exists",
+            daemon.runtime.kind().as_str(),
+            missing.display()
+        ),
     }
     daemon.collect_garbage();
     let watcher = Arc::clone(&daemon);
@@ -556,7 +560,7 @@ impl Daemon {
             Err(StoreError::NoSuchSession(_)) => None,
             Err(e) => return Err(internal(e).into()),
         };
-        let image = image_for_up(image, existing.as_ref().map(|record| record.image.as_str()));
+        let image = image_for_up(image, existing.as_ref().map(|record| record.image.as_str()), self.runtime.kind().default_image());
         let allow_private = allow_private.map(|mut ranges| {
             ranges.sort();
             ranges.dedup();
@@ -581,18 +585,19 @@ impl Daemon {
                 Some(format!("use those, or `bctl down {name} && bctl rm {name}` to replace it")),
             ).into());
         }
-        if !self.paths.image(&image).exists() {
+        let image_file = self.runtime.image_path(&self.paths, &image);
+        if !image_file.exists() {
             return Err(Response::failure(
                 ErrorCode::ImageMissing,
-                format!("no image {image} at {}", self.paths.image(&image).display()),
-                Some(format!("build it with `images/build.sh {image}` and copy the archive there")),
+                format!("no image {image} at {}", image_file.display()),
+                Some(self.runtime.image_hint(&image)),
             ).into());
         }
-        if !self.paths.runtime().exists() {
+        if let Err((missing, hint)) = self.runtime.installed(&self.paths) {
             return Err(Response::failure(
                 ErrorCode::RuntimeMissing,
-                format!("no runtime at {}", self.paths.runtime().display()),
-                Some("build it with `runtime/build.sh` and copy .work/runtime/smolvm there".into()),
+                format!("the {} runtime has no {}", self.runtime.kind().as_str(), missing.display()),
+                Some(hint.into()),
             ).into());
         }
         if existing.is_none() {
@@ -636,7 +641,7 @@ impl Daemon {
                 return Err(internal(error).into());
             }
         };
-        let image_path = match self.paths.image(&image).canonicalize() {
+        let image_path = match self.runtime.image_path(&self.paths, &image).canonicalize() {
             Ok(path) => path,
             Err(error) => {
                 let message = format!("cannot resolve image {image}: {error}");
@@ -651,10 +656,10 @@ impl Daemon {
                 return Err(internal(error).into());
             }
         };
-        let spec = LaunchSpec {
+        let spec = MachineLaunch {
             machine: machine.clone(),
-            source: LaunchSource::Image(image_path),
-            profile_dir: Some(profile_dir),
+            image: image_path,
+            profile_dir,
             endpoints,
             cdp_socket,
             display,
@@ -692,7 +697,7 @@ impl Daemon {
         tabs::close(self, name);
         let machine = MachineName { session: name.clone(), generation: record.generation };
         if let Err(error) = self.runtime.pause(&machine) {
-            return Err(Response::failure(ErrorCode::RuntimeError, error.to_string(), Some(format!("see `bctl inspect {name}`"))).into());
+            return Err(runtime_failure(&error, name).into());
         }
         self.store().transition(name, record.generation, SessionState::Paused, None).map_err(store_failure)?;
         let record = self.store().session(name).map_err(store_failure)?;
@@ -716,7 +721,7 @@ impl Daemon {
         };
         let endpoints = spec.endpoints;
         if let Err(error) = self.runtime.resume(&spec) {
-            return Err(Response::failure(ErrorCode::RuntimeError, error.to_string(), Some(format!("see `bctl inspect {name}`"))).into());
+            return Err(runtime_failure(&error, name).into());
         }
         self.await_ready(&machine, endpoints);
         let record = self.store().session(name).map_err(store_failure)?;
@@ -731,7 +736,7 @@ impl Daemon {
         }
     }
 
-    fn resume_spec(&self, record: &SessionRecord, machine: &MachineName) -> Result<LaunchSpec, String> {
+    fn resume_spec(&self, record: &SessionRecord, machine: &MachineName) -> Result<MachineLaunch, String> {
         let Resources { viewport: [width, height], cpus, memory_mib } = record.resources;
         let display = (
             u16::try_from(width).map_err(|_| format!("viewport width {width} does not fit a display"))?,
@@ -739,11 +744,11 @@ impl Daemon {
         );
         let cpus = u8::try_from(cpus).map_err(|_| format!("{cpus} CPUs do not fit the runtime"))?;
         let endpoints = record.endpoints.ok_or_else(|| format!("session {} has no recorded VNC endpoint", record.name))?;
-        let image = self.paths.image(&record.image).canonicalize().map_err(|e| format!("cannot resolve image {}: {e}", record.image))?;
-        Ok(LaunchSpec {
+        let image = self.runtime.image_path(&self.paths, &record.image).canonicalize().map_err(|e| format!("cannot resolve image {}: {e}", record.image))?;
+        Ok(MachineLaunch {
             machine: machine.clone(),
-            source: LaunchSource::Image(image),
-            profile_dir: Some(self.paths.profile_dir(record.profile.as_str())),
+            image,
+            profile_dir: self.paths.profile_dir(record.profile.as_str()),
             endpoints,
             cdp_socket: self.paths.cdp_socket(&machine.to_string()),
             display,
@@ -798,8 +803,11 @@ impl Daemon {
     pub(crate) fn vnc_target(&self, name: &SessionName) -> Option<(u16, bool)> {
         let endpoints = self.ready_endpoints(name)?;
         let observed = self.observed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let interactive = observed.get(name).and_then(|o| o.input) == Some(InputSupport::Interactive);
-        Some((endpoints.vnc_port, interactive))
+        let input = observed.get(name).and_then(|o| o.input);
+        if input == Some(InputSupport::Headless) {
+            return None;
+        }
+        Some((endpoints.vnc_port, input == Some(InputSupport::Interactive)))
     }
 
     pub(crate) fn down_session(&self, name: &SessionName) -> Result<(), String> {
@@ -826,6 +834,9 @@ impl Daemon {
 
     fn fail_start(&self, machine: &MachineName, error: &RuntimeError) {
         eprintln!("bctl daemon: {machine} failed to start: {error}");
+        if let Ok(logs) = self.runtime.logs(machine) {
+            eprintln!("bctl daemon: last lines from {machine}:\n{}", logs.trim_end());
+        }
         if let Err(e) = self.runtime.remove(machine) {
             eprintln!("bctl daemon: could not remove {machine}: {e}");
         }
@@ -1168,8 +1179,17 @@ pub fn open_log(paths: &Paths) -> std::io::Result<File> {
 }
 
 /// The image `up` starts: the one named, else the one the session was created with, else the default.
-fn image_for_up(requested: Option<&str>, recorded: Option<&str>) -> String {
-    requested.or(recorded).unwrap_or(DEFAULT_IMAGE).to_string()
+fn image_for_up(requested: Option<&str>, recorded: Option<&str>, default: &str) -> String {
+    requested.or(recorded).unwrap_or(default).to_string()
+}
+
+fn runtime_failure(error: &RuntimeError, session: &SessionName) -> Response {
+    match error {
+        RuntimeError::Unsupported { .. } => {
+            Response::failure(ErrorCode::UnsupportedByRuntime, error.to_string(), Some(format!("stop it with `bctl down {session}` instead")))
+        }
+        _ => Response::failure(ErrorCode::RuntimeError, error.to_string(), Some(format!("see `bctl inspect {session}`"))),
+    }
 }
 
 #[cfg(test)]
@@ -1178,8 +1198,9 @@ mod tests {
 
     #[test]
     fn up_takes_the_named_image_then_the_recorded_one_then_helium() {
-        assert_eq!(image_for_up(Some("ref-alpine-chromium"), Some("helium")), "ref-alpine-chromium");
-        assert_eq!(image_for_up(None, Some("ref-scratch-chromium")), "ref-scratch-chromium");
-        assert_eq!(image_for_up(None, None), "helium");
+        assert_eq!(image_for_up(Some("ref-alpine-chromium"), Some("helium"), "helium"), "ref-alpine-chromium");
+        assert_eq!(image_for_up(None, Some("ref-scratch-chromium"), "helium"), "ref-scratch-chromium");
+        assert_eq!(image_for_up(None, None, "helium"), "helium");
+        assert_eq!(image_for_up(None, None, "nanos-helium"), "nanos-helium");
     }
 }

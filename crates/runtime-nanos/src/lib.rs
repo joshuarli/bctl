@@ -9,12 +9,15 @@ use std::time::{Duration, Instant};
 
 use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_browser};
 
+pub mod egress;
 pub mod supervisor;
 
 /// The guest vsock port `bctl-guest run-headless` relays to the browser's CDP endpoint.
 pub const GUEST_CDP_PORT: u32 = 9222;
 /// The guest vsock port that answers with the headless readiness report.
 pub const GUEST_CHECK_PORT: u32 = 9223;
+/// The host vsock port the guest relays the browser's SOCKS5 proxy connections to.
+pub const GUEST_EGRESS_PORT: u32 = 1080;
 
 const CONTROL_SOCKET: &str = "control.sock";
 const VSOCK_SOCKET: &str = "vsock.sock";
@@ -44,6 +47,8 @@ impl std::error::Error for RuntimeError {}
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     pub supervisor: PathBuf,
+    /// Arguments the supervisor executable needs before `launch` (`["nanos-vm"]` when it is `bctl`).
+    pub supervisor_args: Vec<String>,
     pub qemu: PathBuf,
     pub qemu_img: PathBuf,
     pub kernel: PathBuf,
@@ -58,6 +63,8 @@ pub struct LaunchSpec {
     pub cdp_socket: PathBuf,
     pub memory_mib: u32,
     pub cpus: u8,
+    /// IPv4 ranges in CIDR notation the guest may reach although every non-public address is blocked.
+    pub allow_private: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +187,7 @@ impl Nanos {
         }
         fs::create_dir_all(&dir).map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", dir.display()) })?;
         let output = Command::new(&self.tools.supervisor)
+            .args(&self.tools.supervisor_args)
             .arg("launch")
             .arg("--dir")
             .arg(&dir)
@@ -199,6 +207,7 @@ impl Nanos {
             .arg(&self.tools.kernel)
             .arg("--vsock-backend")
             .arg(&self.tools.vsock_backend)
+            .args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()]))
             .output()
             .map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", self.tools.supervisor.display()) })?;
         if output.status.success() {
