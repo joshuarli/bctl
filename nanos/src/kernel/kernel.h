@@ -203,6 +203,26 @@ static inline u64 spin_lock_irq_flush(spinlock l)
     return flags;
 }
 
+static inline void spin_lock_flush(spinlock l)
+{
+    volatile u64 *p = (volatile u64 *)&l->w;
+#ifdef LOCK_STATS
+    u64 spins = 0;
+#endif
+    while (*p || !compare_and_swap_64(&l->w, 0, 1)) {
+#ifdef LOCK_STATS
+        spins++;
+#endif
+        u64 flags = irq_disable_save();
+        page_invalidate_flush();
+        irq_restore(flags);
+        kern_pause();
+    }
+#ifdef LOCK_STATS
+    LOCKSTATS_RECORD_LOCK(l->s, true, spins, 0);
+#endif
+}
+
 static inline u64 spin_wlock_irq(rw_spinlock l)
 {
     u64 flags = irq_disable_save();

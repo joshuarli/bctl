@@ -102,7 +102,7 @@ typedef struct unixsock {
     struct refcount refcount;
 } *unixsock;
 
-#define unixsock_lock(s)    spin_lock(&(s)->sock.f.lock)
+#define unixsock_lock(s)    spin_lock_flush(&(s)->sock.f.lock)
 #define unixsock_unlock(s)  spin_unlock(&(s)->sock.f.lock)
 
 int process_visible_pid(process target, process viewer)
