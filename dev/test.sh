@@ -45,7 +45,13 @@ fixture_native() {
 
 suite_harness() {
 	make -s -C "$ROOT/tests/mini_chromium"
+	links=$WORK/tmp/image-links
+	mkdir -p "$links"
+	printf hello >"$links/target"
+	ln -sfn target "$links/relative"
+	ln -sfn /data/target "$links/absolute"
 	for smp in 1 2; do
+		case_verdict image_links "$smp" 20 PASS '' --tree "$links:/data" "$FIXTURES/image_links"
 		case_verdict hello_static "$smp" 20 PASS '' "$FIXTURES/hello_static"
 		case_verdict hello_stdio "$smp" 20 PASS '' "$FIXTURES/hello_stdio"
 		case_verdict hello_pthread "$smp" 20 PASS '' "$FIXTURES/hello_pthread"

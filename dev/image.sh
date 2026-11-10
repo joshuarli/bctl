@@ -3,7 +3,8 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--link GUEST:TARGET]... [--dir GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--size SIZE] [--trace] BINARY"
+	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--link GUEST:TARGET]... [--dir GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--size SIZE] [--trace] BINARY
+       --tree preserves symbolic links and requires fd"
 }
 
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
@@ -25,10 +26,13 @@ while [ $# -gt 0 ]; do
 	--tree)
 		src=$(realpath "${2%%:*}") dst=${2#*:}
 		[ -d "$src" ] || die "--tree source is not a directory: $src"
-		find "$src" \( -type f -o -type l \) | while IFS= read -r f; do
-			[ -e "$f" ] || continue
-			[ ! -d "$f" ] || continue
-			printf '%s/%s\t%s\n' "${dst%/}" "${f#"$src"/}" "$(realpath "$f")"
+		command -v fd >/dev/null || die "fd is required for --tree"
+		fd --hidden --no-ignore --type f --type l --absolute-path . "$src" | while IFS= read -r f; do
+			if [ -L "$f" ]; then
+				printf '%s/%s\tlink:%s\n' "${dst%/}" "${f#"$src"/}" "$(readlink "$f")"
+			elif [ -f "$f" ]; then
+				printf '%s/%s\t%s\n' "${dst%/}" "${f#"$src"/}" "$(realpath "$f")"
+			fi
 		done >>"$files"
 		shift 2 ;;
 	--link) printf '%s\tlink:%s\n' "${2%%:*}" "${2#*:}" >>"$files"; shift 2 ;;
@@ -44,7 +48,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] && [ -n "$binary" ] || usage
 [ -f "$binary" ] || die "no such binary: $binary"
-for f in "$NANOS_OUT/platform/pc/bin/kernel.img" "$NANOS_OUT/platform/pc/boot/boot.img" "$NANOS_OUT/tools/bin/mkfs"; do
+case $(uname -m) in
+aarch64 | arm64) platform=virt; boot=$NANOS_OUT/platform/virt/boot-stub.img; uefi=$NANOS_OUT/platform/virt/boot/bootaa64.efi ;;
+x86_64) platform=pc; boot=$NANOS_OUT/platform/pc/boot/boot.img; uefi='' ;;
+*) die "unsupported architecture: $(uname -m)" ;;
+esac
+bin=$NANOS_OUT/platform/$platform/bin
+for f in "$bin/kernel.img" "$boot" ${uefi:+"$uefi"} "$NANOS_OUT/tools/bin/mkfs"; do
 	[ -f "$f" ] || die "missing $f: run dev/build.sh"
 done
 
@@ -109,8 +119,8 @@ trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 	if [ -n "$klibs" ]; then
 		printf 'boot:(children:(klib:(children:(\n'
 		for k in $klibs; do
-			[ -f "$NANOS_OUT/platform/pc/bin/$k" ] || die "no klib $k in $NANOS_OUT/platform/pc/bin"
-			printf '  %s:(contents:(host:%s))\n' "$k" "$NANOS_OUT/platform/pc/bin/$k"
+			[ -f "$bin/$k" ] || die "no klib $k in $bin"
+			printf '  %s:(contents:(host:%s))\n' "$k" "$bin/$k"
 		done
 		printf '))))\nklibs:bootfs\n'
 	fi
@@ -127,7 +137,9 @@ trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 } >"$manifest"
 
 mkdir -p "$(dirname -- "$out")"
-"$NANOS_OUT/tools/bin/mkfs" ${size:+-s "$size"} -k "$NANOS_OUT/platform/pc/bin/kernel.img" -b "$NANOS_OUT/platform/pc/boot/boot.img" "$out" <"$manifest" >"$out.mkfs.log" 2>&1 ||
+set -- -k "$bin/kernel.img" -b "$boot"
+[ -z "$uefi" ] || set -- "$@" -u "$uefi"
+"$NANOS_OUT/tools/bin/mkfs" ${size:+-s "$size"} "$@" "$out" <"$manifest" >"$out.mkfs.log" 2>&1 ||
 	{ cat "$out.mkfs.log" >&2; die "mkfs failed"; }
 cp "$manifest" "$out.manifest"
 printf '%s\n' "$invocation" >"$out.reproduce"
