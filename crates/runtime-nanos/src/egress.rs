@@ -112,9 +112,17 @@ const REPLY_HOST_UNREACHABLE: u8 = 4;
 const REPLY_COMMAND_UNSUPPORTED: u8 = 7;
 const REPLY_ADDRESS_UNSUPPORTED: u8 = 8;
 
-fn read_exact(stream: &mut impl Read, n: usize) -> io::Result<Vec<u8>> {
+fn read_exact(stream: &mut impl Read, n: usize, what: &str) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; n];
-    stream.read_exact(&mut buf)?;
+    let mut filled = 0;
+    while filled < n {
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("the client closed after {filled} of the {n} bytes of {what}"))),
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(io::Error::new(error.kind(), format!("reading {what}: {error}"))),
+        }
+    }
     Ok(buf)
 }
 
@@ -125,17 +133,17 @@ fn invalid(message: &str) -> io::Error {
 /// Reads a SOCKS5 greeting and CONNECT request, answering the greeting. An unsupported command or address type
 /// is answered and returned as an error.
 pub fn read_request(stream: &mut (impl Read + Write)) -> io::Result<Destination> {
-    let greeting = read_exact(stream, 2)?;
+    let greeting = read_exact(stream, 2, "the greeting")?;
     if greeting[0] != SOCKS_VERSION {
         return Err(invalid("not SOCKS5"));
     }
-    let methods = read_exact(stream, usize::from(greeting[1]))?;
+    let methods = read_exact(stream, usize::from(greeting[1]), "the greeting's methods")?;
     if !methods.contains(&NO_AUTHENTICATION) {
         stream.write_all(&[SOCKS_VERSION, 0xff])?;
         return Err(invalid("the client offers no unauthenticated method"));
     }
     stream.write_all(&[SOCKS_VERSION, NO_AUTHENTICATION])?;
-    let head = read_exact(stream, 4)?;
+    let head = read_exact(stream, 4, "the request header")?;
     if head[0] != SOCKS_VERSION {
         return Err(invalid("not SOCKS5"));
     }
@@ -145,19 +153,19 @@ pub fn read_request(stream: &mut (impl Read + Write)) -> io::Result<Destination>
     }
     let destination = match head[3] {
         ATYP_IPV4 => {
-            let raw = read_exact(stream, 6)?;
+            let raw = read_exact(stream, 6, "the IPv4 address")?;
             let ip = Ipv4Addr::new(raw[0], raw[1], raw[2], raw[3]);
             Destination::Address(SocketAddr::new(IpAddr::V4(ip), u16::from_be_bytes([raw[4], raw[5]])))
         }
         ATYP_IPV6 => {
-            let raw = read_exact(stream, 18)?;
+            let raw = read_exact(stream, 18, "the IPv6 address")?;
             let octets: [u8; 16] = raw[..16].try_into().expect("16 bytes");
             Destination::Address(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(octets)), u16::from_be_bytes([raw[16], raw[17]])))
         }
         ATYP_NAME => {
-            let length = read_exact(stream, 1)?[0];
-            let name = read_exact(stream, usize::from(length))?;
-            let port = read_exact(stream, 2)?;
+            let length = read_exact(stream, 1, "the host name length")?[0];
+            let name = read_exact(stream, usize::from(length), "the host name")?;
+            let port = read_exact(stream, 2, "the port")?;
             let name = String::from_utf8(name).map_err(|_| invalid("the host name is not UTF-8"))?;
             Destination::Name(name, u16::from_be_bytes([port[0], port[1]]))
         }
@@ -237,6 +245,14 @@ mod tests {
 
     fn addr(text: &str) -> SocketAddr {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_truncated_greeting_names_how_far_the_client_got() {
+        let mut stream = std::io::Cursor::new(vec![SOCKS_VERSION]);
+        let error = read_request(&mut stream).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "the client closed after 1 of the 2 bytes of the greeting");
     }
 
     #[test]
