@@ -656,6 +656,7 @@ typedef struct process {
     blockq            child_bq;
     u64               rlimit_nproc_cur, rlimit_nproc_max;
     u64               rlimit_nofile_cur, rlimit_nofile_max;
+    u64               rlimit_data_cur, rlimit_data_max;
     thread            vfork_waiter;
     boolean           exiting;
     boolean           dumpable;

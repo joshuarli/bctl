@@ -1963,6 +1963,16 @@ sysreturn setrlimit(int resource, const struct rlimit *rlim)
             p->rlimit_nproc_max = rlim->rlim_max;
         }
         break;
+    case RLIMIT_DATA:
+        if (rlim->rlim_cur > rlim->rlim_max)
+            rv = -EINVAL;
+        else if ((rlim->rlim_max > p->rlimit_data_max) && !capable(p, CAP_SYS_RESOURCE))
+            rv = -EPERM;
+        else {
+            p->rlimit_data_cur = rlim->rlim_cur;
+            p->rlimit_data_max = rlim->rlim_max;
+        }
+        break;
     case RLIMIT_NOFILE:
         if (rlim->rlim_cur > rlim->rlim_max)
             rv = -EINVAL;
@@ -1987,9 +1997,8 @@ sysreturn getrlimit(int resource, struct rlimit *rlim)
     sysreturn rv = 0;
     switch (resource) {
     case RLIMIT_DATA:
-        /* not entirely accurate, but a reasonable approximation */
-        rlim->rlim_cur = rlim->rlim_max =
-                heap_total(heap_physical(get_kernel_heaps()));
+        rlim->rlim_cur = current->p->rlimit_data_cur;
+        rlim->rlim_max = current->p->rlimit_data_max;
         break;
     case RLIMIT_STACK:
         rlim->rlim_cur = current->p->rlimit_stack;
@@ -2094,7 +2103,8 @@ static sysreturn brk(void *addr)
         address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
     } else if (new_end > old_end) {
         u64 alloc = new_end - old_end;
-        if (!memory_is_user(pointer_from_u64(old_end), alloc) ||
+        if (u64_from_pointer(addr) - p->vm->heap_base > p->rlimit_data_cur ||
+            !memory_is_user(pointer_from_u64(old_end), alloc) ||
             !adjust_process_heap(p, old_end, new_end))
             goto out;
     }

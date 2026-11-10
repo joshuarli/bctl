@@ -800,6 +800,7 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->cutime = p->cstime = 0;
     p->rlimit_nproc_cur = p->rlimit_nproc_max = default_rlimit_nproc();
     p->rlimit_nofile_cur = p->rlimit_nofile_max = 65536;
+    p->rlimit_data_cur = p->rlimit_data_max = infinity;
     p->vfork_waiter = 0;
     p->exec_thread = 0;
     p->exec_waiter = 0;
@@ -1227,6 +1228,8 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     c->rlimit_nproc_max = parent->rlimit_nproc_max;
     c->rlimit_nofile_cur = parent->rlimit_nofile_cur;
     c->rlimit_nofile_max = parent->rlimit_nofile_max;
+    c->rlimit_data_cur = parent->rlimit_data_cur;
+    c->rlimit_data_max = parent->rlimit_data_max;
     c->trace = parent->trace;
     runtime_memcpy(c->sigactions, parent->sigactions, sizeof(c->sigactions));
     runtime_memcpy(c->saved_aux, parent->saved_aux, sizeof(c->saved_aux));

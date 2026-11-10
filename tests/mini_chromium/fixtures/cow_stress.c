@@ -420,6 +420,36 @@ static void check_nproc_zombies(void)
 	record("lifecycle_nproc_zombies", reaped && exited_with(status, 0), "status=0x%x", status);
 }
 
+static int rlimit_data_manager(void)
+{
+	const rlim_t limit = 8ull << 30;
+	struct rlimit got;
+	if (getrlimit(RLIMIT_DATA, &got) || got.rlim_cur != RLIM_INFINITY || got.rlim_max != RLIM_INFINITY)
+		return 10;
+	struct rlimit inverted = { limit, limit / 2 };
+	if (setrlimit(RLIMIT_DATA, &inverted) != -1 || errno != EINVAL)
+		return 11;
+	struct rlimit rl = { limit, limit };
+	if (setrlimit(RLIMIT_DATA, &rl) || getrlimit(RLIMIT_DATA, &got) || got.rlim_cur != limit || got.rlim_max != limit)
+		return 12;
+	pid_t pid = fork();
+	if (pid == 0)
+		_exit(!getrlimit(RLIMIT_DATA, &got) && got.rlim_cur == limit && got.rlim_max == limit ? 0 : 1);
+	int status = 0;
+	if (pid < 0 || !wait_child(pid, &status) || !exited_with(status, 0))
+		return 13;
+	uintptr_t start = (uintptr_t)syscall(SYS_brk, 0);
+	uintptr_t grown = start + 16 * PAGE;
+	if ((uintptr_t)syscall(SYS_brk, grown) != grown)
+		return 14;
+	struct rlimit none = { 0, limit };
+	if (setrlimit(RLIMIT_DATA, &none) || (uintptr_t)syscall(SYS_brk, grown + 16 * PAGE) != grown)
+		return 15;
+	if (setrlimit(RLIMIT_DATA, &rl) || (uintptr_t)syscall(SYS_brk, grown + 16 * PAGE) != grown + 16 * PAGE)
+		return 16;
+	return 0;
+}
+
 static int brk_split_worker(void)
 {
 	uintptr_t start = (uintptr_t)syscall(SYS_brk, 0);
@@ -450,6 +480,16 @@ static void check_brk_split(void)
 	int status = 0;
 	int reaped = pid > 0 && wait_child(pid, &status);
 	record("lifecycle_brk_after_mprotect", reaped && exited_with(status, 0), "status=0x%x", status);
+}
+
+static void check_rlimit_data(void)
+{
+	pid_t pid = fork();
+	if (pid == 0)
+		_exit(rlimit_data_manager());
+	int status = 0;
+	int reaped = pid > 0 && wait_child(pid, &status);
+	record("lifecycle_rlimit_data", reaped && exited_with(status, 0), "status=0x%x", status);
 }
 
 static void check_reparent(void)
@@ -598,6 +638,7 @@ int main(int argc, char **argv)
 		record("lifecycle_subreaper", 0, "errno=%d", errno);
 		return 1;
 	}
+	check_rlimit_data();
 	check_brk_split();
 	check_cow(argv[0]);
 	check_cow_mprotect();
