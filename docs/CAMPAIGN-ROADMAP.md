@@ -277,7 +277,8 @@ loopback TCP stall that made every page action 300 to 1000 ms; TodoMVC is
 144 ms against the Mac's 277, cold `up` 5.2 s against 1.5 s, VMM RSS 1.7 GiB. It found a third
 hydrogen bug: guests with more than 2 GiB asserted at boot, so the
 default 4 GiB session never started. M7N is the active milestone; its slices are
-under **Sequence**. After it, the Mac performance queue: (1) on an idle host, find what switches input to pixel between
+under **Sequence**. M7H, headed Helium on Nanos, follows it; its NH0
+investigation may run as a lane alongside. After it, the Mac performance queue: (1) on an idle host, find what switches input to pixel between
 9 and 22 ms; the timer-coalescing test is in `docs/performance.md` Findings;
 (2) pause 1.8 s and resume 2.3 s against a 1.5 s cold `up`, where the time goes
 is unprofiled; (3) guest page loads trail the host by 13 ms to first byte and
@@ -1069,7 +1070,8 @@ surface works against it (CDP gateway, `bctl page`, tabs, runs) and the
 bench suites can compare it with SmolVM. No live view, VNC input or human
 takeover on Nanos: guest graphics are a hydrogen non-goal, so Nanos sessions
 are automation-only and `bctl view` and the input lease refuse them with
-`UNSUPPORTED_BY_RUNTIME`.
+`UNSUPPORTED_BY_RUNTIME`. (Superseded 2026-11-10 by the owner: headed Nanos is
+wanted; M7H plans it, and until it lands these refusals stand.)
 
 Decisions (prescribed; the owner may overrule):
 
@@ -1137,6 +1139,48 @@ Slices, in order, one writer:
   --runtime nanos` with the same measure names, Speedometer run headless and
   labelled so, and a Nanos column in `docs/performance.md`. The SmolVM
   numbers are from the Mac until SmolVM runs on Linux, and the table says so.
+
+### M7H: headed Helium on Nanos (Linux amd64)
+
+Owner 2026-11-10: headless Nanos is a step, not the end state; Nanos
+sessions should get the live view, VNC input and human takeover that SmolVM
+sessions have. Hydrogen's "no guest graphics" non-goal is lifted for this
+milestone. Nothing on the Nanos path draws pixels today: `run-headless`
+starts no compositor, and hydrogen has no virtio-gpu, virtio-input, DRM or
+evdev support. SmolVM's headed path relies on all four through the Linux
+guest kernel (libkrun's virtio-gpu and virtio-input, tinyland on DRM and
+libinput through seatd).
+
+Slices, in order, one writer:
+
+- **NH0 Investigation (a lane may start now).** Owns a design note in
+  `docs/`, no code. Compare at least these routes and measure what each
+  needs:
+  1. Linux parity: a Nanos virtio-gpu 2D driver behind the DRM KMS
+     dumb-buffer ioctls tinyland uses, and a virtio-input driver behind
+     evdev for seatd/libinput, so the SmolVM guest stack runs unchanged. It
+     is the largest kernel surface; census the exact ioctls tinyland, seatd
+     and libinput issue on SmolVM first.
+  2. A remote output for tinyland: tinyland keeps Helium on Wayland but
+     sends damaged regions of its output over vsock to the host encoder,
+     and the host sends input back over vsock, so the guest needs no
+     graphics or input devices. The kernel only needs what Chromium's
+     Wayland client already uses (AF_UNIX with `SCM_RIGHTS`, memfd, shared
+     mmap). Settle whether the host VNC encoder can take frames from vsock
+     instead of a virtio-gpu scanout.
+  3. CDP screencast as a stopgap: `Page.startScreencast` and
+     `Input.dispatch*` on headless Helium, with no guest change. It shows
+     page content only (no browser UI, no native popups such as `<select>`)
+     and sends JPEG per frame; record its latency against H1's gate so the
+     comparison is honest.
+  Acceptance: the note picks one route with evidence (syscall or ioctl
+  census, an estimate of kernel lines, a throwaway spike for the riskiest
+  step), names the input-to-pixel and idle-CPU budgets from H1 and
+  `docs/performance.md` that the route must meet, and splits the work into
+  NH slices.
+- **NH1 onward.** Written from NH0's note. Acceptance for the milestone: the
+  viewer and input-lease suites pass with `BCTL_TEST_RUNTIME=nanos`, and
+  `bctl-bench viewer` gives Nanos a column in `docs/performance.md`.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
