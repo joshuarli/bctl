@@ -913,12 +913,19 @@ void *process_map_physical(process p, u64 phys_addr, u64 size, u64 vmflags)
     return pointer_from_u64(virt_addr);
 }
 
-boolean adjust_process_heap(process p, range new)
+boolean adjust_process_heap(process p, u64 old_end, u64 new_end)
 {
+    boolean adjusted = true;
     vmap_lock(p);
-    boolean inserted = rangemap_reinsert(p->vm->vmaps, &p->vm->heap_map->node, new);
+    if (new_end > old_end) {
+        struct vmap k = ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE, 0, 0, 0, 0);
+        k.node.r = irange(old_end, new_end);
+        adjusted = allocate_vmap_locked(p->vm->vmaps, &k) != INVALID_ADDRESS;
+    } else if (new_end < old_end) {
+        process_remove_range_locked(p, irange(new_end, old_end), false);
+    }
     vmap_unlock(p);
-    return inserted;
+    return adjusted;
 }
 
 sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void *new_address)
@@ -1836,7 +1843,7 @@ static process_vm process_vm_alloc(address_space as, u64 mmap_min_addr, boolean 
     vm->as = as;
     spin_lock_init(&vm->vmap_lock);
     vm->mmap_min_addr = mmap_min_addr;
-    vm->stack_map = vm->heap_map = 0;
+    vm->stack_map = 0;
     vm->brk = 0;
     vm->heap_base = 0;
     vm->membarrier_private_expedited = false;
@@ -2083,8 +2090,6 @@ process_vm mmap_process_fork(process_vm parent, sysreturn *rv)
             goto out;
         }
         cvm->fault = vm->fault;
-        if (vm == parent->heap_map)
-            child->heap_map = cvm;
         if (vm == parent->stack_map)
             child->stack_map = cvm;
         if (vmap_is_special(vm) || (child->as == parent->as))
@@ -2157,6 +2162,6 @@ void process_vm_free_mappings(process_vm pvm)
         }
         deallocate_vmap_locked(pvm->vmaps, vm);
     }
-    pvm->heap_map = pvm->stack_map = 0;
+    pvm->stack_map = 0;
     process_vm_unlock(pvm);
 }

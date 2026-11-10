@@ -420,6 +420,38 @@ static void check_nproc_zombies(void)
 	record("lifecycle_nproc_zombies", reaped && exited_with(status, 0), "status=0x%x", status);
 }
 
+static int brk_split_worker(void)
+{
+	uintptr_t start = (uintptr_t)syscall(SYS_brk, 0);
+	uintptr_t base = (start + PAGE - 1) & ~(uintptr_t)(PAGE - 1);
+	if ((uintptr_t)syscall(SYS_brk, base + 4 * PAGE) != base + 4 * PAGE)
+		return 10;
+	if (mprotect((void *)base, PAGE, PROT_NONE))
+		return 11;
+	if ((uintptr_t)syscall(SYS_brk, base + 8 * PAGE) != base + 8 * PAGE)
+		return 12;
+	volatile unsigned char *top = (unsigned char *)(base + 7 * PAGE);
+	*top = 0x5a;
+	if (*top != 0x5a)
+		return 13;
+	if ((uintptr_t)syscall(SYS_brk, base + PAGE) != base + PAGE)
+		return 14;
+	if ((uintptr_t)syscall(SYS_brk, base + 3 * PAGE) != base + 3 * PAGE)
+		return 15;
+	volatile unsigned char *again = (unsigned char *)(base + 2 * PAGE);
+	return *again == 0 ? 0 : 16;
+}
+
+static void check_brk_split(void)
+{
+	pid_t pid = fork();
+	if (pid == 0)
+		_exit(brk_split_worker());
+	int status = 0;
+	int reaped = pid > 0 && wait_child(pid, &status);
+	record("lifecycle_brk_after_mprotect", reaped && exited_with(status, 0), "status=0x%x", status);
+}
+
 static void check_reparent(void)
 {
 	int report[2], hold[2];
@@ -566,6 +598,7 @@ int main(int argc, char **argv)
 		record("lifecycle_subreaper", 0, "errno=%d", errno);
 		return 1;
 	}
+	check_brk_split();
 	check_cow(argv[0]);
 	check_cow_mprotect();
 	check_shared_anon();

@@ -2088,14 +2088,14 @@ static sysreturn brk(void *addr)
     u64 new_end = pad(u64_from_pointer(addr), PAGESIZE);
     if (old_end > new_end) {
         if (u64_from_pointer(addr) < p->vm->heap_base ||
-            !adjust_process_heap(p, irange(p->vm->heap_base, new_end)))
+            !adjust_process_heap(p, old_end, new_end))
             goto out;
         smp_write_barrier();
         address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
     } else if (new_end > old_end) {
         u64 alloc = new_end - old_end;
         if (!memory_is_user(pointer_from_u64(old_end), alloc) ||
-            !adjust_process_heap(p, irange(p->vm->heap_base, new_end)))
+            !adjust_process_heap(p, old_end, new_end))
             goto out;
     }
     p->vm->brk = addr;

@@ -637,8 +637,8 @@ static void procfs_stat(buffer b, process p)
     push_u8(b, '\n');
 }
 
-closure_function(3, 1, boolean, procfs_maps_each,
-                 buffer, b, vmap, stack, vmap, heap_map,
+closure_function(2, 1, boolean, procfs_maps_each,
+                 buffer, b, vmap, stack,
                  vmap map)
 {
     buffer b = bound(b);
@@ -649,7 +649,7 @@ closure_function(3, 1, boolean, procfs_maps_each,
             (map->flags & VMAP_FLAG_SHARED) ? 's' : 'p');
     if (map == bound(stack))
         buffer_write_cstring(b, "\t[stack]");
-    else if (map == bound(heap_map))
+    else if (map->flags & VMAP_FLAG_HEAP)
         buffer_write_cstring(b, "\t[heap]");
     push_u8(b, '\n');
     return true;
@@ -665,7 +665,7 @@ static void procfs_maps(buffer b, process p)
     if (!vm)
         return;
     process_vm_lock(vm);
-    vmap_handler h = stack_closure(procfs_maps_each, b, vm->stack_map, vm->heap_map);
+    vmap_handler h = stack_closure(procfs_maps_each, b, vm->stack_map);
     vmap m = (vmap)rangemap_first_node(vm->vmaps);
     while (m != INVALID_ADDRESS) {
         apply(h, m);

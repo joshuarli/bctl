@@ -595,7 +595,7 @@ static inline sysreturn blockq_block_required(unix_context t, u64 bq_flags)
 }
 
 vmap allocate_vmap(process p, range r, struct vmap q);
-boolean adjust_process_heap(process p, range new);
+boolean adjust_process_heap(process p, u64 old_end, u64 new_end);
 
 u64 process_get_virt_range(process p, u64 size, range region);
 void *process_map_physical(process p, u64 phys_addr, u64 size, u64 vmflags);
@@ -612,7 +612,6 @@ struct process_vm {
     struct spinlock   vmap_lock;
     rangemap          vmaps;
     vmap              stack_map;
-    vmap              heap_map;
     void             *brk;
     u64               heap_base;
     u64               vdso_base;

@@ -456,10 +456,6 @@ static void exec_elf_finish(buffer ex, fsfile f, process kp,
     u64 brk = pad(load_range.end, PAGESIZE) + brk_offset;
     proc->vm->brk = pointer_from_u64(brk);
     proc->vm->heap_base = brk;
-    proc->vm->heap_map = allocate_vmap(proc, irange(brk, brk),
-                                   ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
-                                         0, 0, 0, 0));
-    assert(proc->vm->heap_map != INVALID_ADDRESS);
     fsfile_reserve(f);
     proc->vm->image = f;
     exec_debug("entry %p, brk %p (offset 0x%lx)\n", entry, proc->vm->brk, brk_offset);
@@ -1057,11 +1053,6 @@ static boolean exec_replace_image(thread t, exec_image img, exec_image interp, e
         (aslr ? get_aslr_offset(PROCESS_HEAP_ASLR_RANGE) : 0);
     vm->brk = pointer_from_u64(brk);
     vm->heap_base = brk;
-    vm->heap_map = allocate_vmap(p, irange(brk, brk),
-                                 ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE,
-                                       0, 0, 0, 0));
-    if (vm->heap_map == INVALID_ADDRESS)
-        return false;
     vm->image = img->f;
     img->f = 0;
 
