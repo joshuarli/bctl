@@ -112,9 +112,9 @@ measures the `helium` r6 image on an idle host (load 0.11 to 0.22 per core),
 `bctl page` 451 ms, bimodal because the first `fill` after `goto` waits about
 200 ms in 4 of 7 rounds; CDP round trip 0.24 ms through the gateway; input to
 pixel 23.6 ms (one to two frames, against 6.7 ms on the old Alpine Chromium
-image); 458 MiB VMM footprint and 3.6% of a core idle; Speedometer 3.1 at 31.4
-against 28.8 for Alpine's Chromium 142 in a 2-CPU container; `news-next` load
-event 72.6 ms against 22.1 ms, largest contentful paint 140 against 88 ms.
+image); 458 MiB VMM footprint and 3.6% of a core idle; Speedometer 3.1 at 31.4;
+`news-next` load event 71.9 ms and largest contentful paint 140 ms. The browser
+suite measures Helium alone; the container comparison is gone.
 H1 findings: `smolvm machine pause`
 refused any machine with an exposed socket, image layers, or `--gpu`, which was
 every session; the vendored SmolVM now pauses 2D-GPU sessions in place

@@ -11,7 +11,7 @@ numbers are targets, never measurements of bctl.
 ## Running a suite
 
 Prerequisites: `runtime/build.sh`, `BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium`
-(Helium r6 or later), Docker, a Speedometer checkout (below), and a release build:
+(Helium r6 or later), a Speedometer checkout (below), and a release build:
 
 ```sh
 cargo build --release -p bctl -p bctl-bench
@@ -30,16 +30,13 @@ own `BCTL_HOME` under `.work/tmp` with its own daemon, and names sessions
 its machines behind; stop them with `bctl down` under that home. `serve` hosts
 the pinned Speedometer tree for a manual run.
 
-The interaction and browser suites load pages from a Speedometer checkout, and
-the browser suite builds its own container image:
+The interaction and browser suites load pages from a Speedometer checkout:
 
 - Speedometer 3.1: `git clone --depth 1 -b release/3.1 https://github.com/WebKit/Speedometer .work/dl/speedometer/src`
   (commit `1386415be8fef2f6b6bbdbe1828872471c5d802a`). It is served locally to
   every browser, so no run depends on the public site. Besides the benchmark
   itself, the interaction suite drives its React TodoMVC build and the browser
   suite loads its `news-next` site.
-- The container is `tests/bench/chromium-container`: Alpine 3.22's `chromium`
-  package, Xvfb 1280x800, sandbox on, limited to 2 CPUs and 4 GiB like the guest.
 
 ## Method
 
@@ -57,8 +54,7 @@ the browser suite builds its own container image:
   and every raw sample. A measure with fewer than 5 clean samples has status
   `unclean` and no gate. `info` marks a single fact (a size, a count).
 - **Interleaving.** Where two paths are compared, the suite alternates them in
-  blocks and flips the order each round (gateway and direct), or rotates the start
-  of the variant order each round (Speedometer in the guest and the container).
+  blocks and flips the order each round (gateway and direct).
 - **Result file.** `suite`, `started` (UTC), `host` (model, chip, CPUs, memory,
   macOS), `commit` and `dirty`, `smolvm`, `images` (tar size and config digest),
   `browser_versions`, `measures`, and `notes`.
@@ -98,12 +94,9 @@ over CDP afterwards and reports it against the trials sent.
   Idle CPU is `ps` CPU time over a 60 s window, 30 s after ready.
 - Each automation step is a separate `bctl` process, so every step includes CLI
   start, the daemon round trip, and the gateway, as a user's script would.
-- The container reaches the host benchmark server as `host.docker.internal`; the
-  guest reaches it at `100.96.0.1`, SmolVM's gateway to the host loopback,
-  through `--allow-private 100.96.0.0/30`. Both paths add their own network
-  stack to the page load time.
-- The guest runs Helium and the container runs Alpine's Chromium 142, so the
-  browser comparison is the whole stack, not the VM alone.
+- The guest reaches the host benchmark server at `100.96.0.1`, SmolVM's gateway
+  to the host loopback, through `--allow-private 100.96.0.0/30`, so page load
+  time includes SmolVM's network relay.
 - **Viewer.** The suite asks for Raw only. The VNC server is SmolVM's host-side
   server (`third_party/smolvm/src/agent/vnc.rs`), not libkrun, and Raw is its
   only pixel encoding; it also offers the DesktopSize, Cursor, and
@@ -128,8 +121,7 @@ over CDP afterwards and reports it against the trials sent.
 | Host | Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434) |
 | SmolVM | 1.34.0, vendored with this repository's patches |
 | Guest | `helium` r6 (config `b59ec01a...`, tar 218,243,072 bytes), Helium 0.20.3.1; 2 CPUs, 4096 MiB, 1280x800 |
-| Container | Chromium 142.0.7444.59 (Alpine 3.22 `chromium`), Linux arm64 on OrbStack, `--cpus=2 --memory=4g`, Xvfb 1280x800, renderer `NoNewPrivs: 1`, `Seccomp: 2` |
-| Tree | main `4cd94c1` with the suite changes uncommitted; `bctl` release build |
+| Tree | main `4cd94c1` with the suite changes uncommitted (browser suite: `41db3e9` with the container removed); `bctl` release build |
 | Load | No other work ran. The one-minute load average was 2.0 to 4.0 at the start of each suite (0.11 to 0.22 per core), and the suites waited 1 to 5 s in total for a quiet host. |
 
 Suites ran one after another: lifecycle and interaction with 7 rounds, viewer 7
@@ -237,30 +229,22 @@ fullscreen to scroll as the amount of changed pixels grows. An earlier run on
 Helium r5 with an older runtime measured marker latency p50 at 4.3 to 4.5 ms;
 the image and runtime both changed since, so the doubling is not attributed.
 
-### Browser (Speedometer 3.1, headed, `iterationCount=3`, 5 rounds, order rotated)
+### Browser (Speedometer 3.1, headed, `iterationCount=3`, 5 rounds)
 
-| Variant | Runs that finished | Score, median (min to max) |
+Speedometer finished 5 of 5 runs at a score of 31.43 (29.54 to 31.95). The
+score is the mean of the iteration scores of one run; the spread is across runs.
+
+Page load of the `news-next` site, 25 loads (5 batches of 5), median (minimum to
+maximum):
+
+| `responseEnd` | `loadEventEnd` | Largest contentful paint |
 | --- | --- | --- |
-| Guest, `helium` | 5 of 5 | 31.35 (30.91 to 32.22) |
-| Container, Linux arm64 | 5 of 5 | 28.78 (27.86 to 29.22) |
+| 14.2 ms (4.4 to 21.9) | 71.9 ms (60.8 to 96.5) | 140 ms (96 to 180) |
 
-The score is the mean of the iteration scores of one run; the spread is across
-runs. The guest scores 9 percent above the container and the ranges do not
-overlap, but the two run different browsers (Helium 0.20.3.1 and Chromium 142),
-so this does not compare the VM with the container alone.
-
-Page load of the `news-next` site, 25 loads per variant (5 batches of 5), median
-(minimum to maximum):
-
-| Variant | `responseEnd` | `loadEventEnd` | Largest contentful paint |
-| --- | --- | --- | --- |
-| Guest, `helium` | 14.7 ms (5.0 to 25.4) | 72.6 ms (52.2 to 107.3) | 140 ms (92 to 160) |
-| Container, Linux arm64 | 2.0 ms (1.6 to 5.8) | 22.1 ms (20.6 to 43.4) | 88 ms (76 to 124) |
-
-The guest receives the document 12.7 ms later at the median, which is the guest's
-network path to the host through SmolVM's relay; the gap grows to 50 ms by the
-load event, because the site's scripts and assets take the same path. Largest
-contentful paint differs by 52 ms.
+A container on the same host running Alpine's Chromium 142 received the same
+document at 2.0 ms and fired the load event at 22.1 ms, so most of the guest's
+load time is the guest's network path to the host through SmolVM's relay, which
+every script and asset of the site takes.
 
 ### Resources (7 boots, one VM per boot; minimum to maximum)
 
