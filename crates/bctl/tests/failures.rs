@@ -87,6 +87,18 @@ impl CdpCommand for CloseTarget {
     type Returns = Closed;
 }
 
+#[derive(Serialize)]
+struct CrashBrowser {}
+
+#[derive(Deserialize)]
+struct Empty {}
+
+impl CdpCommand for CrashBrowser {
+    const METHOD: &'static str = "Browser.crash";
+    const EFFECT: Effect = Effect::Mutating;
+    type Returns = Empty;
+}
+
 fn write_config(home: &Home, session: &str, job: &str, kind: &str) -> PathBuf {
     let image = image();
     let body = match kind {
@@ -266,25 +278,33 @@ fn killing_the_guest_browser_fails_the_run_and_the_session_and_leaves_no_vm_port
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let record = session(&home, s);
     let machine = record.machine.clone().unwrap();
-    let vnc_port = record.vnc_port.unwrap();
+    let vnc_port = record.vnc_port;
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
-    let (port, address, as_viewer) = dashboard_viewer(&home);
-    assert_eq!(control(port, &address, &as_viewer, s, "POST", "").0, 200, "a viewer takes control");
-    assert_control(port, &address, &as_viewer, s, "human");
-
-    home.kill_guest_process(&machine, browser_process());
+    let viewer = if common::nanos() {
+        let outside = outside_client(&home, s);
+        let _ = block_on(outside.call(Scope::Browser, &CrashBrowser {}, common::soon()));
+        None
+    } else {
+        let (port, address, as_viewer) = dashboard_viewer(&home);
+        assert_eq!(control(port, &address, &as_viewer, s, "POST", "").0, 200, "a viewer takes control");
+        assert_control(port, &address, &as_viewer, s, "human");
+        home.kill_guest_process(&machine, browser_process());
+        Some((port, address, as_viewer))
+    };
     let failed = ended(&home, run.id, Duration::from_secs(60));
     assert_eq!((failed.state.as_str(), failed.outcome.as_deref()), ("failed", Some("browser-crashed")), "{failed:?}");
     let detail = failed.detail.unwrap_or_default();
-    assert!(detail.contains("browser exited unexpectedly") || detail.contains("stopped unexpectedly"), "{detail}");
+    assert!(detail.contains("browser exited unexpectedly") || detail.contains("stopped unexpectedly") || detail.contains("stopped answering CDP"), "{detail}");
     assert!(!process_alive(leader), "the run's process group outlived the failed session");
 
     let failed_session = wait_session(&home, s, "the session to fail", |record| record.state == "failed");
     let failure = failed_session.failure.unwrap_or_default();
-    assert!(failure.contains("browser exited unexpectedly"), "{failure}");
+    assert!(failure.contains("browser exited unexpectedly") || (common::nanos() && (failure.contains("stopped unexpectedly") || failure.contains("stopped answering CDP"))), "{failure}");
     assert_eq!(failed_session.generation, record.generation, "the failure belongs to the session's live generation");
-    assert_control(port, &address, &as_viewer, s, "automation");
-    assert_cleaned(&home, s, Some(vnc_port));
+    if let Some((port, address, as_viewer)) = viewer {
+        assert_control(port, &address, &as_viewer, s, "automation");
+    }
+    assert_cleaned(&home, s, vnc_port);
     assert_ok(&home.bctl(&["down", s]));
     assert!(home.bctl_machines().is_empty());
 }
