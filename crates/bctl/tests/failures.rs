@@ -242,6 +242,18 @@ fn compositor_process() -> &'static str {
     if image() == "ref-alpine-chromium" { "sway" } else { "tinyland" }
 }
 
+fn vmm_pid(home: &Home, machine: &str) -> u32 {
+    if !common::nanos() {
+        return home.machine_status(machine).pid.expect("a running machine names its VMM pid");
+    }
+    let disk = if cfg!(target_os = "macos") { "disk.img" } else { "disk.qcow2" };
+    let output = Command::new("lsof").arg("-t").arg(home.path.join("machines").join(machine).join(disk)).output().unwrap();
+    assert_ok(&output);
+    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout).lines().map(|line| line.parse().unwrap()).collect();
+    assert_eq!(pids.len(), 1, "expected one VMM holding the guest disk: {pids:?}");
+    pids[0]
+}
+
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn killing_the_guest_browser_fails_the_run_and_the_session_and_leaves_no_vm_port_or_lease() {
@@ -323,12 +335,15 @@ fn killing_the_vm_process_fails_the_run_and_the_session_and_leaves_no_vm_port_or
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let record = session(&home, s);
     let machine = record.machine.clone().unwrap();
-    let vnc_port = record.vnc_port.unwrap();
+    let vnc_port = record.vnc_port;
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
-    let vmm = home.machine_status(&machine).pid.expect("a running machine names its VMM pid");
+    let vmm = vmm_pid(&home, &machine);
     assert!(vmm > 0, "refusing to signal pid 0");
-    let (port, address, as_viewer) = dashboard_viewer(&home);
-    assert_eq!(control(port, &address, &as_viewer, s, "POST", "").0, 200);
+    let viewer = if common::nanos() { None } else {
+        let (port, address, as_viewer) = dashboard_viewer(&home);
+        assert_eq!(control(port, &address, &as_viewer, s, "POST", "").0, 200);
+        Some((port, address, as_viewer))
+    };
 
     assert!(Command::new("kill").args(["-9", &vmm.to_string()]).status().unwrap().success());
     let failed = ended(&home, run.id, Duration::from_secs(60));
@@ -339,8 +354,10 @@ fn killing_the_vm_process_fails_the_run_and_the_session_and_leaves_no_vm_port_or
 
     let failed_session = wait_session(&home, s, "the session to fail", |record| record.state == "failed");
     assert!(failed_session.failure.is_some_and(|f| f.contains("stopped unexpectedly") || f.contains("stopped answering CDP")));
-    assert_control(port, &address, &as_viewer, s, "automation");
-    assert_cleaned(&home, s, Some(vnc_port));
+    if let Some((port, address, as_viewer)) = viewer {
+        assert_control(port, &address, &as_viewer, s, "automation");
+    }
+    assert_cleaned(&home, s, vnc_port);
     assert_ok(&home.bctl(&["down", s]));
     assert!(home.bctl_machines().is_empty());
 }
@@ -356,7 +373,7 @@ fn killing_the_daemon_during_a_run_interrupts_it_and_the_adopted_vm_is_later_rel
     let run = started(&home, s, "idle", &config);
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let before = session(&home, s);
-    let vnc_port = before.vnc_port.unwrap();
+    let vnc_port = before.vnc_port;
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
 
     kill_daemon(&home);
@@ -369,11 +386,13 @@ fn killing_the_daemon_during_a_run_interrupts_it_and_the_adopted_vm_is_later_rel
     let adopted = session(&home, s);
     assert_eq!((adopted.state.as_str(), adopted.generation), ("ready", before.generation), "the restart kept the running VM");
     assert!(browser_answers(&home, s), "the adopted VM's browser still answers CDP");
-    let (port, address, as_viewer) = dashboard_viewer(&home);
-    assert_control(port, &address, &as_viewer, s, "automation");
+    if !common::nanos() {
+        let (port, address, as_viewer) = dashboard_viewer(&home);
+        assert_control(port, &address, &as_viewer, s, "automation");
+    }
 
     assert_ok(&home.bctl(&["down", s]));
-    assert_cleaned(&home, s, Some(vnc_port));
+    assert_cleaned(&home, s, vnc_port);
 }
 
 #[test]
