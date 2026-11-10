@@ -233,7 +233,21 @@ Helium r6 (chromium-build `410801d`, SHA-256 `7289b25b…`, 0 impure, 11/11
 acceptance): starts without `$HOME` and reports `Helium/0.20.3.1` over
 DevTools; the image now refuses archives before r6. On r6 the restore,
 sessions, failures, runs, cdp and dashboard suites pass.
-Next: what switches input to pixel between 9 and 22 ms; the n3 snapshot's intermittent `Frame with the given frameId is not found`; X1's networked restore.
+Performance pass (2026-11-09): the browser suite measures Helium alone
+(`89cf4d8`); the first action after a navigation no longer waits out a 200 ms
+quiet interval (`759b308`, TodoMVC workflow 450.6 to 277.2 ms, gate 470 ms);
+n3's snapshot no longer fails when an iframe moves process mid-read
+(`b895525`, 8 of 8 against about half). Stopped for a noisy host and the
+Helium-on-Nanos comparison on a Linux host.
+Next, in order: (1) on an idle host, find what switches input to pixel between
+9 and 22 ms; the timer-coalescing test is in `docs/performance.md` Findings;
+(2) pause 1.8 s and resume 2.3 s against a 1.5 s cold `up`, where the time goes
+is unprofiled; (3) guest page loads trail the host by 13 ms to first byte and
+50 ms to the load event through SmolVM's relay; (4) X1's networked restore.
+Every perf claim needs `PERF_GATE_MAX_LOAD=0.25`, which this host meets only
+when nothing else runs.
+Needs the owner: the public restore CLI (`bctl template` / `bctl up
+--template`). `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 ## Charter

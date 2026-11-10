@@ -289,7 +289,13 @@ The `bctl` binary is 0.7 percent under its 5,200,000-byte gate.
   run as well as between runs, with the same build and image. The fast mode
   appeared on a busier host and the slow one on an idle host, which points at
   host scheduling or power state rather than the guest, but that is not
-  established.
+  established. One candidate is macOS timer coalescing, which defers a
+  default-QoS process's timers by up to 5 ms each when the host is idle
+  (`kern.timer_coalesce_tier1_ns_max`). Setting the VMM's latency tier with
+  `taskpolicy -l N -p PID` changed nothing on a loaded host (load 5 to 14):
+  tiers 0 and 5 both gave 8.7 to 12.5 ms blocks, and tier 3 gave 10.9 to 15.3
+  ms in a single run. Under load timers fire early anyway, so the test needs an
+  idle host: tier 0 against the default, interleaved, while the slow mode shows.
 - **Host connections to the host's own LAN address stall; the guest was not at
   fault.** The h1 guests reached the benchmark server at the host's LAN address
   (`10.0.1.28`), so SmolVM's relay dialed that address on the host. On this host
