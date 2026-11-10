@@ -451,25 +451,31 @@ fn n4_forms_take_unicode_text_selections_and_checks_like_a_person_and_refuse_whi
 
     let before = events(&home, s);
     let (port, address, as_viewer) = dashboard_viewer(&home);
-    eventually("the daemon to offer input control", || (http(port, &address, &format!("POST /api/sessions/{s}/control"), &as_viewer).0 == 200).then_some(()));
-    for (verb, args) in [
-        ("click", vec!["--label", "I agree"]),
-        ("fill", vec!["--label", "Name", "x"]),
-        ("type", vec!["x"]),
-        ("press", vec!["Enter"]),
-        ("select", vec!["--label", "Plan", "free"]),
-        ("check", vec!["--label", "I agree"]),
-        ("goto", vec!["about:blank"]),
-        ("eval", vec!["events.push('evaluated')"]),
-        ("scroll", vec!["--dy", "100"]),
-        ("dialog", vec!["dismiss"]),
-    ] {
-        assert_eq!(refused(&home, verb, s, &args).code, "HUMAN_IN_CONTROL", "{verb}");
+    if common::nanos() {
+        let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control"), &as_viewer);
+        assert_eq!(status, 409, "{response}");
+        assert!(response.contains("no input devices"), "{response}");
+    } else {
+        eventually("the daemon to offer input control", || (http(port, &address, &format!("POST /api/sessions/{s}/control"), &as_viewer).0 == 200).then_some(()));
+        for (verb, args) in [
+            ("click", vec!["--label", "I agree"]),
+            ("fill", vec!["--label", "Name", "x"]),
+            ("type", vec!["x"]),
+            ("press", vec!["Enter"]),
+            ("select", vec!["--label", "Plan", "free"]),
+            ("check", vec!["--label", "I agree"]),
+            ("goto", vec!["about:blank"]),
+            ("eval", vec!["events.push('evaluated')"]),
+            ("scroll", vec!["--dy", "100"]),
+            ("dialog", vec!["dismiss"]),
+        ] {
+            assert_eq!(refused(&home, verb, s, &args).code, "HUMAN_IN_CONTROL", "{verb}");
+        }
+        assert_eq!(done(&home, "get", s, &["value", "--label", "Plan"]).text.as_deref(), Some("pro"), "reads go on while a person has control");
+        done(&home, "wait", s, &["--text", "Arrived late"]);
+        let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control/resume"), &as_viewer);
+        assert_eq!(status, 200, "{response}");
     }
-    assert_eq!(done(&home, "get", s, &["value", "--label", "Plan"]).text.as_deref(), Some("pro"), "reads go on while a person has control");
-    done(&home, "wait", s, &["--text", "Arrived late"]);
-    let (status, response) = http(port, &address, &format!("POST /api/sessions/{s}/control/resume"), &as_viewer);
-    assert_eq!(status, 200, "{response}");
     assert_eq!(events(&home, s), before, "refused actions changed nothing");
 
     let warm_fill = done(&home, "fill", s, &["--label", "Name", "Warm"]);

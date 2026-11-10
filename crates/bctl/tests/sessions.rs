@@ -57,6 +57,17 @@ fn a_paused_session_keeps_its_browser_state_and_page_binding_across_resume() {
 
     assert_eq!(evaluated(eval(&home, s, "window.__mark = 42")), 42.0);
 
+    if common::nanos() {
+        let refusal = home.json(&["pause", s]).error.expect("Nanos cannot pause");
+        assert_eq!(refusal.code, "UNSUPPORTED_BY_RUNTIME");
+        assert_eq!(state(&home, s), "ready");
+        assert_eq!(evaluated(eval(&home, s, "window.__mark")), 42.0);
+        assert_eq!(home.bctl_machines().len(), 1);
+        assert_ok(&home.bctl(&["down", s]));
+        assert!(home.bctl_machines().is_empty());
+        return;
+    }
+
     assert_ok(&home.bctl(&["pause", s]));
     assert_eq!(state(&home, s), "paused");
     let Reply { error, page } = eval(&home, s, "window.__mark");
