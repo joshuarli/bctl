@@ -66,6 +66,7 @@ suite_harness() {
 		case_verdict poll_xproc "$smp" 20 PASS '' "$FIXTURES/poll_xproc"
 		case_verdict cow_stress "$smp" 60 PASS '' "$FIXTURES/cow_stress"
 		case_verdict cow_stress_dyn "$smp" 60 PASS '' "$FIXTURES/cow_stress_dyn"
+		case_verdict private_page_race "$smp" 30 PASS '' "$FIXTURES/private_page_race"
 		case_mem=6G
 		case_verdict cow_stress_6g "$smp" 60 PASS '' "$FIXTURES/cow_stress"
 		case_mem=

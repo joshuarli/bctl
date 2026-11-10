@@ -2184,11 +2184,11 @@ void pagecache_release_page(pagecache_node pn, u64 node_offset)
     pagecache_lock_node(pn);
     pagecache_page pp = page_lookup_nodelocked(pn, node_offset >> pn->pv->pc->page_order);
     pagecache_debug("%s: pn %p, node_offset 0x%lx, pp %p\n", func_ss, pn, node_offset, pp);
-    if (pp == INVALID_ADDRESS)
-        return;
-    pagecache_lock_state(pc);
-    pagecache_page_release_locked(pc, pp, true);
-    pagecache_unlock_state(pc);
+    if (pp != INVALID_ADDRESS) {
+        pagecache_lock_state(pc);
+        pagecache_page_release_locked(pc, pp, true);
+        pagecache_unlock_state(pc);
+    }
     pagecache_unlock_node(pn);
 }
 

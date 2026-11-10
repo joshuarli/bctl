@@ -316,7 +316,8 @@ static status demand_anonymous_page(process p, context ctx, u64 vaddr, vmap vm, 
 }
 
 /* kvirt may cover more than one page: nothing is mapped if any of them is mapped already */
-static status mmap_filebacked_page(process p, vmap vm, u64 page_addr, pageflags flags, range kvirt)
+static status mmap_filebacked_page(process p, vmap vm, u64 page_addr, pageflags flags, range kvirt,
+                                   boolean private_page)
 {
     u64 len = range_span(kvirt);
     page_addr &= ~(len - 1);
@@ -341,9 +342,13 @@ static status mmap_filebacked_page(process p, vmap vm, u64 page_addr, pageflags 
         address_space_map_locked(p->vm->as, page_addr, physical_from_virtual(kv), len, flags);
     }
     pagetable_unlock();
-    if (!pagecache_map)
-        for (u64 off = 0; off < len; off += PAGESIZE)
-            pagecache_release_page(vm->cache_node, vm->node_offset + vmap_offset + off);
+    if (!pagecache_map) {
+        if (private_page)
+            page_free_phys(physical_from_virtual(kv));
+        else
+            for (u64 off = 0; off < len; off += PAGESIZE)
+                pagecache_release_page(vm->cache_node, vm->node_offset + vmap_offset + off);
+    }
     return STATUS_OK;
 }
 
@@ -414,7 +419,7 @@ static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm,
     if (!*pf) {
         kvirt = pagecache_get_page_if_filled(pn, node_offset, private_page);
         if (range_span(kvirt) != 0)
-            return mmap_filebacked_page(p, vm, page_addr, flags, kvirt);
+            return mmap_filebacked_page(p, vm, page_addr, flags, kvirt, private_page);
         pending_fault new_pf = new_pending_fault_locked(p, ctx, vaddr);
         if (new_pf != INVALID_ADDRESS) {
             pagecache_node_ref(pn);
@@ -435,7 +440,7 @@ static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm,
     if (range_span(kvirt) == 0)
         s = timm_oom;
     else
-        s = mmap_filebacked_page(p, vm, page_addr, flags, kvirt);
+        s = mmap_filebacked_page(p, vm, page_addr, flags, kvirt, private_page);
     return s;
 }
 
