@@ -192,7 +192,9 @@ impl Runtime {
     pub(crate) fn image_hint(&self, name: &str) -> String {
         match self {
             Runtime::SmolVm(_) => format!("build it with `images/build.sh {name}` and copy the archive there"),
-            Runtime::Nanos(_) if cfg!(target_os = "macos") => format!("build the ARM Nanos image and copy it to $BCTL_HOME/images/{name}.img"),
+            Runtime::Nanos(_) if cfg!(target_os = "macos") => format!(
+                "build it with `BCTL_BROWSER_ARCHIVE=DIR sh images/{name}/build-macos.sh` and copy .work/images/{name}.img there"
+            ),
             Runtime::Nanos(_) => format!(
                 "build it with `images/{name}/build.sh` and copy .work/images/{name}.img and .work/images/{name}.kernel.img there"
             ),
