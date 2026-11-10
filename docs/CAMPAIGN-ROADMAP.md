@@ -109,10 +109,10 @@ H1 baselines (`docs/performance.md`, `tests/bench/`): every suite now
 measures the `helium` r6 image on an idle host (load 0.11 to 0.22 per core),
 50 of 50 gates pass. Cold `up` 1.47 s, warm 1.45 s, `down` 0.11 s, `pause`
 1.82 s, `resume` 2.25 s with the page kept 7 of 7; a TodoMVC workflow through
-`bctl page` 451 ms, bimodal because the first `fill` after `goto` waits about
-200 ms in 4 of 7 rounds; CDP round trip 0.24 ms through the gateway; input to
-pixel 23.6 ms (one to two frames, against 6.7 ms on the old Alpine Chromium
-image); 458 MiB VMM footprint and 3.6% of a core idle; Speedometer 3.1 at 31.4;
+`bctl page` 277 ms after `759b308` stopped the first action after a navigation
+from waiting out a 200 ms quiet interval (450.6 ms before); CDP round trip 0.26
+ms through the gateway; input to pixel switches between about 9 and 22 ms with
+the same build, cause open; 458 MiB VMM footprint and 3.6% of a core idle; Speedometer 3.1 at 31.4;
 `news-next` load event 71.9 ms and largest contentful paint 140 ms. The browser
 suite measures Helium alone; the container comparison is gone.
 H1 findings: `smolvm machine pause`
@@ -233,7 +233,7 @@ Helium r6 (chromium-build `410801d`, SHA-256 `7289b25b…`, 0 impure, 11/11
 acceptance): starts without `$HOME` and reports `Helium/0.20.3.1` over
 DevTools; the image now refuses archives before r6. On r6 the restore,
 sessions, failures, runs, cdp and dashboard suites pass.
-Next: the 200 ms first-action wait and Helium's extra input-to-pixel frame; X1's networked restore.
+Next: what switches input to pixel between 9 and 22 ms; the n3 snapshot's intermittent `Frame with the given frameId is not found`; X1's networked restore.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 ## Charter

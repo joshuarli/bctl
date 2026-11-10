@@ -121,7 +121,7 @@ over CDP afterwards and reports it against the trials sent.
 | Host | Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434) |
 | SmolVM | 1.34.0, vendored with this repository's patches |
 | Guest | `helium` r6 (config `b59ec01a...`, tar 218,243,072 bytes), Helium 0.20.3.1; 2 CPUs, 4096 MiB, 1280x800 |
-| Tree | main `4cd94c1` with the suite changes uncommitted (browser suite: `41db3e9` with the container removed); `bctl` release build |
+| Tree | main `4cd94c1` with the suite changes uncommitted (browser: `41db3e9` with the container removed; interaction: `759b308`); `bctl` release build |
 | Load | No other work ran. The one-minute load average was 2.0 to 4.0 at the start of each suite (0.11 to 0.22 per core), and the suites waited 1 to 5 s in total for a quiet host. |
 
 Suites ran one after another: lifecycle and interaction with 7 rounds, viewer 7
@@ -158,22 +158,28 @@ Resume takes 0.8 s longer than a cold `up` at the median, but it returns the
 session with its tab and page state, where a cold `up` starts with neither.
 Where pause and resume spend their time was not profiled.
 
-### Interaction (7 rounds, gateway and direct alternating)
+### Interaction (gateway and direct alternating)
+
+Taken on `759b308` (the first-paint wait fixed) with `PERF_GATE_MAX_LOAD=0.25`
+on a host with other work running: 6 of 7 rounds of the workflow and 5 of 7
+direct and 3 of 7 gateway input blocks passed the quiet-host check; the rest
+are under `discarded`.
 
 TodoMVC workflow through `bctl page`, one per round:
 
 | Step | p50 | p95 | Samples |
 | --- | --- | --- | --- |
-| `goto` with `--wait load` | 39.9 ms | 71.7 ms | 7 |
-| `fill` | 14.4 ms | 216.0 ms | 35 |
-| `press Enter` | 14.1 ms | 26.0 ms | 35 |
-| `check` | 65.8 ms | 69.5 ms | 7 |
-| `snapshot` | 11.5 ms | 15.2 ms | 7 |
-| Whole workflow | 450.6 ms (263 to 485) | | 7 |
+| `goto` with `--wait load` | 39.5 ms | 62.9 ms | 6 |
+| `fill` | 14.3 ms | 40.2 ms | 30 |
+| `press Enter` | 15.4 ms | 23.1 ms | 30 |
+| `check` | 65.7 ms | 72.3 ms | 6 |
+| `snapshot` | 11.9 ms | 14.7 ms | 6 |
+| Whole workflow | 277.2 ms (251.8 to 313.2) | | 6 |
 
-The workflow is bimodal: 263 to 307 ms in 3 rounds and 451 to 485 ms in 4. The
-difference is the first `fill` after `goto`, which took 215 to 222 ms in those 4
-rounds and 13 to 21 ms otherwise; later fills took 11 to 22 ms.
+Before `759b308` the workflow took 450.6 ms (263 to 485) on an idle host,
+because the first `fill` after `goto` waited out a 200 ms quiet interval in 4 of
+7 rounds (see Findings); no step waits that long now, and the slowest `fill` was
+46 ms.
 
 CDP round trip, one call at a time, 700 calls per cell. `direct` is the exposed
 Unix socket, which bypasses the gateway only; both include the guest relay and
@@ -181,27 +187,28 @@ the browser.
 
 | Call | Path | p50 | p95 | Block medians |
 | --- | --- | --- | --- | --- |
-| `Runtime.evaluate("1")` | direct | 170 us | 189 us | 134 to 175 us |
-| `Runtime.evaluate("1")` | gateway | 243 us | 285 us | 219 to 251 us |
+| `Runtime.evaluate("1")` | direct | 170 us | 202 us | 167 to 177 us |
+| `Runtime.evaluate("1")` | gateway | 256 us | 332 us | 251 to 295 us |
 
-The gateway adds 73 us at the median, and the block medians of the two paths do
+The gateway adds 86 us at the median, and the block medians of the two paths do
 not overlap.
 
 Input to pixel: an RFB pointer press or key tap to the update that repaints the
-probe pixel, 140 trials per cell (7 blocks of 20). The page counted 560 toggles for
-560 trials sent; none timed out.
+probe pixel, 20 trials per block. The page counted 560 toggles for 560 trials
+sent; none timed out.
 
 | Input | Path | p50 | p95 | Block medians |
 | --- | --- | --- | --- | --- |
-| pointer | direct | 21.7 ms | 23.9 ms | 18.8 to 22.6 ms |
-| pointer | gateway | 23.6 ms | 25.8 ms | 22.3 to 24.5 ms |
-| key | direct | 21.6 ms | 23.9 ms | 19.0 to 22.6 ms |
-| key | gateway | 23.4 ms | 25.1 ms | 22.4 to 24.0 ms |
+| pointer | direct | 8.9 ms | 9.6 ms | 8.6 to 9.1 ms |
+| pointer | gateway | 10.3 ms | 11.1 ms | 10.2 to 10.6 ms |
+| key | direct | 8.8 ms | 9.6 ms | 8.6 to 9.0 ms |
+| key | gateway | 10.2 ms | 10.9 ms | 10.2 to 10.7 ms |
 
-The gateway adds about 2 ms at the median. Helium presents the change between
-one and two 60 Hz frames after the input; the Alpine Chromium reference image on
-an earlier tree presented it in 6.7 to 7.7 ms, inside one frame. Which part of
-the Helium image adds the frame was not investigated.
+Input to pixel has two modes. The idle-host run before `759b308` had every
+block at 19 to 24 ms; this run had every block at 8.6 to 10.7 ms; a run between
+them started at 9 to 11 ms and moved to 17 to 21 ms in its last two rounds. The
+change in `759b308` does not touch the RFB path, so the mode is not the build.
+What selects it is open (see Findings).
 
 ### Viewer (7 rounds, gateway and direct alternating, 10 s windows)
 
@@ -269,12 +276,20 @@ The `bctl` binary is 0.7 percent under its 5,200,000-byte gate.
 
 ## Findings
 
-- **The first action after a navigation sometimes waits about 200 ms.** In 4 of
-  7 TodoMVC rounds the first `fill` after `goto` took 215 to 222 ms against 11 to
-  22 ms for every other fill, which makes the workflow bimodal. The step matches
-  the automation's 200 ms quiet wait (`MAX_QUIET` in `crates/automation`), as if
-  the action's first check missed the field and then waited for a page change
-  that had already happened; this was not confirmed.
+- **The first action after a navigation waited out a 200 ms quiet interval
+  (fixed in `759b308`).** An action that sends input first checks that the page
+  has its first contentful paint, and between checks it waits for a DOM
+  mutation or a layout or navigation event, at most 200 ms. A paint is neither,
+  so a check that ran a few milliseconds before the paint waited the full
+  200 ms. Re-navigating a plain form to its own URL hit it in 9 of 10 fills.
+  The wait now also ends at that paint;
+  `n7_an_action_right_after_a_navigation_starts_when_the_page_first_paints`
+  keeps it.
+- **Input to pixel switches between about 9 and about 22 ms.** Seen within one
+  run as well as between runs, with the same build and image. The fast mode
+  appeared on a busier host and the slow one on an idle host, which points at
+  host scheduling or power state rather than the guest, but that is not
+  established.
 - **Host connections to the host's own LAN address stall; the guest was not at
   fault.** The h1 guests reached the benchmark server at the host's LAN address
   (`10.0.1.28`), so SmolVM's relay dialed that address on the host. On this host
