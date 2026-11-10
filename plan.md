@@ -57,9 +57,14 @@ bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
   and drops resources it does not model (`RLIMIT_AS`, `RLIMIT_CPU`, ...),
   `RLIMIT_DATA` bounds brk but not private writable mmaps, and
   `prlimit64` on another pid reads and writes the caller's limits.
-- **Running lane:** none.
-- **Next:** G4; the owner's session maps `process_visible_pid` through
-  `pid_nr_ns`.
+  G4.1 accepted: the probe's 55 named checks are identical natively and on
+  Nanos at 1, 2 and 4 vCPUs and cover every Acceptance row; the raw variant
+  passes.
+- **Running lane:** none. G4.2 is parked on `lane/g4.2-stress`: a stress role
+  (8 workers × 100 sandboxed renderer launches) passes on Nanos, but 8 × 400
+  hangs the guest silently, and `probe --repeat` is not written.
+- **Next:** root-cause the 8 × 400 stress hang, then finish G4.2; the
+  owner's session maps `process_visible_pid` through `pid_nr_ns`.
 - **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1–G3.4 accepted; process_visible_pid translation open) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
