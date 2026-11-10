@@ -6,7 +6,7 @@ showing that the fork can host a Chromium-shaped multiprocess application,
 with MMU-isolated processes and an enforced renderer sandbox, inside one KVM
 microVM on Linux x86-64. The end proof is the patched Helium 0.20.3.1 binary
 (Chromium 156.0.8078.79) running headless with its sandbox on. If this works,
-bctl (`~/d/bctl`) may adopt it later. This campaign does not touch bctl.
+bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026-11-10).
 
 ## Status
 
@@ -128,8 +128,9 @@ only when every slice in it is accepted on `main`.
 ### Owner (2026-11-09)
 
 1. **One monorepo.** Everything lives in hydrogen (`~/d/hydrogen`), including
-   the Nanos fork. bctl is read-only context: never build, run or write
-   anything in `~/d/bctl`.
+   the Nanos fork. Superseded 2026-11-10: the owner gave this agent full
+   ownership of bctl, so bctl may be built, run and changed under its own
+   repo rules, and bctl may read and run hydrogen.
 2. **musl only.** Guest programs, the native reference oracle, upstream
    regression tests and the browser all use musl. glibc is out of scope: no
    glibc sysroot, container or loader.
@@ -539,7 +540,7 @@ owner decision 4; read `~/d/bctl`, `~/d/chromium-build` and
 `~/d/laputa-systems/llvm-prebuilt-musl`; run the Helium artifact natively on
 this host for the H cross-check.
 
-**Forbidden:** any write, build or run in `~/d/bctl`; editing tracked files
+**Forbidden:** editing tracked files
 in `~/d/chromium-build` or `~/d/laputa-systems`; chromium-build `build` or
 any step after `prepare`; building Chromium or Helium from source; pushing to
 any target other than hydrogen `origin main`; force pushes; creating remote
@@ -553,7 +554,7 @@ builds images); glibc in any form.
 aarch64, macOS and HVF; the setuid `chrome-sandbox` layer and filesystem
 mode-bit security; general process management beyond what the probe and
 Helium require; a kernel build with LLVM; PCID and other performance work
-before `P.1`; bctl integration.
+before `P.1`.
 
 **Contract changes to report to the owner** (in `docs/campaign-report.md`):
 `prctl` unknown options now return `EINVAL`; `setuid`, `setgid`,
