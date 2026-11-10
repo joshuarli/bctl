@@ -239,14 +239,19 @@ quiet interval (`759b308`, TodoMVC workflow 450.6 to 277.2 ms, gate 470 ms);
 n3's snapshot no longer fails when an iframe moves process mid-read
 (`b895525`, 8 of 8 against about half). Stopped for a noisy host and the
 Helium-on-Nanos comparison on a Linux host.
-Next, in order: (1) on an idle host, find what switches input to pixel between
+M7N (Helium on Nanos, Linux amd64) is the active milestone; its slices are
+under **Sequence**. After it, the Mac performance queue: (1) on an idle host, find what switches input to pixel between
 9 and 22 ms; the timer-coalescing test is in `docs/performance.md` Findings;
 (2) pause 1.8 s and resume 2.3 s against a 1.5 s cold `up`, where the time goes
 is unprofiled; (3) guest page loads trail the host by 13 ms to first byte and
 50 ms to the load event through SmolVM's relay; (4) X1's networked restore.
 Every perf claim needs `PERF_GATE_MAX_LOAD=0.25`, which this host meets only
 when nothing else runs.
-New host: nothing under `.work/` is needed except the browser archive. Rebuild
+New host: on Linux amd64 (Alpine), install `sqlite-static` (rusqlite links
+SQLite statically on musl) and build the dashboard with `pnpm --dir web
+install && pnpm --dir web build` before any `cargo` command; then `cargo test
+--workspace` passes (L0, 2026-11-10). Nothing under `.work/` is needed except
+the browser archive. Rebuild
 the rest: `sh runtime/build.sh` (vendored SmolVM and libkrun), then
 `BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium`, the Speedometer checkout
 named in `docs/performance.md`, and `cargo build --release -p bctl -p
@@ -986,9 +991,10 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
 - **X2 Alternative backends.** A unikernel-style or other VMM backend
   (Unikraft-style library OS, Firecracker/Cloud Hypervisor on Linux) must beat
   SmolVM on H1's measures while passing the full acceptance suite unchanged.
-  Nanos, assessed 2026-11-08 (`docs/research/unikernel-nanos.md`), is not viable:
-  no process creation, namespaces, seccomp, DRM, or evdev, and Chromium dies
-  in early init. Unikraft, assessed 2026-11-08 (`docs/research/unikernel-unikraft.md`), is not viable: Chromium examples need the unpublished `base-compat` Cloud kernel, and stock Unikraft has vfork/execve only, with no fork, namespaces, seccomp, DRM/KMS or evdev.
+  Stock Nanos, assessed 2026-11-08 (`docs/research/unikernel-nanos.md`), was
+  not viable: no process creation, namespaces, seccomp, DRM, or evdev. The
+  hydrogen fork (`~/d/hydrogen`) adds processes, namespaces and seccomp and
+  runs Helium headless with its sandbox on; M7N integrates it. Unikraft, assessed 2026-11-08 (`docs/research/unikernel-unikraft.md`), is not viable: Chromium examples need the unpublished `base-compat` Cloud kernel, and stock Unikraft has vfork/execve only, with no fork, namespaces, seccomp, DRM/KMS or evdev.
 - **X3 Remote contexts.** A remote `bctl` daemon on a Linux KVM host using the
   amd64 Helium artifact, with the same API and ownership model. Jobs reach its
   sessions through its gateway's CDP endpoint, or run on that host when H1's
@@ -997,6 +1003,72 @@ L0; keep a change only if it moves a number by more than the run-to-run spread.
   which configuration (profile warmth, egress, flags) passed or was
   challenged, with sample counts and dates. This measures task completion,
   not page loads. It covers only sites the operator is entitled to automate.
+
+### M7N: Helium on Nanos (Linux amd64, headless)
+
+Owner 2026-11-10: the agent owns both bctl and hydrogen; the first delivery
+is a Nanos runtime backend, so `bctl up --runtime nanos` boots hydrogen's
+Nanos with Helium r5 amd64 headless on a Linux KVM host and every headless
+surface works against it (CDP gateway, `bctl page`, tabs, runs) and the
+bench suites can compare it with SmolVM. No live view, VNC input or human
+takeover on Nanos: guest graphics are a hydrogen non-goal, so Nanos sessions
+are automation-only and `bctl view` and the input lease refuse them with
+`UNSUPPORTED_BY_RUNTIME`.
+
+Decisions (prescribed; the owner may overrule):
+
+- **CDP transport.** virtio-vsock through rust-vmm's `vhost-device-vsock`
+  (0.3.0, built from crates.io with `--locked`), attached as QEMU
+  `vhost-user-vsock-pci`. Its host side is a Unix socket in the session's
+  private directory, so H2's rule that only a Unix socket reaches CDP holds
+  and no host kernel module is needed. Spike 2026-11-10 against hydrogen
+  `aaa0475a`: hybrid `CONNECT` handshake, 35 µs median round trip, repeat
+  connections, 16 MiB at 14 MiB/s.
+- **Kernel and tools.** `runtime/build-nanos.sh` exports hydrogen at the
+  commit it pins (`git archive`, never a write into hydrogen) and builds the
+  kernel, boot image and `mkfs` into `.work/runtime/nanos`, plus
+  `vhost-device-vsock`. QEMU is the host's.
+- **Guest program.** `bctl-guest run-headless` (the Rust `guest/appliance`
+  crate) starts Helium with `--headless=new`, the sandbox on, the profile at
+  `/profile`, and relays vsock port 9222 to the browser's loopback CDP port;
+  `bctl-guest check` answers on vsock port 9223 with `browser`, `sandbox` and
+  `cdp` stages and `input absent`.
+- **Image.** `images/nanos-helium/build.sh` builds a Nanos disk image from
+  the r5 `linux-x86_64-musl` archive with the same archive checks as the
+  arm64 image (sidecars, chromium-build's installer, ELF audit for x86-64).
+- **Profile.** virtio-9p (`-virtfs`, tag `profile`) mounted at `/profile`;
+  if hydrogen's 9p cannot carry a Chromium profile, the profile lives on the
+  image's disk and does not outlive the session, recorded as a gap.
+- **Egress.** QEMU's user network with `restrict=on`, so the guest reaches
+  nothing directly. Helium gets `--proxy-server` pointing at a `guestfwd`
+  endpoint served by a bctl egress proxy on the host that resolves names
+  itself and refuses private and loopback ranges unless `--allow-private`
+  allows them, which keeps H2's egress rule.
+- **Selection.** `bctl up --runtime nanos|smolvm`; the default is `smolvm` on
+  macOS and `nanos` on Linux. The session record stores its runtime (a
+  store migration); pause, resume and templates answer
+  `UNSUPPORTED_BY_RUNTIME` on Nanos until a slice adds them.
+
+Slices, in order, one writer:
+
+- **L0 Linux host build.** `cargo test --workspace` and the dashboard build
+  pass on Linux amd64; the new-host checklist names `sqlite-static`.
+- **L1 Runtime and image.** `runtime/build-nanos.sh` and
+  `images/nanos-helium/build.sh`; acceptance: the image boots under QEMU and
+  `/json/version` answers `Helium/0.20.3.1` through the vsock Unix socket.
+- **L2 Adapter.** `crates/runtime-nanos` launches, observes, checks readiness
+  (machine, guest, browser, sandbox, cdp) and tears down;
+  acceptance: its `--ignored` lifecycle test, 10/10.
+- **L3 Daemon.** Runtime selection, the store migration, and the
+  unsupported-operation refusals; acceptance: the `sessions`, `tabs`,
+  `actions`, `snapshots` and `failures` suites pass with
+  `BCTL_TEST_RUNTIME=nanos`.
+- **L4 Egress.** The proxy and `--allow-private`; acceptance: the `egress`
+  and `host_http` suites pass on Nanos.
+- **L5 Measure.** `bctl-bench lifecycle|interaction|browser|resources
+  --runtime nanos` with the same measure names, Speedometer run headless and
+  labelled so, and a Nanos column in `docs/performance.md`. The SmolVM
+  numbers are from the Mac until SmolVM runs on Linux, and the table says so.
 
 ## Acceptance
 
