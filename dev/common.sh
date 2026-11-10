@@ -15,9 +15,10 @@ export TMPDIR CCACHE_DIR
 die() { printf '%s: %s\n' "$(basename -- "$0")" "$*" >&2; exit 1; }
 
 ensure_work() {
-	exclude=$(git -C "$ROOT" rev-parse --git-path info/exclude)
-	case $exclude in /*) ;; *) exclude=$ROOT/$exclude ;; esac
-	mkdir -p "$(dirname -- "$exclude")"
-	grep -qx '\.work/' "$exclude" 2>/dev/null || printf '.work/\n' >>"$exclude"
+	if exclude=$(git -C "$ROOT" rev-parse --git-path info/exclude 2>/dev/null); then
+		case $exclude in /*) ;; *) exclude=$ROOT/$exclude ;; esac
+		mkdir -p "$(dirname -- "$exclude")"
+		grep -qx '\.work/' "$exclude" 2>/dev/null || printf '.work/\n' >>"$exclude"
+	fi
 	mkdir -p "$WORK/dl" "$WORK/tmp" "$TOOLCHAIN"
 }
