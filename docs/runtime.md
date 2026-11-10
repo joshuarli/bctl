@@ -216,6 +216,7 @@ EFI firmware and its license. Run `runtime/build-nanos-arm64.sh`, then
 `.work/images/nanos-helium.img` to `<BCTL_HOME>/images`. The image embeds the
 kernel and modules built together; it needs no separate kernel file. Set
 `BCTL_RUNTIME=nanos` to select this backend; SmolVM remains the macOS default.
+Ready headless sessions report no VNC port and reject viewer input.
 Internal VM sockets use private, short directories under `<BCTL_HOME>/ns` so
 long session names fit macOS's Unix socket path limit.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`

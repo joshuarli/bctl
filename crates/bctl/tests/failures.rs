@@ -311,7 +311,7 @@ fn killing_the_guest_browser_fails_the_run_and_the_session_and_leaves_no_vm_port
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
-fn killing_the_guest_compositor_fails_the_run_and_the_session_without_leaving_a_vm_port_or_lease() {
+fn compositor_failure_or_headless_absence_leaves_a_named_session_state() {
     let _serial = serial();
     let home = Home::new("h3-compositor");
     let session_name = format!("{}-compositor", home.prefix());
@@ -320,6 +320,18 @@ fn killing_the_guest_compositor_fails_the_run_and_the_session_without_leaving_a_
     let run = started(&home, s, "idle", &config);
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let record = session(&home, s);
+    if common::nanos() {
+        assert!(record.vnc_port.is_none());
+        assert_eq!(record.state, "ready");
+        assert!(browser_answers(&home, s));
+        assert_eq!(one_run(&home, run.id).state, "running");
+        assert_ok(&home.bctl(&["cancel", &run.id.to_string()]));
+        let cancelled = ended(&home, run.id, Duration::from_secs(60));
+        assert_eq!((cancelled.state.as_str(), cancelled.outcome.as_deref()), ("cancelled", Some("cancelled")));
+        assert_ok(&home.bctl(&["down", s]));
+        assert_cleaned(&home, s, None);
+        return;
+    }
     let machine = record.machine.clone().unwrap();
     let vnc_port = record.vnc_port.unwrap();
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
@@ -487,7 +499,7 @@ fn a_run_that_fills_its_output_bound_ends_as_a_job_error_and_the_session_survive
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
-fn dropping_the_viewer_releases_the_input_lease_and_the_run_keeps_its_named_end() {
+fn dropping_the_viewer_or_refusing_headless_input_keeps_the_run_controllable() {
     let _serial = serial();
     let home = Home::new("h3-viewer");
     let session_name = format!("{}-viewer", home.prefix());
@@ -496,10 +508,23 @@ fn dropping_the_viewer_releases_the_input_lease_and_the_run_keeps_its_named_end(
     let run = started(&home, s, "idle", &config);
     wait_run(&home, run.id, "running", Duration::from_secs(120), |r| r.state == "running");
     let record = session(&home, s);
-    let vnc_port = record.vnc_port.unwrap();
+    let vnc_port = record.vnc_port;
     let leader = one_run(&home, run.id).attempts[0].pid.unwrap();
 
     let (port, address, first) = dashboard_viewer(&home);
+    if common::nanos() {
+        let (status, body) = control(port, &address, &first, s, "POST", "");
+        assert_eq!(status, 409, "{body}");
+        assert!(body.contains("no input devices"), "{body}");
+        assert_eq!(one_run(&home, run.id).state, "running");
+        assert_ok(&home.bctl(&["cancel", &run.id.to_string()]));
+        let cancelled = ended(&home, run.id, Duration::from_secs(60));
+        assert_eq!((cancelled.state.as_str(), cancelled.outcome.as_deref()), ("cancelled", Some("cancelled")));
+        assert!(!process_alive(leader));
+        assert_ok(&home.bctl(&["down", s]));
+        assert_cleaned(&home, s, vnc_port);
+        return;
+    }
     let (_, _, second) = dashboard_viewer(&home);
     assert_eq!(control(port, &address, &first, s, "POST", "").0, 200, "the first viewer takes control");
     assert_eq!(control(port, &address, &second, s, "POST", "").0, 409, "input is exclusive while the first viewer holds it");
@@ -523,7 +548,7 @@ fn dropping_the_viewer_releases_the_input_lease_and_the_run_keeps_its_named_end(
     assert!(!process_alive(leader));
 
     assert_ok(&home.bctl(&["down", s]));
-    assert_cleaned(&home, s, Some(vnc_port));
+    assert_cleaned(&home, s, vnc_port);
 }
 
 #[test]

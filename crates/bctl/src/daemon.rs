@@ -537,7 +537,7 @@ impl Daemon {
             stage: if record.state == SessionState::Starting { observed.and_then(|o| o.stage).map(str::to_string) } else { None },
             failure: record.failure.clone(),
             machine: holds.then(|| MachineName { session: record.name.clone(), generation: record.generation }.to_string()),
-            vnc_port: record.endpoints.filter(|_| holds).map(|e| e.vnc_port),
+            vnc_port: record.endpoints.filter(|_| holds && observed.and_then(|o| o.input) != Some(InputSupport::Headless)).map(|e| e.vnc_port),
             input: observed.and_then(|o| o.input).filter(|_| holds).map(|i| match i {
                 InputSupport::Interactive => "interactive".to_string(),
                 InputSupport::ViewOnly => "view-only".to_string(),
