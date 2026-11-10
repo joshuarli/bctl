@@ -148,6 +148,19 @@ impl IrqChipT for HvfGicV3 {
             )))
         }
     }
+
+    fn clear_irq(&self, irq_line: Option<u32>) -> Result<(), DeviceError> {
+        let irq_line = irq_line.ok_or_else(|| DeviceError::FailedSignalingUsedQueue(
+            io::Error::new(io::ErrorKind::InvalidData, "IRQ line not configured")
+        ))?;
+        let ret = unsafe { (self.bindings.hv_gic_set_spi)(irq_line, false) };
+        if ret != HV_SUCCESS {
+            return Err(DeviceError::FailedSignalingUsedQueue(io::Error::other(
+                "HVF returned error when clearing SPI",
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl BusDevice for HvfGicV3 {

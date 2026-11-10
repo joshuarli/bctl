@@ -36,6 +36,10 @@ impl IrqChipDevice {
         self.inner.set_irq(irq_line, interrupt_evt)
     }
 
+    pub fn clear_irq(&self, irq_line: Option<u32>) -> Result<(), DeviceError> {
+        self.inner.clear_irq(irq_line)
+    }
+
     /// Checkpoint the chip's userspace register state, if it has any (see
     /// [`IrqChipT::save_state`]).
     #[cfg(target_arch = "x86_64")]
@@ -134,6 +138,9 @@ pub trait IrqChipT: BusDevice {
         irq_line: Option<u32>,
         interrupt_evt: Option<&EventFd>,
     ) -> Result<(), DeviceError>;
+    fn clear_irq(&self, _irq_line: Option<u32>) -> Result<(), DeviceError> {
+        Ok(())
+    }
 
     /// Capture interrupt-controller state for a VM checkpoint. Only chips whose
     /// registers live in userspace (e.g. the WHP software IOAPIC) return state;
@@ -156,6 +163,9 @@ pub trait IrqChipT: BusDevice + GICDevice {
         irq_line: Option<u32>,
         interrupt_evt: Option<&EventFd>,
     ) -> Result<(), DeviceError>;
+    fn clear_irq(&self, _irq_line: Option<u32>) -> Result<(), DeviceError> {
+        Ok(())
+    }
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -167,6 +177,9 @@ pub trait IrqChipT: BusDevice + AIADevice {
         irq_line: Option<u32>,
         interrupt_evt: Option<&EventFd>,
     ) -> Result<(), DeviceError>;
+    fn clear_irq(&self, _irq_line: Option<u32>) -> Result<(), DeviceError> {
+        Ok(())
+    }
 }
 
 #[cfg(any(test, feature = "test_utils"))]

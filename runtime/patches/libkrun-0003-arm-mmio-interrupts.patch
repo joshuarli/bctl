@@ -1,0 +1,170 @@
+diff --git a/src/devices/src/legacy/hvfgicv3.rs b/src/devices/src/legacy/hvfgicv3.rs
+index b15500f..3091696 100644
+--- a/src/devices/src/legacy/hvfgicv3.rs
++++ b/src/devices/src/legacy/hvfgicv3.rs
+@@ -148,6 +148,19 @@ impl IrqChipT for HvfGicV3 {
+             )))
+         }
+     }
++
++    fn clear_irq(&self, irq_line: Option<u32>) -> Result<(), DeviceError> {
++        let irq_line = irq_line.ok_or_else(|| DeviceError::FailedSignalingUsedQueue(
++            io::Error::new(io::ErrorKind::InvalidData, "IRQ line not configured")
++        ))?;
++        let ret = unsafe { (self.bindings.hv_gic_set_spi)(irq_line, false) };
++        if ret != HV_SUCCESS {
++            return Err(DeviceError::FailedSignalingUsedQueue(io::Error::other(
++                "HVF returned error when clearing SPI",
++            )));
++        }
++        Ok(())
++    }
+ }
+ 
+ impl BusDevice for HvfGicV3 {
+diff --git a/src/devices/src/legacy/irqchip.rs b/src/devices/src/legacy/irqchip.rs
+index 71764af..7ec06e8 100644
+--- a/src/devices/src/legacy/irqchip.rs
++++ b/src/devices/src/legacy/irqchip.rs
+@@ -36,6 +36,10 @@ impl IrqChipDevice {
+         self.inner.set_irq(irq_line, interrupt_evt)
+     }
+ 
++    pub fn clear_irq(&self, irq_line: Option<u32>) -> Result<(), DeviceError> {
++        self.inner.clear_irq(irq_line)
++    }
++
+     /// Checkpoint the chip's userspace register state, if it has any (see
+     /// [`IrqChipT::save_state`]).
+     #[cfg(target_arch = "x86_64")]
+@@ -134,6 +138,9 @@ pub trait IrqChipT: BusDevice {
+         irq_line: Option<u32>,
+         interrupt_evt: Option<&EventFd>,
+     ) -> Result<(), DeviceError>;
++    fn clear_irq(&self, _irq_line: Option<u32>) -> Result<(), DeviceError> {
++        Ok(())
++    }
+ 
+     /// Capture interrupt-controller state for a VM checkpoint. Only chips whose
+     /// registers live in userspace (e.g. the WHP software IOAPIC) return state;
+@@ -156,6 +163,9 @@ pub trait IrqChipT: BusDevice + GICDevice {
+         irq_line: Option<u32>,
+         interrupt_evt: Option<&EventFd>,
+     ) -> Result<(), DeviceError>;
++    fn clear_irq(&self, _irq_line: Option<u32>) -> Result<(), DeviceError> {
++        Ok(())
++    }
+ }
+ 
+ #[cfg(target_arch = "riscv64")]
+@@ -167,6 +177,9 @@ pub trait IrqChipT: BusDevice + AIADevice {
+         irq_line: Option<u32>,
+         interrupt_evt: Option<&EventFd>,
+     ) -> Result<(), DeviceError>;
++    fn clear_irq(&self, _irq_line: Option<u32>) -> Result<(), DeviceError> {
++        Ok(())
++    }
+ }
+ 
+ #[cfg(any(test, feature = "test_utils"))]
+diff --git a/src/devices/src/virtio/mmio.rs b/src/devices/src/virtio/mmio.rs
+index 1c18d89..1b391ae 100644
+--- a/src/devices/src/virtio/mmio.rs
++++ b/src/devices/src/virtio/mmio.rs
+@@ -165,6 +165,18 @@ impl InterruptTransport {
+         Ok(())
+     }
+ 
++    fn ack(&self, mask: u32) -> Result<(), crate::Error> {
++        let prev = self.status().fetch_and(!(mask as usize), Ordering::SeqCst);
++        if prev & !(mask as usize) == 0 {
++            let intc = self.intc().lock().unwrap();
++            intc.clear_irq(self.0.irq_line)?;
++            if self.status().load(Ordering::SeqCst) != 0 {
++                intc.set_irq(self.0.irq_line, Some(&self.0.event))?;
++            }
++        }
++        Ok(())
++    }
++
+     pub fn try_signal_used_queue(&self) -> Result<(), crate::Error> {
+         debug!(target: &self.0.log_target, "interrupt: signal_used_queue");
+         self.try_signal(VIRTIO_MMIO_INT_VRING)
+@@ -592,9 +604,9 @@ impl BusDevice for MmioTransport {
+                     }
+                     0x64 => {
+                         if self.check_device_status(device_status::DRIVER_OK, 0) {
+-                            self.interrupt
+-                                .status()
+-                                .fetch_and(!(v as usize), Ordering::SeqCst);
++                            if let Err(error) = self.interrupt.ack(v) {
++                                warn!("failed to acknowledge interrupt: {error:?}");
++                            }
+                         }
+                     }
+                     0x70 => self.set_device_status(v),
+@@ -647,6 +659,52 @@ pub(crate) mod tests {
+     use crate::legacy::DummyIrqChip;
+     use vm_memory::GuestMemoryMmap;
+ 
++    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
++    #[test]
++    fn acknowledge_lowers_the_level_only_after_all_causes_clear() {
++        use crate::legacy::gic::GICDevice;
++        use crate::legacy::{IrqChipDevice, IrqChipT};
++
++        struct LevelIrq(Arc<Mutex<Vec<bool>>>);
++        impl BusDevice for LevelIrq {}
++        impl GICDevice for LevelIrq {
++            fn device_properties(&self) -> Vec<u64> { vec![] }
++            fn vcpu_count(&self) -> u64 { 1 }
++            fn fdt_compatibility(&self) -> String { String::new() }
++            fn fdt_maint_irq(&self) -> u32 { 0 }
++            fn version(&self) -> u32 { 3 }
++        }
++        impl IrqChipT for LevelIrq {
++            fn get_mmio_addr(&self) -> u64 { 0 }
++            fn get_mmio_size(&self) -> u64 { 0 }
++            fn set_irq(&self, line: Option<u32>, _: Option<&EventFd>) -> Result<(), crate::Error> {
++                assert_eq!(line, Some(35));
++                self.0.lock().unwrap().push(true);
++                Ok(())
++            }
++            fn clear_irq(&self, line: Option<u32>) -> Result<(), crate::Error> {
++                assert_eq!(line, Some(35));
++                self.0.lock().unwrap().push(false);
++                Ok(())
++            }
++        }
++        let levels = Arc::new(Mutex::new(Vec::new()));
++        let chip = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(LevelIrq(levels.clone())))));
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
++        let device = Arc::new(Mutex::new(DummyDevice::new()));
++        let mut transport = MmioTransport::new(mem, chip, device).unwrap();
++        transport.set_irq_line(35);
++        transport.device_status = device_status::DRIVER_OK;
++        transport.interrupt.try_signal_used_queue().unwrap();
++        transport.interrupt.try_signal_config_change().unwrap();
++        transport.write(0, 0x64, &VIRTIO_MMIO_INT_VRING.to_le_bytes());
++        assert_eq!(*levels.lock().unwrap(), [true, true]);
++        transport.write(0, 0x64, &VIRTIO_MMIO_INT_CONFIG.to_le_bytes());
++        assert_eq!(*levels.lock().unwrap(), [true, true, false]);
++        transport.interrupt.try_signal_used_queue().unwrap();
++        assert_eq!(*levels.lock().unwrap(), [true, true, false, true]);
++    }
++
+     static QUEUE_CONFIG: [QueueConfig; 2] = [QueueConfig::new(16), QueueConfig::new(32)];
+ 
+     pub(crate) struct DummyDevice {
+diff --git a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+index c19025f..ba55f64 100644
+--- a/src/hvf/src/lib.rs
++++ b/src/hvf/src/lib.rs
+@@ -1372,6 +1372,7 @@ impl HvfVcpu<'_> {
+ 
+                     match len {
+                         1 => self.mmio_buf[0..1].copy_from_slice(&(val as u8).to_le_bytes()),
++                        2 => self.mmio_buf[0..2].copy_from_slice(&(val as u16).to_le_bytes()),
+                         4 => self.mmio_buf[0..4].copy_from_slice(&(val as u32).to_le_bytes()),
+                         8 => self.mmio_buf[0..8].copy_from_slice(&val.to_le_bytes()),
+                         _ => panic!("unsupported mmio len={len}"),

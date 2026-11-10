@@ -94,6 +94,10 @@ the same key, so before this patch a client that sends only the shifted symbol,
 as noVNC does for synthesized keys, typed `;`. Clients that send real Shift
 events are unchanged.
 
+`libkrun-0003-arm-mmio-interrupts.patch` lowers an HVF GIC level interrupt
+when the guest acknowledges its last virtio-MMIO cause. It also supports
+16-bit MMIO writes from arm64 firmware.
+
 The importer applies every patch to freshly imported source, so a patch that no
 longer matches the tip fails the import, not a later build. `runtime/build.sh`
 verifies each patch's digest and that it applies to either the pristine or the

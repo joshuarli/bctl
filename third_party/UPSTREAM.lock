@@ -3,7 +3,7 @@ format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
 source_identity = "sha256:44d7e0aa11f446be58c2000c7f6f034b4cd7e70294ee98052587163daf20e896"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "libkrun-0003-arm-mmio-interrupts.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -54,3 +54,8 @@ sha256 = "94eb5920bffca5b4a9d55d244baf5bd260ce9fb0bf1ed5166f6bf752c734da68"
 path = "smolvm-0003-vnc-shifted-keysyms.patch"
 tree = "."
 sha256 = "a2e27e1953576824a567b6e6c4b3cc7c9826342e22cc2964caf3c81dc2813bf5"
+
+[[patch]]
+path = "libkrun-0003-arm-mmio-interrupts.patch"
+tree = "libkrun"
+sha256 = "6c2e2c6ea0f0e163c8457a03d06a9719d633fa43ca7134bda3a04a2d94bdf546"

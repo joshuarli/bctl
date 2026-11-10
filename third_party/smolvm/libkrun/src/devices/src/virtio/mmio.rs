@@ -165,6 +165,18 @@ impl InterruptTransport {
         Ok(())
     }
 
+    fn ack(&self, mask: u32) -> Result<(), crate::Error> {
+        let prev = self.status().fetch_and(!(mask as usize), Ordering::SeqCst);
+        if prev & !(mask as usize) == 0 {
+            let intc = self.intc().lock().unwrap();
+            intc.clear_irq(self.0.irq_line)?;
+            if self.status().load(Ordering::SeqCst) != 0 {
+                intc.set_irq(self.0.irq_line, Some(&self.0.event))?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn try_signal_used_queue(&self) -> Result<(), crate::Error> {
         debug!(target: &self.0.log_target, "interrupt: signal_used_queue");
         self.try_signal(VIRTIO_MMIO_INT_VRING)
@@ -592,9 +604,9 @@ impl BusDevice for MmioTransport {
                     }
                     0x64 => {
                         if self.check_device_status(device_status::DRIVER_OK, 0) {
-                            self.interrupt
-                                .status()
-                                .fetch_and(!(v as usize), Ordering::SeqCst);
+                            if let Err(error) = self.interrupt.ack(v) {
+                                warn!("failed to acknowledge interrupt: {error:?}");
+                            }
                         }
                     }
                     0x70 => self.set_device_status(v),
@@ -646,6 +658,52 @@ pub(crate) mod tests {
     use super::*;
     use crate::legacy::DummyIrqChip;
     use vm_memory::GuestMemoryMmap;
+
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn acknowledge_lowers_the_level_only_after_all_causes_clear() {
+        use crate::legacy::gic::GICDevice;
+        use crate::legacy::{IrqChipDevice, IrqChipT};
+
+        struct LevelIrq(Arc<Mutex<Vec<bool>>>);
+        impl BusDevice for LevelIrq {}
+        impl GICDevice for LevelIrq {
+            fn device_properties(&self) -> Vec<u64> { vec![] }
+            fn vcpu_count(&self) -> u64 { 1 }
+            fn fdt_compatibility(&self) -> String { String::new() }
+            fn fdt_maint_irq(&self) -> u32 { 0 }
+            fn version(&self) -> u32 { 3 }
+        }
+        impl IrqChipT for LevelIrq {
+            fn get_mmio_addr(&self) -> u64 { 0 }
+            fn get_mmio_size(&self) -> u64 { 0 }
+            fn set_irq(&self, line: Option<u32>, _: Option<&EventFd>) -> Result<(), crate::Error> {
+                assert_eq!(line, Some(35));
+                self.0.lock().unwrap().push(true);
+                Ok(())
+            }
+            fn clear_irq(&self, line: Option<u32>) -> Result<(), crate::Error> {
+                assert_eq!(line, Some(35));
+                self.0.lock().unwrap().push(false);
+                Ok(())
+            }
+        }
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        let chip = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(LevelIrq(levels.clone())))));
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
+        let device = Arc::new(Mutex::new(DummyDevice::new()));
+        let mut transport = MmioTransport::new(mem, chip, device).unwrap();
+        transport.set_irq_line(35);
+        transport.device_status = device_status::DRIVER_OK;
+        transport.interrupt.try_signal_used_queue().unwrap();
+        transport.interrupt.try_signal_config_change().unwrap();
+        transport.write(0, 0x64, &VIRTIO_MMIO_INT_VRING.to_le_bytes());
+        assert_eq!(*levels.lock().unwrap(), [true, true]);
+        transport.write(0, 0x64, &VIRTIO_MMIO_INT_CONFIG.to_le_bytes());
+        assert_eq!(*levels.lock().unwrap(), [true, true, false]);
+        transport.interrupt.try_signal_used_queue().unwrap();
+        assert_eq!(*levels.lock().unwrap(), [true, true, false, true]);
+    }
 
     static QUEUE_CONFIG: [QueueConfig; 2] = [QueueConfig::new(16), QueueConfig::new(32)];
 
