@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|external..."; }
+usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -205,11 +205,46 @@ suite_helium_native() {
 	esac
 }
 
-suite_helium() {
+helium_image() {
 	helium_prepare
 	"$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --size 2g --klib tmpfs --klib shmem --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
 		--dir /profile --dir /tmp --dir /dev/shm \
 		--arg --root=/ --arg --profile=/profile --arg --logdir=/tmp "$HELIUM_INIT" >/dev/null
+}
+
+HELIUM_STRESS_VMS=10
+
+suite_helium_stress() {
+	helium_image
+	i=1
+	while [ "$i" -le "$HELIUM_STRESS_VMS" ]; do
+		cp "$IMAGES/helium.img" "$IMAGES/helium-stress-$i.img"
+		("$ROOT/dev/run.sh" --mem 2G --smp 2 --timeout 240 --label "helium-stress$i" "$IMAGES/helium-stress-$i.img" \
+			>"$IMAGES/helium-stress-$i.out" 2>&1 || :) &
+		i=$((i + 1))
+	done
+	wait
+	passed=0
+	i=1
+	while [ "$i" -le "$HELIUM_STRESS_VMS" ]; do
+		line=$(tail -n 1 "$IMAGES/helium-stress-$i.out")
+		case $line in
+		"RUN verdict=PASS "*) passed=$((passed + 1)) ;;
+		*) printf '          run %s failed: %s\n' "$i" "${line##* dir=}" ;;
+		esac
+		rm -f "$IMAGES/helium-stress-$i.img" "$IMAGES/helium-stress-$i.out"
+		i=$((i + 1))
+	done
+	if [ "$passed" -eq "$HELIUM_STRESS_VMS" ]; then
+		printf 'PASS      helium-stress      nanos   %s/%s parallel runs\n' "$passed" "$HELIUM_STRESS_VMS"
+	else
+		failures=$((failures + 1))
+		printf 'FAIL      helium-stress      nanos   %s/%s parallel runs\n' "$passed" "$HELIUM_STRESS_VMS"
+	fi
+}
+
+suite_helium() {
+	helium_image
 	line=$("$ROOT/dev/run.sh" --mem 2G --smp 2 --timeout 240 --label helium "$IMAGES/helium.img" || :)
 	dir=${line##* dir=}
 	pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
@@ -257,6 +292,7 @@ for suite in "$@"; do
 	upstream) suite_upstream ;;
 	helium-native) suite_helium_native ;;
 	helium) suite_helium ;;
+	helium-stress) suite_helium_stress ;;
 	external) suite_external ;;
 	g0) suite_harness; suite_upstream; "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
 	debug) "$ROOT/dev/debug.sh" --check || failures=$((failures + 1)) ;;
