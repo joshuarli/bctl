@@ -218,6 +218,8 @@ kernel and modules built together; it needs no separate kernel file. Set
 `BCTL_RUNTIME=nanos` to select this backend; SmolVM remains the macOS default.
 Internal VM sockets use private, short directories under `<BCTL_HOME>/ns` so
 long session names fit macOS's Unix socket path limit.
+After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
+checks that a refused guest connection cannot poison a later connection.
 
 ## Verification
 
