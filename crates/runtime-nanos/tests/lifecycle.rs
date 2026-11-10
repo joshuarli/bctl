@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use bctl_runtime::{InputSupport, cdp_socket_browser};
-use bctl_runtime_nanos::{LaunchSpec, Nanos, RuntimeError, Toolchain};
+use bctl_runtime_nanos::{Backend, LaunchSpec, Nanos, RuntimeError, Toolchain};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn which(name: &str) -> PathBuf {
     std::env::var_os("PATH")
         .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| candidate.is_file()))
@@ -17,15 +18,19 @@ fn which(name: &str) -> PathBuf {
 }
 
 fn nanos(root: &Path) -> Nanos {
-    let runtime = repo().join(".work/runtime/nanos");
+    let runtime = repo().join(if cfg!(target_os = "macos") { ".work/runtime/nanos-krun" } else { ".work/runtime/nanos" });
+    #[cfg(target_os = "macos")]
+    let backend = Backend::Libkrun { runner: runtime.join("nanos-krun"), firmware: runtime.join("firmware.fd") };
+    #[cfg(not(target_os = "macos"))]
+    let backend = Backend::Qemu {
+        qemu: which("qemu-system-x86_64"), qemu_img: which("qemu-img"), vsock_backend: runtime.join("bin/vhost-device-vsock"),
+    };
     Nanos::new(
         root,
         Toolchain {
             supervisor: PathBuf::from(env!("CARGO_BIN_EXE_bctl-nanos-vm")),
             supervisor_args: Vec::new(),
-            qemu: which("qemu-system-x86_64"),
-            qemu_img: which("qemu-img"),
-            vsock_backend: runtime.join("bin/vhost-device-vsock"),
+            backend,
         },
     )
 }
@@ -46,7 +51,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "boots Nanos VMs: needs /dev/kvm, QEMU, runtime/build-nanos.sh and the nanos-helium image"]
+#[ignore = "boots Nanos VMs: needs a built Nanos runtime and the nanos-helium image"]
 fn launch_ready_and_remove_ten_times() {
     let dir = scratch("nanos-lifecycle");
     let runtime = nanos(&dir.join("machines"));
@@ -80,7 +85,7 @@ fn launch_ready_and_remove_ten_times() {
 }
 
 #[test]
-#[ignore = "boots a Nanos VM: needs /dev/kvm, QEMU, runtime/build-nanos.sh and the nanos-helium image"]
+#[ignore = "boots a Nanos VM: needs a built Nanos runtime and the nanos-helium image"]
 fn a_machine_name_cannot_be_launched_twice_and_remove_is_idempotent() {
     let dir = scratch("nanos-twice");
     let runtime = nanos(&dir.join("machines"));
@@ -94,7 +99,7 @@ fn a_machine_name_cannot_be_launched_twice_and_remove_is_idempotent() {
 }
 
 #[test]
-#[ignore = "boots a Nanos VM: needs /dev/kvm, QEMU, runtime/build-nanos.sh and the nanos-helium image"]
+#[ignore = "boots a Nanos VM: needs a built Nanos runtime and the nanos-helium image"]
 fn the_guest_check_answers_every_time() {
     let dir = scratch("nanos-check");
     let runtime = nanos(&dir.join("machines"));

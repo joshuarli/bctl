@@ -72,12 +72,16 @@ impl Home {
         std::fs::create_dir_all(path.join("runtime")).unwrap();
         std::fs::create_dir_all(path.join("images")).unwrap();
         let image = if nanos() {
-            let built = workspace.join(".work/runtime/nanos");
             let name = image();
-            std::fs::create_dir_all(path.join("runtime/nanos")).unwrap();
-            std::os::unix::fs::symlink(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock")).unwrap();
-            let kernel = format!("{name}.kernel.img");
-            std::os::unix::fs::symlink(workspace.join(".work/images").join(&kernel), path.join("images").join(&kernel)).unwrap();
+            if cfg!(target_os = "macos") {
+                std::os::unix::fs::symlink(workspace.join(".work/runtime/nanos-krun"), path.join("runtime/nanos")).unwrap();
+            } else {
+                let built = workspace.join(".work/runtime/nanos");
+                std::fs::create_dir_all(path.join("runtime/nanos")).unwrap();
+                std::os::unix::fs::symlink(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock")).unwrap();
+                let kernel = format!("{name}.kernel.img");
+                std::os::unix::fs::symlink(workspace.join(".work/images").join(&kernel), path.join("images").join(&kernel)).unwrap();
+            }
             format!("{name}.img")
         } else {
             std::os::unix::fs::symlink(workspace.join(".work/runtime/smolvm"), path.join("runtime/smolvm")).unwrap();

@@ -207,6 +207,14 @@ is no separate `runtime/nanos/kernel.img`; that directory holds only
 `vhost-device-vsock`. Starting a session with an image but no kernel beside it
 fails with both paths and the build command.
 
+On Apple Silicon, the experimental Nanos backend uses libkrun and an EFI
+disk image containing its own kernel. Run `runtime/guest.sh`, then
+`runtime/build-nanos-krun.sh`, and install `.work/runtime/nanos-krun` as
+`<BCTL_HOME>/runtime/nanos`. The bundle includes the signed runner, libkrun,
+EFI firmware and its license. Set `BCTL_RUNTIME=nanos` to select it; SmolVM
+remains the macOS default. The ARM Nanos image build and complete lifecycle
+qualification are still in progress.
+
 ## Verification
 
 `runtime/build.sh` fails unless every check passes:

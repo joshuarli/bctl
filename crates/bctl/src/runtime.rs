@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bctl_core::{Endpoints, MachineName, MachineObservation, MachineState};
 use bctl_runtime::{Ready, Stage};
-use bctl_runtime_nanos::{Nanos, Toolchain};
+use bctl_runtime_nanos::{Backend, Nanos, Toolchain};
 use bctl_runtime_smolvm::{LaunchSource, SmolVm};
 
 use crate::paths::Paths;
@@ -124,6 +124,7 @@ pub(crate) enum Runtime {
     Nanos(Nanos),
 }
 
+#[cfg(not(target_os = "macos"))]
 fn on_path(name: &str) -> PathBuf {
     std::env::var_os("PATH")
         .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| candidate.is_file()))
@@ -137,14 +138,18 @@ impl Runtime {
             RuntimeKind::Nanos => {
                 let dir = paths.nanos_runtime();
                 let supervisor = std::env::current_exe().map_err(|e| format!("cannot find the bctl executable: {e}"))?;
+                #[cfg(target_os = "macos")]
+                let backend = Backend::Libkrun { runner: dir.join("nanos-krun"), firmware: dir.join("firmware.fd") };
+                #[cfg(not(target_os = "macos"))]
+                let backend = Backend::Qemu {
+                    qemu: on_path("qemu-system-x86_64"), qemu_img: on_path("qemu-img"), vsock_backend: dir.join("vhost-device-vsock"),
+                };
                 Runtime::Nanos(Nanos::new(
                     paths.home.join("machines"),
                     Toolchain {
                         supervisor,
                         supervisor_args: vec![NANOS_SUPERVISOR_COMMAND.to_string()],
-                        qemu: on_path("qemu-system-x86_64"),
-                        qemu_img: on_path("qemu-img"),
-                        vsock_backend: dir.join("vhost-device-vsock"),
+                        backend,
                     },
                 ))
             }
@@ -162,6 +167,10 @@ impl Runtime {
     pub(crate) fn installed(&self, paths: &Paths) -> Result<(), (PathBuf, &'static str)> {
         let (needed, hint): (Vec<PathBuf>, &'static str) = match self {
             Runtime::SmolVm(_) => (vec![paths.runtime()], "build it with `runtime/build.sh` and copy .work/runtime/smolvm there"),
+            Runtime::Nanos(_) if cfg!(target_os = "macos") => (
+                vec![paths.nanos_runtime().join("nanos-krun"), paths.nanos_runtime().join("firmware.fd"), paths.nanos_runtime().join("lib/libkrun.dylib")],
+                "build it with `runtime/build-nanos-krun.sh` and copy .work/runtime/nanos-krun there",
+            ),
             Runtime::Nanos(_) => (
                 vec![paths.nanos_runtime().join("vhost-device-vsock")],
                 "build it with `runtime/build-nanos.sh` and copy its bin/vhost-device-vsock there",
@@ -183,6 +192,7 @@ impl Runtime {
     pub(crate) fn image_hint(&self, name: &str) -> String {
         match self {
             Runtime::SmolVm(_) => format!("build it with `images/build.sh {name}` and copy the archive there"),
+            Runtime::Nanos(_) if cfg!(target_os = "macos") => format!("build the ARM Nanos image and copy it to $BCTL_HOME/images/{name}.img"),
             Runtime::Nanos(_) => format!(
                 "build it with `images/{name}/build.sh` and copy .work/images/{name}.img and .work/images/{name}.kernel.img there"
             ),
@@ -203,7 +213,7 @@ impl Runtime {
             Runtime::SmolVm(smolvm) => Ok(smolvm.launch(&launch.smolvm())?),
             Runtime::Nanos(nanos) => {
                 let kernel = bctl_runtime_nanos::image_kernel(&launch.image);
-                if !kernel.is_file() {
+                if !cfg!(target_os = "macos") && !kernel.is_file() {
                     let name = launch.image.file_stem().unwrap_or_default().to_string_lossy();
                     return Err(RuntimeError::MissingKernel { image: launch.image.clone(), kernel, hint: self.image_hint(&name) });
                 }

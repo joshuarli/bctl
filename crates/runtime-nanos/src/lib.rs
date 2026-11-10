@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_browser};
 
 pub mod egress;
+#[cfg(not(target_os = "macos"))]
+pub mod supervisor;
+#[cfg(target_os = "macos")]
+#[path = "supervisor_macos.rs"]
 pub mod supervisor;
 
 /// The guest vsock port `bctl-guest run-headless` relays to the browser's CDP endpoint.
@@ -49,15 +53,21 @@ pub fn image_kernel(image: &Path) -> PathBuf {
     image.with_extension("kernel.img")
 }
 
-/// The host side of the Nanos runtime: QEMU, the vsock backend, and the supervisor binary.
+/// The host side of the Nanos runtime.
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     pub supervisor: PathBuf,
     /// Arguments the supervisor executable needs before `launch` (`["nanos-vm"]` when it is `bctl`).
     pub supervisor_args: Vec<String>,
-    pub qemu: PathBuf,
-    pub qemu_img: PathBuf,
-    pub vsock_backend: PathBuf,
+    pub backend: Backend,
+}
+
+#[derive(Debug, Clone)]
+pub enum Backend {
+    #[cfg(not(target_os = "macos"))]
+    Qemu { qemu: PathBuf, qemu_img: PathBuf, vsock_backend: PathBuf },
+    #[cfg(target_os = "macos")]
+    Libkrun { runner: PathBuf, firmware: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -116,29 +126,37 @@ impl HeadlessReport {
     }
 }
 
-/// Connects to a guest vsock port through vhost-device-vsock's Unix socket with its `CONNECT` handshake.
+/// Connects to a guest vsock port through the host backend.
 pub fn connect_guest(vsock: &Path, port: u32, timeout: Duration) -> io::Result<UnixStream> {
-    let stream = UnixStream::connect(vsock)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    (&stream).write_all(format!("CONNECT {port}\n").as_bytes())?;
-    let mut reply = Vec::new();
-    let mut byte = [0u8; 1];
-    while reply.last() != Some(&b'\n') {
-        if (&stream).read(&mut byte)? == 0 {
-            return Err(io::Error::new(io::ErrorKind::ConnectionRefused, format!("guest port {port} is not listening")));
-        }
-        reply.push(byte[0]);
-        if reply.len() > 64 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "overlong vsock handshake reply"));
-        }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = timeout;
+        UnixStream::connect(vsock.with_file_name(format!("{VSOCK_SOCKET}_{port}")))
     }
-    if !reply.starts_with(b"OK ") {
-        return Err(io::Error::new(io::ErrorKind::ConnectionRefused, format!("guest port {port}: {}", String::from_utf8_lossy(&reply).trim())));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let stream = UnixStream::connect(vsock)?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
+        (&stream).write_all(format!("CONNECT {port}\n").as_bytes())?;
+        let mut reply = Vec::new();
+        let mut byte = [0u8; 1];
+        while reply.last() != Some(&b'\n') {
+            if (&stream).read(&mut byte)? == 0 {
+                return Err(io::Error::new(io::ErrorKind::ConnectionRefused, format!("guest port {port} is not listening")));
+            }
+            reply.push(byte[0]);
+            if reply.len() > 64 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "overlong vsock handshake reply"));
+            }
+        }
+        if !reply.starts_with(b"OK ") {
+            return Err(io::Error::new(io::ErrorKind::ConnectionRefused, format!("guest port {port}: {}", String::from_utf8_lossy(&reply).trim())));
+        }
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(None)?;
+        Ok(stream)
     }
-    stream.set_read_timeout(None)?;
-    stream.set_write_timeout(None)?;
-    Ok(stream)
 }
 
 pub struct Nanos {
@@ -191,8 +209,8 @@ impl Nanos {
             return Err(RuntimeError::Supervisor { operation: "launch", message: format!("{} already exists", dir.display()) });
         }
         fs::create_dir_all(&dir).map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", dir.display()) })?;
-        let output = Command::new(&self.tools.supervisor)
-            .args(&self.tools.supervisor_args)
+        let mut command = Command::new(&self.tools.supervisor);
+        command.args(&self.tools.supervisor_args)
             .arg("launch")
             .arg("--dir")
             .arg(&dir)
@@ -203,15 +221,19 @@ impl Nanos {
             .arg("--memory-mib")
             .arg(spec.memory_mib.to_string())
             .arg("--cpus")
-            .arg(spec.cpus.to_string())
-            .arg("--qemu")
-            .arg(&self.tools.qemu)
-            .arg("--qemu-img")
-            .arg(&self.tools.qemu_img)
-            .arg("--kernel")
-            .arg(image_kernel(&spec.image))
-            .arg("--vsock-backend")
-            .arg(&self.tools.vsock_backend)
+            .arg(spec.cpus.to_string());
+        match &self.tools.backend {
+            #[cfg(not(target_os = "macos"))]
+            Backend::Qemu { qemu, qemu_img, vsock_backend } => {
+                command.arg("--qemu").arg(qemu).arg("--qemu-img").arg(qemu_img)
+                    .arg("--kernel").arg(image_kernel(&spec.image)).arg("--vsock-backend").arg(vsock_backend);
+            }
+            #[cfg(target_os = "macos")]
+            Backend::Libkrun { runner, firmware } => {
+                command.arg("--runner").arg(runner).arg("--firmware").arg(firmware);
+            }
+        }
+        let output = command
             .args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()]))
             .output()
             .map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", self.tools.supervisor.display()) })?;
@@ -317,5 +339,27 @@ mod tests {
         assert!(HeadlessReport::parse("browser ok\nsandbox ok\nseat ok\ninput absent\n").is_err());
         assert!(HeadlessReport::parse("browser maybe\nsandbox ok\ninput absent\n").is_err());
         assert!(HeadlessReport::parse("browser ok\nsandbox ok\ninput ok\n").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn libkrun_connects_to_the_requested_port_without_a_handshake() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp").join(format!("nanos-port-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{VSOCK_SOCKET}_{GUEST_CHECK_PORT}"));
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(b"browser ok\n").unwrap();
+        });
+        let mut client = connect_guest(&dir.join(VSOCK_SOCKET), GUEST_CHECK_PORT, Duration::from_secs(1)).unwrap();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert_eq!(reply, "browser ok\n");
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 }
