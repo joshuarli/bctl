@@ -246,6 +246,20 @@ is unprofiled; (3) guest page loads trail the host by 13 ms to first byte and
 50 ms to the load event through SmolVM's relay; (4) X1's networked restore.
 Every perf claim needs `PERF_GATE_MAX_LOAD=0.25`, which this host meets only
 when nothing else runs.
+New host: nothing under `.work/` is needed except the browser archive. Rebuild
+the rest: `sh runtime/build.sh` (vendored SmolVM and libkrun), then
+`BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium`, the Speedometer checkout
+named in `docs/performance.md`, and `cargo build --release -p bctl -p
+bctl-bench`. The Helium r6 arm64 archive
+(`helium-0.20.3.1-r6-linux-aarch64-musl.tar.xz`, SHA-256
+`7289b25b30fa86d41928e63a4210b3006f43ba8da35d9cf5c874b05152215b7a`, with its
+`.sha256` and `.acceptance.json`) exists only on the old Mac and is not
+published. Copy that directory, or rebuild it from chromium-build `410801d` on
+an arm64 builder; that r6 had `helium-devtools-product.patch` applied, which
+chromium-build's `metadata/patches.json` does not list, so a rebuild must
+check that `/json/version` reports `Helium/`. Unmerged lane branches
+(`lane/j2-jobs`, `lane/t0-decouple`, `lane/t1-rust-seat`,
+`lane/x1-wip-backup`) are pushed to origin.
 Needs the owner: the public restore CLI (`bctl template` / `bctl up
 --template`). `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
