@@ -13,11 +13,10 @@ use bctl_core::{
     Action, AllowedRange, AttemptEnd, AttemptRecord, AttemptState, Endpoints, Generation, Interaction, LiveState, MachineName, MachineState, NewRun,
     Outcome as RunOutcome, ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
 };
-use bctl_runtime::{InputSupport, Stage, cdp_socket_browser};
+use bctl_runtime::{InputSupport, cdp_socket_browser};
 use miniserde::json;
 
 use crate::authority::{Authorities, Control};
-use crate::filters;
 use crate::gateway::{self, SharedGateway};
 use crate::paths::Paths;
 use crate::runtime::{MachineLaunch, Runtime, RuntimeError, RuntimeKind};
@@ -817,13 +816,7 @@ impl Daemon {
 
     fn await_ready(&self, machine: &MachineName, endpoints: Endpoints) {
         let session = &machine.session;
-        let deadline = Instant::now() + READY_TIMEOUT;
-        let cdp_socket = self.paths.cdp_socket(&machine.to_string());
-        let result = self.runtime.wait_ready(machine, endpoints, &cdp_socket, READY_TIMEOUT, |stage| self.observe(session, |o| o.stage = Some(stage.as_str()))).and_then(|ready| {
-            self.observe(session, |o| o.stage = Some(Stage::Filters.as_str()));
-            filters::wait(&cdp_socket, bctl_cdp::Generation::new(machine.generation.0), deadline).map_err(RuntimeError::ContentFilter)?;
-            Ok(ready)
-        });
+        let result = self.runtime.wait_ready(machine, endpoints, &self.paths.cdp_socket(&machine.to_string()), READY_TIMEOUT, |stage| self.observe(session, |o| o.stage = Some(stage.as_str())));
         match result {
             Ok(ready) => {
                 self.observe(session, |o| {

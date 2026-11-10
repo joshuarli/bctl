@@ -46,11 +46,6 @@ in the Alpine images.
   process runs with `NoNewPrivs: 1` and `Seccomp: 2`. A last line,
   `input ok` or `input absent`, reports whether both VNC input devices exist;
   `input absent` means a view-only runtime and does not fail the check.
-- After the guest checks and CDP answer, the daemon reports the `filters`
-  stage until the bundled uBlock Origin's background page reads
-  `µBlock.readyToFilter`: until then uBlock holds every request and then
-  reloads the tabs it held. A browser without that extension skips the
-  stage after 3 s.
 
 ## Browser
 
@@ -74,6 +69,10 @@ in the Alpine images.
   diagnostics that publish ports themselves. Chromium builds
   `webSocketDebuggerUrl` from the request's Host header.
 - The profile lives at `/profile` (`BCTL_PROFILE_DIR`), owned by `browser`.
+- Helium's bundled uBlock Origin is off. Before the browser first opens a
+  profile, `bctl-guest browser` creates `Default/Preferences` marking the
+  extension (`blockjmkbacgjkknlgpkjjiijinjdanf`) disabled by the user; a
+  profile that already has `Default/Preferences` keeps its own setting.
 - The first page is `BCTL_START_URL`, default `about:blank`.
 
 ## Logs

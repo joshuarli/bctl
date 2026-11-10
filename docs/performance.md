@@ -306,12 +306,30 @@ pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
 | Machine disk (qcow2 overlay) | 205 MiB (141 to 226) | 683 MiB |
 | Daemon RSS, one session | 5.0 MiB | 12.6 MiB |
 
-- **Four of the five seconds of `up` are uBlock Origin.** CDP answers about
-  1 s after `up`; the daemon then waits in the `filters` stage until the
-  bundled uBlock Origin has compiled its filter lists, which a fresh profile
-  does every boot. The Nanos profile lives on the disposable disk overlay, so
-  warm `up` pays it again; a persisted profile would keep uBlock's compiled
-  lists.
+- **Four of the five seconds of `up` were uBlock Origin, so sessions now
+  start with it disabled.** Helium bundles uBlock Origin 1.75.0 as an
+  extension the user may disable, and on a profile it has never seen, uBlock
+  downloads nothing but compiles the filter lists it bundles (EasyList, EasyPrivacy and uBlock's
+  own among them) into its filtering engine, in JavaScript on its background
+  page. Until that finishes, it holds every request a tab
+  makes and then reloads the tabs it held, which is why a `filters` ready
+  stage existed. The compile took 2.5 to 2.9 s natively on the Ryzen
+  host and about 4 s in the 2-CPU guest, and it is paid every boot because a
+  Nanos profile does not outlive its session. It also cost memory: Nanos does
+  not return freed pages to QEMU, so the compile's peak stayed in the VMM's
+  RSS. A test image carrying uBlock's compiled lists from a host run idled at
+  855 to 862 MiB 30 s after ready, against 1715 to 1752 MiB for the normal
+  image (two boots each). Seeding those lists into the image did not work:
+  uBlock rejected the copied cache ("Filtering engine selfie not available"),
+  even in place on the host, and the cause was not found.
+  `bctl-guest browser` now writes the extension as disabled by the user into
+  a profile's `Default/Preferences` before the browser first opens it, and
+  the `filters` stage is gone. Neither `--disable-extensions` nor
+  `--disable-component-extensions-with-background-pages` stops Helium loading
+  it. Content blocking without that cost would need an engine whose compiled
+  lists load without a per-profile compile, such as Brave's `adblock-rs`
+  (Rust, with a serialized engine format) built into Helium; that is a Helium
+  change, not a bctl one. Sessions block no ads until then.
 - **The Nanos VMM's RSS is guest memory touched, not a footprint.** QEMU's
   memfd backing counts every page the guest has touched; there is no balloon
   or free-page reporting, so it does not shrink after idle.

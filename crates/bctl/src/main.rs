@@ -1,6 +1,5 @@
 mod authority;
 mod daemon;
-mod filters;
 mod gateway;
 mod page;
 mod paths;

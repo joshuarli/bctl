@@ -260,16 +260,16 @@ LAN address, RFC 1918, link-local and unique-local IPv6 refused and never
 reached, the public internet reached); `tabs`, `cdp` and `actions` pass
 except the tests that need a person to take input (headless has none).
 `native_cdp` had asserted a `Chrome/` product, stale since Helium reports
-`Helium/`. The daemon now holds `up` in a `filters` stage until the bundled
-uBlock Origin has compiled its lists (it held requests and reloaded tabs
-before that), which fixed `actions`' navigations right after `up`. Open on
+`Helium/`. uBlock Origin held requests and reloaded tabs until its first-run list
+compile finished, which broke `actions`' navigations right after `up`; a
+`filters` ready stage waited it out, and sessions now start with uBlock
+disabled instead (`docs/performance.md`, Results on Nanos). Open on
 Nanos: `actions`'
 lost-input test sees `Input.dispatchMouseEvent` answer although the page
 busy-waits 13 s (the guest clock is exact; a headless input difference is
 suspected, not shown); the guest-shell `egress` test and the `failures`
 suite need `machine exec`, which Nanos has no equivalent for; the profile
-lives on the machine's disk overlay and does not outlive the session, so
-every `up` pays uBlock's 4 s list compile; a start occasionally never gets
+lives on the machine's disk overlay and does not outlive the session; a start occasionally never gets
 past the guest stage (twice in about 60 boots, both under host load); one
 Speedometer run in seven stalls at 0 tests right after `up`. L5 (2026-11-10):
 `docs/performance.md` has the Nanos column. hydrogen `2c46223e` fixed a

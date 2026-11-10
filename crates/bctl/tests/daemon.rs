@@ -32,7 +32,7 @@ fn the_daemon_owns_sessions_across_restarts() {
         assert!(Instant::now() < deadline, "status never named a readiness stage for a starting session");
         thread::sleep(Duration::from_millis(50));
     };
-    assert!(["machine", "guest", "seat", "compositor", "browser", "sandbox", "cdp", "display", "filters"].contains(&seen_stage.as_str()));
+    assert!(["machine", "guest", "seat", "compositor", "browser", "sandbox", "cdp", "display"].contains(&seen_stage.as_str()));
     assert_ok(&starting.join().unwrap());
 
     let ups: Vec<_> = [(a.clone(), "pa"), (b.clone(), "pb")]
