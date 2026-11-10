@@ -1076,7 +1076,10 @@ wanted; M7H plans it, and until it lands these refusals stand.)
 Decisions (prescribed; the owner may overrule):
 
 - **CDP transport.** virtio-vsock through rust-vmm's `vhost-device-vsock`
-  (0.3.0, built from crates.io with `--locked`), attached as QEMU
+  (0.3.0 from crates.io, checksum-pinned, built with `--locked` and
+  `runtime/patches/vhost-device-vsock-0001-forward-guest-half-close.patch`,
+  without which a guest's `shutdown(SHUT_WR)` never reaches the host stream
+  and a WebSocket close through the gateway never completes), attached as QEMU
   `vhost-user-vsock-pci`. Its host side is a Unix socket in the session's
   private directory, so H2's rule that only a Unix socket reaches CDP holds
   and no host kernel module is needed. Spike 2026-11-10 against hydrogen
