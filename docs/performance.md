@@ -285,23 +285,23 @@ pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
 | | |
 | --- | --- |
 | Host | MS-A1, AMD Ryzen 9 9950X, 32 CPUs, 60 GiB, Alpine Linux edge (7.2.9) |
-| Runtime | hydrogen `e0ee0574`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 |
+| Runtime | hydrogen `bea1e222`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 with the half-close patch |
 | Guest | `nanos-helium` (Helium 0.20.3.1 r5), 2 CPUs, 4096 MiB, headless |
-| Tree | main `8f2166b` (uBlock Origin disabled), release build; every sample passed the quiet-host check |
+| Tree | main `602bfde` (uBlock Origin disabled), release build; every sample passed the quiet-host check |
 
 | Measure | Nanos | Mac |
 | --- | --- | --- |
-| Cold `up` to ready | 999 ms (978 to 1041) | 1466 ms |
-| Warm `up` to ready | 988 ms (942 to 996) | 1455 ms |
-| `down` | 165 ms (113 to 184) | 112.8 ms |
+| Cold `up` to ready | 938 ms (904 to 1043) | 1466 ms |
+| Warm `up` to ready | 982 ms (931 to 990) | 1455 ms |
+| `down` | 164 ms (109 to 165) | 112.8 ms |
 | Daemon start | 100.7 ms | 114.8 ms |
 | TodoMVC workflow | 144 ms (120 to 283) | 277 ms |
 | `goto`, `fill`, `press`, `check`, `snapshot` p50 | 38.8, 4.2, 4.3, 41.9, 3.5 ms | 39.5, 14.3, 15.4, 65.7, 11.9 ms |
 | `Runtime.evaluate` p50 direct / gateway | 281 / 289 us | 170 / 256 us |
-| Speedometer 3.1 score (3 of 4 runs, two suite runs) | 29.3 (28.8 to 29.5) | 31.4 |
-| News site `responseEnd` / `loadEventEnd` / LCP (15 loads) | 4.5 / 79.4 / 172 ms | 14.2 / 71.9 / 140 ms |
-| VMM RSS 30 s after ready | 511 MiB (508 to 514) | 458 MiB footprint |
-| VMM idle CPU | 0.33 percent of a core (0.30 to 0.38) | 3.6 |
+| Speedometer 3.1 score (7 of 7 runs) | 28.2 (26.8 to 28.7) | 31.4 |
+| News site `responseEnd` / `loadEventEnd` / LCP (35 loads) | 3.9 / 82.4 / 152 ms | 14.2 / 71.9 / 140 ms |
+| VMM RSS 30 s after ready | 515 MiB (513 to 519) | 458 MiB footprint |
+| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 3.6 |
 | Machine disk (qcow2 overlay) | 3.8 MiB (3.1 to 3.8) | 683 MiB |
 | Daemon RSS, one session | 5.0 MiB | 12.6 MiB |
 
@@ -343,11 +343,17 @@ pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
   `loadEventEnd` 148 ms and LCP 232 ms, VMM RSS 1696 MiB, idle CPU 7.6
   percent of a core and a 205 MiB disk overlay. Its background page was most
   of the idle CPU and the overlay as well as the compile.
-- **The first Speedometer run after `up` is still unreliable.** In one suite
-  run it stalled at 0 tests; in another it finished (29.3) and the next
-  `Page.navigate` then failed with a broken pipe on the CDP connection,
-  which ended the suite. Both are open. One lifecycle attempt before the
-  `5dd8a92` run failed at the guest stage.
+- **The first-load stalls were a guest kernel deadlock (fixed in hydrogen
+  `bea1e222`).** About one boot in ten froze both vCPUs during the first
+  page load: a unix socket reader took a copy-on-write fault and waited in
+  a TLB flush rendezvous while the other vCPU spun on that socket's lock
+  with interrupts off. CDP, the guest check and egress all stopped, so
+  Speedometer stalled at 0 tests, a CDP connection died with a broken pipe,
+  `bctl up` failed at the guest stage, or a module script failed with
+  `ERR_SOCKS_CONNECTION_FAILED`. gdb on a stalled no-KASLR kernel showed
+  both stacks; hydrogen's `unix_cow_read` case reproduces it, and 80
+  boots after the fix showed no stall. All 7 Speedometer runs above
+  finished, the first one after `up` included.
 - **The page actions were 300 to 1000 ms before hydrogen `2c46223e`.** A
   message one byte past a full 1460-byte segment on the guest's loopback TCP
   waited for a delayed ACK that a timer queued and nothing delivered. Every
