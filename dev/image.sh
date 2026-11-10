@@ -83,6 +83,7 @@ manifest=$(mktemp "$WORK/tmp/manifest.XXXXXX")
 trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 {
 	sort -u "$files" | awk -F '\t' '
+		function q(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return "\"" s "\"" }
 		function emit(dir, indent,   n, i, k, child, list, path) {
 			n = 0
 			for (k in kids) if (index(k, dir SUBSEP) == 1) { child = substr(k, length(dir) + 2); list[++n] = child }
@@ -90,9 +91,9 @@ trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 				child = list[i]
 				delete list[i]
 				path = (dir == "" ? "" : dir "/") child
-				if (path in host && substr(host[path], 1, 5) == "link:") printf "%s%s:(linktarget:%s)\n", indent, child, substr(host[path], 6)
-				else if (path in host && host[path] != "") printf "%s%s:(contents:(host:%s))\n", indent, child, host[path]
-				else { printf "%s%s:(children:(\n", indent, child; emit(path, indent "  "); printf "%s))\n", indent }
+				if (path in host && substr(host[path], 1, 5) == "link:") printf "%s%s:(linktarget:%s)\n", indent, q(child), q(substr(host[path], 6))
+				else if (path in host && host[path] != "") printf "%s%s:(contents:(host:%s))\n", indent, q(child), q(host[path])
+				else { printf "%s%s:(children:(\n", indent, q(child); emit(path, indent "  "); printf "%s))\n", indent }
 			}
 		}
 		{
