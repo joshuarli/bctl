@@ -10,9 +10,8 @@ numbers are targets, never measurements of bctl.
 
 ## Running a suite
 
-Prerequisites: `runtime/build.sh`, `images/build.sh ref-alpine-chromium`,
-`images/build.sh ref-alpine-tinyland`, `images/build.sh helium`, Docker, and a
-release build:
+Prerequisites: `runtime/build.sh`, `BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium`
+(Helium r6 or later), Docker, a Speedometer checkout (below), and a release build:
 
 ```sh
 cargo build --release -p bctl -p bctl-bench
@@ -25,20 +24,22 @@ target/release/bctl-bench gate [RESULT.json...]
 target/release/bctl-bench serve
 ```
 
-Every suite creates its own `BCTL_HOME` under `.work/tmp` with its own daemon and
-names sessions `h1-...`, so it never touches the user's daemon. A suite that is
-killed leaves its machines behind; stop them with `bctl down` under that home.
-`serve` hosts the pinned Speedometer and the page-load fixture for a manual run.
+Every suite measures the `helium` image, the one `bctl up` launches, creates its
+own `BCTL_HOME` under `.work/tmp` with its own daemon, and names sessions
+`h1-...`, so it never touches the user's daemon. A suite that is killed leaves
+its machines behind; stop them with `bctl down` under that home. `serve` hosts
+the pinned Speedometer tree for a manual run.
 
-The browser suite needs a Speedometer checkout and builds its own container
-image:
+The interaction and browser suites load pages from a Speedometer checkout, and
+the browser suite builds its own container image:
 
 - Speedometer 3.1: `git clone --depth 1 -b release/3.1 https://github.com/WebKit/Speedometer .work/dl/speedometer/src`
   (commit `1386415be8fef2f6b6bbdbe1828872471c5d802a`). It is served locally to
-  every browser, so no run depends on the public site.
-- The container is `tests/bench/chromium-container`: Alpine 3.22 (same digest as
-  the reference images), the same `chromium` package, Xvfb 1280x800, sandbox on, limited to 2 CPUs and
-  4 GiB like the guest.
+  every browser, so no run depends on the public site. Besides the benchmark
+  itself, the interaction suite drives its React TodoMVC build and the browser
+  suite loads its `news-next` site.
+- The container is `tests/bench/chromium-container`: Alpine 3.22's `chromium`
+  package, Xvfb 1280x800, sandbox on, limited to 2 CPUs and 4 GiB like the guest.
 
 ## Method
 
@@ -57,7 +58,7 @@ image:
   `unclean` and no gate. `info` marks a single fact (a size, a count).
 - **Interleaving.** Where two paths are compared, the suite alternates them in
   blocks and flips the order each round (gateway and direct), or rotates the start
-  of the variant order each round (Speedometer on each image and the container).
+  of the variant order each round (Speedometer in the guest and the container).
 - **Result file.** `suite`, `started` (UTC), `host` (model, chip, CPUs, memory,
   macOS), `commit` and `dirty`, `smolvm`, `images` (tar size and config digest),
   `browser_versions`, `measures`, and `notes`.
@@ -67,17 +68,21 @@ image:
 | Suite | Timed region | Source of truth |
 | --- | --- | --- |
 | `lifecycle` | `bctl up` from invocation to exit (it blocks until ready), `bctl down`, daemon start (first command on an empty home to answer). Stage timeline: a poller runs `bctl status` every 20 ms and records when `stage` first names each stage. | CLI wall time |
-| `lifecycle` pause | `smolvm machine pause` and `resume` wall time on a daemon-owned machine, then on a bare machine | smolvm CLI |
-| `browser` | Speedometer 3.1 `Score` per iteration from `benchmarkClient._metrics`, headed, `iterationCount` per run (default 5), one fresh page load per run; fixture load from the Navigation Timing API of the fixture page, 5 loads per batch, cache disabled | page JS |
-| `interaction` CDP | one sequential `Browser.getVersion` or `Runtime.evaluate` at a time on one WebSocket, 10 warm-up calls, blocks of 100 | client wall time |
+| `lifecycle` pause | `bctl pause` and `bctl resume` on a ready session with a page open; afterwards `bctl page get title` must return that page's title | CLI wall time |
+| `interaction` automation | one TodoMVC workflow per round through `bctl page`: `goto` the React TodoMVC build (waiting for `load`), `fill` and `press Enter` 5 times, `check` the first todo, `snapshot`; each step and the whole workflow | CLI wall time |
+| `interaction` CDP | one sequential `Runtime.evaluate("1")` at a time on one WebSocket, 10 warm-up calls, blocks of 100 | client wall time |
 | `interaction` input | RFB pointer press or key tap written, until an incremental update repaints a probe pixel of a full-viewport color toggle; 400 ms between trials | client wall time |
+| `browser` | Speedometer 3.1 `Score` per iteration from `benchmarkClient._metrics`, headed, `iterationCount` per run (default 5), one fresh page load per run; page load of Speedometer's `news-next` site (a client-rendered Next.js build of about 1 MiB) with Navigation Timing and largest contentful paint, 5 loads per batch, cache disabled | page JS |
 | `resources` | `ps` RSS and CPU time, `footprint` for the macOS physical footprint, `du` for disk | host tools |
 | `viewer` | RFB frame rate, draw-to-receive latency, and stream bandwidth on the direct VNC TCP port and the dashboard WebSocket: a page whose rAF loop increments a 16-bit black/white marker strip and records `performance.timeOrigin+performance.now()` per counter; three 10 s scenarios (`marker`, `fullscreen`, `scroll`) per path | page JS, RFB stream byte counts, CDP clock probes |
 
 Checks that the timed work happened: a lifecycle sample requires the session to
-be `ready`; a Speedometer run requires `iterationCount` scores; a fixture load
-requires `loadEventEnd` for the load's own URL; the input suite reads the page's
-own toggle counter over CDP afterwards and reports it against the trials sent.
+be `ready`, and a resume requires the page opened before the pause; a workflow
+requires the app to report 5 todos with 1 completed and the snapshot to list 5
+checkboxes with exactly one checked; a Speedometer run requires `iterationCount`
+scores; a page load requires `loadEventEnd` for the load's own URL and the
+site's articles in the DOM; the input suite reads the page's own toggle counter
+over CDP afterwards and reports it against the trials sent.
 
 ### Caveats that shape the numbers
 
@@ -91,10 +96,14 @@ own toggle counter over CDP afterwards and reports it against the trials sent.
   the footprint measure is the one to gate.
 - The VMM process tree is found by the per-home runtime path in its command line.
   Idle CPU is `ps` CPU time over a 60 s window, 30 s after ready.
+- Each automation step is a separate `bctl` process, so every step includes CLI
+  start, the daemon round trip, and the gateway, as a user's script would.
 - The container reaches the host benchmark server as `host.docker.internal`; the
   guest reaches it at `100.96.0.1`, SmolVM's gateway to the host loopback,
   through `--allow-private 100.96.0.0/30`. Both paths add their own network
-  stack to the fixture load time.
+  stack to the page load time.
+- The guest runs Helium and the container runs Alpine's Chromium 142, so the
+  browser comparison is the whole stack, not the VM alone.
 - **Viewer.** The suite asks for Raw only. The VNC server is SmolVM's host-side
   server (`third_party/smolvm/src/agent/vnc.rs`), not libkrun, and Raw is its
   only pixel encoding; it also offers the DesktopSize, Cursor, and
@@ -103,7 +112,7 @@ own toggle counter over CDP afterwards and reports it against the trials sent.
   the WebSocket with the input lease; `direct` is the VMM's VNC TCP port, and
   both paths carry the same framebuffer. Latency needs the guest and host clock
   offset, taken NTP-style from the minimum-RTT of 20 bracketed `Runtime.evaluate`
-  probes, with uncertainty half that RTT (0.11 ms in the latest run). Byte counts
+  probes, with uncertainty half that RTT (0.15 ms in the latest run). Byte counts
   are protocol payload: they exclude WebSocket framing and TCP/IP overhead.
   `fps` is distinct counters decoded per one-second bucket, median over seconds
   per round and then over rounds; `fps.worst_second` is the minimum bucket across
@@ -117,75 +126,74 @@ own toggle counter over CDP afterwards and reports it against the trials sent.
 | | |
 | --- | --- |
 | Host | Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434) |
-| SmolVM | 1.31.4 |
-| Guests | `ref-alpine-chromium` (config `0213b5c8...`, tar 305,999,872 bytes), `ref-alpine-tinyland` (config `d3a9543c...`, tar 301,190,144 bytes); 2 CPUs, 4096 MiB, 1280x800 |
-| Browser | Chromium 142.0.7444.59 (Alpine 3.22 `chromium`) in both guests and the container |
-| Container | Linux arm64 on OrbStack, `--cpus=2 --memory=4g`, Xvfb 1280x800, renderer `NoNewPrivs: 1`, `Seccomp: 2` |
-| Tree | `lane/h1` on main `117562a`; `bctl` release build |
-| Load | The host shared its cores with a Chromium build in Docker (up to 17 cores). The latest results were taken while the one-minute load average was 9.6 to 14.7 against the gate's limit of 12.6, so the gate admitted them but the host was not idle. |
+| SmolVM | 1.34.0, vendored with this repository's patches |
+| Guest | `helium` r6 (config `b59ec01a...`, tar 218,243,072 bytes), Helium 0.20.3.1; 2 CPUs, 4096 MiB, 1280x800 |
+| Container | Chromium 142.0.7444.59 (Alpine 3.22 `chromium`), Linux arm64 on OrbStack, `--cpus=2 --memory=4g`, Xvfb 1280x800, renderer `NoNewPrivs: 1`, `Seccomp: 2` |
+| Tree | main `4cd94c1` with the suite changes uncommitted; `bctl` release build |
+| Load | No other work ran. The one-minute load average was 2.0 to 4.0 at the start of each suite (0.11 to 0.22 per core), and the suites waited 1 to 5 s in total for a quiet host. |
 
-An earlier pass of the same suites, taken at a load average of 4 to 9 on a tree
-from before the authority change, measured the direct `Browser.getVersion` CDP
-median at 142 us where the pass below measured 219 us. Its files were not kept,
-because a harness fix (lease retake) and the rebase made them unrepeatable. The
-difference says the default gate admits windows that differ by 50 percent. For a
-baseline that will be compared later, set `PERF_GATE_MAX_LOAD` low, for example
-`PERF_GATE_MAX_LOAD=0.25`, so `perf-gate-ready` admits only a near-idle host.
+Suites ran one after another: lifecycle and interaction with 7 rounds, viewer 7
+rounds, resources 7 boots, browser 5 rounds of `iterationCount=3`.
 
 ## Results
 
-All time results passed the quiet-host check before and after each sample;
-discarded samples are in the files. "Block" is one alternation unit; the block
-medians show run-to-run spread where samples within a block are not independent.
+All time results passed the quiet-host check before and after each sample; no
+sample was discarded. "Block" is one alternation unit; the block medians show
+run-to-run spread where samples within a block are not independent.
 
-### Lifecycle (`ref-alpine-chromium`, 7 rounds, median and minimum to maximum)
+### Lifecycle (7 rounds, median and minimum to maximum)
 
 | Measure | Result |
 | --- | --- |
-| Daemon start (first command on an empty home) | 109.8 ms (106.9 to 111.8) |
-| Cold `up` to ready | 2101 ms (1964 to 2485; quartiles 2051, 2313) |
-| Warm `up` to ready (same session and profile after `down`) | 1783 ms (1764 to 2116) |
-| `down` | 304.9 ms (301.2 to 329.5), 14 samples |
-| Cold `up`: request to first failed readiness probe | 1041 ms (1023 to 1096) |
-| Cold `up`: first failed probe to ready | 1063 ms (925 to 1442) |
-| Warm `up`: request to first failed readiness probe | 1030 ms (1010 to 1055) |
-| Warm `up`: first failed probe to ready | 754 ms (742 to 1086) |
+| Daemon start (first command on an empty home) | 114.8 ms (111.8 to 116.6) |
+| Cold `up` to ready | 1466 ms (1439 to 1572; quartiles 1460, 1500) |
+| Warm `up` to ready (same session and profile after `down`) | 1455 ms (1442 to 1490) |
+| `down` | 112.8 ms (79.1 to 159.1), 14 samples |
+| Cold `up`: request to first failed readiness probe | 803 ms (789 to 871) |
+| Cold `up`: first failed probe to ready | 673 ms (639 to 707) |
+| Warm `up`: request to first failed readiness probe | 820 ms (783 to 857) |
+| Warm `up`: first failed probe to ready | 633 ms (626 to 672) |
+| `pause` | 1817 ms (1735 to 1853) |
+| `resume` | 2253 ms (2160 to 2395) |
+| Page kept across pause and resume | 7 of 7 |
 
-Stage timeline: the daemon named `compositor` as the first missing stage in 7 of
-7 cold and 7 of 7 warm `up`s, at the time of the first failed probe. It named
-`browser` in 3 of 7 cold and 1 of 7 warm, around 1.4 s, and `display` in 2 of 7
-cold, around 1.8 s. It never named `machine`, `guest`, `seat`, `sandbox`, or
-`cdp`: they passed between its probes. So VM create, start, boot, guest agent,
-and seat take about 1.0 s together; compositor to browser to display take the
-remaining 0.8 to 1.0 s. A finer split needs a finer probe in the daemon, not a
-faster poll here.
+Stage timeline: the daemon named `compositor` as the first missing stage at its
+first failed probe in 7 of 7 cold and 7 of 7 warm `up`s, and named no other
+stage: everything after the compositor passed between its probes. Cold and warm
+do not differ beyond the spread.
 
-Cold and warm differ by 0.3 s at the median, but their ranges overlap at the upper end
-(cold 2485, warm 2116), so the cold penalty is small and not established beyond
-the median.
+Resume takes 0.8 s longer than a cold `up` at the median, but it returns the
+session with its tab and page state, where a cold `up` starts with neither.
+Where pause and resume spend their time was not profiled.
 
-Pause and resume on a bare machine (no image, no GPU, no socket; 4096 MiB, 2 CPUs,
-idle), 7 rounds: pause 574 ms (539 to 827), resume 634 ms (497 to 662); a guest
-process kept its pid and its counter kept advancing in 7 of 7 rounds. This is a
-reference for SmolVM, not a measure of the appliance, which cannot be paused (see
-Findings).
+### Interaction (7 rounds, gateway and direct alternating)
 
-### Interaction (`ref-alpine-chromium`, 7 blocks per path, gateway and direct alternating)
+TodoMVC workflow through `bctl page`, one per round:
+
+| Step | p50 | p95 | Samples |
+| --- | --- | --- | --- |
+| `goto` with `--wait load` | 39.9 ms | 71.7 ms | 7 |
+| `fill` | 14.4 ms | 216.0 ms | 35 |
+| `press Enter` | 14.1 ms | 26.0 ms | 35 |
+| `check` | 65.8 ms | 69.5 ms | 7 |
+| `snapshot` | 11.5 ms | 15.2 ms | 7 |
+| Whole workflow | 450.6 ms (263 to 485) | | 7 |
+
+The workflow is bimodal: 263 to 307 ms in 3 rounds and 451 to 485 ms in 4. The
+difference is the first `fill` after `goto`, which took 215 to 222 ms in those 4
+rounds and 13 to 21 ms otherwise; later fills took 11 to 22 ms.
 
 CDP round trip, one call at a time, 700 calls per cell. `direct` is the exposed
 Unix socket, which bypasses the gateway only; both include the guest relay and
-Chromium.
+the browser.
 
 | Call | Path | p50 | p95 | Block medians |
 | --- | --- | --- | --- | --- |
-| `Browser.getVersion` | direct | 219 us | 320 us | 200 to 267 us |
-| `Browser.getVersion` | gateway | 294 us | 434 us | 265 to 327 us |
-| `Runtime.evaluate("1")` | direct | 399 us | 560 us | 353 to 473 us |
-| `Runtime.evaluate("1")` | gateway | 488 us | 658 us | 455 to 514 us |
+| `Runtime.evaluate("1")` | direct | 170 us | 189 us | 134 to 175 us |
+| `Runtime.evaluate("1")` | gateway | 243 us | 285 us | 219 to 251 us |
 
-The gateway adds 75 us (`getVersion`) and 89 us (`evaluate`) at the median, and
-its block median was higher than direct in 7 of 7 paired rounds (differences 50 to
-99 us and 11 to 137 us).
+The gateway adds 73 us at the median, and the block medians of the two paths do
+not overlap.
 
 Input to pixel: an RFB pointer press or key tap to the update that repaints the
 probe pixel, 140 trials per cell (7 blocks of 20). The page counted 560 toggles for
@@ -193,110 +201,96 @@ probe pixel, 140 trials per cell (7 blocks of 20). The page counted 560 toggles 
 
 | Input | Path | p50 | p95 | Block medians |
 | --- | --- | --- | --- | --- |
-| pointer | direct | 6.72 ms | 8.94 ms | 6.28 to 8.43 ms |
-| pointer | gateway | 7.41 ms | 10.07 ms | 6.96 to 9.54 ms |
-| key | direct | 6.82 ms | 8.78 ms | 6.33 to 8.22 ms |
-| key | gateway | 7.68 ms | 10.00 ms | 7.33 to 9.57 ms |
+| pointer | direct | 21.7 ms | 23.9 ms | 18.8 to 22.6 ms |
+| pointer | gateway | 23.6 ms | 25.8 ms | 22.3 to 24.5 ms |
+| key | direct | 21.6 ms | 23.9 ms | 19.0 to 22.6 ms |
+| key | gateway | 23.4 ms | 25.1 ms | 22.4 to 24.0 ms |
 
-The gateway adds about 0.7 to 0.9 ms at the median and was slower in 6 of 7
-paired rounds (differences from -0.97 to +2.43 ms), so its cost is real but within
-the block-to-block spread. Medians of 6.7 to 7.7 ms are below one 60 Hz frame (16.7 ms). The toggle count
-confirms every trial moved the pixel it timed; why the pipeline presents inside a
-frame was not investigated.
+The gateway adds about 2 ms at the median. Helium presents the change between
+one and two 60 Hz frames after the input; the Alpine Chromium reference image on
+an earlier tree presented it in 6.7 to 7.7 ms, inside one frame. Which part of
+the Helium image adds the frame was not investigated.
 
-### Viewer (`helium`, 5 rounds, gateway and direct alternating, 10 s windows)
+### Viewer (7 rounds, gateway and direct alternating, 10 s windows)
 
-30 of 30 windows retained clean samples; no window was discarded. The guest
-clock ran 231.6 ms from the host clock, and the minimum-RTT offset probe had an
-uncertainty of 0.11 ms. Latency has 3,033 to 3,599 samples per cell; fps,
-bandwidth, and missed have 5 (one per round). fps and bandwidth spreads are the
-per-round medians from minimum to maximum.
+42 of 42 windows retained clean samples. The guest clock ran 291.9 ms from the
+host clock, and the minimum-RTT offset probe had an uncertainty of 0.15 ms.
+Latency has 4,151 to 5,079 samples per cell; fps, bandwidth, and missed have 7
+(one per round). fps and bandwidth spreads are the per-round medians from
+minimum to maximum.
 
 | Scenario | Path | fps median (min to max) | Worst second | Latency p50 | Latency p95 | Bandwidth MB/s (min to max) | Missed |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| marker | direct | 59.5 (58.5 to 60.5) | 56 | 4.53 ms | 6.88 ms | 0.63 (0.62 to 0.64) | 0 |
-| marker | gateway | 61.0 (59.0 to 62.5) | 56 | 4.26 ms | 5.28 ms | 0.64 (0.62 to 0.67) | 0 |
-| fullscreen | direct | 70.5 (57 to 77) | 55 | 7.04 ms | 13.07 ms | 260 (219 to 286) | 0 |
-| fullscreen | gateway | 75.5 (61 to 76) | 55 | 7.70 ms | 13.28 ms | 281 (234 to 289) | 0 |
-| scroll | direct | 70.5 (67.5 to 72) | 54 | 8.36 ms | 9.64 ms | 259 (253 to 263) | 0 |
-| scroll | gateway | 72.5 (60.5 to 75.5) | 53 | 9.10 ms | 10.47 ms | 263 (236 to 277) | 0 |
-
-Conditions: Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434);
-SmolVM 1.34.0; guest `helium` (config `7c0feb90...`, tar 218,244,608 bytes) with
-Chrome 156.0.8078.79; one-minute load average 2.95 at the start, and
-`perf-gate-ready` admitted every window; tree `d1034e5` with the viewer suite
-uncommitted.
+| marker | direct | 58.0 (58.0 to 60.0) | 57 | 8.40 ms | 10.07 ms | 0.62 (0.61 to 0.64) | 0 |
+| marker | gateway | 58.0 (58.0 to 59.0) | 57 | 8.33 ms | 10.34 ms | 0.61 (0.60 to 0.64) | 0 |
+| fullscreen | direct | 78.0 (56 to 79) | 55 | 11.04 ms | 15.74 ms | 283 (213 to 298) | 0 |
+| fullscreen | gateway | 77.0 (55 to 80) | 54 | 11.53 ms | 17.16 ms | 278 (217 to 297) | 0 |
+| scroll | direct | 61.0 (55.5 to 67) | 54 | 12.47 ms | 13.89 ms | 234 (215 to 250) | 0 |
+| scroll | gateway | 61.5 (58.5 to 68.5) | 54 | 13.32 ms | 15.19 ms | 235 (227 to 255) | 0 |
 
 The marker scenario changes only the strip, so its bandwidth is the strip's
-damage rectangles: about 0.63 MB/s at 60 fps. Fullscreen and scroll repaint most
-of the 1280x800 viewport, so their bandwidth is near `fps × 1280 × 800 × 4`
-(about 260 to 290 MB/s) and the frame rate itself ran at 57 to 77 fps. The two
-paths differ by less than the round-to-round spread in every cell; the viewer
-kept up everywhere (`missed` 0), so this window does not separate them. Latency
-grows from marker (4.3 to 4.5 ms) through fullscreen to scroll (8.4 to 9.1 ms at
-the median) as the amount of changed pixels grows.
+damage rectangles: about 0.62 MB/s at 58 fps. Fullscreen and scroll repaint most
+of the 1280x800 viewport, so their bandwidth is near `fps × 1280 × 800 × 4`. The
+two paths differ by less than the round-to-round spread in every cell, and the
+viewer kept up everywhere (`missed` 0). Latency grows from marker through
+fullscreen to scroll as the amount of changed pixels grows. An earlier run on
+Helium r5 with an older runtime measured marker latency p50 at 4.3 to 4.5 ms;
+the image and runtime both changed since, so the doubling is not attributed.
 
-### Browser (Speedometer 3.1, headed, `iterationCount=5`, 8 rounds, order rotated)
+### Browser (Speedometer 3.1, headed, `iterationCount=3`, 5 rounds, order rotated)
 
-| Variant | Runs that finished | Score, median (min to max) | Fixture load, `loadEventEnd` median (min to max) |
-| --- | --- | --- | --- |
-| Container, Linux arm64 | 8 of 8 | 23.22 (21.95 to 23.70) | 60.7 ms (43.0 to 102.8), 40 loads |
-| Guest, `ref-alpine-chromium` | 5 of 8 | 18.78 (17.98 to 18.86) | 96.1 ms (66.8 to 134.2), 40 loads |
-| Guest, `ref-alpine-tinyland` | 4 of 8 | 16.79 (16.65 to 17.23), unclean | 100.7 ms (75.1 to 139.1), 35 loads |
-
-The score is the mean of the 5 iteration scores of one run; the spread is across
-runs. Tinyland has 4 clean runs, fewer than the 5 required, so its score has no
-gate. Against the container the guest scores 81 percent (Sway image) and 72
-percent (Tinyland image) at the median, and the ranges do not overlap. Tinyland
-scores 11 percent below the Sway image, with non-overlapping ranges and 4 and 5
-runs. The fixture loads 1.6 times slower in the guest, which includes the guest's
-network path to the host.
-
-The guest was not tuned toward the container and the container was not tuned
-toward the guest beyond matching CPUs and memory: the guest software-renders
-through llvmpipe on 2 vCPUs, the container runs Xvfb with no compositor. The
-limiter of the gap was not profiled, so the cause (CPU, rendering, memory, or the
-virtual display) is open.
-
-Stalls: 7 of 16 guest runs (3 of 8 on the Sway image, 4 of 8 on the Tinyland image)
-stopped making progress and were aborted after 120 s; the container had none.
-They stopped in different workloads (`observable-plot`, `angular-complex`,
-`perf-dashboard`, `react-stockcharts`, `chartjs`, `tiptap`), so no workload is
-at fault. These runs reached the server at the host's LAN address, which stalls
-on this host without any VM; see Findings.
-
-### Resources (5 boots per image, one VM per boot; minimum to maximum)
-
-| Measure | ref-alpine-chromium | ref-alpine-tinyland |
+| Variant | Runs that finished | Score, median (min to max) |
 | --- | --- | --- |
-| VMM physical footprint, 30 s after ready (VMM and encoder helper) | 644.0 MiB (642.0 to 645.0) | 642.9 MiB (640.9 to 645.9) |
-| VMM RSS, same moment (not gated) | 1388 MiB (1382 to 1399) | 1342 MiB (1340 to 1349) |
-| VMM RSS after 60 s more idle | 1533 MiB (1498 to 1580) | 1500 MiB (1477 to 1549) |
-| VMM idle CPU, 60 s window | 5.48 percent of a core (5.40 to 5.52) | 5.53 percent (5.47 to 5.57) |
-| Machine data directory on disk | 792.3 MiB (791.4 to 792.3) | 785.9 MiB (785.4 to 785.9) |
-| Image archive | 305,999,872 bytes | 301,190,144 bytes |
+| Guest, `helium` | 5 of 5 | 31.35 (30.91 to 32.22) |
+| Container, Linux arm64 | 5 of 5 | 28.78 (27.86 to 29.22) |
+
+The score is the mean of the iteration scores of one run; the spread is across
+runs. The guest scores 9 percent above the container and the ranges do not
+overlap, but the two run different browsers (Helium 0.20.3.1 and Chromium 142),
+so this does not compare the VM with the container alone.
+
+Page load of the `news-next` site, 25 loads per variant (5 batches of 5), median
+(minimum to maximum):
+
+| Variant | `responseEnd` | `loadEventEnd` | Largest contentful paint |
+| --- | --- | --- | --- |
+| Guest, `helium` | 14.7 ms (5.0 to 25.4) | 72.6 ms (52.2 to 107.3) | 140 ms (92 to 160) |
+| Container, Linux arm64 | 2.0 ms (1.6 to 5.8) | 22.1 ms (20.6 to 43.4) | 88 ms (76 to 124) |
+
+The guest receives the document 12.7 ms later at the median, which is the guest's
+network path to the host through SmolVM's relay; the gap grows to 50 ms by the
+load event, because the site's scripts and assets take the same path. Largest
+contentful paint differs by 52 ms.
+
+### Resources (7 boots, one VM per boot; minimum to maximum)
+
+| Measure | `helium` |
+| --- | --- |
+| VMM physical footprint, 30 s after ready (VMM and encoder helper) | 457.9 MiB (433.9 to 462.9) |
+| VMM RSS, same moment (not gated) | 1318 MiB (1116 to 1418) |
+| VMM RSS after 60 s more idle | 1147 MiB (1007 to 1165) |
+| VMM idle CPU, 60 s window | 3.60 percent of a core (2.53 to 3.63) |
+| Machine data directory on disk | 682.7 MiB (682.7 to 682.7) |
+| Profile directory on disk | 21.7 MiB (3.1 to 22.0) |
+| Image archive | 218,243,072 bytes |
 
 | Measure | Value |
 | --- | --- |
-| `bctl` release binary (embeds the dashboard) | 4,967,168 bytes |
-| Daemon RSS, no session, 10 samples | 3.98 MiB (3.92 to 4.00) |
-| Daemon RSS, one ready session, 10 samples | 12.4 MiB (12.4 to 12.5) |
-| Daemon idle CPU, one session, 60 s windows | below 0.02 percent of a core (`ps` resolution) |
+| `bctl` release binary (embeds the dashboard) | 5,161,552 bytes |
+| Daemon RSS, no session | 4.08 MiB (4.05 to 4.11) |
+| Daemon RSS, one ready session | 12.6 MiB (12.6 to 12.7) |
+| Daemon idle CPU, one session, 60 s windows | 0.03 percent of a core (0.02 to 0.03) |
 
-Both images carry the same Chromium; their footprints differ by less than the
-spread. An idle appliance spends about 5.5 percent of a core in the VMM, the same on both
-images. The cause was not profiled.
+The `bctl` binary is 0.7 percent under its 5,200,000-byte gate.
 
 ## Findings
 
-- **The appliance cannot be paused.** `smolvm machine pause` on a daemon-owned
-  session fails with `the initial portable checkpoint profile does not support
-  published sockets, host-backed image layers, Vulkan GPU state`: the exposed CDP
-  socket, the `--image` layers, and `--gpu`, all three requirements of the product
-  launch. The session stays `ready`. A bare machine pauses and resumes (above), so
-  this is a property of the launch configuration, not of SmolVM. Whether the tab,
-  the JS heap, and CDP survive a resume cannot be asked until the launch
-  configuration can be paused. Checkpoint restore (X1) will meet the same refusal.
+- **The first action after a navigation sometimes waits about 200 ms.** In 4 of
+  7 TodoMVC rounds the first `fill` after `goto` took 215 to 222 ms against 11 to
+  22 ms for every other fill, which makes the workflow bimodal. The step matches
+  the automation's 200 ms quiet wait (`MAX_QUIET` in `crates/automation`), as if
+  the action's first check missed the field and then waited for a page change
+  that had already happened; this was not confirmed.
 - **Host connections to the host's own LAN address stall; the guest was not at
   fault.** The h1 guests reached the benchmark server at the host's LAN address
   (`10.0.1.28`), so SmolVM's relay dialed that address on the host. On this host
@@ -336,9 +330,6 @@ images. The cause was not profiled.
   after the authority change.
 - **macOS RSS misreports a VM.** `ps` RSS excludes compressed pages: one VM read
   158 MiB where others read 1.3 GiB. The footprint is the measure to gate.
-- **Guest and container run the same browser build.** Both report Chromium
-  142.0.7444.59 and both renderers run with the sandbox on, so the score gap is the
-  VM and the guest stack, not the browser or its sandbox.
 
 ## Gates
 
@@ -349,12 +340,15 @@ apply. The gate compares the measure's own statistic (the median, or the p95 for
 `.p95` measures) with its limit. Limits are set from the worst observed sample:
 latency and CPU limits sit 20 to 80 percent above the largest sample, score
 floors at 80 percent of the smallest run, memory and size limits 5 to 50 percent
-above the largest observation. The 50 percent spread between load windows seen
-above is inside those margins.
+above the largest observation. For a p95 measure the largest sample is the
+largest block p95, because one call in hundreds can be an order of magnitude
+slower than the rest.
 
-51 of the 52 gates in the file pass on the latest results; the 52nd,
-`browser.speedometer.guest-tinyland.score`, is deferred (4 clean runs). The 30
-`viewer` gates were set from the clean 5-round result above: fps and
+All 50 gates in the file pass on the latest results. The lifecycle, interaction,
+browser, and helium resource limits sit 50 percent above the largest round or
+block, the Speedometer floor at 80 percent of the smallest run (24.7), and the
+footprint, disk, and daemon limits are unchanged or 30 percent above the largest
+boot. The 30 `viewer` gates were set from an earlier 5-round Helium run: fps and
 `fps.worst_second` floors at 80 percent of the smallest round, latency p95
 limits 20 percent above the largest raw sample, bandwidth limits 50 percent
 above the largest round, and `missed` at 5 percent.
@@ -367,17 +361,12 @@ allow for.
 - CDP round trip inside the guest is not measured. `direct` skips only the
   gateway.
 - JetStream and MotionMark: Speedometer only.
-- Helium: the suites take an image name and report the browser version, so P2
-  reruns them unchanged on the arm64 Helium image.
-- Checkpoint restore: blocked by the pause refusal above.
+- Checkpoint restore: `bctl-bench restore` times it, but there is no CLI for it
+  yet, so it has no baseline here.
 - Run and takeover measures follow M3.
-- **Transport counters.** `crates/cdp` is being changed in another lane and the
-  bench depends on none of it. When its counters (commands started, completed,
-  timed out, cancelled; pending high-water; bytes and messages each way; largest
-  message; parse time; late responses; subscription overflows) exist, add an
-  `automation` suite next to `interaction`: drive the fixture through `crates/cdp`,
-  read one counter snapshot per run, and push each counter into `Outcome.measures`
-  with `report::fact` (monotonic counts) or `Samples::finish` (per-run
-  distributions) under `automation.cdp.<counter>`. The result file, the gate
-  checker, and this page need no other change. Warm command p50 and p95 use the
-  same `Samples` and the quiet-host gate as the CDP round trip here.
+- Allocation and transport counters for the automation workflow. When
+  `crates/cdp` exposes its counters (commands started, completed, timed out,
+  cancelled; pending high-water; bytes and messages each way; largest message;
+  parse time; late responses; subscription overflows), read one snapshot per
+  workflow and push each counter into `Outcome.measures` under
+  `interaction.automation.cdp.<counter>`.

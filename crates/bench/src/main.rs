@@ -25,7 +25,7 @@ use session::Home;
 const USAGE: &str = "usage:
   bctl-bench lifecycle|browser|interaction|resources|viewer|restore [--rounds N] [--iterations N] [--quiet-wait SECS] [--out DIR]
   bctl-bench gate [RESULT.json...]
-  bctl-bench serve                      serve the pinned Speedometer and the page-load fixture on a free port, for manual runs
+  bctl-bench serve                      serve the pinned Speedometer tree, whose workloads are also the page-load and automation fixtures, on a free port
 
 Suites write DIR/<UTC time>-<suite>.json (default tests/bench/results) and print its path.
 --iterations is the Speedometer iterationCount of the browser suite.
@@ -67,7 +67,7 @@ fn run() -> Fallible<()> {
     let suite = args.next().ok_or(USAGE)?;
     let rest: Vec<String> = args.collect();
     if suite == "serve" {
-        let server = serve::start(Some(host::root().join(browser::SPEEDOMETER_DIR)))?;
+        let server = serve::start(host::root().join(browser::SPEEDOMETER_DIR))?;
         println!("http://127.0.0.1:{}/speedometer/index.html", server.port);
         loop {
             std::thread::park();

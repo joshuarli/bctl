@@ -58,12 +58,6 @@ impl Endpoint {
         Ok(rest.find('/').map_or("/".into(), |at| rest[at..].to_string()))
     }
 
-    pub fn attach_browser(&self) -> Fallible<Cdp> {
-        let version = self.get_json("/json/version")?;
-        let url = string(&version, &["webSocketDebuggerUrl"]).ok_or("no webSocketDebuggerUrl")?;
-        self.attach(&self.websocket_path(url)?)
-    }
-
     pub fn attach_first_page(&self) -> Fallible<(String, Cdp)> {
         let list = self.get_json("/json/list")?;
         let Value::Array(targets) = &list else { return Err("/json/list is not an array".into()) };

@@ -1,20 +1,26 @@
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bctl_rfb::{Client, Rgb};
 use miniserde::{Deserialize, json};
 
 use crate::cdp::Endpoint;
-use crate::host::{Fallible, Verdict};
+use crate::browser::{HOST_FROM_GUEST, HOST_RANGE};
+use crate::host::{self, Fallible, Verdict};
 use crate::net::{self, WebSocket};
 use crate::report::Samples;
 use crate::rfb::{Probe, Viewer};
 use crate::session::{Home, session_name};
+use crate::serve;
 use crate::stats::Statistic;
 use crate::{Context, Outcome};
 
-const IMAGE: &str = "ref-alpine-chromium";
+const IMAGE: &str = "helium";
+const TODOS: usize = 5;
+const TODO_APP: &str = "speedometer/resources/todomvc/architecture-examples/react/dist/index.html";
+const NEW_TODO: &str = "What needs to be done?";
+const STEPS: [&str; 5] = ["goto", "fill", "press", "check", "snapshot"];
 const CALLS_PER_BLOCK: usize = 100;
 const WARMUP_CALLS: usize = 10;
 const TRIALS_PER_BLOCK: usize = 20;
@@ -60,24 +66,49 @@ fn direct_socket(home: &Home) -> Fallible<PathBuf> {
     sockets.next().filter(|_| sockets.next().is_none()).ok_or_else(|| "expected exactly one exposed CDP socket".into())
 }
 
-fn cdp_block(endpoint: &Endpoint) -> Fallible<(Vec<f64>, Vec<f64>)> {
-    let mut browser = endpoint.attach_browser()?;
+fn cdp_block(endpoint: &Endpoint) -> Fallible<Vec<f64>> {
     let (_, mut page) = endpoint.attach_first_page()?;
     for _ in 0..WARMUP_CALLS {
-        browser.call("Browser.getVersion", "{}")?;
         page.evaluate("1")?;
     }
-    let mut browser_calls = Vec::with_capacity(CALLS_PER_BLOCK);
-    let mut page_calls = Vec::with_capacity(CALLS_PER_BLOCK);
+    let mut calls = Vec::with_capacity(CALLS_PER_BLOCK);
     for _ in 0..CALLS_PER_BLOCK {
-        let started = std::time::Instant::now();
-        browser.call("Browser.getVersion", "{}")?;
-        browser_calls.push(micros(started.elapsed()));
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         page.evaluate("1")?;
-        page_calls.push(micros(started.elapsed()));
+        calls.push(micros(started.elapsed()));
     }
-    Ok((browser_calls, page_calls))
+    Ok(calls)
+}
+
+fn timed(steps: &mut [Vec<f64>; 5], step: &str, run: impl FnOnce() -> Fallible<String>) -> Fallible<String> {
+    let started = Instant::now();
+    let output = run()?;
+    let at = STEPS.iter().position(|s| *s == step).expect("known step");
+    steps[at].push(millis(started.elapsed()));
+    Ok(output)
+}
+
+fn todo_workflow(home: &Home, session: &str, url: &str) -> Fallible<([Vec<f64>; 5], f64)> {
+    let mut steps: [Vec<f64>; 5] = Default::default();
+    let started = Instant::now();
+    timed(&mut steps, "goto", || home.page(&["goto", session, url, "--wait", "load"]))?;
+    for todo in 0..TODOS {
+        let text = format!("todo {todo}");
+        timed(&mut steps, "fill", || home.page(&["fill", session, "--placeholder", NEW_TODO, &text]))?;
+        timed(&mut steps, "press", || home.page(&["press", session, "--placeholder", NEW_TODO, "Enter"]))?;
+    }
+    timed(&mut steps, "check", || home.page(&["check", session, "--css", ".todo-list li .toggle", "--nth", "1"]))?;
+    let snapshot = timed(&mut steps, "snapshot", || home.page(&["snapshot", session]))?;
+    let total = millis(started.elapsed());
+    let state = home.page(&["eval", session, "[document.querySelectorAll('.todo-list li').length, document.querySelectorAll('.todo-list li.completed').length].join('/')"])?;
+    if state.trim_matches('"') != format!("{TODOS}/1") {
+        return Err(format!("the todo app holds {state} items/completed after the workflow, not {TODOS}/1"));
+    }
+    let items: Vec<&str> = snapshot.lines().filter(|l| l.starts_with("- checkbox [")).collect();
+    if items.len() != TODOS || items.iter().filter(|l| l.ends_with(", checked]")).count() != 1 {
+        return Err(format!("the snapshot does not show {TODOS} todo checkboxes with one checked: {snapshot}"));
+    }
+    Ok((steps, total))
 }
 
 #[derive(Deserialize)]
@@ -165,7 +196,8 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let home = Home::new("inter")?;
     home.start_daemon()?;
     let session = session_name("inter");
-    home.up(&session, &session, IMAGE, &[])?;
+    let server = serve::start(host::root().join(crate::browser::SPEEDOMETER_DIR))?;
+    home.up(&session, &session, IMAGE, &[HOST_RANGE.to_string()])?;
     let view = home.session(&session)?;
     let vnc_port = view.vnc_port.ok_or("session has no VNC port")?;
     let gateway_url = home.cdp_url(&session)?;
@@ -178,9 +210,7 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let mut rtt: Vec<Series> = Vec::new();
     let mut latency: Vec<Series> = Vec::new();
     for path in [Path::Direct, Path::Gateway] {
-        for label in ["Browser.getVersion", "Runtime.evaluate"] {
-            rtt.push(Series { path, label, samples: Samples::new() });
-        }
+        rtt.push(Series { path, label: "Runtime.evaluate", samples: Samples::new() });
         for label in ["pointer", "key"] {
             latency.push(Series { path, label, samples: Samples::new() });
         }
@@ -195,18 +225,37 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         for path in paths(round) {
             let endpoint = if path == Path::Direct { &direct } else { &gateway };
             match ctx.gate.run(|| cdp_block(endpoint)) {
-                Ok(((browser, page), _, verdict)) => {
-                    eprintln!("interaction round {round}: cdp {} {} calls ({verdict:?})", path.name(), browser.len());
-                    for (label, calls) in [("Browser.getVersion", browser), ("Runtime.evaluate", page)] {
-                        let samples = find(&mut rtt, path, label);
-                        match verdict {
-                            Verdict::Clean => calls.into_iter().for_each(|c| samples.push(c)),
-                            other => samples.discard(None, format!("{other:?}: block of {} calls dropped", calls.len())),
-                        }
+                Ok((calls, _, verdict)) => {
+                    eprintln!("interaction round {round}: cdp {} {} calls ({verdict:?})", path.name(), calls.len());
+                    let samples = find(&mut rtt, path, "Runtime.evaluate");
+                    match verdict {
+                        Verdict::Clean => calls.into_iter().for_each(|c| samples.push(c)),
+                        other => samples.discard(None, format!("{other:?}: block of {} calls dropped", calls.len())),
                     }
                 }
                 Err(e) => outcome.notes.push(format!("cdp block {} round {round} failed: {e}", path.name())),
             }
+        }
+    }
+
+    let todo_url = format!("http://{HOST_FROM_GUEST}:{}/{TODO_APP}", server.port);
+    let mut steps: [Samples; 5] = std::array::from_fn(|_| Samples::new());
+    let mut workflow = Samples::new();
+    home.open_tab(&session, "about:blank")?;
+    for round in 0..ctx.rounds {
+        if ctx.gate.gave_up() {
+            outcome.notes.push(format!("perf gate deferred: host busy; automation workflows stopped before round {round} of {}", ctx.rounds));
+            break;
+        }
+        match ctx.gate.run(|| todo_workflow(&home, &session, &todo_url)) {
+            Ok(((timings, total), _, verdict)) => {
+                eprintln!("interaction round {round}: todo workflow {total:.0} ms ({verdict:?})");
+                workflow.record(total, verdict);
+                for (samples, values) in steps.iter_mut().zip(timings) {
+                    values.into_iter().for_each(|v| samples.record(v, verdict));
+                }
+            }
+            Err(e) => outcome.notes.push(format!("todo workflow round {round} failed: {e}")),
         }
     }
 
@@ -259,9 +308,15 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
         outcome.measures.push(series.samples.finish(&format!("{name}.p50"), "us", Statistic::Median, conditions));
         outcome.measures.push(series.samples.finish(&format!("{name}.p95"), "us", Statistic::P95, conditions));
     }
+    let automation = format!("bctl page commands from a host process on Speedometer 3.1's React TodoMVC, served from the host: goto with --wait load, then {TODOS} times fill and press Enter on the new-todo field, check the first item, snapshot; each command includes the CLI process, the daemon, the gateway's CDP session and the guest");
+    for (step, samples) in STEPS.iter().zip(&steps) {
+        outcome.measures.push(samples.finish(&format!("interaction.automation.{step}.p50"), "ms", Statistic::Median, &automation));
+        outcome.measures.push(samples.finish(&format!("interaction.automation.{step}.p95"), "ms", Statistic::P95, &automation));
+    }
+    outcome.measures.push(workflow.finish("interaction.automation.todo_workflow", "ms", Statistic::Median, &automation));
     for series in &latency {
         let name = format!("interaction.input_to_pixel.{}.{}", series.path.name(), series.label);
-        let conditions = "RFB pointer press or key tap written to the stream until an update repaints a probe pixel of a full-viewport color toggle; ref-alpine-chromium 1280x800; direct = the VMM's VNC port, gateway = dashboard WebSocket with the input lease; 400 ms between trials";
+        let conditions = "RFB pointer press or key tap written to the stream until an update repaints a probe pixel of a full-viewport color toggle; helium 1280x800; direct = the VMM's VNC port, gateway = dashboard WebSocket with the input lease; 400 ms between trials";
         outcome.measures.push(series.samples.finish(&format!("{name}.p50"), "ms", Statistic::Median, conditions));
         outcome.measures.push(series.samples.finish(&format!("{name}.p95"), "ms", Statistic::P95, conditions));
     }

@@ -53,12 +53,11 @@ impl Home {
         std::fs::create_dir_all(path.join("runtime")).and_then(|()| std::fs::create_dir_all(path.join("images"))).map_err(|e| e.to_string())?;
         let link = |from: PathBuf, to: PathBuf| std::os::unix::fs::symlink(from, to).map_err(|e| e.to_string());
         link(root.join(".work/runtime/smolvm"), path.join("runtime/smolvm"))?;
-        for image in ["ref-alpine-chromium", "ref-alpine-tinyland"] {
-            let tar = root.join(format!(".work/images/{image}.tar"));
-            if tar.exists() {
-                link(tar, path.join(format!("images/{image}.tar")))?;
-            }
+        let tar = root.join(".work/images/helium.tar");
+        if !tar.exists() {
+            return Err(format!("no {}; run BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium", tar.display()));
         }
+        link(tar, path.join("images/helium.tar"))?;
         let bctl = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("bctl");
         if !bctl.exists() {
             return Err(format!("no {}; run cargo build --release -p bctl -p bctl-bench", bctl.display()));
@@ -149,6 +148,37 @@ impl Home {
             return Err(format!("{name} is {} after up: {}", view.state, view.failure.unwrap_or_default()));
         }
         Ok(UpTiming { total, stages })
+    }
+
+    pub fn pause(&self, name: &str) -> Fallible<Duration> {
+        let started = Instant::now();
+        self.reply(&["pause", name])?;
+        Ok(started.elapsed())
+    }
+
+    pub fn resume(&self, name: &str) -> Fallible<Duration> {
+        let started = Instant::now();
+        let view = self.reply(&["resume", name])?.sessions.into_iter().find(|s| s.name == name).ok_or("resume returned no session")?;
+        if view.state != "ready" {
+            return Err(format!("{name} is {} after resume: {}", view.state, view.failure.unwrap_or_default()));
+        }
+        Ok(started.elapsed())
+    }
+
+    pub fn open_tab(&self, name: &str, url: &str) -> Fallible<()> {
+        let output = self.command(&["tab", "new", name, url]).output().map_err(|e| format!("cannot run bctl: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("bctl tab new {name} exited {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(())
+    }
+
+    pub fn page(&self, args: &[&str]) -> Fallible<String> {
+        let output = self.command(&[&["page"], args].concat()).output().map_err(|e| format!("cannot run bctl: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("bctl page {args:?} exited {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     pub fn down(&self, name: &str) -> Fallible<Duration> {

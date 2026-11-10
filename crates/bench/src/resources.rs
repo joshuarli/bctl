@@ -7,7 +7,7 @@ use crate::session::{Home, session_name};
 use crate::stats::Statistic;
 use crate::{Context, Outcome};
 
-const IMAGES: [&str; 2] = ["ref-alpine-chromium", "ref-alpine-tinyland"];
+const IMAGES: [&str; 1] = ["helium"];
 const SETTLE: Duration = Duration::from_secs(30);
 const IDLE_WINDOW: Duration = Duration::from_secs(60);
 

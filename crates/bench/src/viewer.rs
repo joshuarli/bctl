@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use miniserde::{Deserialize, json};
 
 use crate::cdp::{Cdp, Endpoint};
-use crate::host::{self, Fallible};
+use crate::host::Fallible;
 use crate::net::{self, WebSocket};
 use crate::report::{self, Samples};
 use crate::rfb::Viewer;
@@ -202,13 +202,6 @@ fn cell<'a>(cells: &'a mut [Cell], path: Path, scenario: &str) -> &'a mut Cell {
 pub fn run(ctx: &Context) -> Fallible<Outcome> {
     let mut outcome = Outcome { images: vec![IMAGE], ..Outcome::default() };
     let home = Home::new("viewer")?;
-    let tar = host::root().join(".work/images/helium.tar");
-    let link = home.path.join("images/helium.tar");
-    if let Err(e) = std::os::unix::fs::symlink(&tar, &link)
-        && e.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(format!("{}: {e}", link.display()));
-    }
     home.start_daemon()?;
     let session = session_name("viewer");
     home.up(&session, &session, IMAGE, &[])?;
