@@ -17,6 +17,8 @@ extern crate log;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_board;
 pub mod builder;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+mod acpi;
 /// Checkpointed CPU discovery policy and live creation bookkeeping.
 pub mod cpu_growth;
 #[cfg(target_os = "linux")]
@@ -89,6 +91,10 @@ use arch::{ArchMemoryInfo, InitrdConfig};
 use crossbeam_channel::Sender;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use devices::fdt;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+use devices::fdt::DeviceInfoForFDT;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+use devices::legacy::gic::GICDevice;
 use devices::legacy::IrqChip;
 use devices::virtio::VmmExitObserver;
 use devices::{BusDevice, DeviceType};
@@ -150,6 +156,8 @@ pub enum Error {
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     /// Cannot generate or write FDT
     SetupFDT(devices::fdt::Error),
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    SetupAcpi(&'static str),
     /// Cannot create Timer file descriptor.
     TimerFd(io::Error),
     /// Vcpu error.
@@ -200,6 +208,8 @@ impl Display for Error {
             Serial(e) => write!(f, "Error writing to the serial console: {e:?}"),
             #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             SetupFDT(e) => write!(f, "Error generating or writing FDT: {e:?}"),
+            #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+            SetupAcpi(e) => write!(f, "Cannot configure ACPI: {e}"),
             TimerFd(e) => write!(f, "Error creating timer fd: {e}"),
             Vcpu(e) => write!(f, "Vcpu error: {e}"),
             VcpuEvent(e) => write!(f, "Cannot send event to vCPU. {e:?}"),
@@ -498,6 +508,8 @@ pub struct Vmm {
 
     // Guest VM devices.
     mmio_device_manager: MMIODeviceManager,
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    fwcfg: Option<Arc<Mutex<devices::legacy::FwCfg>>>,
     /// Balloon device handle for runtime target control (idle-squeeze).
     #[cfg(not(feature = "tee"))]
     balloon: Option<Arc<Mutex<devices::virtio::Balloon>>>,
@@ -655,6 +667,10 @@ fn paused_vm_with_failed_ram_mapping_cannot_capture_or_rearm() {
 impl Vmm {
     #[cfg(snapshot_supported)]
     fn save_vm_state(&self) -> Result<vstate::VmState> {
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        if self.fwcfg.is_some() {
+            return Err(Error::Snapshot("EFI firmware devices cannot be checkpointed".into()));
+        }
         #[allow(unused_mut)] // Windows adds host-emulated PIT state.
         let mut state = self.vm.save_state().map_err(Error::Vm)?;
         #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
@@ -693,6 +709,7 @@ impl Vmm {
         let mut first_virtio: Option<(u64, u32)> = None;
         for ((kind, _), info) in self.mmio_device_manager.get_device_info() {
             let kind = match kind {
+                DeviceType::FwCfg => return None,
                 DeviceType::Serial => arm_board::LegacyKind::Serial,
                 DeviceType::RTC => arm_board::LegacyKind::Rtc,
                 DeviceType::Gpio => arm_board::LegacyKind::Gpio,
@@ -2557,6 +2574,35 @@ impl Vmm {
                 _pvh,
             )
             .map_err(Error::ConfigureSystem)?;
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        if let Some(fwcfg) = &self.fwcfg {
+            let dev_info = self.mmio_device_manager.get_device_info();
+            let mut virtio: Vec<(u64, u64, u32)> = dev_info
+                .iter()
+                .filter(|((t, _), _)| matches!(t, DeviceType::Virtio(_)))
+                .map(|(_, i)| (i.addr(), i.length(), i.irq()))
+                .collect();
+            virtio.sort_by_key(|(addr, _, _)| *addr);
+            let uart = dev_info.get(&(DeviceType::Serial, DeviceType::Serial.to_string()));
+            let gic_props = _intc.lock().unwrap().device_properties();
+            let [gicd_base, _, gicr_base, gicr_size] = gic_props[..] else {
+                return Err(Error::SetupAcpi("GICv3 device properties are incomplete"));
+            };
+            let info = acpi::AcpiInfo {
+                mpidrs: vcpus.iter().map(|cpu| cpu.get_mpidr()).collect(),
+                gicd_base,
+                gicr_base,
+                gicr_size,
+                uart: uart.map(|u| (u.addr(), u.irq())),
+                virtio,
+            };
+            let blobs = acpi::build_acpi(&info);
+            let mut dev = fwcfg.lock().unwrap();
+            dev.add_file(acpi::FILE_LOADER, blobs.loader);
+            dev.add_file(acpi::FILE_RSDP, blobs.rsdp);
+            dev.add_file(acpi::FILE_TABLES, blobs.tables);
         }
 
         #[cfg(target_arch = "aarch64")]

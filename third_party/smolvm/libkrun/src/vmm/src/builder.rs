@@ -1161,6 +1161,8 @@ pub fn build_microvm(
     #[allow(unused_mut)]
     let mut vcpus;
     let intc: IrqChip;
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    let mut fwcfg: Option<Arc<Mutex<devices::legacy::FwCfg>>> = None;
     #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
     let pit: Arc<Mutex<devices::legacy::Pit>>;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
@@ -1383,6 +1385,15 @@ pub fn build_microvm(
             event_manager,
             _shutdown_efd,
         )?;
+
+        if vm_resources.firmware_config.is_some() {
+            let dev = Arc::new(Mutex::new(devices::legacy::FwCfg::new()));
+            mmio_device_manager
+                .register_mmio_fwcfg(dev.clone())
+                .map_err(Error::RegisterMMIODevice)
+                .map_err(StartMicrovmError::Internal)?;
+            fwcfg = Some(dev);
+        }
     }
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     vmm_timing!("vcpus + irq created");
@@ -1486,6 +1497,8 @@ pub fn build_microvm(
         held_save_valid: None,
         vm,
         mmio_device_manager,
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        fwcfg,
         #[cfg(not(feature = "tee"))]
         balloon: None,
         #[cfg(target_arch = "x86_64")]

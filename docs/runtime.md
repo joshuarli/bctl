@@ -98,6 +98,11 @@ events are unchanged.
 when the guest acknowledges its last virtio-MMIO cause. It also supports
 16-bit MMIO writes from arm64 firmware.
 
+`libkrun-0004-arm-efi-acpi.patch` supplies ACPI tables to arm64 EFI guests
+through fw_cfg. The tables describe the configured CPUs and attached MMIO
+devices. Firmware-backed guests cannot be checkpointed until fw_cfg state is
+included in the checkpoint.
+
 The importer applies every patch to freshly imported source, so a patch that no
 longer matches the tip fails the import, not a later build. `runtime/build.sh`
 verifies each patch's digest and that it applies to either the pristine or the

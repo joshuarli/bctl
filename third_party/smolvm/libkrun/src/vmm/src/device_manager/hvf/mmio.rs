@@ -549,6 +549,29 @@ impl MMIODeviceManager {
     }
 
     #[cfg(target_arch = "aarch64")]
+    pub fn register_mmio_fwcfg(
+        &mut self,
+        fwcfg: Arc<Mutex<devices::legacy::FwCfg>>,
+    ) -> Result<()> {
+        self.bus
+            .insert(fwcfg, self.mmio_base, MMIO_LEN)
+            .map_err(Error::BusError)?;
+
+        let ret = self.mmio_base;
+        self.id_to_dev_info.insert(
+            (DeviceType::FwCfg, DeviceType::FwCfg.to_string()),
+            MMIODeviceInfo {
+                addr: ret,
+                len: MMIO_LEN,
+                irq: 0,
+            },
+        );
+
+        self.mmio_base += MMIO_LEN;
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
     /// Register a MMIO GIC device.
     pub fn register_mmio_gic(&mut self, _vm: &Vm, intc: IrqChip) -> Result<()> {
         let (mmio_addr, mmio_size) = {
