@@ -894,14 +894,18 @@ static int wait_cdp_port(long timeout_ms)
 	return -1;
 }
 
-static int wait_page_ready(struct ws *page, long timeout_ms)
+static int wait_page_ready(struct ws *page, long timeout_ms, char *last, size_t last_len)
 {
 	char want[64], got[256];
 	snprintf(want, sizeof want, "complete|http://127.0.0.1:%d/", opt.fixture_port);
+	snprintf(last, last_len, "no-answer");
 	long deadline = now_ms() + timeout_ms;
 	while (now_ms() < deadline) {
-		if (cdp_eval_string(page, "document.readyState+'|'+location.href", got, sizeof got) == 0 && !strcmp(got, want))
-			return 0;
+		if (cdp_eval_string(page, "document.readyState+'|'+location.href", got, sizeof got) == 0) {
+			snprintf(last, last_len, "%s", got);
+			if (!strcmp(got, want))
+				return 0;
+		}
 		sleep_ms(200);
 	}
 	return -1;
@@ -1074,12 +1078,20 @@ static int run_cdp(void)
 
 	char params[256];
 	snprintf(params, sizeof params, "{\"url\":\"http://127.0.0.1:%d/\"}", opt.fixture_port);
+	long nav_start = now_ms();
 	char *nav = cdp_call(&page, "Page.navigate", params, 30000);
-	int nav_ok = cdp_ok(nav) && !strstr(nav, "\"errorText\"");
+	long nav_ms = now_ms() - nav_start;
+	int sent = cdp_ok(nav) && !strstr(nav, "\"errorText\"");
+	char nav_reply[200] = "none";
+	if (nav)
+		snprintf(nav_reply, sizeof nav_reply, "%s", nav);
 	free(nav);
-	nav_ok = nav_ok && wait_page_ready(&page, 60000) == 0;
-	record("cdp_navigate", nav_ok, "url=http://127.0.0.1:%d/", opt.fixture_port);
+	char last[160] = "not-waited";
+	int nav_ok = sent && wait_page_ready(&page, 60000, last, sizeof last) == 0;
+	record("cdp_navigate", nav_ok, "url=http://127.0.0.1:%d/,navigate_ok=%d,navigate_ms=%ld,last_state=%s,reply=%s",
+		opt.fixture_port, sent, nav_ms, last, nav_reply);
 	if (!nav_ok) {
+		emit_log_tail("helium.log", 8192);
 		ws_close(&page);
 		ws_close(&browser);
 		return -1;
