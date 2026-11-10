@@ -136,3 +136,17 @@ Related links:
 
 https://wiki.qemu.org/Documentation/QMP
 https://github.com/qemu/qemu/blob/master/docs/virtio-balloon-stats.txt
+
+Free page reporting
+
+With "-device virtio-balloon-pci,free-page-reporting=on,vectors=5" the driver
+also negotiates VIRTIO_BALLOON_F_REPORTING. Every 5 seconds it allocates every
+free 2 MB block it can while keeping twice the memory cleaner's threshold free,
+reports the blocks to the host, which discards their backing, and frees them
+again once the host has answered. Memory that guest programs touched and then
+freed so leaves the host process's RSS without any balloon target being set.
+
+The device needs one MSI-X vector for its configuration interrupt and one per
+virtqueue (inflate, deflate, stats and reporting). QEMU's default for
+virtio-balloon-pci is fewer than that, and without "vectors=5" the driver
+fails to attach with "failed to find free MSI-X slot".

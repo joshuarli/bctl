@@ -46,7 +46,7 @@ else
 if [ "$net" -eq 1 ]; then nic='user,model=virtio-net-pci'; else nic='none'; fi
 set -- qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp "$smp" -m "$mem" \
 	-display none -monitor none -serial "file:$serial" -no-reboot \
-	-device isa-debug-exit -device virtio-rng-pci \
+	-device isa-debug-exit -device virtio-rng-pci -device virtio-balloon-pci,free-page-reporting=on,vectors=5 \
 	-drive "if=none,id=hd0,format=raw,file=$image" -device virtio-scsi-pci,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=hd0 \
 	-nic "$nic" -kernel "$kernel"
 qemu_cmd=$*

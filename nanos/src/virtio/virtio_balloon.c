@@ -37,6 +37,12 @@
 #define VIRTIO_BALLOON_F_MUST_TELL_HOST 1
 #define VIRTIO_BALLOON_F_STATS_VQ       2
 #define VIRTIO_BALLOON_F_DEFLATE_ON_OOM 4
+#define VIRTIO_BALLOON_F_REPORTING      32
+
+#define VIRTIO_BALLOON_REPORT_ORDER         (PAGELOG + 9)
+#define VIRTIO_BALLOON_REPORT_SIZE          U64_FROM_BIT(VIRTIO_BALLOON_REPORT_ORDER)
+#define VIRTIO_BALLOON_REPORT_DESCS         16
+#define VIRTIO_BALLOON_REPORT_INTERVAL_SEC  5
 
 struct virtio_balloon_stat {
 #define VIRTIO_BALLOON_S_SWAP_IN      0
@@ -72,6 +78,16 @@ struct virtio_balloon {
     u32 actual_pages;
     struct list in_balloon;
     struct list free;
+    struct {
+        virtqueue vq;
+        u64 *held;
+        u64 held_count;
+        u64 capacity;
+        boolean running;
+        struct timer timer;
+        closure_struct(timer_handler, timer_task);
+        closure_struct(vqfinish, reported);
+    } reporting;
 } virtio_balloon;
 
 typedef struct balloon_page {
@@ -91,7 +107,8 @@ struct virtio_balloon_config {
 
 #define VIRTIO_BALLOON_DRV_FEATURES (VIRTIO_BALLOON_F_MUST_TELL_HOST |  \
                                      VIRTIO_BALLOON_F_STATS_VQ |        \
-                                     VIRTIO_BALLOON_F_DEFLATE_ON_OOM)
+                                     VIRTIO_BALLOON_F_DEFLATE_ON_OOM |  \
+                                     VIRTIO_BALLOON_F_REPORTING)
 
 typedef struct vtbln_deflate_work {
     balloon_page bp;
@@ -108,6 +125,18 @@ static inline boolean balloon_must_tell_host(void)
 static inline boolean balloon_has_stats_vq(void)
 {
     return (virtio_balloon.dev->features & VIRTIO_BALLOON_F_STATS_VQ) != 0;
+}
+
+static inline boolean balloon_reports_free_pages(void)
+{
+    return (virtio_balloon.dev->features & VIRTIO_BALLOON_F_REPORTING) != 0;
+}
+
+/* Virtqueues of features not negotiated take no index, so the reporting queue follows the last
+ * queue present; this driver never negotiates VIRTIO_BALLOON_F_FREE_PAGE_HINT. */
+static inline u16 balloon_reporting_vq_index(void)
+{
+    return balloon_has_stats_vq() ? 3 : 2;
 }
 
 static void update_actual_pages(s64 delta)
@@ -355,6 +384,97 @@ closure_func_basic(mem_wcleaner, u64, virtio_balloon_deflater,
     return deflated << VIRTIO_BALLOON_ALLOC_ORDER;
 }
 
+static u64 report_reserve(void)
+{
+    u64 clean_threshold = MAX(heap_total(virtio_balloon.physical) >> MEM_CLEAN_THRESHOLD_SHIFT,
+                              MEM_CLEAN_THRESHOLD);
+    return 2 * clean_threshold;
+}
+
+static void release_reported(void)
+{
+    for (u64 i = 0; i < virtio_balloon.reporting.held_count; i++)
+        deallocate_u64(virtio_balloon.physical, virtio_balloon.reporting.held[i],
+                       VIRTIO_BALLOON_REPORT_SIZE);
+    virtio_balloon_debug("%s: reported %ld MB\n", func_ss,
+                         (virtio_balloon.reporting.held_count * VIRTIO_BALLOON_REPORT_SIZE) >> 20);
+    virtio_balloon.reporting.held_count = 0;
+    virtio_balloon.reporting.running = false;
+}
+
+static void report_next(void)
+{
+    heap physical = virtio_balloon.physical;
+    virtqueue vq = virtio_balloon.reporting.vq;
+    u64 reserve = report_reserve();
+    vqmsg m = 0;
+    int descs = 0;
+    while ((descs < VIRTIO_BALLOON_REPORT_DESCS) &&
+           (virtio_balloon.reporting.held_count < virtio_balloon.reporting.capacity) &&
+           (heap_free(physical) >= reserve + VIRTIO_BALLOON_REPORT_SIZE)) {
+        if (!m) {
+            m = allocate_vqmsg(vq, VIRTIO_BALLOON_REPORT_DESCS);
+            if (m == INVALID_ADDRESS) {
+                m = 0;
+                break;
+            }
+        }
+        u64 phys = allocate_u64(physical, VIRTIO_BALLOON_REPORT_SIZE);
+        if (phys == INVALID_PHYSICAL)
+            break;
+        if (!vqmsg_push(vq, m, phys, VIRTIO_BALLOON_REPORT_SIZE, true)) {
+            deallocate_u64(physical, phys, VIRTIO_BALLOON_REPORT_SIZE);
+            break;
+        }
+        virtio_balloon.reporting.held[virtio_balloon.reporting.held_count++] = phys;
+        descs++;
+    }
+    if (descs == 0) {
+        if (m)
+            deallocate_vqmsg(vq, m);
+        release_reported();
+        return;
+    }
+    vqmsg_commit(vq, m, (vqfinish)&virtio_balloon.reporting.reported);
+}
+
+closure_func_basic(vqfinish, void, virtio_balloon_reported,
+                   u64 len)
+{
+    report_next();
+}
+
+closure_func_basic(timer_handler, void, virtio_balloon_report_task,
+                   u64 expiry, u64 overruns)
+{
+    if ((overruns == timer_disabled) || virtio_balloon.reporting.running)
+        return;
+    virtio_balloon.reporting.running = true;
+    report_next();
+}
+
+static boolean virtio_balloon_init_reporting(heap general)
+{
+    u64 capacity = heap_total(virtio_balloon.physical) >> VIRTIO_BALLOON_REPORT_ORDER;
+    virtio_balloon.reporting.held = allocate(general, capacity * sizeof(u64));
+    if (virtio_balloon.reporting.held == INVALID_ADDRESS) {
+        msg_err("vtbln cannot allocate the reporting list");
+        return false;
+    }
+    virtio_balloon.reporting.capacity = capacity;
+    virtio_balloon.reporting.held_count = 0;
+    virtio_balloon.reporting.running = false;
+    init_closure_func(&virtio_balloon.reporting.reported, vqfinish, virtio_balloon_reported);
+    init_closure_func(&virtio_balloon.reporting.timer_task, timer_handler,
+                      virtio_balloon_report_task);
+    init_timer(&virtio_balloon.reporting.timer);
+    timestamp interval = seconds(VIRTIO_BALLOON_REPORT_INTERVAL_SEC);
+    register_timer(kernel_timers, &virtio_balloon.reporting.timer, CLOCK_ID_MONOTONIC,
+                   interval, false, interval,
+                   (timer_handler)&virtio_balloon.reporting.timer_task);
+    return true;
+}
+
 static inline void write_stat(u16 tag, u64 val)
 {
     virtio_balloon_debug("   tag %d, val 0x%lx\n", tag, val);
@@ -461,6 +581,12 @@ static boolean virtio_balloon_attach(heap general, backed_heap backed, heap phys
     } else {
         virtio_balloon.statsq = 0;
     }
+    if (balloon_reports_free_pages()) {
+        s = virtio_alloc_virtqueue(v, ss("virtio balloon reportingq"), balloon_reporting_vq_index(),
+                                   &virtio_balloon.reporting.vq);
+        if (!is_ok(s))
+            goto fail;
+    }
     virtio_balloon_debug("   virtqueues allocated, setting driver status OK\n");
     vtdev_set_status(v, VIRTIO_CONFIG_STATUS_DRIVER_OK);
     update_actual_pages(0);
@@ -472,6 +598,8 @@ static boolean virtio_balloon_attach(heap general, backed_heap backed, heap phys
     }
     if (balloon_has_stats_vq())
         virtio_balloon_init_statsq();
+    if (balloon_reports_free_pages() && !virtio_balloon_init_reporting(general))
+        return false;
     return true;
   fail:
     msg_err("vtbln failed to attach: %v", s);
