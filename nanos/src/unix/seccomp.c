@@ -416,7 +416,17 @@ boolean seccomp_check(thread t, context_frame f, sysreturn *rv)
         return true;
     }
     if (action == SECCOMP_RET_TRAP) {
-        f[SYSCALL_FRAME_RETVAL1] = (u64)(s64)nr;
+        if (t->signal_mask & mask_from_sig(SIGSYS)) {
+            process_kill(t->p, wait_status_signaled(SIGSYS));
+            *rv = -ENOSYS;
+            return true;
+        }
+#if defined(__aarch64__)
+        sysreturn trapped_return = (sysreturn)f[SYSCALL_FRAME_ARG0];
+#else
+        sysreturn trapped_return = nr;
+#endif
+        f[SYSCALL_FRAME_RETVAL1] = (u64)trapped_return;
         struct siginfo si;
         zero(&si, sizeof(si));
         si.si_signo = SIGSYS;
@@ -426,7 +436,7 @@ boolean seccomp_check(thread t, context_frame f, sysreturn *rv)
         si.sifields.sigsys.syscall = nr;
         si.sifields.sigsys.arch = AUDIT_ARCH_NATIVE;
         force_signal(t, &si);
-        *rv = nr;
+        *rv = trapped_return;
         return true;
     }
     if (action == SECCOMP_RET_TRACE || action == SECCOMP_RET_USER_NOTIF) {

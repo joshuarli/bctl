@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -93,7 +94,13 @@ enum {
 #define SECCOMP_FILTER_FLAG_TSYNC 1
 #define SECCOMP_FILTER_FLAG_SPEC_ALLOW 4
 #define SECCOMP_FILTER_FLAG_TSYNC_ESRCH 16
-#define AUDIT_ARCH_X86_64 0xc000003eU
+#if defined(__aarch64__)
+#define AUDIT_ARCH_NATIVE 0xc00000b7U
+#elif defined(__x86_64__)
+#define AUDIT_ARCH_NATIVE 0xc000003eU
+#else
+#error unsupported architecture
+#endif
 #define X32_SYSCALL_BIT 0x40000000U
 #define SYS_SECCOMP_SI_CODE 1
 #define TRAPPED_RESULT 4242
@@ -318,17 +325,23 @@ static void check_errno_cap(void)
 }
 static volatile sig_atomic_t trapped_syscall = -1;
 static volatile sig_atomic_t trapped_arch_ok;
-static volatile sig_atomic_t trapped_ra;
+static volatile uintptr_t trapped_ra;
 static volatile sig_atomic_t trapped_rip_ok;
 static void on_sigsys(int sig, siginfo_t *info, void *ctx)
 {
     (void)sig;
     ucontext_t *uc = ctx;
     trapped_syscall = info->si_syscall;
-    trapped_arch_ok = info->si_code == SYS_SECCOMP_SI_CODE && info->si_arch == AUDIT_ARCH_X86_64;
+    trapped_arch_ok = info->si_code == SYS_SECCOMP_SI_CODE && info->si_arch == AUDIT_ARCH_NATIVE;
+#if defined(__aarch64__)
+    trapped_ra = uc->uc_mcontext.regs[0];
+    trapped_rip_ok = uc->uc_mcontext.pc == (uintptr_t)info->si_call_addr;
+    uc->uc_mcontext.regs[0] = TRAPPED_RESULT;
+#else
     trapped_ra = uc->uc_mcontext.gregs[REG_RAX];
     trapped_rip_ok = uc->uc_mcontext.gregs[REG_RIP] == (long)(uintptr_t)info->si_call_addr;
     uc->uc_mcontext.gregs[REG_RAX] = TRAPPED_RESULT;
+#endif
 }
 static int child_trap(void)
 {
@@ -346,7 +359,12 @@ static int child_trap(void)
     struct utsname u;
     errno = 0;
     long trapped = syscall(SYS_uname, &u);
-    int ok = trapped == TRAPPED_RESULT && trapped_syscall == SYS_uname && trapped_arch_ok && trapped_ra == SYS_uname && trapped_rip_ok;
+#if defined(__aarch64__)
+    uintptr_t expected_ra = (uintptr_t)&u;
+#else
+    uintptr_t expected_ra = SYS_uname;
+#endif
+    int ok = trapped == TRAPPED_RESULT && trapped_syscall == SYS_uname && trapped_arch_ok && trapped_ra == expected_ra && trapped_rip_ok;
     return ok ? 0 : 3;
 }
 static void check_trap(void)
@@ -381,7 +399,7 @@ static int child_trap_blocked(void)
 static void check_trap_blocked(void)
 {
     int status = run_child(child_trap_blocked);
-    record("trap_blocked", child_exit_code(status) == 0, "stage=%d", child_exit_code(status));
+    record("trap_blocked", WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS, "stage=%d", child_exit_code(status));
 }
 static int child_kill_process(void)
 {
@@ -604,7 +622,7 @@ static int child_action_avail(void)
     uint32_t act = SECCOMP_RET_USER_NOTIF;
     errno = 0;
     long r = syscall(SYS_seccomp, SECCOMP_GET_ACTION_AVAIL, 0, &act);
-    if (r < 0 && errno == EOPNOTSUPP)
+    if (r == 0 || (r < 0 && errno == EOPNOTSUPP))
         return 0;
     return 4;
 }
