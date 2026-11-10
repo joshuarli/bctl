@@ -219,7 +219,7 @@ kernel and modules built together; it needs no separate kernel file. Set
 Internal VM sockets use private, short directories under `<BCTL_HOME>/ns` so
 long session names fit macOS's Unix socket path limit.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
-checks that a refused guest connection cannot poison a later connection.
+checks reconnects, shutdown and port reuse with a bounded host descriptor limit.
 
 ## Verification
 

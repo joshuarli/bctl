@@ -1,0 +1,52 @@
+diff --git a/src/devices/src/virtio/vsock/unix.rs b/src/devices/src/virtio/vsock/unix.rs
+index 324e258..1bf4027 100644
+--- a/src/devices/src/virtio/vsock/unix.rs
++++ b/src/devices/src/virtio/vsock/unix.rs
+@@ -355,7 +355,7 @@ impl UnixProxy {
+         Some((self.id, raw_handle(&self.sock), self.conn_evset()))
+     }
+ 
+-    fn finish_guest_shutdown(&mut self) {
++    fn finish_guest_shutdown(&mut self, update: &mut ProxyUpdate) {
+         if self.guest_shutdown & uapi::VSOCK_FLAGS_SHUTDOWN_SEND != 0
+             && self.tx_buf.is_empty() && !self.host_write_shutdown
+         {
+@@ -364,6 +364,17 @@ impl UnixProxy {
+             }
+             self.host_write_shutdown = true;
+         }
++        let both = uapi::VSOCK_FLAGS_SHUTDOWN_RCV | uapi::VSOCK_FLAGS_SHUTDOWN_SEND;
++        if self.guest_shutdown & both == both && self.host_write_shutdown {
++            if !self.local_read_shutdown {
++                self.push_shutdown(uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
++                self.local_read_shutdown = true;
++                update.signal_queue = true;
++            }
++            self.status = ProxyStatus::Closed;
++            update.polling = Some((self.id, raw_handle(&self.sock), EventSet::empty()));
++            update.remove_proxy = ProxyRemoval::Immediate;
++        }
+     }
+ 
+     fn flush_tx(&mut self) -> Result<bool, ()> {
+@@ -636,8 +647,9 @@ impl Proxy for UnixProxy {
+                 warn!("error sending read shutdown to socket: {e}");
+             }
+         }
+-        self.finish_guest_shutdown();
+-        ProxyUpdate { polling: self.repoll(), ..Default::default() }
++        let mut update = ProxyUpdate { polling: self.repoll(), ..Default::default() };
++        self.finish_guest_shutdown(&mut update);
++        update
+     }
+ 
+     fn release(&mut self) -> ProxyUpdate {
+@@ -790,7 +802,7 @@ impl Proxy for UnixProxy {
+                             update.signal_queue = true;
+                         }
+                         update.polling = self.repoll();
+-                        self.finish_guest_shutdown();
++                        self.finish_guest_shutdown(&mut update);
+                     }
+                     Err(()) => {
+                         self.push_reset();
