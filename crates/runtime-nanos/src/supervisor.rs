@@ -26,6 +26,7 @@ const TICK: Duration = Duration::from_millis(50);
 #[derive(Debug, Clone)]
 struct Config {
     dir: PathBuf,
+    sockets: PathBuf,
     image: PathBuf,
     cdp_socket: PathBuf,
     memory_mib: u32,
@@ -46,6 +47,7 @@ impl Config {
         let path = |name: &str| value(name).map(PathBuf::from);
         Ok(Config {
             dir: path("--dir")?,
+            sockets: path("--socket-dir")?,
             image: path("--image")?,
             cdp_socket: path("--cdp-socket")?,
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
@@ -151,13 +153,13 @@ fn qemu_command(config: &Config) -> Result<Command, String> {
         .args(["-m", &format!("{}M", config.memory_mib), "-smp", &config.cpus.to_string()])
         .args(["-display", "none", "-monitor", "none", "-no-reboot"])
         .args(["-serial", &format!("file:{}", serial.display())])
-        .args(["-qmp", &format!("unix:{},server=on,wait=off", dir.join(QMP_SOCKET).display())])
+        .args(["-qmp", &format!("unix:{},server=on,wait=off", config.sockets.join(QMP_SOCKET).display())])
         .args(["-device", "isa-debug-exit", "-device", "virtio-rng-pci"])
         .args(["-device", "virtio-balloon-pci,free-page-reporting=on,vectors=5"])
         .args(["-drive", &format!("if=none,id=hd0,format=qcow2,file={}", dir.join(DISK).display())])
         .args(["-device", "virtio-scsi-pci,id=scsi0", "-device", "scsi-hd,bus=scsi0.0,drive=hd0"])
         .args(["-nic", "none"])
-        .args(["-chardev", &format!("socket,id=vsock,path={}", dir.join(VHOST_SOCKET).display())])
+        .args(["-chardev", &format!("socket,id=vsock,path={}", config.sockets.join(VHOST_SOCKET).display())])
         .args(["-device", "vhost-user-vsock-pci,chardev=vsock"])
         .arg("-kernel")
         .arg(&config.kernel)
@@ -181,8 +183,8 @@ fn serve(config: &Config) -> Result<(), String> {
         return Err(format!("qemu-img create: {}", String::from_utf8_lossy(&created.stderr).trim()));
     }
 
-    let vhost = dir.join(VHOST_SOCKET);
-    let vsock = dir.join(VSOCK_SOCKET);
+    let vhost = config.sockets.join(VHOST_SOCKET);
+    let vsock = config.sockets.join(VSOCK_SOCKET);
     let mut backend = Command::new(&config.vsock_backend)
         .arg("--vm")
         .arg(format!("guest-cid={GUEST_CID},socket={},uds-path={}", vhost.display(), vsock.display()))
@@ -204,7 +206,7 @@ fn serve(config: &Config) -> Result<(), String> {
         }
     };
     let stop = Arc::new(AtomicBool::new(false));
-    let started = wait_for(&dir.join(QMP_SOCKET), &mut qemu, "qemu")
+    let started = wait_for(&config.sockets.join(QMP_SOCKET), &mut qemu, "qemu")
         .and_then(|()| listen(config, &vsock, Arc::clone(&stop)))
         .and_then(|()| {
             let mut stdout = io::stdout().lock();
@@ -227,7 +229,7 @@ fn serve(config: &Config) -> Result<(), String> {
         if stop.load(Ordering::SeqCst) {
             match quit_sent_at {
                 None => {
-                    if let Err(error) = qmp_quit(&dir.join(QMP_SOCKET)) {
+                    if let Err(error) = qmp_quit(&config.sockets.join(QMP_SOCKET)) {
                         eprintln!("bctl-nanos-vm: QMP quit: {error}; killing qemu");
                         let _ = qemu.kill();
                     }
@@ -249,30 +251,31 @@ fn serve(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-fn egress_socket(dir: &Path) -> PathBuf {
-    dir.join(format!("{VSOCK_SOCKET}_{GUEST_EGRESS_PORT}"))
+fn egress_socket(sockets: &Path) -> PathBuf {
+    sockets.join(format!("{VSOCK_SOCKET}_{GUEST_EGRESS_PORT}"))
 }
 
 fn cleanup(config: &Config) {
     for path in [
-        config.dir.join(CONTROL_SOCKET),
+        config.sockets.join(CONTROL_SOCKET),
         config.cdp_socket.clone(),
-        config.dir.join(VHOST_SOCKET),
-        config.dir.join(VSOCK_SOCKET),
-        egress_socket(&config.dir),
+        config.sockets.join(QMP_SOCKET),
+        config.sockets.join(VHOST_SOCKET),
+        config.sockets.join(VSOCK_SOCKET),
+        egress_socket(&config.sockets),
     ] {
         let _ = fs::remove_file(path);
     }
 }
 
 fn listen(config: &Config, vsock: &Path, stop: Arc<AtomicBool>) -> Result<(), String> {
-    let control_path = config.dir.join(CONTROL_SOCKET);
+    let control_path = config.sockets.join(CONTROL_SOCKET);
     remove_stale(&control_path)?;
     let control = UnixListener::bind(&control_path).map_err(io_error(&control_path))?;
     remove_stale(&config.cdp_socket)?;
     let cdp = UnixListener::bind(&config.cdp_socket).map_err(io_error(&config.cdp_socket))?;
     let policy = Policy::new(&config.allow_private)?;
-    let egress_path = egress_socket(&config.dir);
+    let egress_path = egress_socket(&config.sockets);
     remove_stale(&egress_path)?;
     let egress = UnixListener::bind(&egress_path).map_err(io_error(&egress_path))?;
     thread::spawn(move || {

@@ -1,7 +1,6 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-#[cfg(target_os = "macos")]
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -186,14 +185,8 @@ impl Nanos {
         self.root.join(machine)
     }
 
-    #[cfg(target_os = "macos")]
     fn socket_dir(&self, machine: &str) -> PathBuf {
         self.root.parent().unwrap_or(&self.root).join("ns").join(bctl_runtime::machine_socket_key(machine))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn socket_dir(&self, machine: &str) -> PathBuf {
-        self.machine_dir(machine)
     }
 
     fn control(&self, machine: &str, command: &str) -> io::Result<String> {
@@ -231,7 +224,6 @@ impl Nanos {
             return Err(RuntimeError::Supervisor { operation: "launch", message: format!("{} already exists", dir.display()) });
         }
         fs::create_dir_all(&dir).map_err(|e| RuntimeError::Spawn { message: format!("{}: {e}", dir.display()) })?;
-        #[cfg(target_os = "macos")]
         let socket_dir = {
             let path = self.socket_dir(&spec.machine);
             let created = fs::create_dir_all(path.parent().expect("socket directory has a parent"))
@@ -255,8 +247,9 @@ impl Nanos {
             .arg(spec.memory_mib.to_string())
             .arg("--cpus")
             .arg(spec.cpus.to_string());
+        command.arg("--socket-dir").arg(&socket_dir);
         #[cfg(target_os = "macos")]
-        command.arg("--socket-dir").arg(&socket_dir).arg("--profile-dir").arg(&spec.profile_dir);
+        command.arg("--profile-dir").arg(&spec.profile_dir);
         match &self.tools.backend {
             #[cfg(not(target_os = "macos"))]
             Backend::Qemu { qemu, qemu_img, vsock_backend } => {
@@ -273,7 +266,6 @@ impl Nanos {
             Ok(output) => output,
             Err(error) => {
                 let _ = fs::remove_dir_all(&dir);
-                #[cfg(target_os = "macos")]
                 let _ = fs::remove_dir_all(&socket_dir);
                 return Err(RuntimeError::Spawn { message: format!("{}: {error}", self.tools.supervisor.display()) });
             }
@@ -283,7 +275,6 @@ impl Nanos {
         }
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let _ = fs::remove_dir_all(&dir);
-        #[cfg(target_os = "macos")]
         let _ = fs::remove_dir_all(&socket_dir);
         Err(RuntimeError::Supervisor { operation: "launch", message })
     }
@@ -311,12 +302,9 @@ impl Nanos {
                 return Err(RuntimeError::Supervisor { operation: "remove", message: format!("{machine} did not stop within 45 s") });
             }
         }
-        #[cfg(target_os = "macos")]
-        {
-            let sockets = self.socket_dir(machine);
-            if sockets.exists() {
-                fs::remove_dir_all(&sockets).map_err(|e| RuntimeError::Supervisor { operation: "remove", message: format!("{}: {e}", sockets.display()) })?;
-            }
+        let sockets = self.socket_dir(machine);
+        if sockets.exists() {
+            fs::remove_dir_all(&sockets).map_err(|e| RuntimeError::Supervisor { operation: "remove", message: format!("{}: {e}", sockets.display()) })?;
         }
         fs::remove_dir_all(&dir).map_err(|e| RuntimeError::Supervisor { operation: "remove", message: format!("{}: {e}", dir.display()) })
     }
@@ -428,7 +416,6 @@ mod tests {
         fs::remove_dir(dir).unwrap();
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn a_long_machine_name_can_reach_its_control_socket() {
         use std::os::unix::net::UnixListener;
@@ -437,7 +424,10 @@ mod tests {
         let dir = root.join(".work/tmp").join(format!("nanos-long-{}", std::process::id()));
         let runtime = Nanos::new(dir.join("machines"), Toolchain {
             supervisor: PathBuf::new(), supervisor_args: Vec::new(),
+            #[cfg(target_os = "macos")]
             backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
+            #[cfg(not(target_os = "macos"))]
+            backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new() },
         });
         let machine = "long-machine-name-".repeat(3);
         let socket_dir = runtime.socket_dir(&machine);
