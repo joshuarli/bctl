@@ -875,6 +875,20 @@ pub(crate) fn image_digest(archive: &Path) -> Result<String, String> {
     }
 }
 
+pub(crate) fn disk_image_digest(image: &Path) -> Result<String, String> {
+    let mut file = File::open(image).map_err(|error| format!("cannot read {}: {error}", image.display()))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = file.read(&mut buffer).map_err(|error| format!("cannot read {}: {error}", image.display()))?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("sha256:{}", hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
+}
+
 fn tar_member(archive: &Path, wanted: &str) -> io::Result<Vec<u8>> {
     let mut file = File::open(archive)?;
     let mut header = [0u8; 512];
@@ -901,6 +915,16 @@ fn tar_member(archive: &Path, wanted: &str) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_disk_digest_identifies_its_contents() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("raw-digest-{}", std::process::id()));
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(disk_image_digest(&path).unwrap(), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        fs::remove_file(&path).unwrap();
+    }
 
     fn finished(outcome: &str, detail: &str) -> Finished {
         Finished { outcome: outcome.into(), detail: detail.into() }

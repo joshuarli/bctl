@@ -918,7 +918,11 @@ impl Daemon {
         }
         let record = self.store().session(session).map_err(store_failure)?;
         let browser_version = self.browser_version(session)?;
-        let image_digest = runs::image_digest(&self.paths.image(&record.image)).map_err(internal)?;
+        let image_path = self.runtime.image_path(&self.paths, &record.image);
+        let image_digest = match self.runtime.kind() {
+            RuntimeKind::SmolVm => runs::image_digest(&image_path),
+            RuntimeKind::Nanos => runs::disk_image_digest(&image_path),
+        }.map_err(internal)?;
         let config = RunConfig {
             job: job.name.clone(),
             session: session.to_string(),
