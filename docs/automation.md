@@ -218,28 +218,3 @@ CLI already is. The capability is still the gateway's: `bctl cdp-revoke` or
   waits.
 - A read begun after a takeover, such as a long `wait`, is not interrupted by
   it and holds the session's page lock until it ends.
-
-## External automation clients (planned M8C)
-
-Browser-use 1.0.0 and agent-browser v0.42.0 are **proposed CDP consumers**,
-not yet qualified against bctl. Both should attach from the host through
-the `bctl cdp-url NAME` gateway (not run inside the browser appliance).
-Their browser driver, tab bindings and element references remain separate
-from bctl's native automation. See
-[external-client research](research/external-clients.md) and
-[M8C](CAMPAIGN-ROADMAP.md#m8c-external-browser-clients-browser-use-100-and-agent-browser-v0420).
-
-**Current exclusivity limitation:** `yielding`/`human` blocks **new** CDP
-attachments, but does not revoke connections already in use. Therefore a
-running external client can still mutate the page during human control.
-Until M8C ownership is implemented, do not claim an exclusive human
-takeover against an uncontrolled external CDP client. The proposed initial
-policy refuses takeover while a managed external controller is active,
-rather than pretending arbitrary Python/CLI automation can pause.
-One browser-use controller may legitimately use multiple WebSockets
-(e.g. a separate domain guard).
-
-Client disconnect must leave a borrowed bctl browser alive. In contrast,
-an explicitly bctl-owned ephemeral session needs generation-checked
-reconciliation and expiry after external client failure. Both semantics
-require real-client tests before being described as supported.

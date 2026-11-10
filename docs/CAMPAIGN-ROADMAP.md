@@ -228,7 +228,7 @@ taken at the appliance's pre-browser forkpoint reaches ready with the sandbox
 intact, 1,137 ms against 1,445 ms cold at the median of 10 interleaved runtime
 launches (load 14). Restored sessions have no guest network and no profile
 mount, so `bctl up` does not offer them; X1 open: networked restore, profile
-remount, a public CLI.
+remount, then `bctl up` using the checkpoint.
 Helium r6 (chromium-build `410801d`, SHA-256 `7289b25b…`, 0 impure, 11/11
 acceptance): starts without `$HOME` and reports `Helium/0.20.3.1` over
 DevTools; the image now refuses archives before r6. On r6 the restore,
@@ -298,16 +298,11 @@ chromium-build's `metadata/patches.json` does not list, so a rebuild must
 check that `/json/version` reports `Helium/`. Unmerged lane branches
 (`lane/j2-jobs`, `lane/t0-decouple`, `lane/t1-rust-seat`,
 `lane/x1-wip-backup`) are pushed to origin.
-Needs the owner: the public restore CLI (`bctl template` / `bctl up
---template`). `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
+`lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
-M8C external-client compatibility is **proposed** (not qualified): prove
-browser-use 1.0.0 and agent-browser v0.42.0 against the existing Helium CDP
-gateway, then add external-controller ownership, managed jobs, file transfer,
-and optionally an agent-browser provider. See [research](research/external-clients.md)
-and the new M8C sequence. Work can start alongside M7N without changing its
-active acceptance or introducing a third browser engine.
+Next after M7N: M8C (external clients), starting at E1 on this Linux/Nanos
+host; nothing in it is qualified yet.
 
 ## Charter
 
@@ -491,6 +486,10 @@ active acceptance or introducing a third browser engine.
   currently gated; do not claim exclusive takeover until M8C's
   controller ownership tests pass. External bctl clients remain
   unqualified until a real pinned-client test passes.
+- Owner 2026-11-10: templates get no public CLI. Once X1's networked restore
+  and profile remount pass, `bctl up` restores from the image's pre-browser
+  forkpoint checkpoint when one exists for that image and runtime, and boots
+  cold otherwise; the checkpoint is a cache the daemon makes and discards.
 
 ## Baseline
 
@@ -1163,23 +1162,23 @@ Nothing from these clients is linked into the Rust daemon or guest image.
 
 Upgrade pins only as deliberate, separately evidenced compatibility work.
 Tests use Helium, with reference Chrome permitted only as a labelled diagnostic
-control. An agent may run the independently scoped research/attachment proofs
-alongside M7N; do not interrupt its active implementation or shared host bench.
+control. M8C starts once M7N's L5 lands, one writer at a time; its VM proofs
+never overlap a timed bench on the same host. The clients are host-side test
+tooling under `.work/interop/`, never product dependencies, so the guest purity
+rules do not apply to them: browser-use 1.0.0 in a virtualenv, agent-browser
+built from its pinned tag with `cargo`. Linux x86_64 with Nanos qualifies first;
+the macOS arm64 and SmolVM leg is under **Needs environment**.
 
-**E0 — Contract census and compatibility matrix (documentation only).**
-Own `docs/research/external-clients.md`. Read the exact upstream release sources
-and bctl's gateway, authority, jobs, and runtime code; document HTTP discovery,
-advertised WebSocket URL, Origin/Host handling, client cleanup, tab ownership,
-file paths, additional CDP sockets, and runtime-specific limitations. Confirm
-which CLI/client packages actually install on macOS arm64 and Linux x86_64/musl.
-A Rust binary being statically linked is *not* evidence it satisfies the
-project's no-libgcc/compiler-purity requirements. Record a matrix of
-source-verified, runtime-verified, blocked, and unsupported features.
-**Acceptance:** source permalinks, exact pins, identified call sites,
-correct capability claims, and no fabricated proof results.
+**E0 — Contract census (done).** `docs/research/external-clients.md` at
+`bc6462a` is the census: pins, call sites, and the source-verified matrix. E1
+moves rows from source-verified to runtime-verified or blocked as it runs them.
+Python on this host resolves `<token>.localhost` to both `127.0.0.1` and `::1`
+(checked 2026-11-10); the clients' own resolvers are still E1's to test.
 
-**E1 — Released-client endpoint proof.** Prereq E0, existing H2 gateway.
-Own a small `tests/interop/` harness and only the gateway fixes required by
+**E1 — Released-client endpoint proof.** Prereq: the existing H2 gateway.
+Own `tests/interop/` (one `run.sh` that installs the pinned clients under
+`.work/interop/`, starts a session, runs both clients and prints the receipts)
+and only the gateway fixes required by
 failing tests. Run each released client against a real bctl session; exercise
 `/json/version` HTTP discovery, the advertised browser WS URL, access to
 `Browser.getVersion`/Target APIs, tab navigation, a fixture form fill/click,
@@ -1200,13 +1199,16 @@ adding only a browser-WS endpoint, and a WS endpoint does not cure DNS.
 **Acceptance:** exact bctl/image/runtime/upstream version receipts; 10/10
 repeated connections and reconnects per consumer on qualified runtime,
 consistent successful real-page operations, and an invalid/revoked endpoint
-cannot attach. A missing test host is "unverified", not "passed".
+cannot attach. A missing test host is "unverified", not "passed". Command:
+`tests/interop/run.sh`, which exits non-zero on any failed check.
 
 **E2 — External controller leases and lifecycle.** Prereq E1. Own
 `crates/core/`, `crates/bctl/src/{gateway,authority,runs}.rs`, and corresponding
 tests. Start with one active *logical controlling owner* per session; allow
 multiple CDP WebSockets for the same owner (browser-use's domain guard needs
-one). Do not confuse a capability with an owned session: distinguish
+one). The owner is the capability: every socket opened through one `cdp-url`
+token belongs to one controller, and a run's `BCTL_CDP_URL` is its own token.
+Do not confuse a capability with an owned session: distinguish
 `borrowed/attach-existing` (client disconnect leaves the browser alive)
 from `managed-ephemeral` (bctl owns and eventually reclaims the exact
 session generation). Track client/attempt/generation, capability issuance,
@@ -1358,6 +1360,8 @@ Owner-provided; never blocks other items.
 - The Linux arm64 Helium artifact (P2, T0, and everything after M3 on the
   product image).
 - A Linux KVM host for X3's remote context and amd64 parity.
+- An Apple Silicon Mac for M8C's macOS and SmolVM leg (E1 to E6 on headed
+  Helium); until then those tuples are reported unverified.
 
 ## Out of scope
 
