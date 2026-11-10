@@ -465,7 +465,7 @@ const UNPAINTED_AGE: &str = "function() {
   return performance.now() - (navigation ? navigation.responseStart : 0);
 }";
 
-const CHANGED: &str = "function(quietMs) {
+const CHANGED: &str = "function(quietMs, paintPending) {
   return new Promise(resolve => {
     const events = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel', 'scroll', 'resize', 'hashchange', 'popstate', 'pageshow', 'visibilitychange', 'focusin', 'readystatechange', 'load'];
     let done = false;
@@ -473,6 +473,7 @@ const CHANGED: &str = "function(quietMs) {
       if (done) return;
       done = true;
       observer.disconnect();
+      paints.disconnect();
       clearTimeout(timer);
       for (const type of events) document.removeEventListener(type, changed, true);
       removeEventListener('resize', changed, true);
@@ -482,6 +483,10 @@ const CHANGED: &str = "function(quietMs) {
     const changed = () => finish('changed');
     const observer = new MutationObserver(changed);
     observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    const paints = new PerformanceObserver(list => {
+      if (list.getEntries().some(entry => entry.name === 'first-contentful-paint')) changed();
+    });
+    if (paintPending) paints.observe({ type: 'paint', buffered: true });
     for (const type of events) document.addEventListener(type, changed, true);
     addEventListener('resize', changed, true);
     const timer = setTimeout(() => finish('quiet'), quietMs);
@@ -884,11 +889,13 @@ pub(crate) struct Act<'a> {
     worlds: HashMap<(SessionId, FrameId), (DocumentId, i64)>,
     holding: HashSet<SessionId>,
     input: Input<'a>,
+    /// The last check found the page without its first contentful paint, so the next wait ends at that paint.
+    paint_pending: bool,
 }
 
 impl<'a> Act<'a> {
     pub(crate) fn new(cdp: &'a Counted<'a>, target: &'a TargetScope, attachment: &'a mut Attachment, refs: &'a mut RefTable) -> Act<'a> {
-        Act { cdp, target, attachment, refs, hosts: HashMap::new(), worlds: HashMap::new(), holding: HashSet::new(), input: Input::Preparing }
+        Act { cdp, target, attachment, refs, hosts: HashMap::new(), worlds: HashMap::new(), holding: HashSet::new(), input: Input::Preparing, paint_pending: false }
     }
 
     fn lost(&self, error: CallError) -> ActionError {
@@ -1586,8 +1593,9 @@ impl<'a> Act<'a> {
         })
     }
 
-    /// Waits for the page to change: a DOM mutation, an event that follows layout or navigation, the main
-    /// document going away, or at most `quiet` without any of them.
+    /// Waits for the page to change: a DOM mutation, an event that follows layout or navigation, the first
+    /// contentful paint the last check found missing, the main document going away, or at most `quiet` without
+    /// any of them.
     async fn changed(&mut self, quiet: Duration) -> Result<(), ActionError> {
         let (session, context) = match self.main_world().await {
             Ok(world) => world,
@@ -1597,7 +1605,7 @@ impl<'a> Act<'a> {
         let command = InspectContext {
             on: context,
             function_declaration: CHANGED.into(),
-            arguments: vec![argument(number(quiet.as_millis() as f64))],
+            arguments: vec![argument(number(quiet.as_millis() as f64)), argument(json::Value::Bool(std::mem::take(&mut self.paint_pending)))],
             return_by_value: true,
             await_promise: true,
             object_group: OBJECT_GROUP.into(),
@@ -1787,6 +1795,7 @@ impl<'a> Act<'a> {
         let age = self.inspect_in(&session, context, "the paint check", UNPAINTED_AGE, Vec::new()).await?;
         let age = as_f64(&age).ok_or_else(|| helper_reply("the paint check", &age))?;
         if age >= 0.0 && Duration::from_secs_f64(age / 1000.0) < PAINT_HOLDING {
+            self.paint_pending = true;
             return Err(ActionError::Unstable {
                 locator: "the page".into(),
                 reason: format!(

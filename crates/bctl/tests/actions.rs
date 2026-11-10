@@ -589,6 +589,25 @@ fn n7_actions_wait_for_late_layout_and_overlays_and_hit_fractional_boxes_at_any_
 
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
+fn n7_an_action_right_after_a_navigation_starts_when_the_page_first_paints() {
+    let fixture = Fixture::start(site);
+    let home = Home::new("n7-p");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    up_with_fixtures(&home, s, "n7-p");
+    open_tab(&home, s, "about:blank");
+    let elapsed: Vec<u64> = (0..10)
+        .map(|_| {
+            done(&home, "goto", s, &[&fixture.url("/form"), "--wait", "load"]);
+            done(&home, "fill", s, &["--label", "Name", "x"]).elapsed_ms
+        })
+        .collect();
+    assert!(elapsed.iter().all(|ms| *ms < 150), "a fill right after its page loaded took {elapsed:?} ms");
+    assert_ok(&home.bctl(&["down", s]));
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn n7_a_ref_stays_stale_when_its_node_leaves_while_a_query_follows_the_page_to_its_new_element() {
     let fixture = Fixture::start(site);
     let home = Home::new("n7-d");
