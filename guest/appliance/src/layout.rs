@@ -6,6 +6,7 @@ pub const WAYLAND_SOCKET: &str = "wayland-1";
 pub const BROWSER_CDP_PORT: u16 = 9221;
 pub const VSOCK_CDP_PORT: u32 = 9222;
 pub const VSOCK_CHECK_PORT: u32 = 9223;
+pub const VSOCK_STOP_PORT: u32 = 9224;
 pub const VSOCK_EGRESS_PORT: u32 = 1080;
 pub const EGRESS_PROXY_PORT: u16 = 1080;
 pub const VSOCK_HOST_CID: u32 = 2;

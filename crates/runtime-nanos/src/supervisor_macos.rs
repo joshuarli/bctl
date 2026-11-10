@@ -1,18 +1,17 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
-use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
+use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
@@ -21,6 +20,7 @@ struct Config {
     dir: PathBuf,
     socket_dir: PathBuf,
     image: PathBuf,
+    profile_dir: PathBuf,
     cdp_socket: PathBuf,
     memory_mib: u32,
     cpus: u8,
@@ -59,6 +59,7 @@ impl Config {
             dir: path("--dir")?,
             socket_dir: path("--socket-dir")?,
             image: path("--image")?,
+            profile_dir: path("--profile-dir")?,
             cdp_socket: path("--cdp-socket")?,
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
             cpus: value("--cpus")?.parse().map_err(|_| "--cpus is not a number")?,
@@ -140,6 +141,7 @@ fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
 
 fn serve(config: &Config) -> Result<(), String> {
     let policy = Policy::new(&config.allow_private)?;
+    let profile = prepare_profile(&config.profile_dir, &config.image.with_extension("profile.img"))?;
     let disk = config.dir.join("disk.img");
     fs::copy(&config.image, &disk).map_err(|error| format!("copy {} to {}: {error}", config.image.display(), disk.display()))?;
     let mut cleanup = SocketCleanup(Vec::new());
@@ -151,7 +153,7 @@ fn serve(config: &Config) -> Result<(), String> {
     let egress_path = socket(&config.socket_dir, GUEST_EGRESS_PORT);
     let egress = bind(&egress_path)?;
     cleanup.0.push(egress_path);
-    for port in [GUEST_CDP_PORT, GUEST_CHECK_PORT] {
+    for port in [GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_STOP_PORT] {
         let path = socket(&config.socket_dir, port);
         match fs::symlink_metadata(&path) {
             Ok(_) => return Err(format!("{} already exists", path.display())),
@@ -162,13 +164,14 @@ fn serve(config: &Config) -> Result<(), String> {
     let mut child = Vm(Command::new(&config.runner).arg(&disk).arg(&config.firmware)
         .arg(socket(&config.socket_dir, GUEST_CDP_PORT)).arg(socket(&config.socket_dir, GUEST_CHECK_PORT))
         .arg(socket(&config.socket_dir, GUEST_EGRESS_PORT)).arg(config.cpus.to_string()).arg(config.memory_mib.to_string())
+        .arg(&profile).arg(socket(&config.socket_dir, GUEST_STOP_PORT))
         .stdin(Stdio::null()).stdout(log_file(&config.dir, CONSOLE_LOG)?).stderr(log_file(&config.dir, SUPERVISOR_LOG)?)
         .spawn().map_err(|error| format!("{}: {error}", config.runner.display()))?);
     cleanup.0.push(socket(&config.socket_dir, GUEST_CDP_PORT));
     cleanup.0.push(socket(&config.socket_dir, GUEST_CHECK_PORT));
+    cleanup.0.push(socket(&config.socket_dir, GUEST_STOP_PORT));
     wait_for_runner(&mut child.0, config)?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let control_stop = Arc::clone(&stop);
+    let (stop, stop_requests) = mpsc::channel::<mpsc::Sender<(Result<(), String>, mpsc::Sender<()>)>>();
     thread::spawn(move || {
         for client in control.incoming() {
             let mut client = match client {
@@ -178,9 +181,22 @@ fn serve(config: &Config) -> Result<(), String> {
             let mut line = String::new();
             if BufReader::new(&client).read_line(&mut line).is_err() { continue; }
             let reply = match line.trim() {
-                "status" if control_stop.load(Ordering::SeqCst) => "stopping",
                 "status" => "running",
-                "stop" => { control_stop.store(true, Ordering::SeqCst); "stopping" }
+                "stop" => {
+                    let (reply, result) = mpsc::channel();
+                    let response = stop.send(reply).map_err(|e| e.to_string()).and_then(|()| result.recv().map_err(|e| e.to_string()));
+                    match response {
+                        Ok((result, acknowledged)) => {
+                            match result {
+                                Ok(()) => { let _ = writeln!(client, "stopped"); }
+                                Err(error) => { let _ = writeln!(client, "{error}"); }
+                            }
+                            let _ = acknowledged.send(());
+                        }
+                        Err(error) => { let _ = writeln!(client, "{error}"); }
+                    }
+                    continue;
+                }
                 _ => "unknown command",
             };
             let _ = writeln!(client, "{reply}");
@@ -213,14 +229,72 @@ fn serve(config: &Config) -> Result<(), String> {
             eprintln!("bctl-nanos-vm: libkrun exited: {status}");
             break;
         }
-        if stop.load(Ordering::SeqCst) {
-            child.0.kill().map_err(|error| format!("stop libkrun: {error}"))?;
-            child.0.wait().map_err(|error| format!("wait for libkrun: {error}"))?;
+        if let Ok(reply) = stop_requests.try_recv() {
+            let result = stop_vm(&mut child.0, &config.socket_dir);
+            let (acknowledged, ack) = mpsc::channel();
+            if reply.send((result.clone(), acknowledged)).is_ok() {
+                let _ = ack.recv_timeout(Duration::from_secs(2));
+            }
+            result?;
             break;
         }
         thread::sleep(TICK);
     }
     Ok(())
+}
+
+fn prepare_profile(dir: &Path, template: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let disk = dir.join("nanos-profile.img");
+    match fs::symlink_metadata(&disk) {
+        Ok(meta) if meta.file_type().is_file() => return Ok(disk),
+        Ok(_) => return Err(format!("{} is not a regular file", disk.display())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", disk.display())),
+    }
+    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_name().to_string_lossy().starts_with(".nanos-profile-init-") {
+            return Err(format!("{} contains a profile in a different format", dir.display()));
+        }
+    }
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
+    let temp = dir.join(format!(".nanos-profile-init-{}-{nonce}", std::process::id()));
+    let result = (|| -> io::Result<()> {
+        let mut source = File::open(template)?;
+        let mut target = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+        io::copy(&mut source, &mut target)?;
+        target.sync_all()?;
+        fs::hard_link(&temp, &disk)?;
+        File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temp);
+    result.map_err(|e| format!("initialize {} from {}: {e}", disk.display(), template.display()))?;
+    Ok(disk)
+}
+
+fn stop_vm(child: &mut Child, socket_dir: &Path) -> Result<(), String> {
+    let result = (|| -> Result<(), String> {
+        let stream = UnixStream::connect(socket(socket_dir, GUEST_STOP_PORT)).map_err(|e| format!("request guest shutdown: {e}"))?;
+        stream.set_read_timeout(Some(Duration::from_secs(18))).map_err(|e| e.to_string())?;
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).map_err(|e| format!("guest shutdown: {e}"))?;
+        if reply.trim() != "ok" { return Err(format!("guest shutdown failed: {}", reply.trim())); }
+        Ok(())
+    })();
+    if result.is_ok() {
+        let deadline = Instant::now() + Duration::from_secs(18);
+        while Instant::now() < deadline {
+            if child.try_wait().map_err(|e| format!("wait for libkrun: {e}"))?.is_some() {
+                return Ok(());
+            }
+            thread::sleep(TICK);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    result.and(Err("guest did not stop within 18 s".into()))
 }
 
 fn relay(client: UnixStream, vsock: &Path) {
@@ -252,16 +326,37 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let image = dir.join("source.img");
         fs::write(&image, b"image").unwrap();
+        fs::write(image.with_extension("profile.img"), b"profile").unwrap();
         let cdp_socket = dir.join("cdp.sock");
         let listener = UnixListener::bind(&cdp_socket).unwrap();
         let config = Config {
-            dir: dir.clone(), socket_dir: dir.clone(), image, cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
+            dir: dir.clone(), socket_dir: dir.clone(), image, profile_dir: dir.join("profile"), cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
             runner: dir.join("runner"), firmware: dir.join("firmware"), allow_private: Vec::new(),
         };
         assert!(serve(&config).is_err());
         assert!(cdp_socket.exists());
         assert!(!dir.join(CONTROL_SOCKET).exists());
         drop(listener);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn profile_initialization_preserves_existing_data_and_rejects_other_formats() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp").join(format!("nanos-profile-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let template = dir.join("template");
+        fs::write(&template, b"empty profile").unwrap();
+        let profile_dir = dir.join("profile");
+        let disk = prepare_profile(&profile_dir, &template).unwrap();
+        assert_eq!(fs::read(&disk).unwrap(), b"empty profile");
+        fs::write(&disk, b"saved data").unwrap();
+        fs::remove_file(&template).unwrap();
+        assert_eq!(fs::read(prepare_profile(&profile_dir, &template).unwrap()).unwrap(), b"saved data");
+        let other = dir.join("other");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("Preferences"), b"existing profile").unwrap();
+        assert!(prepare_profile(&other, &template).is_err());
+        assert_eq!(fs::read(other.join("Preferences")).unwrap(), b"existing profile");
         fs::remove_dir_all(dir).unwrap();
     }
 }

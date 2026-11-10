@@ -1244,6 +1244,17 @@ Slices, in order, one writer, each gated on the one before:
   assembled image. The full arm64 harness, production image and backend
   remain unqualified. The x86 Chromium, seccomp, fork and exec checks passed
   on threadripper.
+- **MM3 progress, 2026-11-10.** Nanos profiles on macOS persist on a
+  per-profile disk that the VM locks, and stopping a session waits for the
+  guest to flush it. Persistent boots stalled intermittently: two threads
+  faulting the same writable program page left the page cache's node lock
+  held. Hydrogen `12600ce1` fixes this and adds `private_page_race`, which
+  hung every boot before the fix and passed 15 HVF boots at one, two and four
+  vCPUs after it. Hydrogen's x86 harness passed on threadripper. On an Apple
+  M5 Max with that kernel, `BCTL_TEST_RUNTIME=nanos` passed the sessions,
+  tabs, actions, snapshots, failures, egress, host_http and profiles suites
+  (24 tests) and the runtime-nanos lifecycle suite. The `docs/performance.md`
+  column remains.
 - **MM0 Native boot (needs the Mac).** Reproduce bsdkrun's `nanos-hello`
   on Apple Silicon with acceleration confirmed (HVF, not TCG) before any
   port. Acceptance: three consecutive boots print the hello line, and the

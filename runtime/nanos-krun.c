@@ -1,8 +1,10 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include "libkrun.h"
@@ -29,9 +31,16 @@ static int configured(const char *operation, int32_t result)
 int main(int argc, char **argv)
 {
     unsigned long cpus, memory;
-    if (argc != 8 || number(argv[6], UINT8_MAX, &cpus) || number(argv[7], UINT32_MAX, &memory)) {
-        fprintf(stderr, "usage: nanos-krun DISK FIRMWARE CDP_SOCKET CHECK_SOCKET EGRESS_SOCKET CPUS MEMORY_MIB\n");
+    if ((argc != 8 && argc != 10) || number(argv[6], UINT8_MAX, &cpus) || number(argv[7], UINT32_MAX, &memory)) {
+        fprintf(stderr, "usage: nanos-krun DISK FIRMWARE CDP_SOCKET CHECK_SOCKET EGRESS_SOCKET CPUS MEMORY_MIB [PROFILE_DISK STOP_SOCKET]\n");
         return 2;
+    }
+    if (argc == 10) {
+        int profile = open(argv[8], O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+        if (profile < 0 || flock(profile, LOCK_EX | LOCK_NB)) {
+            perror("nanos-krun: lock profile");
+            return 1;
+        }
     }
     int console[2];
     if (pipe(console)) {
@@ -44,10 +53,12 @@ int main(int argc, char **argv)
     if (!configured("configure VM", krun_set_vm_config((uint32_t)ctx, (uint8_t)cpus, (uint32_t)memory)) ||
         !configured("configure console", krun_add_serial_console_default((uint32_t)ctx, console[0], STDOUT_FILENO)) ||
         !configured("attach disk", krun_add_disk((uint32_t)ctx, "root", argv[1], false)) ||
+        (argc == 10 && !configured("attach profile", krun_add_disk((uint32_t)ctx, "profile", argv[8], false))) ||
         !configured("load firmware", krun_set_firmware((uint32_t)ctx, argv[2])) ||
         !configured("add vsock", krun_add_vsock((uint32_t)ctx, 0)) ||
         !configured("map CDP", krun_add_vsock_port2((uint32_t)ctx, 9222, argv[3], true)) ||
         !configured("map readiness", krun_add_vsock_port2((uint32_t)ctx, 9223, argv[4], true)) ||
+        (argc == 10 && !configured("map stop", krun_add_vsock_port2((uint32_t)ctx, 9224, argv[9], true))) ||
         !configured("map egress", krun_add_vsock_port2((uint32_t)ctx, 1080, argv[5], false))) {
         krun_free_ctx((uint32_t)ctx);
         return 1;

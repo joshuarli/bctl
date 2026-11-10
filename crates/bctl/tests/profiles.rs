@@ -62,10 +62,44 @@ fn a_profile_keeps_its_cookies_across_twenty_down_up_cycles() {
         let machine = s.machine.clone().expect("a ready session has a machine");
         let value = format!("cycle-{cycle}");
         async_io::block_on(cookie_round_trip(&cdp_url, previous.as_deref(), &value)).unwrap_or_else(|e| panic!("cycle {cycle}: {e}"));
-        let problems = browser_log_problems(&home, &machine);
-        assert!(problems.is_empty(), "cycle {cycle}: browser log reports storage trouble:\n{problems}");
+        if !common::nanos() {
+            let problems = browser_log_problems(&home, &machine);
+            assert!(problems.is_empty(), "cycle {cycle}: browser log reports storage trouble:\n{problems}");
+        }
         assert_ok(&home.bctl(&["down", &session]));
         previous = Some(value);
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[test]
+#[ignore = "boots real macOS Nanos VMs and kills one to check profile recovery"]
+fn a_committed_profile_survives_a_vm_crash() {
+    if !common::nanos() || !cfg!(target_os = "macos") { return; }
+    let home = Home::new("profile-crash");
+    let session = format!("{}-s", home.prefix());
+    assert_ok(&home.up(&session, "keeper"));
+    async_io::block_on(cookie_round_trip(&home.cdp_url(&session), None, "saved")).unwrap();
+    assert_ok(&home.bctl(&["down", &session]));
+    assert_ok(&home.up(&session, "keeper"));
+    let status = home.json(&["status"]);
+    let machine = status_of(&status, &session).machine.clone().unwrap();
+    let disk = home.path.join("machines").join(machine).join("disk.img");
+    let output = Command::new("lsof").arg("-t").arg(disk).output().unwrap();
+    assert_ok(&output);
+    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout).lines().map(|line| line.parse().unwrap()).collect();
+    assert_eq!(pids.len(), 1);
+    assert!(pids[0] > 0);
+    assert!(Command::new("kill").args(["-9", &pids[0].to_string()]).status().unwrap().success());
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = home.json(&["status"]);
+        if status_of(&status, &session).state == "failed" { break; }
+        assert!(std::time::Instant::now() < deadline, "the daemon did not notice the VM crash");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_ok(&home.bctl(&["down", &session]));
+    assert_ok(&home.up(&session, "keeper"));
+    async_io::block_on(cookie_round_trip(&home.cdp_url(&session), Some("saved"), "saved")).unwrap();
+    assert_ok(&home.bctl(&["down", &session]));
 }

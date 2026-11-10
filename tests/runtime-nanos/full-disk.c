@@ -39,7 +39,7 @@ int main(void)
     if (child < 0)
         return 1;
     if (child == 0) {
-        execl("/usr/local/bin/bctl-guest", "bctl-guest", "run-headless", (char *)0);
+        execl("/usr/local/bin/bctl-guest", "bctl-guest", "run-headless-persistent", (char *)0);
         return 1;
     }
     int server = socket(AF_INET, SOCK_STREAM, 0);

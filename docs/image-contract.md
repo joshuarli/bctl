@@ -211,6 +211,16 @@ program. Nanos runs `bctl-guest run-headless`, which:
   `/run/bctl/browser.log` on the console and exits non-zero, which ends the
   VM.
 
+On Apple Silicon, the image builder produces an EFI image and a separate empty
+`nanos-helium.profile.img` template. The guest runs `run-headless-persistent`
+and requires the profile volume to be mounted at `/profile` before starting
+the browser. Its readiness report includes `profile ok` after that check, so
+an older image cannot be mistaken for one that persists profiles. The host
+attaches a private copy for each profile. Guest vsock
+port 9224 requests shutdown; the guest acknowledges after the browser exits
+and filesystem data is flushed. The host reports a failure if that does not
+complete.
+
 The host reaches those ports through `vhost-device-vsock`'s Unix socket with
 the hybrid `CONNECT <port>` handshake, so no TCP port reaches CDP. The guest
 has no network device: the headless browser uses

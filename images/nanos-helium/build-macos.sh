@@ -24,5 +24,15 @@ trap - EXIT
 docker run --rm --platform linux/arm64 -v "$tree:/src" -v "$rootfs:/rootfs:ro" -v "$images:/images" -w /src \
     -e TMPDIR=/src/.work/tmp bctl/nanos-arm64-builder sh dev/image.sh \
     -o /images/nanos-helium.img --size 2g --klib tmpfs --klib shmem --root /rootfs --tree /rootfs:/ \
-    --dir /profile --dir /tmp --dir /dev/shm --arg run-headless /rootfs/usr/local/bin/bctl-guest >/dev/null || fail "cannot pack the ARM Nanos image"
+    --dir /profile --dir /tmp --dir /dev/shm --arg run-headless-persistent /rootfs/usr/local/bin/bctl-guest >/dev/null || fail "cannot pack the ARM Nanos image"
+docker run --rm --platform linux/arm64 -v "$tree:/src" -v "$rootfs:/rootfs:ro" -v "$images:/images" -w /src \
+    bctl/nanos-arm64-builder sh -c '
+        mkfs=nanos/output/tools/bin/mkfs
+        "$mkfs" -s 2g -k nanos/output/platform/virt/bin/kernel.img -b nanos/output/platform/virt/boot-stub.img \
+            -u nanos/output/platform/virt/boot/bootaa64.efi -t '\''(mounts:(profile:"/profile"))'\'' \
+            /images/nanos-helium.img.new < /images/nanos-helium.img.manifest &&
+        "$mkfs" -e -l profile -s 2g /images/nanos-helium.profile.img.new
+    ' >/dev/null || fail "cannot create the persistent profile volumes"
+mv "$images/nanos-helium.img.new" "$images/nanos-helium.img"
+mv "$images/nanos-helium.profile.img.new" "$images/nanos-helium.profile.img"
 echo "$images/nanos-helium.img"

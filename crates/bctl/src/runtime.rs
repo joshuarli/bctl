@@ -49,6 +49,7 @@ pub(crate) enum RuntimeError {
     SmolVm(bctl_runtime_smolvm::RuntimeError),
     Nanos(bctl_runtime_nanos::RuntimeError),
     MissingKernel { image: PathBuf, kernel: PathBuf, hint: String },
+    IncompatibleProfile { message: String },
     Unsupported { runtime: RuntimeKind, operation: &'static str },
 }
 
@@ -61,6 +62,7 @@ impl fmt::Display for RuntimeError {
                 write!(f, "no kernel {} for image {}; {hint}", kernel.display(), image.display())
             }
             RuntimeError::Unsupported { runtime, operation } => write!(f, "the {} runtime cannot {operation}", runtime.as_str()),
+            RuntimeError::IncompatibleProfile { message } => f.write_str(message),
         }
     }
 }
@@ -74,6 +76,15 @@ impl From<bctl_runtime_smolvm::RuntimeError> for RuntimeError {
 impl From<bctl_runtime_nanos::RuntimeError> for RuntimeError {
     fn from(error: bctl_runtime_nanos::RuntimeError) -> Self {
         RuntimeError::Nanos(error)
+    }
+}
+
+fn reject_nanos_profile(dir: &Path) -> Result<(), RuntimeError> {
+    let path = dir.join("nanos-profile.img");
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => Err(RuntimeError::IncompatibleProfile { message: format!("{} is a Nanos profile and cannot be opened by SmolVM", dir.display()) }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RuntimeError::IncompatibleProfile { message: format!("cannot inspect {}: {error}", path.display()) }),
     }
 }
 
@@ -108,6 +119,8 @@ impl MachineLaunch {
         bctl_runtime_nanos::LaunchSpec {
             machine: self.machine.to_string(),
             image: self.image.clone(),
+            #[cfg(target_os = "macos")]
+            profile_dir: self.profile_dir.clone(),
             cdp_socket: self.cdp_socket.clone(),
             memory_mib: self.memory_mib,
             cpus: self.cpus,
@@ -212,7 +225,10 @@ impl Runtime {
 
     pub(crate) fn launch(&self, launch: &MachineLaunch) -> Result<(), RuntimeError> {
         match self {
-            Runtime::SmolVm(smolvm) => Ok(smolvm.launch(&launch.smolvm())?),
+            Runtime::SmolVm(smolvm) => {
+                reject_nanos_profile(&launch.profile_dir)?;
+                Ok(smolvm.launch(&launch.smolvm())?)
+            }
             Runtime::Nanos(nanos) => {
                 let kernel = bctl_runtime_nanos::image_kernel(&launch.image);
                 if !cfg!(target_os = "macos") && !kernel.is_file() {
@@ -233,7 +249,10 @@ impl Runtime {
 
     pub(crate) fn resume(&self, launch: &MachineLaunch) -> Result<(), RuntimeError> {
         match self {
-            Runtime::SmolVm(smolvm) => Ok(smolvm.resume(&launch.smolvm())?),
+            Runtime::SmolVm(smolvm) => {
+                reject_nanos_profile(&launch.profile_dir)?;
+                Ok(smolvm.resume(&launch.smolvm())?)
+            }
             Runtime::Nanos(_) => Err(RuntimeError::Unsupported { runtime: RuntimeKind::Nanos, operation: "resume a session" }),
         }
     }

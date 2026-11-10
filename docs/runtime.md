@@ -213,12 +213,18 @@ image containing its own kernel. Run `runtime/guest.sh` and
 `<BCTL_HOME>/runtime/nanos`. The bundle includes the signed runner, optimized libkrun,
 EFI firmware and its license. Run `runtime/build-nanos-arm64.sh`, then
 `BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build-macos.sh`, and copy
-`.work/images/nanos-helium.img` to `<BCTL_HOME>/images`. The image embeds the
-kernel and modules built together; it needs no separate kernel file. Set
+both `.work/images/nanos-helium.img` and `.work/images/nanos-helium.profile.img`
+to `<BCTL_HOME>/images`. The second file is the empty profile volume template.
+The image embeds the kernel and modules built together; it needs no separate kernel file. Set
 `BCTL_RUNTIME=nanos` to select this backend; SmolVM remains the macOS default.
 Ready headless sessions report no VNC port and reject viewer input.
 Internal VM sockets use private, short directories under `<BCTL_HOME>/ns` so
 long session names fit macOS's Unix socket path limit.
+Each profile has its own Nanos disk, initialized from the template only once
+and locked while in use. Stopping a session waits for the browser to exit and
+the guest to flush the disk. Profiles from the SmolVM backend use a different
+format and cannot be opened as Nanos profiles, or vice versa; bctl refuses to
+open a profile in the other runtime rather than replacing its state.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
 checks reconnects, shutdown and port reuse with a bounded host descriptor limit.
 

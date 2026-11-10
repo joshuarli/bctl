@@ -22,6 +22,8 @@ pub mod supervisor;
 pub const GUEST_CDP_PORT: u32 = 9222;
 /// The guest vsock port that answers with the headless readiness report.
 pub const GUEST_CHECK_PORT: u32 = 9223;
+#[cfg(target_os = "macos")]
+pub const GUEST_STOP_PORT: u32 = 9224;
 /// The host vsock port the guest relays the browser's SOCKS5 proxy connections to.
 pub const GUEST_EGRESS_PORT: u32 = 1080;
 
@@ -76,6 +78,8 @@ pub enum Backend {
 pub struct LaunchSpec {
     pub machine: String,
     pub image: PathBuf,
+    #[cfg(target_os = "macos")]
+    pub profile_dir: PathBuf,
     /// Host path where the CDP socket appears; its directory must already exist and be private.
     pub cdp_socket: PathBuf,
     pub memory_mib: u32,
@@ -88,12 +92,13 @@ pub struct LaunchSpec {
 pub struct HeadlessReport {
     pub browser: bool,
     pub sandbox: bool,
+    pub profile: Option<bool>,
 }
 
 impl HeadlessReport {
     /// Parses what the guest's check port answers (see docs/image-contract.md, nanos-helium).
     pub fn parse(output: &str) -> Result<HeadlessReport, String> {
-        let (mut browser, mut sandbox, mut input) = (None, None, false);
+        let (mut browser, mut sandbox, mut profile, mut input) = (None, None, None, false);
         for line in output.lines().filter(|l| !l.trim().is_empty()) {
             let (name, verdict) = line.split_once(' ').ok_or_else(|| format!("malformed line {line:?}"))?;
             let ok = match (name, verdict) {
@@ -108,16 +113,21 @@ impl HeadlessReport {
             match name {
                 "browser" => browser = Some(ok),
                 "sandbox" => sandbox = Some(ok),
+                "profile" => profile = Some(ok),
                 _ => return Err(format!("unknown stage in {line:?}")),
             }
         }
         if !input {
             return Err("no input line".into());
         }
-        Ok(HeadlessReport { browser: browser.ok_or("no browser line")?, sandbox: sandbox.ok_or("no sandbox line")? })
+        Ok(HeadlessReport { browser: browser.ok_or("no browser line")?, sandbox: sandbox.ok_or("no sandbox line")?, profile })
     }
 
     pub fn first_missing(&self) -> Option<Stage> {
+        #[cfg(target_os = "macos")]
+        if self.profile != Some(true) {
+            return Some(Stage::Guest);
+        }
         if !self.browser {
             Some(Stage::Browser)
         } else if !self.sandbox {
@@ -188,7 +198,7 @@ impl Nanos {
 
     fn control(&self, machine: &str, command: &str) -> io::Result<String> {
         let mut stream = UnixStream::connect(self.socket_dir(machine).join(CONTROL_SOCKET))?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(45)))?;
         stream.write_all(format!("{command}\n").as_bytes())?;
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line)?;
@@ -246,7 +256,7 @@ impl Nanos {
             .arg("--cpus")
             .arg(spec.cpus.to_string());
         #[cfg(target_os = "macos")]
-        command.arg("--socket-dir").arg(&socket_dir);
+        command.arg("--socket-dir").arg(&socket_dir).arg("--profile-dir").arg(&spec.profile_dir);
         match &self.tools.backend {
             #[cfg(not(target_os = "macos"))]
             Backend::Qemu { qemu, qemu_img, vsock_backend } => {
@@ -284,13 +294,21 @@ impl Nanos {
         if !dir.exists() {
             return Ok(());
         }
-        if self.control(machine, "stop").is_ok() {
-            let deadline = Instant::now() + Duration::from_secs(20);
+        let stopped = match self.control(machine, "stop") {
+            Ok(reply) => Some(reply),
+            Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => None,
+            Err(error) => return Err(RuntimeError::Supervisor { operation: "remove", message: error.to_string() }),
+        };
+        if let Some(reply) = stopped {
+            if reply != "stopped" && reply != "stopping" {
+                return Err(RuntimeError::Supervisor { operation: "remove", message: reply });
+            }
+            let deadline = Instant::now() + Duration::from_secs(45);
             while self.socket_dir(machine).join(CONTROL_SOCKET).exists() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(50));
             }
             if self.is_running(machine) {
-                return Err(RuntimeError::Supervisor { operation: "remove", message: format!("{machine} did not stop within 20 s") });
+                return Err(RuntimeError::Supervisor { operation: "remove", message: format!("{machine} did not stop within 45 s") });
             }
         }
         #[cfg(target_os = "macos")]
@@ -366,9 +384,9 @@ mod tests {
 
     #[test]
     fn a_headless_report_names_the_first_missing_stage() {
-        let report = HeadlessReport::parse("browser ok\nsandbox missing\ninput absent\n").unwrap();
+        let report = HeadlessReport::parse("browser ok\nsandbox missing\ninput absent\nprofile ok\n").unwrap();
         assert_eq!(report.first_missing(), Some(Stage::Sandbox));
-        let ready = HeadlessReport::parse("browser ok\nsandbox ok\ninput absent\n").unwrap();
+        let ready = HeadlessReport::parse("browser ok\nsandbox ok\ninput absent\nprofile ok\n").unwrap();
         assert_eq!(ready.first_missing(), None);
     }
 
@@ -379,6 +397,13 @@ mod tests {
         assert!(HeadlessReport::parse("browser ok\nsandbox ok\nseat ok\ninput absent\n").is_err());
         assert!(HeadlessReport::parse("browser maybe\nsandbox ok\ninput absent\n").is_err());
         assert!(HeadlessReport::parse("browser ok\nsandbox ok\ninput ok\n").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_older_image_without_a_profile_report_is_not_ready() {
+        let report = HeadlessReport::parse("browser ok\nsandbox ok\ninput absent\n").unwrap();
+        assert_eq!(report.first_missing(), Some(Stage::Guest));
     }
 
     #[cfg(target_os = "macos")]
