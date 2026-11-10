@@ -61,17 +61,21 @@ impl Home {
                 "tar"
             }
             Runtime::Nanos => {
-                std::fs::create_dir_all(path.join("runtime/nanos")).map_err(|e| e.to_string())?;
-                let built = root.join(".work/runtime/nanos");
-                link(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock"))?;
-                let kernel = root.join(format!(".work/images/{image}.kernel.img"));
-                if !kernel.exists() {
-                    return Err(format!(
-                        "no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img and .work/images/{image}.kernel.img there",
-                        kernel.display()
-                    ));
+                if cfg!(target_os = "macos") {
+                    link(root.join(".work/runtime/nanos-krun"), path.join("runtime/nanos"))?;
+                } else {
+                    std::fs::create_dir_all(path.join("runtime/nanos")).map_err(|e| e.to_string())?;
+                    let built = root.join(".work/runtime/nanos");
+                    link(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock"))?;
+                    let kernel = root.join(format!(".work/images/{image}.kernel.img"));
+                    if !kernel.exists() {
+                        return Err(format!(
+                            "no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img and .work/images/{image}.kernel.img there",
+                            kernel.display()
+                        ));
+                    }
+                    link(kernel, path.join(format!("images/{image}.kernel.img")))?;
                 }
-                link(kernel, path.join(format!("images/{image}.kernel.img")))?;
                 "img"
             }
         };
@@ -79,6 +83,9 @@ impl Home {
         if !source.exists() {
             return Err(match runtime {
                 Runtime::SmolVm => format!("no {}; run BCTL_BROWSER_ARCHIVE=DIR images/build.sh {image}", source.display()),
+                Runtime::Nanos if cfg!(target_os = "macos") => format!(
+                    "no {}; run BCTL_BROWSER_ARCHIVE=DIR sh images/{image}/build-macos.sh", source.display()
+                ),
                 Runtime::Nanos => format!(
                     "no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img and .work/images/{image}.kernel.img there",
                     source.display()

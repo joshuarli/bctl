@@ -108,6 +108,7 @@ impl Runtime {
     pub fn version(self) -> Fallible<String> {
         match self {
             Runtime::SmolVm => output_of(root().join(".work/runtime/smolvm/smolvm").to_str().expect("utf-8 path"), &["--version"]),
+            Runtime::Nanos if cfg!(target_os = "macos") => Ok("libkrun/HVF".into()),
             Runtime::Nanos => {
                 let commit = std::fs::read_to_string(root().join(".work/runtime/nanos/hydrogen/COMMIT"))
                     .map_err(|e| format!(".work/runtime/nanos/hydrogen/COMMIT: {e}"))?;
@@ -134,7 +135,8 @@ impl Runtime {
             Runtime::Nanos => {
                 let image = root().join(format!(".work/images/{name}.img"));
                 let bytes = std::fs::metadata(&image).map_err(|e| format!("{}: {e}", image.display()))?.len();
-                let sum = output_of("sha256sum", &[image.to_str().expect("utf-8 path")])?;
+                let path = image.to_str().expect("utf-8 path");
+                let sum = if cfg!(target_os = "macos") { output_of("shasum", &["-a", "256", path])? } else { output_of("sha256sum", &[path])? };
                 let digest = sum.split_whitespace().next().ok_or_else(|| format!("sha256sum printed {sum:?}"))?;
                 Ok(ImageIdentity { name: name.into(), bytes, config_digest: format!("sha256:{digest}") })
             }
