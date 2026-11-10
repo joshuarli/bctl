@@ -12,9 +12,10 @@ use bctl_cdp::{Connection, Endpoint, Generation, Scope};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, Serialize, json};
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Error {
     pub code: String,
+    pub message: String,
 }
 
 #[derive(Deserialize, Clone)]

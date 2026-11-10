@@ -148,7 +148,7 @@ fn one_run(home: &Home, id: i64) -> Run {
 
 fn started(home: &Home, session: &str, job: &str, config: &Path) -> Run {
     let mut response = runs(home, &["run", job, "--session", session, "--config", config.to_str().unwrap()]);
-    assert!(response.error.is_none(), "bctl run {job} failed: {:?}", response.error.map(|e| e.code));
+    assert!(response.error.is_none(), "bctl run {job} failed: {:?}", response.error);
     response.runs.pop().unwrap_or_else(|| panic!("bctl run {job} returned no run"))
 }
 
