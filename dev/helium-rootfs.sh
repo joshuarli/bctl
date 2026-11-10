@@ -2,11 +2,18 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-ARCHIVE=${HELIUM_ARCHIVE:-/home/josh/d/chromium-build/.work/artifacts/helium-0.20.3.1-r5/helium-0.20.3.1-r5-linux-x86_64-musl.tar.xz}
-ARCHIVE_SHA256=f4b06e80a097587e508982a3c73f043dbd80e3660aab6d47f72648b6ffc36a05
-ARCHIVE_ROOT=helium-0.20.3.1-r5-linux-x86_64-musl
-MUSL_APK_URL=https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/musl-1.2.6-r3.apk
-MUSL_APK_SHA256=e142255d0fa397f14318996bc10378093dcc069dc3dd1b6818c8f28a789c21da
+if [ "$ARCH" = x86_64 ]; then
+	ARCHIVE=${HELIUM_ARCHIVE:-/home/josh/d/chromium-build/.work/artifacts/helium-0.20.3.1-r5/helium-0.20.3.1-r5-linux-x86_64-musl.tar.xz}
+	ARCHIVE_SHA256=f4b06e80a097587e508982a3c73f043dbd80e3660aab6d47f72648b6ffc36a05
+	ARCHIVE_ROOT=helium-0.20.3.1-r5-linux-x86_64-musl
+	MUSL_APK_SHA256=e142255d0fa397f14318996bc10378093dcc069dc3dd1b6818c8f28a789c21da
+else
+	ARCHIVE=${HELIUM_ARCHIVE:?set HELIUM_ARCHIVE to helium-0.20.3.1-r6-linux-aarch64-musl.tar.xz}
+	ARCHIVE_SHA256=7289b25b30fa86d41928e63a4210b3006f43ba8da35d9cf5c874b05152215b7a
+	ARCHIVE_ROOT=helium-0.20.3.1-r6-linux-aarch64-musl
+	MUSL_APK_SHA256=2e17864102278d9049c3a56f1bceed9e8cf287065617e579325123443daed8a5
+fi
+MUSL_APK_URL=https://dl-cdn.alpinelinux.org/alpine/v3.24/main/$ARCH/musl-1.2.6-r3.apk
 
 DL=$WORK/dl/apk-3.24.2
 OUT=$WORK/helium
@@ -23,16 +30,16 @@ mkdir -p "$DL" "$OUT"
 
 if [ ! -f "$OUT/archive.ok" ] || ! [ "$(cat "$OUT/archive.ok")" = "$ARCHIVE_SHA256" ]; then
 	[ -f "$ARCHIVE" ] || die "missing Helium archive $ARCHIVE"
-	printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -s || die "Helium archive sha256 mismatch: $ARCHIVE"
+	sha256_is "$ARCHIVE_SHA256" "$ARCHIVE" || die "Helium archive sha256 mismatch: $ARCHIVE"
 	printf '%s\n' "$ARCHIVE_SHA256" >"$OUT/archive.ok"
 fi
 
 musl_apk=$DL/${MUSL_APK_URL##*/}
-if ! printf '%s  %s\n' "$MUSL_APK_SHA256" "$musl_apk" | sha256sum -c -s 2>/dev/null; then
+if ! sha256_is "$MUSL_APK_SHA256" "$musl_apk"; then
 	fetch "$MUSL_APK_URL" "$musl_apk"
-	printf '%s  %s\n' "$MUSL_APK_SHA256" "$musl_apk" | sha256sum -c -s || { rm -f "$musl_apk"; die "$MUSL_APK_URL does not match its pinned sha256"; }
+	sha256_is "$MUSL_APK_SHA256" "$musl_apk" || { rm -f "$musl_apk"; die "$MUSL_APK_URL does not match its pinned sha256"; }
 fi
-apk verify "$musl_apk" >/dev/null 2>&1 || { rm -f "$musl_apk"; die "$musl_apk: signature or content check failed"; }
+[ "$ARCH" != x86_64 ] || apk verify "$musl_apk" >/dev/null 2>&1 || { rm -f "$musl_apk"; die "$musl_apk: signature or content check failed"; }
 
 rm -rf "$ROOTFS"
 mkdir -p "$ROOTFS"

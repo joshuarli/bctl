@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#pragma clang diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wsign-compare"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>

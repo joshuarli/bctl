@@ -4,20 +4,25 @@ set -eu
 
 fetch() {
 	url=$1 sum=$2 out=$WORK/dl/$(basename -- "$1")
-	if [ -f "$out" ] && printf '%s  %s\n' "$sum" "$out" | sha256sum -c -s; then return 0; fi
+	if sha256_is "$sum" "$out"; then return 0; fi
 	curl -fsSL --retry 2 -o "$out.part" "$url" || die "download failed: $url"
-	printf '%s  %s\n' "$sum" "$out.part" | sha256sum -c -s || { rm -f "$out.part"; die "sha256 mismatch: $url"; }
+	sha256_is "$sum" "$out.part" || { rm -f "$out.part"; die "sha256 mismatch: $url"; }
 	mv "$out.part" "$out"
 }
 
 ensure_work
+if [ "$(uname -s)" = Darwin ]; then
+	ensure_builder
+	linux "$ROOT/dev/bootstrap.sh"
+	exit 0
+fi
 
-if [ ! -x "$LLVM/bin/clang" ]; then
+if [ "$ARCH" = x86_64 ] && [ ! -x "$LLVM/bin/clang" ]; then
 	fetch "$LLVM_URL" "$LLVM_SHA256"
 	tar -xf "$WORK/dl/$(basename -- "$LLVM_URL")" -C "$TOOLCHAIN"
 fi
 
-if [ ! -x "$GOROOT/bin/go" ]; then
+if [ "$ARCH" = x86_64 ] && [ ! -x "$GOROOT/bin/go" ]; then
 	fetch "$GO_URL" "$GO_SHA256"
 	rm -rf "$GOROOT"
 	tar -xf "$WORK/dl/$(basename -- "$GO_URL")" -C "$TOOLCHAIN"
@@ -31,9 +36,14 @@ if [ ! -f "$SYSROOT/.musl-$MUSL_VERSION" ]; then
 	tar -xzf "$WORK/dl/$(basename -- "$MUSL_URL")" -C "$WORK/src"
 	(
 		cd "$src"
-		./configure --quiet --prefix="$SYSROOT" --syslibdir="$SYSROOT/lib" --target=x86_64-linux-musl \
-			CC="$LLVM/bin/clang" AR="$LLVM/bin/llvm-ar" RANLIB="$LLVM/bin/llvm-ranlib" \
-			LDFLAGS="-Wl,-soname,$MUSL_SONAME"
+		if [ "$ARCH" = x86_64 ]; then
+			./configure --quiet --prefix="$SYSROOT" --syslibdir="$SYSROOT/lib" --target=x86_64-linux-musl \
+				CC="$LLVM/bin/clang" AR="$LLVM/bin/llvm-ar" RANLIB="$LLVM/bin/llvm-ranlib" \
+				LDFLAGS="-Wl,-soname,$MUSL_SONAME"
+		else
+			./configure --quiet --prefix="$SYSROOT" --syslibdir="$SYSROOT/lib" \
+				--enable-wrapper=gcc CC=gcc LDFLAGS="-Wl,-soname,$MUSL_SONAME"
+		fi
 		make -s -j"$(nproc)"
 		make -s install
 	)
@@ -42,4 +52,8 @@ if [ ! -f "$SYSROOT/.musl-$MUSL_VERSION" ]; then
 fi
 
 make -s -C "$NANOS" vendor-check
-printf 'bootstrap: ok (llvm %s, musl %s, %s)\n' "$LLVM_RELEASE" "$MUSL_VERSION" "$GO_VERSION"
+if [ "$ARCH" = x86_64 ]; then
+	printf 'bootstrap: ok (llvm %s, musl %s, %s)\n' "$LLVM_RELEASE" "$MUSL_VERSION" "$GO_VERSION"
+else
+	printf 'bootstrap: ok (gcc %s, musl %s)\n' "$(gcc -dumpfullversion)" "$MUSL_VERSION"
+fi

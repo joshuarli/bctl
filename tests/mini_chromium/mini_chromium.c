@@ -869,7 +869,7 @@ static int address_readable(uintptr_t addr, uint64_t *out)
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGSEGV, &sa, &old_segv);
 	sigaction(SIGBUS, &sa, &old_bus);
-	int readable = 0;
+	volatile int readable = 0;
 	if (!sigsetjmp(fault_jump, 1)) {
 		*out = *(volatile uint64_t *)addr;
 		readable = 1;
@@ -885,7 +885,7 @@ static int address_writable(uintptr_t addr)
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGSEGV, &sa, &old_segv);
 	sigaction(SIGBUS, &sa, &old_bus);
-	int writable = 0;
+	volatile int writable = 0;
 	if (!sigsetjmp(fault_jump, 1)) {
 		*(volatile uint64_t *)addr = 0x4141414141414141ull;
 		writable = 1;

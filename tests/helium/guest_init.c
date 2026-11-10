@@ -1086,7 +1086,7 @@ static int run_cdp(void)
 	if (nav)
 		snprintf(nav_reply, sizeof nav_reply, "%s", nav);
 	free(nav);
-	char last[160] = "not-waited";
+	char last[256] = "not-waited";
 	int nav_ok = sent && wait_page_ready(&page, 60000, last, sizeof last) == 0;
 	record("cdp_navigate", nav_ok, "url=http://127.0.0.1:%d/,navigate_ok=%d,navigate_ms=%ld,last_state=%s,reply=%s",
 		opt.fixture_port, sent, nav_ms, last, nav_reply);

@@ -27,10 +27,25 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$image" ] && [ -f "$image" ] || usage
 [ "$native" -eq 1 ] || [ $# -eq 0 ] || usage
-kernel=$NANOS_OUT/platform/pc/bin/kernel.img
+kernel=$NANOS_OUT/platform/$PLATFORM/bin/kernel.img
 [ "$native" -eq 1 ] || [ -f "$kernel" ] || die "missing $kernel: run dev/build.sh"
 [ -n "$label" ] || label=$(basename -- "$image" .img)
 [ "$native" -eq 0 ] || label=native-$label
+hvf=0
+[ "$(uname -s)" != Darwin ] || [ "$native" -eq 1 ] || hvf=1
+if [ "$hvf" -eq 1 ]; then
+	[ "$net" -eq 0 ] || die "--net is not supported under HVF"
+	[ -x "$KRUN_RUN" ] && [ -f "${HYDROGEN_KRUN:-}/firmware.fd" ] || die "missing $KRUN_RUN or HYDROGEN_KRUN: run dev/build.sh"
+	case $mem in
+	*G) mib=$((${mem%G} * 1024)) ;;
+	*M) mib=${mem%M} ;;
+	*) die "--mem must end in G or M under HVF: $mem" ;;
+	esac
+fi
+now() {
+	if [ -r /proc/uptime ]; then cut -d' ' -f1 /proc/uptime
+	else perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; fi
+}
 
 dir=$WORK/runs/$(date -u +%Y%m%dT%H%M%SZ)-$label-$$
 mkdir -p "$dir"
@@ -40,8 +55,13 @@ if [ "$native" -eq 1 ]; then
 	program_host=$(realpath "$image")
 	set -- "$program_host" "$@"
 	qemu_cmd=''
-	start=$(cut -d' ' -f1 /proc/uptime)
+	start=$(now)
 	( cd "$dir" && exec "$@" ) >"$serial" 2>"$dir/stderr.log" &
+elif [ "$hvf" -eq 1 ]; then
+	set -- "$KRUN_RUN" "$image" "$HYDROGEN_KRUN/firmware.fd" "$smp" "$mib"
+	qemu_cmd=$*
+	start=$(now)
+	"$@" >"$serial" 2>"$dir/qemu.log" &
 else
 if [ "$net" -eq 1 ]; then nic='user,model=virtio-net-pci'; else nic='none'; fi
 set -- qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp "$smp" -m "$mem" \
@@ -51,7 +71,7 @@ set -- qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp "$smp" -m "$mem"
 	-nic "$nic" -kernel "$kernel"
 qemu_cmd=$*
 
-start=$(cut -d' ' -f1 /proc/uptime)
+start=$(now)
 "$@" >"$dir/qemu.log" 2>&1 &
 fi
 qpid=$!
@@ -63,7 +83,7 @@ rc=$?
 set -e
 kill "$wpid" 2>/dev/null || :
 wait "$wpid" 2>/dev/null || :
-end=$(cut -d' ' -f1 /proc/uptime)
+end=$(now)
 [ -f "$serial" ] || : >"$serial"
 tr -d '\r' <"$serial" >"$dir/serial.txt"
 log=$dir/serial.txt
@@ -71,6 +91,10 @@ log=$dir/serial.txt
 verdict=PASS detail=''
 fail() { [ "$verdict" != PASS ] || { verdict=$1; detail=$2; }; }
 
+if [ "$hvf" -eq 1 ] && [ "$rc" -eq 0 ]; then
+	code=$(sed -n 's/^Angel shutdown trap failed; shutting down with PSCI, exit code \([0-9]*\)\.$/\1/p' "$log" | tail -n 1)
+	[ -z "$code" ] || rc=$((code * 2 + 1))
+fi
 guest_code=$((rc >> 1))
 [ "$native" -eq 0 ] || guest_code=$rc
 if [ -f "$dir/deadline" ]; then
@@ -78,8 +102,8 @@ if [ -f "$dir/deadline" ]; then
 elif [ "$native" -eq 1 ]; then
 	if [ "$rc" -gt 128 ]; then fail CRASH "killed by signal $((rc - 128))"
 	elif [ "$rc" -ne "$want_exit" ]; then fail FAIL "exit=$rc want=$want_exit"; fi
-elif grep -q '^qemu-system-x86_64:' "$dir/qemu.log"; then
-	fail QEMU_ERROR "$(grep -m1 '^qemu-system-x86_64:' "$dir/qemu.log")"
+elif grep -qE '^(qemu-system-x86_64|krun-run):' "$dir/qemu.log"; then
+	fail QEMU_ERROR "$(grep -m1 -E '^(qemu-system-x86_64|krun-run):' "$dir/qemu.log")"
 elif grep -qE '^\*\*\* signal|^\*\*\* Thread context|assertion .* failed|kernel page fault|^panic' "$log" ||
 	{ [ $((rc & 1)) -eq 1 ] && { [ "$guest_code" -eq 126 ] || [ "$guest_code" -eq 127 ]; }; }; then
 	fail CRASH "$(grep -m1 -E '^\*\*\* signal|assertion .* failed|kernel page fault|^panic' "$log" || printf 'guest exit %s' "$guest_code")"
@@ -128,15 +152,15 @@ fi
 symbolize() {
 	elf=${kernel%.img}.elf
 	offset=$(sed -n 's/^kernel load offset \([0-9a-f]*\)$/\1/p' "$log" | head -n 1)
-	awk '/^ *rip: / { print $2 } /^frame trace:/ { f = 1; next } /^kernel load offset/ { f = 0 } f && /^[0-9a-f]+: / { print $2 }' "$log" | while read -r addr; do
+	awk '/^ *(rip|elr): / { print $2 } /^frame trace:/ { f = 1; next } /^kernel load offset/ { f = 0 } f && /^[0-9a-f]+: / { print $2 }' "$log" | while read -r addr; do
 		case $addr in
 		ffff*)
 			[ -n "$offset" ] && [ -f "$elf" ] || { printf '0x%s kernel (no load offset or kernel.elf)\n' "$addr"; continue; }
-			printf '0x%s %s\n' "$addr" "$(addr2line -f -i -p -e "$elf" "$(printf '0x%x' $((0x$addr - 0x$offset)))")"
+			printf '0x%s %s\n' "$addr" "$(linux addr2line -f -i -p -e "$elf" "$(printf '0x%x' $((0x$addr - 0x$offset)))")"
 			;;
 		*)
 			[ -n "$host" ] && [ -f "$host" ] || { printf '0x%s user (no program binary)\n' "$addr"; continue; }
-			printf '0x%s %s\n' "$addr" "$(addr2line -f -i -p -e "$host" "0x$addr")"
+			printf '0x%s %s\n' "$addr" "$(linux addr2line -f -i -p -e "$host" "0x$addr")"
 			;;
 		esac
 	done

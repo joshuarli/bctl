@@ -1,9 +1,7 @@
 ROOT:=		$(abspath ../..)
-include $(ROOT)/dev/toolchain.lock
-CC:=		$(ROOT)/.work/toolchain/$(LLVM_DIR)/bin/clang
-SYSROOT:=	$(ROOT)/.work/sysroot
+include $(ROOT)/tests/guest.mk
 OUT:=		$(ROOT)/.work/build/external
-CFLAGS:=	--sysroot=$(SYSROOT) -O2 -g -Wall -Wextra -Werror -Wno-unused-function -static
+CFLAGS:=	$(GUEST_FLAGS) -O2 -g -Wall -Wextra -Werror -Wno-unused-function -static
 
 CASES:=		dup fcntl lseek fork exec wait socket_unix_cmsg socket_unix_peercred
 

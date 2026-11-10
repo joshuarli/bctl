@@ -1,9 +1,7 @@
 ROOT:=		$(abspath ../..)
-include $(ROOT)/dev/toolchain.lock
-CC:=		$(ROOT)/.work/toolchain/$(LLVM_DIR)/bin/clang
-SYSROOT:=	$(ROOT)/.work/sysroot
+include $(ROOT)/tests/guest.mk
 OUT:=		$(ROOT)/.work/build/mini_chromium
-CFLAGS:=	--sysroot=$(SYSROOT) -O2 -g -Wall -Wextra -Werror
+CFLAGS:=	$(GUEST_FLAGS) -O2 -g -Wall -Wextra -Werror
 
 STATIC_FIXTURES:=	hello_static hello_pthread crash silent_exit hang duplicate_result meminfo writev_iov wait_nochild low_user_va fork_isolation exec_self vm_isolation poll_xproc cow_stress kill_race exec_contract process_stress shmem_xproc ipc_xproc creds_procfs seccomp seccomp_arch userns pidns mmap_bad_fd scm_rights crashpad_cmsg session_signal netns unix_abstract netlink_route tcp_loopback unix_cow_read image_links write_from_mapped_file vsock_reconnect private_page_race
 DYNAMIC_FIXTURES:=	hello_stdio exec_contract_helper

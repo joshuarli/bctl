@@ -12,7 +12,7 @@ case_verdict() {
 	name=$1 smp=$2 timeout=$3 want=$4 known_red=$5
 	shift 5
 	image=$IMAGES/$name.img
-	"$ROOT/dev/image.sh" -o "$image" "$@" >/dev/null
+	linux "$ROOT/dev/image.sh" -o "$image" "$@" >/dev/null
 	line=$("$ROOT/dev/run.sh" --smp "$smp" --mem "${case_mem:-1G}" --timeout "$timeout" --label "$name-smp$smp" "$image" || :)
 	got=${line%% dir=*}
 	got=${got#RUN verdict=}
@@ -34,7 +34,7 @@ case_verdict() {
 fixture_native() {
 	name=$1
 	shift
-	line=$("$@" "$ROOT/dev/run.sh" --native --timeout 120 --label "$name-native" "$FIXTURES/$name" || :)
+	line=$(linux "$@" "$ROOT/dev/run.sh" --native --timeout 120 --label "$name-native" "$FIXTURES/$name" || :)
 	dir=${line##* dir=}
 	checks=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json" 2>/dev/null || echo 0)
 	case $line in
@@ -44,7 +44,7 @@ fixture_native() {
 }
 
 suite_harness() {
-	make -s -C "$ROOT/tests/mini_chromium"
+	linux make -s -C "$ROOT/tests/mini_chromium"
 	links=$WORK/tmp/image-links
 	mkdir -p "$links"
 	printf hello >"$links/target"
@@ -72,7 +72,7 @@ suite_harness() {
 		case_mem=
 		case_verdict kill_race "$smp" 200 PASS '' "$FIXTURES/kill_race"
 		case_verdict exec_contract "$smp" 60 PASS '' --file "$FIXTURES/exec_contract_helper:/exec_contract_helper" \
-			--file "$SYSROOT/lib/ld-musl-x86_64.so.1:/lib/ld-musl-x86_64.so.1" "$FIXTURES/exec_contract"
+			--file "$SYSROOT/lib/$MUSL_LOADER:/lib/$MUSL_LOADER" "$FIXTURES/exec_contract"
 		case_verdict shmem_xproc "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/shmem_xproc"
 		case_verdict ipc_xproc "$smp" 60 PASS '' "$FIXTURES/ipc_xproc"
 		case_verdict creds_procfs "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/creds_procfs"
@@ -127,7 +127,7 @@ PROBES=$WORK/build/mini_chromium
 
 probe_native() {
 	bin=$1
-	line=$("$ROOT/dev/run.sh" --native --timeout 120 --label "probe-$bin" "$PROBES/$bin" || :)
+	line=$(linux "$ROOT/dev/run.sh" --native --timeout 120 --label "probe-$bin" "$PROBES/$bin" || :)
 	dir=${line##* dir=}
 	probe_names=$(jaq -r '.tests[].name' "$dir/result.json")
 	case $line in
@@ -141,7 +141,7 @@ probe_nanos() {
 	shift 2
 	probe_native "$bin"
 	[ -n "$probe_names" ] || { failures=$((failures + 1)); printf 'FAIL      %-18s no native check names\n' "$bin"; return; }
-	"$ROOT/dev/image.sh" "$@" -o "$IMAGES/$bin.img" "$PROBES/$bin" >/dev/null
+	linux "$ROOT/dev/image.sh" "$@" -o "$IMAGES/$bin.img" "$PROBES/$bin" >/dev/null
 	set --
 	for n in $probe_names; do set -- "$@" --expect-test "$n"; done
 	total=$(printf '%s\n' $probe_names | wc -l)
@@ -163,7 +163,7 @@ probe_nanos() {
 }
 
 suite_probe() {
-	make -s -C "$ROOT/tests/mini_chromium"
+	linux make -s -C "$ROOT/tests/mini_chromium"
 	probe_nanos mini_chromium '' --klib tmpfs --klib shmem
 	probe_nanos mini_chromium_raw ''
 }
@@ -206,7 +206,7 @@ HELIUM_INIT=$WORK/build/helium/guest_init
 
 helium_prepare() {
 	"$ROOT/dev/helium-rootfs.sh" >/dev/null
-	make -s -C "$ROOT/tests/helium"
+	linux make -s -C "$ROOT/tests/helium"
 }
 
 suite_helium_native() {
@@ -214,7 +214,7 @@ suite_helium_native() {
 	run=$WORK/run/helium-native
 	rm -rf "$run"
 	mkdir -p "$run"
-	line=$("$ROOT/dev/run.sh" --native --timeout 180 --label helium "$HELIUM_INIT" --root="$HELIUM_ROOT" \
+	line=$(linux "$ROOT/dev/run.sh" --native --timeout 180 --label helium "$HELIUM_INIT" --root="$HELIUM_ROOT" \
 		--profile="$run/profile" --logdir="$run/logs" || :)
 	case $line in
 	"RUN verdict=PASS "*) printf 'PASS      helium             native  %s\n' "$(jaq -r '[.tests[] | .name] | join(",")' "${line##* dir=}/result.json")" ;;
@@ -224,7 +224,7 @@ suite_helium_native() {
 
 helium_image() {
 	helium_prepare
-	"$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --size 2g --klib tmpfs --klib shmem --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
+	linux "$ROOT/dev/image.sh" -o "$IMAGES/helium.img" --size 2g --klib tmpfs --klib shmem --root "$HELIUM_ROOT" --tree "$HELIUM_ROOT:/" \
 		--dir /profile --dir /tmp --dir /dev/shm \
 		--arg --root=/ --arg --profile=/profile --arg --logdir=/tmp "$HELIUM_INIT" >/dev/null
 }
@@ -304,7 +304,7 @@ for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
 	metrics) suite_metrics ;;
-	probe-native) make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
+	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;
 	upstream) suite_upstream ;;
 	helium-native) suite_helium_native ;;

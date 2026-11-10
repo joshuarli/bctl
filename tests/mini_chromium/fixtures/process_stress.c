@@ -42,7 +42,8 @@ static void *spin(void *arg)
 static void *crash(void *arg)
 {
 	(void)arg;
-	*(volatile int *)8 = 1;
+	volatile int *volatile fault = (volatile int *)8;
+	*fault = 1;
 	return 0;
 }
 
@@ -53,7 +54,7 @@ static void *leave(void *arg)
 	return 0;
 }
 
-static int multithreaded_child(void *(*fn)(void *))
+static _Noreturn void multithreaded_child(void *(*fn)(void *))
 {
 	pthread_t t[3];
 	for (int i = 0; i < 2; i++)

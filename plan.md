@@ -250,6 +250,22 @@ only when every slice in it is accepted on `main`.
   a terminal record present exactly once, and no `*** signal` or panic text on
   serial. If `/dev/kvm` acceleration is unavailable, the run fails. It never
   falls back to TCG.
+- **arm64 on Apple Silicon runs the same suites under Hypervisor.framework.**
+  On macOS, `dev/build.sh`, `make` and `dev/image.sh` run inside the
+  `dev/aarch64.Dockerfile` container, with the checkout mounted at its host
+  path so manifests stay valid. `bootstrap.sh` builds the musl 1.2.6 sysroot
+  there with gcc and its `musl-gcc` wrapper. `run.sh` boots through
+  `dev/krun-run.c` and a libkrun bundle named by `HYDROGEN_KRUN` (bctl's
+  `.work/runtime/nanos-krun`, which holds `lib/libkrun.dylib` and
+  `firmware.fd`). Native oracle runs stay in the container, which gets
+  `seccomp=unconfined` and `SYS_PTRACE` so user namespaces work and Helium's
+  confinement check can read a renderer's namespaces. Guest programs link at
+  0x200000 on both architectures, so `low_user_va` probes the same layout.
+  libkrun has no semihosting, so the kernel's PSCI fallback prints the exit
+  code and `run.sh` reads it from serial. `--net` is not supported there.
+  `HELIUM_ARCHIVE` must name the pinned arm64 Helium 0.20.3.1-r6 archive;
+  Alpine's aarch64 musl package is checked by its pinned sha256 only, because
+  `apk verify` needs an Alpine host.
 - **Result protocol and storage.** Fixtures print
   `MINI_CHROMIUM_TEST name=<n> status=PASS|FAIL [detail=…]` and one
   `MINI_CHROMIUM_RESULT status=… passed=N failed=M`. Each run writes

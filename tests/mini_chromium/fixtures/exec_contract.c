@@ -221,6 +221,12 @@ static void check_cloexec(void)
 	close(dupfd_cloexec);
 }
 
+static void *unmapped(void)
+{
+	void *volatile address = (void *)1;
+	return address;
+}
+
 static int exec_errno(const char *path, char *const argv[], char *const envp[])
 {
 	pid_t pid = fork();
@@ -238,11 +244,11 @@ static void check_errors(void)
 	int enoent = exec_errno("/exec-contract-does-not-exist", argv, envp);
 	int enoexec = exec_errno(not_elf, argv, envp);
 	int eacces = exec_errno("/", argv, envp);
-	int efault_path = exec_errno((const char *)1, argv, envp);
-	int efault_argv = exec_errno(self, (char *const *)1, envp);
-	char *bad_string[] = { self, (char *)1, 0 };
+	int efault_path = exec_errno(unmapped(), argv, envp);
+	int efault_argv = exec_errno(self, unmapped(), envp);
+	char *bad_string[] = { self, unmapped(), 0 };
 	int efault_string = exec_errno(self, bad_string, envp);
-	int efault_envp = exec_errno(self, argv, (char *const *)1);
+	int efault_envp = exec_errno(self, argv, unmapped());
 	record("exec_errors", enoent == ENOENT && enoexec == ENOEXEC && eacces == EACCES && efault_path == EFAULT &&
 		efault_argv == EFAULT && efault_string == EFAULT && efault_envp == EFAULT,
 		"enoent=%d,enoexec=%d,eacces=%d,efault=%d/%d/%d/%d", enoent, enoexec, eacces, efault_path, efault_argv,
