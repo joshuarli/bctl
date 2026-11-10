@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$root/.work/interop
 browser_use_rev=070be98109c03f04a95f704533e8f6e9868d0525
 agent_browser_rev=e7519957b9067c541825afa21a792fbe1f483047
-export TMPDIR=$root/.work/tmp
+export TMPDIR=$root/.work/tmp PYTHONDONTWRITEBYTECODE=1
 
 fail() { echo "tests/interop/run.sh: $*" >&2; exit 1; }
 
