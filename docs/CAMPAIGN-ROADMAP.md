@@ -245,7 +245,15 @@ through the vsock Unix socket `/json/version` answers `Helium/0.20.3.1` and
 the check port reports `browser ok`, `sandbox ok`, `input absent`. Getting
 there fixed hydrogen's unprivileged `gid_map` check (it compared the group
 with the euid, so Chromium's namespace probe failed for `browser`, 1000:27).
-M7N is the active milestone; its slices are
+L2 (`crates/runtime-nanos`, `cargo test -p bctl-runtime-nanos --test
+lifecycle -- --ignored`, 10/10): a per-machine `bctl-nanos-vm` supervisor
+runs vhost-device-vsock and QEMU on a qcow2 overlay, serves the host CDP
+socket by relaying to guest vsock port 9222, and stops QEMU over QMP;
+readiness is machine, guest check, browser, sandbox, then `/json/version`
+through the host socket. Launch to ready 1.2 to 5.8 s, median 1.8 s
+(unloaded host not checked). It found a second hydrogen bug: a host vsock
+connect during early boot asserted the guest kernel before the socket layer
+existed. M7N is the active milestone; its slices are
 under **Sequence**. After it, the Mac performance queue: (1) on an idle host, find what switches input to pixel between
 9 and 22 ms; the timer-coalescing test is in `docs/performance.md` Findings;
 (2) pause 1.8 s and resume 2.3 s against a 1.5 s cold `up`, where the time goes

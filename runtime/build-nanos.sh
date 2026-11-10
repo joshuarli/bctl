@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-hydrogen_commit=00aeb8d059ddad8690f2fea8392369eaeba74908
+hydrogen_commit=63c2d147194805b23b8683feeb5889e89b0a366d
 vhost_vsock_version=0.3.0
 root=$(cd "$(dirname "$0")/.." && pwd)
 hydrogen=${HYDROGEN:-$HOME/d/hydrogen}

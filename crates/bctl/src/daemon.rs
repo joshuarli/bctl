@@ -537,6 +537,7 @@ impl Daemon {
             input: observed.and_then(|o| o.input).filter(|_| holds).map(|i| match i {
                 InputSupport::Interactive => "interactive".to_string(),
                 InputSupport::ViewOnly => "view-only".to_string(),
+                InputSupport::Headless => "headless".to_string(),
             }),
         }
     }

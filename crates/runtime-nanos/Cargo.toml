@@ -1,0 +1,17 @@
+[package]
+name = "bctl-runtime-nanos"
+description = "Typed adapter over hydrogen's Nanos on QEMU/KVM: a per-machine supervisor, readiness over vsock, and teardown of headless appliance VMs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bctl-nanos-vm"
+path = "src/bin/bctl-nanos-vm.rs"
+
+[dependencies]
+bctl-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

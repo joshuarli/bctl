@@ -38,6 +38,7 @@ impl Stage {
 pub enum InputSupport {
     Interactive,
     ViewOnly,
+    Headless,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
