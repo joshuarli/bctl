@@ -115,6 +115,7 @@ pub fn run(ctx: &Context) -> Fallible<Outcome> {
     for (image, [vmm_rss, vmm_rss_after, vmm_cpu, disk, profile, vmm_footprint]) in &per_image {
         let summed = match runtime {
             Runtime::SmolVm => "summed over the VMM process and its video encoder helper",
+            Runtime::Nanos if cfg!(target_os = "macos") => "summed over libkrun and the bctl nanos-vm supervisor",
             Runtime::Nanos => "summed over qemu, vhost-device-vsock and the bctl nanos-vm supervisor",
         };
         let conditions = format!("{image}, 2 CPUs, 4096 MiB guest, 1280x800; {summed}");
