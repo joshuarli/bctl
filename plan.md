@@ -57,6 +57,12 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
   and drops resources it does not model (`RLIMIT_AS`, `RLIMIT_CPU`, ...),
   `RLIMIT_DATA` bounds brk but not private writable mmaps, and
   `prlimit64` on another pid reads and writes the caller's limits.
+  bctl's Nanos backend (bctl M7N) runs Helium headless in sessions and found
+  three kernel bugs, now fixed with tests: an unprivileged `gid_map` was
+  checked against the euid (Chromium's namespace probe failed for a browser
+  user whose gid differs from its uid), a host vsock connect during early
+  boot asserted before the socket layer existed, and guests with more than
+  2 GiB asserted in `init_shared_pages` (harness `cow_stress_6g`).
   G4.1 accepted: the probe's 55 named checks are identical natively and on
   Nanos at 1, 2 and 4 vCPUs and cover every Acceptance row; the raw variant
   passes.
