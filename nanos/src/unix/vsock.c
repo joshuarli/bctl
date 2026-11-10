@@ -721,6 +721,48 @@ static sysreturn vsock_getsockopt(struct sock *sock, int level, int optname, voi
     return rv;
 }
 
+static sysreturn vsock_shutdown(struct sock *sock, int how)
+{
+    vsock s = (vsock)sock;
+    int flags;
+    switch (how) {
+    case SHUT_RD:
+        flags = VSOCK_SHUTDOWN_RX;
+        break;
+    case SHUT_WR:
+        flags = VSOCK_SHUTDOWN_TX;
+        break;
+    case SHUT_RDWR:
+        flags = VSOCK_SHUTDOWN_TX | VSOCK_SHUTDOWN_RX;
+        break;
+    default:
+        socket_release(sock);
+        return -EINVAL;
+    }
+    sysreturn rv = 0;
+    vsock_lock(s);
+    vsock_connection conn = s->conn;
+    if (s->state != VSOCK_STATE_CONNECTED) {
+        vsock_unlock(s);
+        rv = -ENOTCONN;
+        goto out;
+    }
+    int added = flags & ~s->flags;
+    s->flags |= flags;
+    vsock_unlock(s);
+    if (added) {
+        vsock_conn_lock(conn);
+        virtio_sock_shutdown(conn, added);
+        vsock_conn_unlock(conn);
+    }
+    blockq_wake_one(s->sock.txbq);
+    blockq_wake_one(s->sock.rxbq);
+    notify_dispatch(s->sock.f.ns, vsock_events_internal(s));
+  out:
+    socket_release(sock);
+    return rv;
+}
+
 static sysreturn vsock_alloc(heap h, int type, int flags, boolean alloc_fd, vsock *sp)
 {
     vsock s = allocate(h, sizeof(*s));
@@ -747,6 +789,7 @@ static sysreturn vsock_alloc(heap h, int type, int flags, boolean alloc_fd, vsoc
     s->sock.recvfrom = vsock_recvfrom;
     s->sock.getsockname = vsock_getsockname;
     s->sock.getsockopt = vsock_getsockopt;
+    s->sock.shutdown = vsock_shutdown;
     s->bound = 0;
     s->conn = 0;
     s->flags = 0;
