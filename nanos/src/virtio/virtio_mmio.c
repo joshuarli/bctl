@@ -193,6 +193,11 @@ closure_func_basic(thunk, void, vtmmio_irq)
 
 static void vtmmio_irq_setup(vtmmio dev, range cpu_affinity)
 {
+#ifdef __aarch64__
+    dev->irq_vector = dev->irq;
+    irq_register_handler(dev->irq, init_closure_func(&dev->irq_handler, thunk, vtmmio_irq),
+                         ss("vtmmio"), cpu_affinity);
+#else
     u64 irq_vector = allocate_mmio_interrupt();
     assert(irq_vector != INVALID_PHYSICAL);
     register_interrupt(irq_vector, init_closure_func(&dev->irq_handler, thunk, vtmmio_irq),
@@ -200,6 +205,7 @@ static void vtmmio_irq_setup(vtmmio dev, range cpu_affinity)
     dev->irq_vector = irq_vector;
 #ifdef __x86_64__
     ioapic_set_int(dev->irq, irq_vector, irq_get_target_cpu(cpu_affinity));
+#endif
 #endif
 }
 

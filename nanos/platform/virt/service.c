@@ -503,6 +503,7 @@ void detect_devices(kernel_heaps kh, storage_attach sa)
         if (!hv_storvsc_attached)
             msg_err("Hyper-V: cannot detect storage device");
     } else {
+        virtio_mmio_enum_devs(kh);
         init_virtio_network(kh);
         init_aws_ena(kh);
         init_gve(kh);

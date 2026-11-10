@@ -132,6 +132,7 @@ void enable_mmu(u64 vtarget)
                  SCTLR_EL1_M);
     asm volatile ("dsb sy;"
                   "tlbi vmalle1is;"
+                  "dsb sy;"
                   "msr SCTLR_EL1, %0;"
                   "isb;"
                   "br %1" :: "r" (sctlr), "r" (vtarget));

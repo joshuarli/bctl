@@ -531,9 +531,12 @@ closure_func_basic(madt_handler, void, gic_madt_handler,
 
 int init_gic(void)
 {
+    boolean madt_redist = false;
     if (!acpi_walk_madt(stack_closure_func(madt_handler, gic_madt_handler))) {
         gic.dist_base = mmio_base_addr(GIC_DIST);
         gic.redist.base = mmio_base_addr(GIC_REDIST);
+    } else if (gic.redist.base) {
+        madt_redist = true;
     }
     gic_debug("dist %p, redist %p, its %p\n", gic.dist_base, gic.redist.base, gic.its_base);
     u64 aa64pfr0 = read_psr(ID_AA64PFR0_EL1);
@@ -548,6 +551,8 @@ int init_gic(void)
     default:
         halt("%s: gic type %d from ID_AA64PFR0_EL1 not supported\n", func_ss, gic_iface);
     }
+    if (madt_redist)
+        gic.v3_iface = true;
 
     if (gic.v3_iface) {
         gicr_get_base();
