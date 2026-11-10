@@ -557,7 +557,9 @@ systemd, Ansible or other heavy orchestration; `ops` (`mkfs` from the fork
 builds images); glibc in any form.
 
 **Non-goals:** kernel or device graphics: DRM/KMS, evdev, seatd and virtio-gpu/input and any Wayland compositor;
-aarch64, macOS and HVF; the setuid `chrome-sandbox` layer and filesystem
+aarch64, macOS and HVF (lifted by the owner on 2026-11-10 for after this
+campaign: bctl's roadmap M7M plans Nanos on Apple Silicon and the arm64 port it
+needs here); the setuid `chrome-sandbox` layer and filesystem
 mode-bit security; general process management beyond what the probe and
 Helium require; a kernel build with LLVM; PCID and other performance work
 before `P.1`.
