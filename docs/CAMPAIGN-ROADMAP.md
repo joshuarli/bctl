@@ -1185,6 +1185,63 @@ Slices, in order, one writer:
   viewer and input-lease suites pass with `BCTL_TEST_RUNTIME=nanos`, and
   `bctl-bench viewer` gives Nanos a column in `docs/performance.md`.
 
+### M7M: Nanos on Apple Silicon (macOS arm64, Hypervisor.framework)
+
+Owner 2026-11-10: Nanos sessions should run on macOS too, at hardware speed.
+Hypervisor.framework only runs guests of the host's architecture, so this
+means an arm64 hydrogen kernel and an arm64 musl Helium. x86-64 Nanos under
+emulation (QEMU TCG) is not a candidate for Chromium. The VMM is libkrun,
+which bctl already vendors for SmolVM (`third_party/smolvm/libkrun/`); QEMU
+with `-accel hvf` is the fallback if libkrun's device model blocks a slice.
+The product contract stays the same as on Linux (CDP only over a Unix
+socket, the egress policy, disposable disks, readiness stages); the binaries
+and the VMM differ.
+
+Prior art: `tsirysndr/bsdkrun` boots a hello-world Nanos to userspace under
+libkrun on M-series Macs (three consecutive boots reported 2026-08-12).
+Stock Nanos 0.1.55 fails. Its fork `tsirysndr/nanos` branch
+`fix/aarch64-libkrun-boot` (5 commits) fixes, in order: virtio-mmio
+enumeration from the DSDT (`platform/virt/service.c`), DC ZVA before the
+MMU is on (`src/runtime/memops.c`), dirty caches handed over by the EFI
+loader (`src/aarch64/uefi.c`), GICv2/v3 selection when HVF does not
+virtualize `ID_AA64PFR0_EL1.GIC` (`src/aarch64/gic.c`), and virtio-mmio IRQs
+routed to the DSDT's SPI (`src/virtio/virtio_mmio.c`). Its libkrun fork
+(branch `feat/pvh-boot`) also lowers the in-kernel GIC's level SPI once the
+guest acknowledges the interrupt; without that the guest takes about 35k
+empty interrupts a second. The boot implementation is
+`bsdkrun/core/src/nanos.rs`.
+
+Slices, in order, one writer, each gated on the one before:
+
+- **MM0 Native boot (needs the Mac).** Reproduce bsdkrun's `nanos-hello`
+  on Apple Silicon with acceleration confirmed (HVF, not TCG) before any
+  port. Acceptance: three consecutive boots print the hello line, and the
+  record names the host, macOS version and the commits used.
+- **MM1 Boot fixes in hydrogen.** Port the five kernel fixes into
+  hydrogen's fork instead of keeping a second Nanos, and the SPI de-assert
+  into bctl's libkrun patches (`runtime/patches/`). Hydrogen's x86-64
+  harness must stay green, and the image must still boot on QEMU arm64
+  with both virtio-PCI and modern virtio-mmio disks, as bsdkrun checks.
+  Acceptance: hydrogen's own arm64 boot of a probe image under bctl's
+  libkrun on the Mac.
+- **MM2 Hydrogen's Chromium support on arm64.** The large slice. Fork,
+  execve, address-space isolation, seccomp, namespaces and the rest of
+  hydrogen's G1 to G4 work are proven only on x86-64 (for example
+  `src/x86_64/unix_machine.c`); each needs its arm64 half and hydrogen's
+  native-oracle and harness cases on arm64. Nothing about the renderer
+  sandbox may be relaxed for arm64. Acceptance: hydrogen's harness and
+  Helium suites on arm64, with an arm64 musl Helium (P2's arm64 archive
+  from chromium-build) reaching `sandbox ok`.
+- **MM3 bctl backend.** A Nanos-on-libkrun runtime beside SmolVM on macOS.
+  The Linux backend's CDP and egress run over QEMU's vhost-user-vsock;
+  libkrun's vsock with its Unix-socket port mapping is the likely
+  replacement, settled in this slice. Acceptance: the M7N suites with
+  `BCTL_TEST_RUNTIME=nanos` on the Mac, plus a Nanos-on-macOS column in
+  `docs/performance.md`.
+
+Headed sessions (M7H) stay out of this milestone until headless arm64
+Helium works.
+
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
 **Status: proposed, source-reviewed; no upstream-client VM acceptance yet.** This
@@ -1413,6 +1470,8 @@ Owner-provided; never blocks other items.
 - A Linux KVM host for X3's remote context and amd64 parity.
 - An Apple Silicon Mac for M8C's macOS and SmolVM leg (E1 to E6 on headed
   Helium); until then those tuples are reported unverified.
+- An Apple Silicon Mac for M7M (Nanos on macOS); MM0 needs it before any
+  porting starts.
 
 ## Out of scope
 
