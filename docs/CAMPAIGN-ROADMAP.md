@@ -105,14 +105,17 @@ checks shifted symbols, Caps Lock, Alt and Ctrl chords, key repeat, and the
 Ctrl+Shift+U compose sequence; the US layout has no dead keys, so no dead-key
 sequence was tested. R3 open: no Helium arm64 archive exists to check its
 imports against the 33.
-H1 harness (`0676de1`, `target/release/bctl-bench lifecycle|interaction|browser|resources`,
-`docs/performance.md`, `tests/bench/gates.json`): provisional numbers from a
-loaded host (load 9.6 to 14.7 under the 12.6 limit), so they are not
-baselines until rerun with `PERF_GATE_MAX_LOAD=0.25`: cold `up` 2.1 s, warm
-1.8 s, `down` 0.3 s, CDP round trip 0.40 ms direct and 0.49 ms through the
-gateway, pointer input to pixel 6.7 ms, 644 MiB VMM footprint and 5.5% of a
-core idle per session, Speedometer 3.1 at 81% (Sway) and 72% (Tinyland) of
-the same Chromium in a 2-CPU container. H1 findings: `smolvm machine pause`
+H1 baselines (`docs/performance.md`, `tests/bench/`): every suite now
+measures the `helium` r6 image on an idle host (load 0.11 to 0.22 per core),
+50 of 50 gates pass. Cold `up` 1.47 s, warm 1.45 s, `down` 0.11 s, `pause`
+1.82 s, `resume` 2.25 s with the page kept 7 of 7; a TodoMVC workflow through
+`bctl page` 451 ms, bimodal because the first `fill` after `goto` waits about
+200 ms in 4 of 7 rounds; CDP round trip 0.24 ms through the gateway; input to
+pixel 23.6 ms (one to two frames, against 6.7 ms on the old Alpine Chromium
+image); 458 MiB VMM footprint and 3.6% of a core idle; Speedometer 3.1 at 31.4
+against 28.8 for Alpine's Chromium 142 in a 2-CPU container; `news-next` load
+event 72.6 ms against 22.1 ms, largest contentful paint 140 against 88 ms.
+H1 findings: `smolvm machine pause`
 refused any machine with an exposed socket, image layers, or `--gpu`, which was
 every session; the vendored SmolVM now pauses 2D-GPU sessions in place
 (`52557a1`) and `bctl pause`/`bctl resume` drive it, with page state, tabs and
@@ -230,7 +233,7 @@ Helium r6 (chromium-build `410801d`, SHA-256 `7289b25b…`, 0 impure, 11/11
 acceptance): starts without `$HOME` and reports `Helium/0.20.3.1` over
 DevTools; the image now refuses archives before r6. On r6 the restore,
 sessions, failures, runs, cdp and dashboard suites pass.
-Next: H1 baselines on an idle host; X1's networked restore.
+Next: the 200 ms first-action wait and Helium's extra input-to-pixel frame; X1's networked restore.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 ## Charter
