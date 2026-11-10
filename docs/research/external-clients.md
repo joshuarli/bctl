@@ -1,7 +1,8 @@
 # External browser controllers: source-pinned integration research
 
-Status: **research and proposed roadmap only**; no real released-client
-attachment suite has yet passed against bctl. Campaign owner: M8C in
+Status: **E1 passed on macOS arm64** (SmolVM and Nanos) with the released
+clients; Linux x86_64 is unverified. See [Runtime results](#runtime-results-e1).
+The rest of this document is source inspection. Campaign owner: M8C in
 [CAMPAIGN-ROADMAP.md](../CAMPAIGN-ROADMAP.md). Inspected bctl commit:
 `bc6462a54a0fb77aa2492816381ca653708087e8`.
 The source dates are November 9, 2026 (America/Los_Angeles). Runtime results
@@ -141,7 +142,9 @@ the affected attach, ownership and file-transfer code.
 - The built-in provider named `browser-use` targets Browser Use Cloud,
   *not* the open-source browser-use Python agent.
 
-## Planned compatibility surface (NOT qualified yet)
+## Planned compatibility surface
+
+E1 qualified the first row on macOS arm64; the other rows are not qualified.
 
 | Capability | browser-use 1.0.0 | agent-browser v0.42.0 | bctl/runtime prerequisite |
 | --- | --- | --- | --- |
@@ -171,6 +174,60 @@ interop result):
 Do not conflate VM checkpoints, app-level run continuation, persistent
 profiles, and client REPL persistence. In particular, browser-use
 `keep_alive` preserves the client session, not an Nanos profile disk.
+
+## Runtime results (E1)
+
+`tests/interop/run.sh` runs the pinned clients against a real session and a
+host fixture site, and exits non-zero on any failed check. On 2026-11-10, on
+an Apple M5 Max with macOS 27.0.1 and bctl `aca8175`, the final suite passed
+all 55 checks on SmolVM 1.34.0 (headed Helium 0.20.3.1) and on Nanos
+(headless Helium 0.20.3.1, hydrogen `12600ce1` on libkrun). Earlier runs of
+the same checks passed twice on SmolVM and once on Nanos; one Nanos run
+failed on a race in the suite's own dialog cell, since fixed. The clients were
+browser-use 1.0.0 with browser-harness 0.1.13, and agent-browser 0.42.0.
+Linux x86_64 with Nanos has not been run and stays unverified.
+
+| Check | browser-use 1.0.0 | agent-browser 0.42.0 |
+| --- | --- | --- |
+| `<token>.localhost` discovery and browser WS | pass | pass |
+| `Browser.getVersion`, targets | pass | `tab list` |
+| Form fill and click, seen by the fixture | pass, `default` and `ultrafast` | pass |
+| Accessibility tree | `Accessibility.getFullAXTree`, `bu.state()` | `snapshot` |
+| Screenshot PNG bytes | pass | pass |
+| `confirm` dialog | pass | pass, with `--no-auto-dialog` |
+| Popup target | pass | pass |
+| Same- and cross-origin iframe | pass | pass, by snapshot ref |
+| 10 attach/detach cycles, no socket left open | 10/10 | 10/10 |
+| Proxy variables set, `NO_PROXY=localhost` | pass | pass |
+| Helium still `ready` after client close | pass | pass |
+| Revoked URL cannot attach | pass | pass |
+
+The gateway refused a browser `Origin` (403), a bare `127.0.0.1` Host (401)
+and an unknown token (401). `cdp-revoke` refused new attachments and closed
+the open sockets within a second.
+
+Findings that a recipe must account for:
+
+- **agent-browser can bind a hidden tab.** On attach it takes an existing
+  page target without `Page.bringToFront`. With several tabs open, that tab
+  reported `visibilityState` `hidden` on both runtimes. Chromium dropped the
+  clicks sent there, while each command still printed `Done`. Run
+  `agent-browser tab new URL` (or `tab <id>`) after attaching.
+- **agent-browser `frame <css>` matches the frame's name only.** A selector
+  for `<iframe id=x>` without `name` fails with `Frame not found`. `frame
+  @eN` from `snapshot` works, including for a cross-origin frame in its own
+  process.
+- **agent-browser `get title` can answer from its cache** after its socket
+  is gone. Use `eval` to test whether a connection is live.
+- **browser-use `ultrafast` accepts dialogs automatically**, as `ax.py`
+  documents. `default` leaves them to the cell.
+- **browser-use's domain guard adds a socket.** A guarded run held two
+  gateway sockets, and both closed on `stop()`. A main-frame navigation to
+  another site, started from page JavaScript, was blocked.
+- **`Agent.run()` does not raise when the attach is refused.** It logs the
+  error and returns no result. `Browser(cdp_url=...).start()` raises.
+- **`bctl doctor` checks only SmolVM.** It reports a Nanos home as failing.
+  That is a bctl gap outside E1.
 
 ## Security and correctness gates
 

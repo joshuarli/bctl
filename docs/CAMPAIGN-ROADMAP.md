@@ -306,8 +306,9 @@ check that `/json/version` reports `Helium/`. Unmerged lane branches
 `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
-Next after M7N: M8C (external clients), starting at E1 on this Linux/Nanos
-host; nothing in it is qualified yet.
+M8C (external clients) is active: E1 passed on the Mac with SmolVM and
+Nanos (`tests/interop/run.sh`); the Linux x86_64 Nanos run of E1 is next,
+then E2.
 
 ## Charter
 
@@ -1295,7 +1296,7 @@ Helium works.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
-**Status: proposed, source-reviewed; no upstream-client VM acceptance yet.** This
+**Status: E1 passed on macOS arm64, 2026-11-10; Linux x86_64 unverified.** This
 extends bctl's *consumer* surface; it does not replace M3N's native automation,
 Shadowdriver, Grab, or the active M7N work. See
 [the pinned integration research](research/external-clients.md). The initial
@@ -1360,6 +1361,10 @@ repeated connections and reconnects per consumer on qualified runtime,
 consistent successful real-page operations, and an invalid/revoked endpoint
 cannot attach. A missing test host is "unverified", not "passed". Command:
 `tests/interop/run.sh`, which exits non-zero on any failed check.
+**E1 result, 2026-11-10:** on the Apple M5 Max, all 55 checks passed on SmolVM
+and on Nanos, with no gateway change needed; the findings are in
+[the census](research/external-clients.md#runtime-results-e1). The Linux
+x86_64 Nanos run is unverified.
 
 **E2 — External controller leases and lifecycle.** Prereq E1. Own
 `crates/core/`, `crates/bctl/src/{gateway,authority,runs}.rs`, and corresponding
