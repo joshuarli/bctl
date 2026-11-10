@@ -2560,8 +2560,8 @@ sysreturn listen(int sockfd, int backlog)
     return sock->listen(sock, backlog);
 }
 
-closure_function(5, 1, sysreturn, accept_bh,
-                 netsock, s, struct sockaddr *, addr, socklen_t *, addrlen, int, flags, io_completion, completion,
+closure_function(6, 1, sysreturn, accept_bh,
+                 netsock, s, process, p, struct sockaddr *, addr, socklen_t *, addrlen, int, flags, io_completion, completion,
                  u64 bqflags)
 {
     netsock s = bound(s);
@@ -2645,7 +2645,8 @@ closure_function(5, 1, sysreturn, accept_bh,
         tcp_unref(tcp_lw);
     }
 
-    rv = allocate_fd(child->p, child, fd_flags_from_open_flags(bound(flags)));
+    child->p = bound(p);
+    rv = allocate_fd(bound(p), child, fd_flags_from_open_flags(bound(flags)));
     if (rv == INVALID_PHYSICAL)
         rv = -ENFILE;
     else
@@ -2676,7 +2677,7 @@ static sysreturn netsock_accept4(struct sock *sock, struct sockaddr *addr,
         goto out;
     }
 
-    blockq_action ba = closure_from_context(ctx, accept_bh, s, addr, addrlen, flags, completion);
+    blockq_action ba = closure_from_context(ctx, accept_bh, s, current->p, addr, addrlen, flags, completion);
     if (ba == INVALID_ADDRESS) {
         rv = -ENOMEM;
         goto out;
