@@ -185,6 +185,28 @@ The GPU dylibs are Homebrew's, rewritten so every dependency resolves at
 Homebrew builds; `libvirglrenderer` is `libkrun/krun/virglrenderer-krun`, the
 Venus-only build whose 2D refusal the patch works around.
 
+## Nanos runtime layout
+
+On Linux x86_64 with `/dev/kvm`, bctl also runs hydrogen's Nanos.
+`runtime/build-nanos.sh` builds under `.work/runtime/nanos`; what bctl needs
+from it is installed as:
+
+```
+<BCTL_HOME>/runtime/nanos/vhost-device-vsock
+<BCTL_HOME>/images/<image>.img
+<BCTL_HOME>/images/<image>.kernel.img
+```
+
+The image and its kernel are a pair. `images/nanos-helium/build.sh` writes
+`.work/images/nanos-helium.img` and `.work/images/nanos-helium.kernel.img`
+together, copying the kernel from the hydrogen tree whose `tmpfs` and `shmem`
+klibs the image packs. Copy both files: bctl boots
+`<BCTL_HOME>/images/<image>.kernel.img` beside `<image>.img`. A kernel from a
+different build than the image's klibs crashes in `klib_initialize`, so there
+is no separate `runtime/nanos/kernel.img`; that directory holds only
+`vhost-device-vsock`. Starting a session with an image but no kernel beside it
+fails with both paths and the build command.
+
 ## Verification
 
 `runtime/build.sh` fails unless every check passes:

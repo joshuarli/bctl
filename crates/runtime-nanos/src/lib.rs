@@ -43,7 +43,13 @@ impl fmt::Display for RuntimeError {
 
 impl std::error::Error for RuntimeError {}
 
-/// The host side of the Nanos runtime: QEMU, hydrogen's kernel, the vsock backend, and the supervisor binary.
+/// The kernel an image must boot with: the image build writes it beside the image, from the same build as the
+/// klibs the image carries.
+pub fn image_kernel(image: &Path) -> PathBuf {
+    image.with_extension("kernel.img")
+}
+
+/// The host side of the Nanos runtime: QEMU, the vsock backend, and the supervisor binary.
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     pub supervisor: PathBuf,
@@ -51,7 +57,6 @@ pub struct Toolchain {
     pub supervisor_args: Vec<String>,
     pub qemu: PathBuf,
     pub qemu_img: PathBuf,
-    pub kernel: PathBuf,
     pub vsock_backend: PathBuf,
 }
 
@@ -204,7 +209,7 @@ impl Nanos {
             .arg("--qemu-img")
             .arg(&self.tools.qemu_img)
             .arg("--kernel")
-            .arg(&self.tools.kernel)
+            .arg(image_kernel(&spec.image))
             .arg("--vsock-backend")
             .arg(&self.tools.vsock_backend)
             .args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()]))

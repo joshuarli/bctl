@@ -48,6 +48,7 @@ impl RuntimeKind {
 pub(crate) enum RuntimeError {
     SmolVm(bctl_runtime_smolvm::RuntimeError),
     Nanos(bctl_runtime_nanos::RuntimeError),
+    MissingKernel { image: PathBuf, kernel: PathBuf, hint: String },
     Unsupported { runtime: RuntimeKind, operation: &'static str },
 }
 
@@ -56,6 +57,9 @@ impl fmt::Display for RuntimeError {
         match self {
             RuntimeError::SmolVm(error) => error.fmt(f),
             RuntimeError::Nanos(error) => error.fmt(f),
+            RuntimeError::MissingKernel { image, kernel, hint } => {
+                write!(f, "no kernel {} for image {}; {hint}", kernel.display(), image.display())
+            }
             RuntimeError::Unsupported { runtime, operation } => write!(f, "the {} runtime cannot {operation}", runtime.as_str()),
         }
     }
@@ -140,7 +144,6 @@ impl Runtime {
                         supervisor_args: vec![NANOS_SUPERVISOR_COMMAND.to_string()],
                         qemu: on_path("qemu-system-x86_64"),
                         qemu_img: on_path("qemu-img"),
-                        kernel: dir.join("kernel.img"),
                         vsock_backend: dir.join("vhost-device-vsock"),
                     },
                 ))
@@ -160,8 +163,8 @@ impl Runtime {
         let (needed, hint): (Vec<PathBuf>, &'static str) = match self {
             Runtime::SmolVm(_) => (vec![paths.runtime()], "build it with `runtime/build.sh` and copy .work/runtime/smolvm there"),
             Runtime::Nanos(_) => (
-                vec![paths.nanos_runtime().join("kernel.img"), paths.nanos_runtime().join("vhost-device-vsock")],
-                "build it with `runtime/build-nanos.sh` and copy its kernel.img and bin/vhost-device-vsock there",
+                vec![paths.nanos_runtime().join("vhost-device-vsock")],
+                "build it with `runtime/build-nanos.sh` and copy its bin/vhost-device-vsock there",
             ),
         };
         match needed.into_iter().find(|path| !path.exists()) {
@@ -180,7 +183,9 @@ impl Runtime {
     pub(crate) fn image_hint(&self, name: &str) -> String {
         match self {
             Runtime::SmolVm(_) => format!("build it with `images/build.sh {name}` and copy the archive there"),
-            Runtime::Nanos(_) => format!("build it with `images/{name}/build.sh` and copy .work/images/{name}.img there"),
+            Runtime::Nanos(_) => format!(
+                "build it with `images/{name}/build.sh` and copy .work/images/{name}.img and .work/images/{name}.kernel.img there"
+            ),
         }
     }
 
@@ -196,7 +201,14 @@ impl Runtime {
     pub(crate) fn launch(&self, launch: &MachineLaunch) -> Result<(), RuntimeError> {
         match self {
             Runtime::SmolVm(smolvm) => Ok(smolvm.launch(&launch.smolvm())?),
-            Runtime::Nanos(nanos) => Ok(nanos.launch(&launch.nanos())?),
+            Runtime::Nanos(nanos) => {
+                let kernel = bctl_runtime_nanos::image_kernel(&launch.image);
+                if !kernel.is_file() {
+                    let name = launch.image.file_stem().unwrap_or_default().to_string_lossy();
+                    return Err(RuntimeError::MissingKernel { image: launch.image.clone(), kernel, hint: self.image_hint(&name) });
+                }
+                Ok(nanos.launch(&launch.nanos())?)
+            }
         }
     }
 

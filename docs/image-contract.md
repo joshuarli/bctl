@@ -185,6 +185,16 @@ same sidecar and chromium-build installer checks as the arm64 image
 `Helium/<version>` over DevTools, and the image ships `/home/browser`, so the
 missing `$HOME` crash r6 fixes is not reached.
 
+The image and its kernel are one unit. The build writes
+`.work/images/nanos-helium.img` and `.work/images/nanos-helium.kernel.img`
+together; the kernel is copied from the same hydrogen tree whose `tmpfs` and
+`shmem` klibs the image packs, and the pack is stamped with both files'
+SHA-256s. bctl boots `$BCTL_HOME/images/<image>.kernel.img` beside
+`$BCTL_HOME/images/<image>.img`; a kernel from a different build than the
+image's klibs crashes in `klib_initialize`. `<BCTL_HOME>/runtime/nanos/` keeps
+only `vhost-device-vsock`. A missing paired kernel fails before launch with
+both paths and the build command.
+
 The image is hydrogen's Helium rootfs (Alpine's musl 1.2.6 and the archive
 at `/opt/browser`) with the Rust `bctl-guest`, built for
 `x86_64-unknown-linux-musl` by that LLVM with `std` rebuilt, as the Nanos

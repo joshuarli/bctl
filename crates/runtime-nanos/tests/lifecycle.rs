@@ -18,8 +18,6 @@ fn which(name: &str) -> PathBuf {
 
 fn nanos(root: &Path) -> Nanos {
     let runtime = repo().join(".work/runtime/nanos");
-    let kernel = runtime.join("hydrogen/nanos/output/platform/pc/bin/kernel.img");
-    assert!(kernel.is_file(), "run runtime/build-nanos.sh first");
     Nanos::new(
         root,
         Toolchain {
@@ -27,7 +25,6 @@ fn nanos(root: &Path) -> Nanos {
             supervisor_args: Vec::new(),
             qemu: which("qemu-system-x86_64"),
             qemu_img: which("qemu-img"),
-            kernel,
             vsock_backend: runtime.join("bin/vhost-device-vsock"),
         },
     )

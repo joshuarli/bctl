@@ -63,8 +63,15 @@ impl Home {
             Runtime::Nanos => {
                 std::fs::create_dir_all(path.join("runtime/nanos")).map_err(|e| e.to_string())?;
                 let built = root.join(".work/runtime/nanos");
-                link(built.join("hydrogen/nanos/output/platform/pc/bin/kernel.img"), path.join("runtime/nanos/kernel.img"))?;
                 link(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock"))?;
+                let kernel = root.join(format!(".work/images/{image}.kernel.img"));
+                if !kernel.exists() {
+                    return Err(format!(
+                        "no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img and .work/images/{image}.kernel.img there",
+                        kernel.display()
+                    ));
+                }
+                link(kernel, path.join(format!("images/{image}.kernel.img")))?;
                 "img"
             }
         };
@@ -72,7 +79,10 @@ impl Home {
         if !source.exists() {
             return Err(match runtime {
                 Runtime::SmolVm => format!("no {}; run BCTL_BROWSER_ARCHIVE=DIR images/build.sh {image}", source.display()),
-                Runtime::Nanos => format!("no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img there", source.display()),
+                Runtime::Nanos => format!(
+                    "no {}; build it with images/{image}/build.sh and copy .work/images/{image}.img and .work/images/{image}.kernel.img there",
+                    source.display()
+                ),
             });
         }
         link(source, path.join(format!("images/{image}.{extension}")))?;

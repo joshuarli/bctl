@@ -47,6 +47,75 @@ A `FORCE=1` rebuild with the default warm ccache took 9.27 s. The old script
 had no per-part key: a patch or pin change deleted the tree and rebuilt the
 kernel, the vsock backend, and LLVM.
 
+## Nanos Helium image build loop
+
+`images/nanos-helium/build.sh` builds four parts and prints one line per
+part, `installer:`, `rootfs:`, `guest:`, and `image:`, each `built` or
+`reused`. `tests/build/nanos-helium-cache.sh` reads those lines to assert
+which parts ran. `FORCE=1` rebuilds the installer, the rootfs, and the image;
+the guest still goes through cargo under the persistent target, so cargo's
+own incrementality still decides.
+
+The archive sidecar check runs on every build: the script hashes the archive
+and refuses a `.sha256` that does not bind that digest and name, an
+`.acceptance.json` that does not name product `helium`, architecture `amd64`,
+the archive and its digest, and an archive older than r5. Nothing cached can
+skip this check.
+
+| Part | Input identity | Reuse condition |
+|---|---|---|
+| installer | archive SHA-256, chromium-build pin, SHA-256 of the three scripts | stamp matches and the scripts are present |
+| rootfs | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, `guest/appliance/rootfs/etc/{passwd,group}` | stamp matches and the rootfs integrity digest matches |
+| guest | none: cargo decides | cargo does not say `Compiling bctl-guest` |
+| image | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, kernel/boot/mkfs SHA-256, rootfs digest, guest SHA-256, this script | stamp matches and both `.img` and `.kernel.img` match their recorded SHA-256 |
+
+The three chromium-build scripts are cached under
+`.work/images/dl/chromium-build/<pinned-rev>/` and fetched only when absent.
+The cached scripts are inputs to the installer stamp, so editing one reruns
+the installer's `--verify-extract` rather than trusting the old result.
+
+The rootfs integrity digest is the sorted `stat` output for every entry below
+the rootfs: type, mode, size, name, and a symlink's target. It does not read
+file contents. That is deliberate: the rootfs is 907 MiB and 542 entries, and
+hashing it would cost more than the extraction it guards. A removed,
+truncated, extra, or replaced entry changes the digest; a same-size edit to a
+file's contents does not, but the rootfs is rebuilt
+from the archive whenever its input identity changes, and a rooted rebuild is
+the response to any integrity miss. The digest is cheap (metadata only) and
+covers the failure that matters here: a half-written or partly deleted cached
+rootfs being packed into an image.
+
+The guest builds with `CARGO_TARGET_DIR=.work/images/nanos-helium/target`,
+which survives every run; a source change recompiles incrementally instead of
+starting from an empty target directory. The image and its kernel are one
+unit: the pack step writes `.work/images/nanos-helium.img` and copies the
+exact `kernel.img` from the hydrogen tree whose `tmpfs` and `shmem` klibs it
+packs to `.work/images/nanos-helium.kernel.img`. Both SHA-256s are recorded in
+the image stamp, and a missing kernel forces a repack. The three Nanos outputs
+the pack uses are checked against `build-nanos.sh`'s kernel stamp first, so a
+tree whose kernel no longer matches its stamp is refused instead of paired
+with the image.
+
+## Measured image build wall times
+
+Linux x86_64, 32 cores, `perf-gate-ready` exited 0 immediately before and
+after every timed run. The archive and the chromium-build script cache were
+present.
+
+| Case | Old script | New script |
+|---|---|---|
+| cold, `.work/images/nanos-helium` removed | 59.00 s | 38.00 s |
+| unchanged | 32.00 s | 7.00 s |
+| guest Rust code changed | 38.00 s | 14.00 s |
+
+The old script did the same work in every case: it deleted the image work
+directory, downloaded the chromium-build scripts, ran the installer and the
+full rootfs build, built the guest in a fresh target directory, deleted that
+directory, and packed. The old "unchanged" and "guest code changed" numbers
+differ only because of filesystem cache warmth; the script never reused
+anything.
+
+
 ## ccache
 
 The kernel build from a freshly exported tree at the same path:
