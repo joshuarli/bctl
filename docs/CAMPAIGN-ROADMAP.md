@@ -306,8 +306,8 @@ check that `/json/version` reports `Helium/`. Unmerged lane branches
 `lane/x1-wip-backup` is an unmerged backup branch of X1, kept.
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
-M8C (external clients) is active: E1 to E3 passed on the Mac with SmolVM and
-Nanos; their Linux x86_64 Nanos runs are pending, and E4 is next.
+M8C (external clients): E1 to E6 passed on the Mac with SmolVM and Nanos
+(2026-11-11); the Linux x86_64 Nanos leg of every E is pending.
 
 ## Charter
 
@@ -491,6 +491,12 @@ Nanos; their Linux x86_64 Nanos runs are pending, and E4 is next.
   currently gated; do not claim exclusive takeover until M8C's
   controller ownership tests pass. External bctl clients remain
   unqualified until a real pinned-client test passes.
+- Owner 2026-11-11 (E4): files move through a per-session host directory
+  mounted at the guest's download directory, not through per-file transfer
+  commands. The CDP transfer (`bctl file put/get/ls`) worked on SmolVM but
+  needed staging, a size cap and checksums, and it crashed Helium on Nanos.
+  Nanos gets a files directory once Hydrogen can mount a host directory;
+  until then its sessions report none.
 - Owner 2026-11-10: templates get no public CLI. Once X1's networked restore
   and profile remount pass, `bctl up` restores from the image's pre-browser
   forkpoint checkpoint when one exists for that image and runtime, and boots
@@ -1295,7 +1301,7 @@ Helium works.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
-**Status: E1 to E3 passed on macOS arm64, 2026-11-10; Linux x86_64 unverified.** This
+**Status: E1 to E6 passed on macOS arm64, 2026-11-11; Linux x86_64 unverified.** This
 extends bctl's *consumer* surface; it does not replace M3N's native automation,
 Shadowdriver, Grab, or the active M7N work. See
 [the pinned integration research](research/external-clients.md). The initial
@@ -1455,6 +1461,24 @@ server; collect a downloaded binary with verified digest and no path escape;
 assert correct unsupported errors for missing runtime transport/profile
 capabilities; no accidental profile sharing.
 
+**E4 result, 2026-11-11:** a per-session files directory,
+`<BCTL_HOME>/files/<session>`, is mounted at the guest's
+`/home/browser/Downloads` on SmolVM (see Decisions and `docs/files.md`).
+`bctl inspect` reports `files_dir`, `guest_files_dir`, `display` and
+`pausable`, and jobs get `BCTL_FILES_DIR` and `BCTL_GUEST_FILES_DIR`.
+On the Mac:
+
+- a 150 KB upload reached the fixture with a matching SHA-256 from both
+  clients: browser-use from a host path through the page, agent-browser by
+  guest path;
+- a 200 KB download landed in the files directory byte for byte;
+- a second session on another profile saw neither the first's cookies nor its
+  files, and `bctl rm` deleted the directory;
+- the mount survived `pause` and `resume`.
+
+Nanos reports no files directory: its kernel cannot mount a host directory
+yet.
+
 **E5 — Optional agent-browser provider.** Prereq E1–E2. Keep it a separate,
 tiny Rust executable/subcommand implementing upstream
 `agent-browser.plugin.v1`: `plugin.manifest`, `browser.launch`, and
@@ -1471,6 +1495,29 @@ installation or a dependency on npm at bctl runtime.
 real `--provider bctl` navigation, failed-launch cleanup, repeated close and
 owner-death reclamation. Generic CDP attachment remains usable without plugin.
 
+**E5 result, 2026-11-11:** `bctl agent-browser-plugin` implements
+`agent-browser.plugin.v1` (`docs/agent-browser.md`).
+
+- **Owned:** it starts `ab-<session>` and records the generation and URL; close
+  stops the session only if both match.
+- **Borrowed (`--session NAME`):** it mints a URL; close revokes only that URL
+  (`bctl cdp-revoke NAME --url URL`).
+- **Refused options:** non-Chrome engines, `userAgent`, `colorScheme`, and
+  `headed` on Nanos.
+
+On the Mac, against real agent-browser 0.42.0 on SmolVM and Nanos, these
+passed: navigation through `--provider bctl`, close, repeated close, a failed
+launch that left nothing behind, reclaim after a `kill -9` of agent-browser's
+daemon, and no machine left running. Reclaim stops the stale session and keeps
+its record, so the new VM gets a new generation and machine name. Generic
+`--cdp` attachment is unchanged.
+
+Limits from agent-browser:
+
+- `open` has 30 s in total, so a launch must finish within it.
+- A plugin result cannot carry headers.
+- Plugin error text is hidden from agent-browser's own errors.
+
 **E6 — Cross-runtime regression and measurement.** Prereq E1–E5 according
 to each feature. Add interop to the existing acceptance/bench discipline:
 per-client connection startup p50/p95, screenshot/AX/navigation latency,
@@ -1483,6 +1530,16 @@ failures and any reason a test was skipped.
 **Acceptance:** an explicit supported-feature matrix for each verified
 (client, version, host, runtime, Helium image) tuple with reproducible
 commands, failing cases, and a maintained compatibility suite.
+
+**E6 result, 2026-11-11:** `docs/compatibility.md` is the feature matrix
+for the two Mac tuples, SmolVM and Nanos on libkrun. It lists their receipts,
+the commands that reproduce them, and the failing cases.
+`tests/interop/run.sh` is the maintained suite: 113 checks on SmolVM and 105
+on Nanos, both passing. `BCTL_INTEROP_SUITE=measure` times attach, navigate,
+accessibility tree, screenshot and close per client, plus client memory.
+`docs/performance.md#external-clients` has the gated results. CDP call and byte
+counts are not available from either client or the gateway. Linux x86_64 is
+unverified.
 
 **Stop conditions:** uncertain authority, unexpected automatic browser
 provisioning or billing, sandbox being disabled, unbounded file access,

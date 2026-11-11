@@ -79,10 +79,19 @@ fixture_port=$(cat "$home/fixture.port")
 url_file=$home/cdp-url
 (umask 077 && "$bctl" cdp-url "$session" >"$url_file") || fail "bctl cdp-url failed"
 
+case ${BCTL_INTEROP_SUITE:-checks} in
+checks | measure) suite=${BCTL_INTEROP_SUITE:-checks} ;;
+*) fail "BCTL_INTEROP_SUITE must be checks or measure" ;;
+esac
 status=0
-"$venv/bin/python" "$root/tests/interop/checks.py" "$session" "$url_file" "$fixture_port" >"$home/checks.out" || status=$?
-grep -v '^{' "$home/checks.out" || :
-helium=$(grep '^{' "$home/checks.out" | tail -n 1 | sed 's/.*"helium": "\([^"]*\)".*/\1/')
+"$venv/bin/python" "$root/tests/interop/$suite.py" "$session" "$url_file" "$fixture_port" >"$home/checks.out" || status=$?
+if [ "$suite" = measure ]; then
+    cat "$home/checks.out"
+    helium=$(curl -s "$(cat "$url_file")/json/version" | sed -n 's/.*"Browser": *"\([^"]*\)".*/\1/p')
+else
+    grep -v '^{' "$home/checks.out" || :
+    helium=$(grep '^{' "$home/checks.out" | tail -n 1 | sed 's/.*"helium": "\([^"]*\)".*/\1/')
+fi
 dirty=$(git -C "$root" status --porcelain --untracked-files=no | head -c 1)
 printf '\nreceipts\n'
 printf '  bctl           %s%s\n' "$(git -C "$root" rev-parse HEAD)" "${dirty:+ (dirty)}"
@@ -100,5 +109,5 @@ printf '  helium         %s\n' "${helium:-unknown}"
 printf '  browser-use    1.0.0 %s, browser-harness %s\n' "$browser_use_rev" \
     "$("$venv/bin/python" -c 'import importlib.metadata as m; print(m.version("browser-harness"))')"
 printf '  agent-browser  %s %s\n' "$("$agent_browser" --version | cut -d' ' -f2)" "$agent_browser_rev"
-[ "$status" -eq 0 ] || fail "checks failed"
-printf 'interop: ok\n'
+[ "$status" -eq 0 ] || fail "$suite failed"
+printf 'interop %s: ok\n' "$suite"

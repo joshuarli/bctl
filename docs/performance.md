@@ -387,6 +387,45 @@ lifecycle, resources and browser only.
   waited for a delayed ACK that a timer queued and nothing delivered. Every
   locator query crossed that path through the guest's CDP relay.
 
+## External clients
+
+`BCTL_INTEROP_SUITE=measure tests/interop/run.sh` (`tests/interop/measure.py`)
+times each pinned client against a ready session, 7 rounds, with the clients
+alternating. Times are host wall time in ms, as the client's user sees them:
+
+- agent-browser's include starting its CLI.
+- browser-use's are timed inside its REPL cells, except the attach (from
+  `Agent.run` to the end of its first cell) and the whole run.
+
+The page is the fixture's `/form`. bctl was `b3d419a` plus the E5 changes, a
+debug build, on the host above. `perf-gate-ready` passed before and after each
+runtime's run.
+
+| Client | Operation | SmolVM median | p95 | Nanos (libkrun) median | p95 |
+|--------|-----------|------:|----:|------:|----:|
+| browser-use | attach, first cell run | 307.9 | 311.1 | 313.0 | 323.4 |
+| browser-use | navigate | 18.4 | 27.9 | 14.1 | 334.1 |
+| browser-use | accessibility tree | 5.1 | 6.8 | 1.6 | 12.7 |
+| browser-use | screenshot | 43.2 | 55.6 | 43.7 | 50.1 |
+| browser-use | run, start to finish | 396.7 | 423.2 | 398.3 | 748.4 |
+| agent-browser | attach (first `eval`) | 136.2 | 142.3 | 132.5 | 140.3 |
+| agent-browser | navigate (`open`) | 30.1 | 42.0 | 29.4 | 41.1 |
+| agent-browser | accessibility tree (`snapshot`) | 16.2 | 20.1 | 14.7 | 21.3 |
+| agent-browser | screenshot | 42.2 | 55.4 | 39.0 | 50.0 |
+| agent-browser | close | 11.4 | 12.1 | 11.6 | 13.8 |
+
+Memory, in MiB:
+
+- browser-use's agent process peaked at 94.4 (SmolVM) and 94.6 (Nanos). That
+  figure leaves out browser-harness's own daemon.
+- agent-browser's daemon held 13.3 and 13.2.
+
+With 7 samples, p95 is the largest sample. The first Nanos round, the
+session's first navigation, made the browser-use navigate p95 334 ms and its run
+p95 748 ms; the other six stayed near the median. Neither client reports CDP call or byte counts, and the
+gateway does not count them, so those are not measured. Linux x86_64 is not
+measured.
+
 ## Findings
 
 - **The first action after a navigation waited out a 200 ms quiet interval
