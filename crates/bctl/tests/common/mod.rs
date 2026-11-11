@@ -339,6 +339,11 @@ pub fn http(port: u16, host: &str, request_line: &str, extra: &str) -> (u16, Str
 }
 
 pub fn process_alive(pid: u32) -> bool {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with('Z'))
+    {
+        return false;
+    }
     Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().unwrap().success()
 }
 
