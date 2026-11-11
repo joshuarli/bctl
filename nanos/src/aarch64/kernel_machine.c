@@ -135,7 +135,6 @@ void psci_reset(void)
 }
 
 BSS_RO_AFTER_INIT static buffer mpid_map;
-static struct spinlock ap_lock;
 static void (*init_mmu_target)(void);
 
 vector cpus_init_ids(heap h)
@@ -164,7 +163,6 @@ static int cpuid_from_mpid(u64 mpid)
 static void ap_start_newstack(int cpuid)
 {
     total_processors++;
-    spin_unlock(&ap_lock);
     cpu_init(cpuid);
     run_percpu_init();
     kernel_sleep();
@@ -183,19 +181,43 @@ static void ap_start(void)
 static void ap_start_nommu(void)
 {
     asm volatile("bl aarch64_cpu_init");
-    spin_lock(&ap_lock);    /* so that all APs can use the same temporary stack */
     enable_mmu(u64_from_pointer(init_mmu_target));
 }
 
 #define AP_START_TIMEOUT_MS 500
+#define AP_TEMP_STACK_SIZE  (4 * KB)
+
+static void dcache_clean_inval(u64 start, u64 end)
+{
+    u64 ctr;
+    asm volatile("mrs %0, CTR_EL0" : "=r"(ctr));
+    u64 line = 4ull << ((ctr >> 16) & 0xf);
+    for (u64 p = start & ~(line - 1); p < end; p += line)
+        asm volatile("dc civac, %0" :: "r"(p) : "memory");
+}
+
 void start_secondary_cores(kernel_heaps kh)
 {
     init_flush(heap_locked(kh));
-    for (int i = 1; i < present_processors; i++)
+    /* An AP runs with its MMU and caches off until enable_mmu: it reads these from memory, not
+       from our cache, and its temporary stack must not be overwritten by our evicted lines. */
+    dcache_clean_inval(u64_from_pointer(&init_mmu_target), u64_from_pointer(&init_mmu_target + 1));
+    dcache_clean_inval(u64_from_pointer(&user_tablebase), u64_from_pointer(&user_tablebase + 1));
+    dcache_clean_inval(u64_from_pointer(&kernel_tablebase), u64_from_pointer(&kernel_tablebase + 1));
+    u64 stack_top = PHYSMEM_BASE + kernel_phys_offset + INIT_IDENTITY_SIZE;
+    dcache_clean_inval(stack_top - AP_TEMP_STACK_SIZE, stack_top);
+    asm volatile("dsb sy" ::: "memory");
+    /* APs share one temporary stack, so start them one at a time. They cannot take a lock
+       instead: exclusive and atomic accesses to non-cacheable memory need not succeed (they
+       never do under Hypervisor.framework on Apple silicon). */
+    for (int i = 1; i < present_processors; i++) {
         arm_hvc(PSCI_FN64_CPU_ON, mpid_from_cpuid(i),
                 u64_from_pointer((void *)ap_start_nommu - kas_kern_offset + kernel_phys_offset), 0);
-    for (u64 to = 0; (total_processors != present_processors) && (to < AP_START_TIMEOUT_MS); to++)
-        kernel_delay(milliseconds(1));
+        for (u64 to = 0; (total_processors != i + 1) && (to < AP_START_TIMEOUT_MS); to++)
+            kernel_delay(milliseconds(1));
+        if (total_processors != i + 1)
+            break;
+    }
 
     /* The MMU has been enabled on secondary cores: unmap the temporary identity map. */
     unmap(PHYSMEM_BASE + kernel_phys_offset, INIT_IDENTITY_SIZE);
@@ -219,7 +241,6 @@ void count_cpus_present(void)
     if (present_processors == 0)
         acpi_walk_madt(stack_closure_func(madt_handler, count_cpus_handler));
     if (present_processors > 1) {
-        spin_lock_init(&ap_lock);
         init_mmu_target = ap_start;
     } else {
         deallocate_buffer(mpid_map);
