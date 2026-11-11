@@ -274,37 +274,54 @@ every script and asset of the site takes.
 
 The `bctl` binary is 0.7 percent under its 5,200,000-byte gate.
 
-## Results on Nanos (Linux amd64, headless)
+## Results on Nanos
 
-The same suites on `nanos-helium` under hydrogen's Nanos, beside the Mac
-numbers above. The Mac column is SmolVM on the M5 Max, headed; the Nanos
-column is a different machine, a different VMM and a headless browser, so a
-row compares the two products as shipped, not the VMMs alone. Nanos has no
-pause, resume, VNC or input-to-pixel, and the viewer suite does not apply.
+The same suites on `nanos-helium` under hydrogen's Nanos, on Linux amd64 with
+QEMU and on the Mac with libkrun, beside the SmolVM numbers above. The SmolVM
+column is the M5 Max, headed; the Nanos columns are headless and use other
+VMMs, and the Linux column is another machine, so a row compares the products
+as shipped, not the VMMs alone. Nanos has no pause, resume, VNC or
+input-to-pixel, and the viewer suite does not apply. The Mac Nanos column ran
+lifecycle, resources and browser only.
 
-| | |
-| --- | --- |
-| Host | MS-A1, AMD Ryzen 9 9950X, 32 CPUs, 60 GiB, Alpine Linux edge (7.2.9) |
-| Runtime | hydrogen `bea1e222`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 with the half-close patch |
-| Guest | `nanos-helium` (Helium 0.20.3.1 r5), 2 CPUs, 4096 MiB, headless |
-| Tree | main `602bfde` (uBlock Origin disabled), release build; every sample passed the quiet-host check |
-
-| Measure | Nanos | Mac |
+| | Linux | Mac |
 | --- | --- | --- |
-| Cold `up` to ready | 938 ms (904 to 1043) | 1466 ms |
-| Warm `up` to ready | 982 ms (931 to 990) | 1455 ms |
-| `down` | 164 ms (109 to 165) | 112.8 ms |
-| Daemon start | 100.7 ms | 114.8 ms |
-| TodoMVC workflow | 144 ms (120 to 283) | 277 ms |
-| `goto`, `fill`, `press`, `check`, `snapshot` p50 | 38.8, 4.2, 4.3, 41.9, 3.5 ms | 39.5, 14.3, 15.4, 65.7, 11.9 ms |
-| `Runtime.evaluate` p50 direct / gateway | 281 / 289 us | 170 / 256 us |
-| Speedometer 3.1 score (7 of 7 runs) | 28.2 (26.8 to 28.7) | 31.4 |
-| News site `responseEnd` / `loadEventEnd` / LCP (35 loads) | 3.9 / 82.4 / 152 ms | 14.2 / 71.9 / 140 ms |
-| VMM RSS 30 s after ready | 515 MiB (513 to 519) | 458 MiB footprint |
-| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 3.6 |
-| Machine disk (qcow2 overlay) | 3.8 MiB (3.1 to 3.8) | 683 MiB |
-| Daemon RSS, one session | 5.0 MiB | 12.6 MiB |
+| Host | MS-A1, AMD Ryzen 9 9950X, 32 CPUs, 60 GiB, Alpine Linux edge (7.2.9) | Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434) |
+| Runtime | hydrogen `bea1e222`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 with the half-close patch | hydrogen `12600ce1`, libkrun on Hypervisor.framework (`nanos-krun`) |
+| Guest | `nanos-helium` (Helium 0.20.3.1 r5), 2 CPUs, 4096 MiB, headless | `nanos-helium` arm64 (Helium 0.20.3.1), 2 CPUs, 4096 MiB, headless |
+| Tree | main `602bfde` (uBlock Origin disabled), release build | main `0442223` with the profile clone fix, release build |
+| Quiet host | every sample passed | every time sample passed at 0.25 load per core; 2 of 5 idle CPU windows overlapped load and were discarded |
 
+| Measure | Nanos, Linux | Nanos, Mac | SmolVM, Mac |
+| --- | --- | --- | --- |
+| Cold `up` to ready | 938 ms (904 to 1043) | 2728 ms (2711 to 2880) | 1466 ms |
+| Warm `up` to ready | 982 ms (931 to 990) | 1296 ms (1246 to 1355) | 1455 ms |
+| `down` | 164 ms (109 to 165) | 332 ms (251 to 362) | 112.8 ms |
+| Daemon start | 100.7 ms | 113.5 ms | 114.8 ms |
+| TodoMVC workflow | 144 ms (120 to 283) | not run | 277 ms |
+| `goto`, `fill`, `press`, `check`, `snapshot` p50 | 38.8, 4.2, 4.3, 41.9, 3.5 ms | not run | 39.5, 14.3, 15.4, 65.7, 11.9 ms |
+| `Runtime.evaluate` p50 direct / gateway | 281 / 289 us | not run | 170 / 256 us |
+| Speedometer 3.1 score (7 of 7 runs) | 28.2 (26.8 to 28.7) | 28.4 (27.0 to 28.7) | 31.4 |
+| News site `responseEnd` / `loadEventEnd` / LCP (35 loads) | 3.9 / 82.4 / 152 ms | 5.8 / 98.2 / 176 ms | 14.2 / 71.9 / 140 ms |
+| VMM memory 30 s after ready | 515 MiB RSS (513 to 519) | 296 MiB footprint (294 to 296); 757 MiB RSS | 458 MiB footprint |
+| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 100 percent (100.0 to 100.1) | 3.6 |
+| Machine disk | 3.8 MiB (3.1 to 3.8), qcow2 overlay | 636 MiB, an APFS clone of the image that `du` counts in full | 683 MiB |
+| Profile disk, before browsing | — | 3.9 MiB (3.8 to 4.5) | — |
+| Daemon RSS, one session | 5.0 MiB | 4.8 MiB | 12.6 MiB |
+
+- **An idle Nanos VM on the Mac holds one core busy.** `sample` of the
+  idle VMM shows vCPU 0 waiting in Hypervisor.framework's
+  `wait_for_interrupt`, as a halted vCPU should, and vCPU 1 inside guest code
+  for every sample. The second vCPU never halts, whether in Hydrogen's arm64
+  idle path or a guest thread that spins; the host cannot tell which. Open,
+  in hydrogen.
+- **Cold `up` on the Mac is 1.4 s slower than warm, all before the guest
+  answers** (first probe 2371 ms cold, 898 ms warm). Cold starts a fresh
+  daemon and profile; the suite does not split that time further.
+- **A new Mac profile filled its 2 GiB sparse template.** The supervisor
+  copied the template byte by byte, writing every hole: 2062 MiB per profile.
+  It now clones the template, and a profile costs 3.9 MiB until the browser
+  writes to it.
 - **Four of the five seconds of `up` were uBlock Origin, so sessions now
   start with it disabled.** Helium bundles uBlock Origin 1.75.0 as an
   extension the user may disable, and on a profile it has never seen, uBlock
