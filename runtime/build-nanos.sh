@@ -1,10 +1,12 @@
 #!/bin/sh
 set -eu
 
-hydrogen_commit=df9490871da51096c05953b5e70f3866164de73e
+hydrogen_commit=6dc7d43e5b17df75d3598535ec0f069164c5eab3
 vhost_vsock_version=0.3.0
 vhost_vsock_sha256=52ce95d81af89ad693d067c650e42df0f217addfbc96cc4820f7c62eb4a28b13
 vhost_vsock_patch=vhost-device-vsock-0001-forward-guest-half-close.patch
+virtiofsd_version=1.14.0
+virtiofsd_sha256=7051accc9cf2816e25945c8216e6d4be2b4e75fc5e77559cd7eed5e400245cc1
 root=$(cd "$(dirname "$0")/.." && pwd)
 hydrogen=${HYDROGEN:-$HOME/d/hydrogen}
 out=$root/.work/runtime/nanos
@@ -31,6 +33,24 @@ vsock_identity() {
     printf 'patch %s\n' "$(sha "$root/runtime/patches/$vhost_vsock_patch")"
     printf 'rustc %s\n' "$(rustc -V)"
     printf 'cargo %s\n' "$(cargo -V)"
+}
+
+virtiofsd_identity() {
+    printf 'version %s\n' "$virtiofsd_version"
+    printf 'sha256 %s\n' "$virtiofsd_sha256"
+    printf 'rustc %s\n' "$(rustc -V)"
+    printf 'cargo %s\n' "$(cargo -V)"
+}
+
+# virtiofsd links libseccomp and libcap-ng; a host without their -dev packages still has the runtime
+# libraries, so link against those.
+host_library() {
+    for dir in /usr/lib /lib /usr/lib64 /usr/lib/x86_64-linux-gnu; do
+        for candidate in "$dir/$1.so" "$dir/$1.so".*; do
+            [ -e "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+        done
+    done
+    return 1
 }
 
 llvm_identity() {
@@ -133,6 +153,44 @@ else
     echo "vhost-device-vsock: reused"
 fi
 
+virtiofsd_bin=$out/bin/virtiofsd
+virtiofsd_stamp=$out/bin/.build-nanos-virtiofsd.stamp
+virtiofsd_rel=bin/virtiofsd
+virtiofsd_id=$(virtiofsd_identity | digest)
+if [ "$force" = 1 ] || [ ! -s "$virtiofsd_bin" ] || [ ! -x "$virtiofsd_bin" ] ||
+    ! stamp_valid "$virtiofsd_stamp" "$virtiofsd_id" "$virtiofsd_rel"; then
+    mkdir -p "$out/dl" "$out/bin" "$out/src"
+    virtiofsd_crate=$out/dl/virtiofsd-$virtiofsd_version.crate
+    if ! printf '%s  %s\n' "$virtiofsd_sha256" "$virtiofsd_crate" | sha256sum -c -s 2>/dev/null; then
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$virtiofsd_crate.part" \
+            "https://static.crates.io/crates/virtiofsd/virtiofsd-$virtiofsd_version.crate" ||
+            fail "cannot fetch virtiofsd $virtiofsd_version"
+        mv "$virtiofsd_crate.part" "$virtiofsd_crate"
+        printf '%s  %s\n' "$virtiofsd_sha256" "$virtiofsd_crate" | sha256sum -c -s ||
+            fail "virtiofsd $virtiofsd_version does not match its crates.io checksum"
+    fi
+    virtiofsd_src=$out/src/virtiofsd-$virtiofsd_version
+    rm -rf "$virtiofsd_src"
+    tar -xzf "$virtiofsd_crate" -C "$out/src"
+    # The source sits under this repository, so cargo would treat it as a member of bctl's workspace.
+    printf '\n[workspace]\n' >>"$virtiofsd_src/Cargo.toml"
+    link_dir=$out/src/virtiofsd-link
+    rm -rf "$link_dir"
+    mkdir -p "$link_dir"
+    for lib in libseccomp libcap-ng; do
+        found=$(host_library "$lib") || fail "virtiofsd needs $lib, which is not installed"
+        ln -s "$found" "$link_dir/$lib.so"
+    done
+    RUSTFLAGS="-L $link_dir -C target-feature=-crt-static" \
+        cargo install --quiet --locked --force --root "$out" --path "$virtiofsd_src" ||
+        fail "cannot build virtiofsd $virtiofsd_version"
+    [ -s "$virtiofsd_bin" ] && [ -x "$virtiofsd_bin" ] || fail "virtiofsd built no $virtiofsd_bin"
+    write_stamp "$virtiofsd_stamp" "$virtiofsd_id" "$virtiofsd_rel"
+    echo "virtiofsd: built"
+else
+    echo "virtiofsd: reused"
+fi
+
 mkdir -p "$out/dl"
 git -C "$hydrogen" show "$hydrogen_commit:dev/toolchain.lock" >"$out/toolchain.lock" ||
     fail "hydrogen commit $hydrogen_commit has no dev/toolchain.lock"
@@ -159,4 +217,4 @@ else
     echo "llvm: reused"
 fi
 
-echo "kernel $bin/kernel.img, mkfs $mkfs, $vsock_bin, $out/llvm"
+echo "kernel $bin/kernel.img, mkfs $mkfs, $vsock_bin, $virtiofsd_bin, $out/llvm"

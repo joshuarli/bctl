@@ -242,9 +242,9 @@ else
     cp "$kernel" "$kernel_out.new"
     sh "$tree/dev/image.sh" -o "$out" --size 2g --klib tmpfs --klib shmem --root "$rootfs" --tree "$rootfs:/" \
         --link /usr/local/bin/browser:/opt/browser/helium \
-        --dir /profile --dir /tmp --dir /dev/shm \
+        --dir /profile --dir /tmp --dir /dev/shm --dir /home/browser/Downloads \
         --arg run-headless-persistent "$guest" >/dev/null || { rm -f "$kernel_out.new" "$out"; fail "mkfs failed"; }
-    "$mkfs" -s 2g -k "$kernel" -b "$boot" -t '(mounts:(profile:"/profile"))' "$out.new" <"$out.manifest" >/dev/null &&
+    "$mkfs" -s 2g -k "$kernel" -b "$boot" -t '(mounts:(profile:"/profile" files:"/home/browser/Downloads"))' "$out.new" <"$out.manifest" >/dev/null &&
         "$mkfs" -e -l profile -s 2g "$profile_out.new" >/dev/null ||
         { rm -f "$kernel_out.new" "$out" "$out.new" "$profile_out.new"; fail "cannot create the persistent profile volumes"; }
     mv "$out.new" "$out"

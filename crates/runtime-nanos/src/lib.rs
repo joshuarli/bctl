@@ -70,7 +70,7 @@ pub struct Toolchain {
 #[derive(Debug, Clone)]
 pub enum Backend {
     #[cfg(not(target_os = "macos"))]
-    Qemu { qemu: PathBuf, qemu_img: PathBuf, vsock_backend: PathBuf },
+    Qemu { qemu: PathBuf, qemu_img: PathBuf, vsock_backend: PathBuf, virtiofsd: PathBuf },
     #[cfg(target_os = "macos")]
     Libkrun { runner: PathBuf, firmware: PathBuf },
 }
@@ -80,6 +80,8 @@ pub struct LaunchSpec {
     pub machine: String,
     pub image: PathBuf,
     pub profile_dir: PathBuf,
+    /// Host directory the guest mounts at [`bctl_runtime::GUEST_FILES_DIR`]; it must already exist.
+    pub files_dir: PathBuf,
     /// Host path where the CDP socket appears; its directory must already exist and be private.
     pub cdp_socket: PathBuf,
     pub memory_mib: u32,
@@ -249,11 +251,13 @@ impl Nanos {
             .arg(spec.cpus.to_string());
         command.arg("--socket-dir").arg(&socket_dir);
         command.arg("--profile-dir").arg(&spec.profile_dir);
+        command.arg("--files-dir").arg(&spec.files_dir);
         match &self.tools.backend {
             #[cfg(not(target_os = "macos"))]
-            Backend::Qemu { qemu, qemu_img, vsock_backend } => {
+            Backend::Qemu { qemu, qemu_img, vsock_backend, virtiofsd } => {
                 command.arg("--qemu").arg(qemu).arg("--qemu-img").arg(qemu_img)
-                    .arg("--kernel").arg(image_kernel(&spec.image)).arg("--vsock-backend").arg(vsock_backend);
+                    .arg("--kernel").arg(image_kernel(&spec.image)).arg("--vsock-backend").arg(vsock_backend)
+                    .arg("--virtiofsd").arg(virtiofsd);
             }
             #[cfg(target_os = "macos")]
             Backend::Libkrun { runner, firmware } => {
@@ -426,7 +430,7 @@ mod tests {
             #[cfg(target_os = "macos")]
             backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
             #[cfg(not(target_os = "macos"))]
-            backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new() },
+            backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new(), virtiofsd: PathBuf::new() },
         });
         let machine = "long-machine-name-".repeat(3);
         let socket_dir = runtime.socket_dir(&machine);
@@ -456,7 +460,7 @@ mod tests {
             #[cfg(target_os = "macos")]
             backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
             #[cfg(not(target_os = "macos"))]
-            backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new() },
+            backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new(), virtiofsd: PathBuf::new() },
         });
         let machine = "orphan";
         let machine_dir = runtime.machine_dir(machine);

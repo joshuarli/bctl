@@ -612,10 +612,10 @@ pub struct SessionView {
     pub display: Option<String>,
     /// Whether `bctl pause` can checkpoint the session's VM, while it holds one.
     pub pausable: Option<bool>,
-    /// On SmolVM: the host directory the guest sees at `guest_files_dir`, kept until `bctl rm`.
-    pub files_dir: Option<String>,
-    /// On SmolVM: where the guest sees `files_dir`, which is also where the browser saves downloads.
-    pub guest_files_dir: Option<String>,
+    /// The host directory the guest sees at `guest_files_dir`, kept until `bctl rm`.
+    pub files_dir: String,
+    /// Where the guest sees `files_dir`, which is also where the browser saves downloads.
+    pub guest_files_dir: String,
 }
 
 /// One run and its attempts. Every resolved input is here, so `bctl runs ID --json` is the run's full record.

@@ -557,8 +557,8 @@ impl Daemon {
             }),
             display: observed.and_then(|o| o.input).filter(|_| holds).map(|i| if i == InputSupport::Headless { "headless" } else { "headed" }.to_string()),
             pausable: holds.then_some(self.runtime.kind() == RuntimeKind::SmolVm),
-            files_dir: self.files_dir(&record.name).map(|d| d.display().to_string()),
-            guest_files_dir: self.files_dir(&record.name).map(|_| bctl_runtime_smolvm::GUEST_FILES_DIR.to_string()),
+            files_dir: self.files_dir(&record.name).display().to_string(),
+            guest_files_dir: bctl_runtime::GUEST_FILES_DIR.to_string(),
         }
     }
 
@@ -657,13 +657,11 @@ impl Daemon {
                 return Err(internal(error).into());
             }
         };
-        let files_dir = match self.files_dir(name).map(|dir| private_dir(&dir).map(|()| dir)).transpose() {
-            Ok(dir) => dir,
-            Err(error) => {
-                let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
-                return Err(internal(error).into());
-            }
-        };
+        let files_dir = self.files_dir(name);
+        if let Err(error) = private_dir(&files_dir) {
+            let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+            return Err(internal(error).into());
+        }
         let image_path = match self.runtime.image_path(&self.paths, &image).canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -804,9 +802,9 @@ impl Daemon {
         Ok(path)
     }
 
-    /// The session's files directory, on runtimes that can mount one into the guest.
-    pub(crate) fn files_dir(&self, session: &SessionName) -> Option<PathBuf> {
-        (self.runtime.kind() == RuntimeKind::SmolVm).then(|| self.paths.files_dir(session.as_str()))
+    /// The session's files directory, which the guest mounts at [`bctl_runtime::GUEST_FILES_DIR`].
+    pub(crate) fn files_dir(&self, session: &SessionName) -> PathBuf {
+        self.paths.files_dir(session.as_str())
     }
 
     pub(crate) fn run_dir(&self, run: i64) -> PathBuf {

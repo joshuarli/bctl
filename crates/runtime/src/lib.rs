@@ -48,6 +48,9 @@ pub struct Ready {
 }
 
 /// A stable short directory name for a machine's Unix sockets.
+/// Where the guest sees a session's files directory, which is also where the browser saves downloads.
+pub const GUEST_FILES_DIR: &str = "/home/browser/Downloads";
+
 pub fn machine_socket_key(machine: &str) -> String {
     let hash = machine.bytes().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3));
     format!("{hash:016x}")

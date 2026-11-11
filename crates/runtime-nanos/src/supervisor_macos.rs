@@ -23,6 +23,7 @@ struct Config {
     socket_dir: PathBuf,
     image: PathBuf,
     profile_dir: PathBuf,
+    files_dir: PathBuf,
     cdp_socket: PathBuf,
     memory_mib: u32,
     cpus: u8,
@@ -62,6 +63,7 @@ impl Config {
             socket_dir: path("--socket-dir")?,
             image: path("--image")?,
             profile_dir: path("--profile-dir")?,
+            files_dir: path("--files-dir")?,
             cdp_socket: path("--cdp-socket")?,
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
             cpus: value("--cpus")?.parse().map_err(|_| "--cpus is not a number")?,
@@ -76,7 +78,7 @@ pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     let result = match args.split_first() {
         Some((command, rest)) if command == "launch" => Config::parse(rest).and_then(|config| launch(prefix, &config, rest)),
         Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)),
-        _ => Err("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]...".into()),
+        _ => Err("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --profile-dir DIR --files-dir DIR --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]...".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -167,7 +169,7 @@ fn serve(config: &Config) -> Result<(), String> {
     let mut child = Vm(Command::new(&config.runner).arg(&disk).arg(&config.firmware)
         .arg(socket(&config.socket_dir, GUEST_CDP_PORT)).arg(socket(&config.socket_dir, GUEST_CHECK_PORT))
         .arg(socket(&config.socket_dir, GUEST_EGRESS_PORT)).arg(config.cpus.to_string()).arg(config.memory_mib.to_string())
-        .arg(&profile).arg(socket(&config.socket_dir, GUEST_STOP_PORT))
+        .arg(&profile).arg(socket(&config.socket_dir, GUEST_STOP_PORT)).arg(&config.files_dir)
         .stdin(Stdio::null()).stdout(log_file(&config.dir, CONSOLE_LOG)?).stderr(log_file(&config.dir, SUPERVISOR_LOG)?)
         .spawn().map_err(|error| format!("{}: {error}", config.runner.display()))?);
     cleanup.0.push(socket(&config.socket_dir, GUEST_CDP_PORT));
@@ -308,7 +310,7 @@ mod tests {
         let cdp_socket = dir.join("cdp.sock");
         let listener = UnixListener::bind(&cdp_socket).unwrap();
         let config = Config {
-            dir: dir.clone(), socket_dir: dir.clone(), image, profile_dir: dir.join("profile"), cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
+            dir: dir.clone(), socket_dir: dir.clone(), image, profile_dir: dir.join("profile"), files_dir: dir.join("files"), cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
             runner: dir.join("runner"), firmware: dir.join("firmware"), allow_private: Vec::new(),
         };
         assert!(serve(&config).is_err());

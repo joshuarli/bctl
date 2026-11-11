@@ -24,6 +24,7 @@ fn nanos(root: &Path) -> Nanos {
     #[cfg(not(target_os = "macos"))]
     let backend = Backend::Qemu {
         qemu: which("qemu-system-x86_64"), qemu_img: which("qemu-img"), vsock_backend: runtime.join("bin/vhost-device-vsock"),
+        virtiofsd: runtime.join("bin/virtiofsd"),
     };
     Nanos::new(
         root,
@@ -39,6 +40,12 @@ fn image() -> PathBuf {
     let image = std::env::var_os("BCTL_NANOS_IMAGE").map(PathBuf::from).unwrap_or_else(|| repo().join(".work/images/nanos-helium.img"));
     assert!(image.is_file(), "build the image with images/nanos-helium/build.sh or set BCTL_NANOS_IMAGE");
     image
+}
+
+fn files_dir(dir: &Path) -> PathBuf {
+    let files = dir.join("files");
+    fs::create_dir_all(&files).unwrap();
+    files
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -61,7 +68,7 @@ fn launch_ready_and_remove_ten_times() {
     for round in 0..rounds {
         let machine = format!("lifecycle-{round}");
         let cdp_socket = dir.join("cdp").join(format!("{round}.sock"));
-        let spec = LaunchSpec { machine: machine.clone(), image: image.clone(), profile_dir: dir.join("profile"), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
+        let spec = LaunchSpec { machine: machine.clone(), image: image.clone(), profile_dir: dir.join("profile"), files_dir: files_dir(&dir), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
         let start = Instant::now();
         runtime.launch(&spec).unwrap_or_else(|e| panic!("round {round}: {e}"));
         let mut stages = Vec::new();
@@ -90,7 +97,7 @@ fn a_machine_name_cannot_be_launched_twice_and_remove_is_idempotent() {
     let dir = scratch("nanos-twice");
     let runtime = nanos(&dir.join("machines"));
     let cdp_socket = dir.join("cdp/s");
-    let spec = LaunchSpec { machine: "twice".into(), image: image(), profile_dir: dir.join("profile"), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
+    let spec = LaunchSpec { machine: "twice".into(), image: image(), profile_dir: dir.join("profile"), files_dir: files_dir(&dir), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
     runtime.launch(&spec).unwrap();
     assert!(matches!(runtime.launch(&spec), Err(RuntimeError::Supervisor { operation: "launch", .. })));
     runtime.wait_ready("twice", &cdp_socket, Duration::from_secs(90), |_| {}).unwrap();
@@ -104,7 +111,7 @@ fn the_guest_check_answers_every_time() {
     let dir = scratch("nanos-check");
     let runtime = nanos(&dir.join("machines"));
     let cdp_socket = dir.join("cdp/s");
-    let spec = LaunchSpec { machine: "check".into(), image: image(), profile_dir: dir.join("profile"), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
+    let spec = LaunchSpec { machine: "check".into(), image: image(), profile_dir: dir.join("profile"), files_dir: files_dir(&dir), cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new() };
     runtime.launch(&spec).unwrap();
     runtime.wait_ready("check", &cdp_socket, Duration::from_secs(90), |_| {}).unwrap();
     let mut failures = Vec::new();

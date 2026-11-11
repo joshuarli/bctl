@@ -16,8 +16,11 @@ use crate::profile::prepare_profile;
 use crate::supervisor_lock;
 use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
-const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH [--allow-private CIDR]...";
+const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --files-dir DIR --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH --virtiofsd PATH [--allow-private CIDR]...";
 const VHOST_SOCKET: &str = "vhost.sock";
+const VIRTIOFS_SOCKET: &str = "virtiofs.sock";
+/// The virtio-fs tag the image mounts at the guest's files directory.
+const FILES_TAG: &str = "files";
 const QMP_SOCKET: &str = "qmp.sock";
 const DISK: &str = "disk.qcow2";
 const GUEST_CID: u32 = 3;
@@ -32,6 +35,7 @@ struct Config {
     sockets: PathBuf,
     image: PathBuf,
     profile_dir: PathBuf,
+    files_dir: PathBuf,
     cdp_socket: PathBuf,
     memory_mib: u32,
     cpus: u8,
@@ -39,6 +43,7 @@ struct Config {
     qemu_img: PathBuf,
     kernel: PathBuf,
     vsock_backend: PathBuf,
+    virtiofsd: PathBuf,
     allow_private: Vec<String>,
 }
 
@@ -54,6 +59,7 @@ impl Config {
             sockets: path("--socket-dir")?,
             image: path("--image")?,
             profile_dir: path("--profile-dir")?,
+            files_dir: path("--files-dir")?,
             cdp_socket: path("--cdp-socket")?,
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
             cpus: value("--cpus")?.parse().map_err(|_| "--cpus is not a number")?,
@@ -61,6 +67,7 @@ impl Config {
             qemu_img: path("--qemu-img")?,
             kernel: path("--kernel")?,
             vsock_backend: path("--vsock-backend")?,
+            virtiofsd: path("--virtiofsd")?,
             allow_private: args.windows(2).filter(|pair| pair[0] == "--allow-private").map(|pair| pair[1].clone()).collect(),
         })
     }
@@ -168,6 +175,8 @@ fn qemu_command(config: &Config, profile: &Path) -> Result<Command, String> {
         .args(["-nic", "none"])
         .args(["-chardev", &format!("socket,id=vsock,path={}", config.sockets.join(VHOST_SOCKET).display())])
         .args(["-device", "vhost-user-vsock-pci,chardev=vsock"])
+        .args(["-chardev", &format!("socket,id=files,path={}", config.sockets.join(VIRTIOFS_SOCKET).display())])
+        .args(["-device", &format!("vhost-user-fs-pci,chardev=files,tag={FILES_TAG}")])
         .arg("-kernel")
         .arg(&config.kernel)
         .stdin(Stdio::null())
@@ -209,10 +218,18 @@ fn serve(config: &Config) -> Result<(), String> {
         let _ = backend.kill();
         return Err(error);
     }
+    let mut files = match spawn_virtiofsd(config) {
+        Ok(files) => files,
+        Err(error) => {
+            let _ = backend.kill();
+            return Err(error);
+        }
+    };
 
     let mut qemu = match qemu_command(config, &profile)?.spawn() {
         Ok(qemu) => qemu,
         Err(error) => {
+            let _ = files.kill();
             let _ = backend.kill();
             return Err(format!("{}: {error}", config.qemu.display()));
         }
@@ -227,6 +244,8 @@ fn serve(config: &Config) -> Result<(), String> {
     if let Err(error) = started {
         let _ = qemu.kill();
         let _ = qemu.wait();
+        let _ = files.kill();
+        let _ = files.wait();
         let _ = backend.kill();
         let _ = backend.wait();
         cleanup(config);
@@ -265,10 +284,34 @@ fn serve(config: &Config) -> Result<(), String> {
         thread::sleep(TICK);
     };
     eprintln!("bctl-nanos-vm: qemu exited: {status}");
+    let _ = files.kill();
+    let _ = files.wait();
     let _ = backend.kill();
     let _ = backend.wait();
     cleanup(config);
     Ok(())
+}
+
+/// Serves the session's files directory to the guest. The namespace sandbox confines virtiofsd to that
+/// directory, so the guest cannot reach the rest of the host's files through it.
+fn spawn_virtiofsd(config: &Config) -> Result<Child, String> {
+    let socket = config.sockets.join(VIRTIOFS_SOCKET);
+    remove_stale(&socket)?;
+    let mut files = Command::new(&config.virtiofsd)
+        .arg(format!("--socket-path={}", socket.display()))
+        .arg(format!("--shared-dir={}", config.files_dir.display()))
+        .args(["--sandbox=namespace", "--log-level=warn"])
+        .stdin(Stdio::null())
+        .stdout(log_file(&config.dir, "virtiofsd.log")?)
+        .stderr(log_file(&config.dir, "virtiofsd.log")?)
+        .spawn()
+        .map_err(io_error(&config.virtiofsd))?;
+    if let Err(error) = wait_for(&socket, &mut files, "virtiofsd") {
+        let _ = files.kill();
+        let _ = files.wait();
+        return Err(error);
+    }
+    Ok(files)
 }
 
 fn convert_template(qemu_img: &Path, template: &Path, scratch: &Path) -> io::Result<()> {
@@ -290,6 +333,7 @@ fn cleanup(config: &Config) {
         config.cdp_socket.clone(),
         config.sockets.join(QMP_SOCKET),
         config.sockets.join(VHOST_SOCKET),
+        config.sockets.join(VIRTIOFS_SOCKET),
         config.sockets.join(VSOCK_SOCKET),
         egress_socket(&config.sockets),
     ] {

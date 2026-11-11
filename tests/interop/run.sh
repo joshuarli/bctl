@@ -48,7 +48,7 @@ elif [ "$(uname -s)" = Darwin ]; then
 else
     image=nanos-helium
     mkdir -p "$home/runtime/nanos"
-    ln -s "$root/.work/runtime/nanos/bin/vhost-device-vsock" "$home/runtime/nanos/vhost-device-vsock"
+    for tool in vhost-device-vsock virtiofsd; do ln -s "$root/.work/runtime/nanos/bin/$tool" "$home/runtime/nanos/$tool"; done
     for f in nanos-helium.img nanos-helium.kernel.img; do ln -s "$root/.work/images/$f" "$home/images/$f"; done
     image_file=$root/.work/images/nanos-helium.img
 fi

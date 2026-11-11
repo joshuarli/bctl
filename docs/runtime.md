@@ -193,6 +193,7 @@ from it is installed as:
 
 ```
 <BCTL_HOME>/runtime/nanos/vhost-device-vsock
+<BCTL_HOME>/runtime/nanos/virtiofsd
 <BCTL_HOME>/images/<image>.img
 <BCTL_HOME>/images/<image>.kernel.img
 <BCTL_HOME>/images/<image>.profile.img
@@ -206,7 +207,9 @@ klibs the image packs. Copy both files: bctl boots
 `<BCTL_HOME>/images/<image>.kernel.img` beside `<image>.img`. A kernel from a
 different build than the image's klibs crashes in `klib_initialize`, so there
 is no separate `runtime/nanos/kernel.img`; that directory holds only
-`vhost-device-vsock`. Starting a session with an image but no kernel beside it
+`vhost-device-vsock` and `virtiofsd`. `virtiofsd` is built from crates.io
+against the host's libseccomp and libcap-ng, which only need their runtime
+libraries installed. Starting a session with an image but no kernel beside it
 fails with both paths and the build command. On Linux each profile's disk is
 a qcow2 file converted once from the template, so it starts at a few
 megabytes and grows with the profile; QEMU's image lock keeps two sessions

@@ -11,8 +11,6 @@ use bctl_rfb::Client;
 use miniserde::{Deserialize, json};
 
 const GUEST_CDP_SOCKET: &str = "/run/bctl/cdp.sock";
-/// Where the guest sees a session's files directory: the browser's default download directory.
-pub const GUEST_FILES_DIR: &str = "/home/browser/Downloads";
 
 /// Why a smolvm operation failed. `Smolvm` carries smolvm's own stable error code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +46,7 @@ pub struct LaunchSpec {
     pub source: LaunchSource,
     /// Host directory mounted at `/profile`, so the browser profile outlives the VM.
     pub profile_dir: Option<PathBuf>,
-    /// Host directory mounted at [`GUEST_FILES_DIR`], shared with the guest for uploads and downloads.
+    /// Host directory mounted at [`bctl_runtime::GUEST_FILES_DIR`], shared with the guest for uploads and downloads.
     pub files_dir: Option<PathBuf>,
     pub endpoints: Endpoints,
     /// Host path where the guest's CDP socket appears; its directory must already exist and be private.
@@ -245,7 +243,7 @@ impl SmolVm {
         }
         if matches!(&spec.source, LaunchSource::Image(_)) {
             let profile = spec.profile_dir.as_ref().map(|d| format!("{}:/profile", d.to_string_lossy()));
-            let files = spec.files_dir.as_ref().map(|d| format!("{}:{GUEST_FILES_DIR}", d.to_string_lossy()));
+            let files = spec.files_dir.as_ref().map(|d| format!("{}:{}", d.to_string_lossy(), bctl_runtime::GUEST_FILES_DIR));
             for volume in [profile, files].into_iter().flatten() {
                 create.push("-v".into());
                 create.push(volume);

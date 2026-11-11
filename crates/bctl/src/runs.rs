@@ -230,8 +230,8 @@ pub(crate) struct Launch<'a> {
     pub config: &'a RunConfig,
     pub files: RunFiles,
     pub cdp_url: String,
-    /// The session's files directory on the host, when its runtime mounts one into the guest.
-    pub shared: Option<PathBuf>,
+    /// The session's files directory on the host, which the guest mounts.
+    pub shared: PathBuf,
 }
 
 pub(crate) fn launch(launch: Launch<'_>, ledger: Arc<dyn Ledger>) -> Result<Arc<Live>, String> {
@@ -255,10 +255,9 @@ pub(crate) fn launch(launch: Launch<'_>, ledger: Arc<dyn Ledger>) -> Result<Arc<
         .current_dir(&cwd)
         .env("BCTL_CDP_URL", &cdp_url)
         .env("BCTL_OUTPUT_DIR", &output)
-        .env("BCTL_RUN", run.to_string());
-    if let Some(shared) = &shared {
-        command.env("BCTL_FILES_DIR", shared).env("BCTL_GUEST_FILES_DIR", bctl_runtime_smolvm::GUEST_FILES_DIR);
-    }
+        .env("BCTL_RUN", run.to_string())
+        .env("BCTL_FILES_DIR", &shared)
+        .env("BCTL_GUEST_FILES_DIR", bctl_runtime::GUEST_FILES_DIR);
     let child = spawn_held(command, &files.lock(number));
     let mut child = match child {
         Ok(child) => child,

@@ -5,7 +5,7 @@ means nothing to it. A CDP client that passes one to `DOM.setFileInputFiles`
 uploads nothing, and a download lands in the guest, not under
 `BCTL_OUTPUT_DIR`.
 
-On SmolVM, each session has a files directory that both sides see:
+Each session has a files directory that both sides see:
 
 | Side | Path | Reported as |
 |------|------|-------------|
@@ -21,8 +21,10 @@ The guest path is the browser's default download directory, so:
 `bctl up` creates the directory, readable only by the host user, and
 `bctl rm` deletes it with its contents. `bctl down` and `up` keep it.
 
-Nanos sessions have no files directory, and `files_dir` is absent. Their
-kernel cannot mount a host directory yet.
+SmolVM mounts it with its own host mount. Nanos mounts it over virtio-fs, with
+the tag `files`. On Linux, the session's supervisor runs `virtiofsd` with its
+namespace sandbox, which confines it to that one directory. On the Mac,
+libkrun serves it.
 
 ## Downloads
 

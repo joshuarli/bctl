@@ -482,10 +482,8 @@ async def file_checks(scratch: Path) -> None:
 	runtime = os.environ['BCTL_RUNTIME']
 	fields = {k: view.get(k) for k in ('display', 'input', 'pausable', 'guest_files_dir')}
 	expected = {'smolvm': {'display': 'headed', 'pausable': True, 'guest_files_dir': '/home/browser/Downloads'},
-				'nanos': {'display': 'headless', 'input': 'headless', 'pausable': False, 'guest_files_dir': None}}[runtime]  # fmt: skip
+				'nanos': {'display': 'headless', 'input': 'headless', 'pausable': False, 'guest_files_dir': '/home/browser/Downloads'}}[runtime]  # fmt: skip
 	check('capabilities', 'inspect names what the runtime does', all(fields[k] == v for k, v in expected.items()), fields)
-	if runtime != 'smolvm':
-		return
 	shared, guest = Path(view['files_dir']), view['guest_files_dir']
 
 	blob = urllib.request.urlopen(f'http://127.0.0.1:{FIXTURE_PORT}/blob.bin', timeout=10).read()

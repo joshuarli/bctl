@@ -92,8 +92,8 @@ pub(crate) struct MachineLaunch {
     pub(crate) machine: MachineName,
     pub(crate) image: PathBuf,
     pub(crate) profile_dir: PathBuf,
-    /// SmolVM only: the session's files directory, mounted at the browser's download directory.
-    pub(crate) files_dir: Option<PathBuf>,
+    /// The session's files directory, mounted at the browser's download directory.
+    pub(crate) files_dir: PathBuf,
     pub(crate) endpoints: Endpoints,
     pub(crate) cdp_socket: PathBuf,
     pub(crate) display: (u16, u16),
@@ -108,7 +108,7 @@ impl MachineLaunch {
             machine: self.machine.clone(),
             source: LaunchSource::Image(self.image.clone()),
             profile_dir: Some(self.profile_dir.clone()),
-            files_dir: self.files_dir.clone(),
+            files_dir: Some(self.files_dir.clone()),
             endpoints: self.endpoints,
             cdp_socket: self.cdp_socket.clone(),
             display: self.display,
@@ -123,6 +123,7 @@ impl MachineLaunch {
             machine: self.machine.to_string(),
             image: self.image.clone(),
             profile_dir: self.profile_dir.clone(),
+            files_dir: self.files_dir.clone(),
             cdp_socket: self.cdp_socket.clone(),
             memory_mib: self.memory_mib,
             cpus: self.cpus,
@@ -158,6 +159,7 @@ impl Runtime {
                 #[cfg(not(target_os = "macos"))]
                 let backend = Backend::Qemu {
                     qemu: on_path("qemu-system-x86_64"), qemu_img: on_path("qemu-img"), vsock_backend: dir.join("vhost-device-vsock"),
+                    virtiofsd: dir.join("virtiofsd"),
                 };
                 Runtime::Nanos(Nanos::new(
                     paths.home.join("machines"),
@@ -187,8 +189,8 @@ impl Runtime {
                 "build it with `runtime/build-nanos-krun.sh` and copy .work/runtime/nanos-krun there",
             ),
             Runtime::Nanos(_) => (
-                vec![paths.nanos_runtime().join("vhost-device-vsock")],
-                "build it with `runtime/build-nanos.sh` and copy its bin/vhost-device-vsock there",
+                vec![paths.nanos_runtime().join("vhost-device-vsock"), paths.nanos_runtime().join("virtiofsd")],
+                "build it with `runtime/build-nanos.sh` and copy its bin/vhost-device-vsock and bin/virtiofsd there",
             ),
         };
         match needed.into_iter().find(|path| !path.exists()) {
