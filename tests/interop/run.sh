@@ -104,7 +104,8 @@ else
     runtime_receipt="nanos on QEMU, hydrogen $(sed -n 's/^hydrogen_commit=//p' "$root/runtime/build-nanos.sh")"
 fi
 printf '  runtime        %s\n' "$runtime_receipt"
-printf '  image          %s sha256:%s\n' "$image" "$(shasum -a 256 "$image_file" | cut -d' ' -f1)"
+if command -v sha256sum >/dev/null; then image_digest=$(sha256sum "$image_file"); else image_digest=$(shasum -a 256 "$image_file"); fi
+printf '  image          %s sha256:%s\n' "$image" "${image_digest%% *}"
 printf '  helium         %s\n' "${helium:-unknown}"
 printf '  browser-use    1.0.0 %s, browser-harness %s\n' "$browser_use_rev" \
     "$("$venv/bin/python" -c 'import importlib.metadata as m; print(m.version("browser-harness"))')"
