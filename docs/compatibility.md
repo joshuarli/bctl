@@ -9,7 +9,7 @@ passed it. Anything not listed is unverified.
 | Tuple | Host | Runtime | Image | Checks |
 |-------|------|---------|-------|--------|
 | mac-smolvm | macOS 27.0.1, Apple M5 Max (arm64) | smolvm 1.34.0 | `helium` sha256:a91a0ab8… | 113 of 113 |
-| mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `bbeea356` | `nanos-helium` sha256:f6db6190… | 105 of 105, twice |
+| mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `6dc7d43e` | `nanos-helium` sha256:399f8ca5… | 113 of 113, twice |
 | linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `6dc7d43e` | `nanos-helium` sha256:b8239e70… | 113 of 113 in 2 of 4 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
 
 Every tuple uses Helium 0.20.3.1 and the same client pins:
@@ -19,8 +19,8 @@ Every tuple uses Helium 0.20.3.1 and the same client pins:
 
 The linux-nanos receipts are from bctl `d0da931`; one of its two runs there
 passed. The other two runs were on the same code before it was committed.
-mac-nanos predates the files directory on Nanos and was verified on an older
-Hydrogen; it needs a rerun at the current pin.
+The mac-nanos receipts are from bctl `e1d1d62` and Hydrogen `6dc7d43e`.
+Both of those runs passed.
 
 Reproduce a tuple:
 
@@ -43,18 +43,18 @@ BCTL_RUNTIME=nanos sh tests/interop/run.sh
 | browser-use's domain guard and its second CDP socket | ✓ | – | ✓ | ✓ | ✓ |
 | Revocation closes the client's sockets | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Run as a `bctl run` job: result, record, cancel, no retry | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Upload a host file | ✓ through the page | – | ✓ | ? | ✓ |
-| Upload from the files directory by guest path | – | ✓ | ✓ | ? | ✓ |
-| Download into the files directory | ✓ | ? | ✓ | ? | ✓ |
+| Upload a host file | ✓ through the page | – | ✓ | ✓ | ✓ |
+| Upload from the files directory by guest path | – | ✓ | ✓ | ✓ | ✓ |
+| Download into the files directory | ✓ | ? | ✓ | ✓ | ✓ |
 | `--provider bctl`: owned launch, close, reclaim after owner death | – | ✓ | ✓ | ✓ | ✓ |
 | `--provider bctl`: borrowed lease, close revokes only its URL | – | ✓ | ✓ | ✓ | ✓ |
 | `--provider bctl`: refuses other engines, `headed` on Nanos | – | ✓ | ✓ | ✓ | ✓ |
 
-agent-browser downloads have no check. The mac-nanos `?` cells are file
-checks the suite skipped on Nanos when that tuple ran. The
+agent-browser downloads have no check. The
 client-independent check that two sessions on different profiles do not
-share cookies or files passes on mac-smolvm and linux-nanos. A second
-controller being refused is covered by bctl's Rust tests, not by this suite.
+share cookies or files passes on mac-smolvm, mac-nanos, and linux-nanos.
+A second controller being refused is covered by bctl's Rust tests, not by
+this suite.
 
 ## Known failing or unsupported cases
 

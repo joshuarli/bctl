@@ -35,8 +35,8 @@ later, and Hydrogen `main` at `6dc7d43e` or later.
 
 ## Verify on the Mac
 
-None of the following has run on macOS; everything above type-checks for
-`aarch64-apple-darwin`.
+Done on 2026-11-11. The results are below. Before that, everything above
+type-checked for `aarch64-apple-darwin` and had not run on macOS.
 
 - Rebuild with `runtime/build-nanos-arm64.sh`, `runtime/build-nanos-krun.sh`
   and `images/nanos-helium/build-macos.sh`.
@@ -71,3 +71,36 @@ None of the following has run on macOS; everything above type-checks for
 
 - Existing Linux Nanos homes still need `<image>.kernel.img`, and now also
   `runtime/nanos/virtiofsd`.
+
+## Mac results, 2026-11-11
+
+Apple M5 Max, macOS 27.0.1. bctl `e1d1d62`, Hydrogen kernel pin `6dc7d43e`.
+
+- **Rebuild.** `runtime/build-nanos-arm64.sh`, `runtime/build-nanos-krun.sh`,
+  and `images/nanos-helium/build-macos.sh` with the Helium r6 archive. The
+  bundle is installed at `~/Library/Application Support/bctl/runtime/nanos`,
+  with `nanos-helium.img` and `nanos-helium.profile.img` beside the other
+  images. Image sha256
+  `399f8ca598690434de22b6847b8ed80e6efb84db3bd38ad5bddbdbad7c3eccce`.
+  That image build also re-saved `helium.tar`, so its tar hash is no longer
+  the mac-smolvm receipt.
+- **`cargo test -p bctl-runtime-nanos`.** 17 passed, 0 failed. BSD accepts
+  `/bin/kill -s SIG -PGID` and `pgrep -g`. The lock tests and
+  `remove_stops_a_supervisor_whose_control_socket_is_gone` passed.
+- **virtiofs under HVF.** `dev/test.sh virtiofs` passed 5 of 5 at one CPU
+  and at two, and the host check. The first run's host check compared BSD
+  `wc`'s padded count with `1000` and failed after a correct guest run.
+  Hydrogen `f503d850` strips that padding. The share was 1000 bytes and
+  `gdir` was gone.
+- **Interop.** `BCTL_RUNTIME=nanos sh tests/interop/run.sh` passed 113 of
+  113 twice. One run before `e1d1d62` failed the download check: Chromium
+  had created `.org.chromium.Chromium.*` and the check treated it as the
+  finished file, although `blob.bin` was 200000 bytes. The guest-path upload
+  and the owner-death reclaim failed in that same run. Both passed in the
+  two runs after the suite ignored dotfile download temps. The reclaim
+  failure left no `console.log`. The suite deletes its home on exit.
+- **SmolVM.** Two runs on the re-saved `helium.tar`, each 112 of 113. One
+  missed `browser-use no client socket left open`: the check saw a socket
+  that was gone when the failure line was printed. The other missed
+  `cookies stay in their profile` because `bctl page eval` printed nothing.
+  The file checks passed both times. The mac-smolvm row is unchanged.

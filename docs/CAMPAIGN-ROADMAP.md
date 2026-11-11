@@ -307,11 +307,11 @@ check that `/json/version` reports `Helium/`. Unmerged lane branches
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 M8C (external clients): E1 to E6 passed on the Mac with SmolVM and Nanos
-(2026-11-11). On Linux x86_64 Nanos, E1 to E5 and E6's interop suite passed
-113 of 113 in 2 of 4 runs, now including E4's files directory over
-virtio-fs. The other two runs each failed one intermittent check
-(`docs/compatibility.md`). The Mac Nanos tuple needs a rerun at Hydrogen
-`6dc7d43e`. E6's Linux measurement is pending a quiet host.
+(2026-11-11). The Mac Nanos tuple was rerun at Hydrogen `6dc7d43e`: 113 of
+113 twice, including the files directory over virtio-fs. On Linux x86_64
+Nanos, E1 to E5 and E6's interop suite passed 113 of 113 in 2 of 4 runs.
+The other two runs each failed one intermittent check
+(`docs/compatibility.md`). E6's Linux measurement is pending a quiet host.
 
 ## Charter
 
@@ -1305,7 +1305,7 @@ Helium works.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
-**Status: E1 to E6 passed on macOS arm64, 2026-11-11. On Linux x86_64 Nanos, E1 to E5 and E6's checks passed 113 of 113 in 2 of 4 runs; the Linux measurement is pending.** This
+**Status: E1 to E6 passed on macOS arm64, 2026-11-11. Nanos on libkrun was rerun at Hydrogen `6dc7d43e` the same day: 113 of 113 twice, including the files directory. On Linux x86_64 Nanos, E1 to E5 and E6's checks passed 113 of 113 in 2 of 4 runs; the Linux measurement is pending.** This
 extends bctl's *consumer* surface; it does not replace M3N's native automation,
 Shadowdriver, Grab, or the active M7N work. See
 [the pinned integration research](research/external-clients.md). The initial
@@ -1480,8 +1480,9 @@ On the Mac:
   files, and `bctl rm` deleted the directory;
 - the mount survived `pause` and `resume`.
 
-Nanos reports no files directory: its kernel cannot mount a host directory
-yet.
+On Nanos the same directory is a virtio-fs mount at that guest path. The Mac
+rerun at Hydrogen `6dc7d43e` passed the upload, download, and profile checks.
+Nanos sessions are not pausable, so the pause check does not apply there.
 
 **E5 — Optional agent-browser provider.** Prereq E1–E2. Keep it a separate,
 tiny Rust executable/subcommand implementing upstream
@@ -1539,7 +1540,8 @@ commands, failing cases, and a maintained compatibility suite.
 for the two Mac tuples, SmolVM and Nanos on libkrun. It lists their receipts,
 the commands that reproduce them, and the failing cases.
 `tests/interop/run.sh` is the maintained suite: 113 checks on SmolVM and 105
-on Nanos, both passing. `BCTL_INTEROP_SUITE=measure` times attach, navigate,
+on Nanos, both passing. That Nanos run skipped the file checks. The rerun
+below includes them. `BCTL_INTEROP_SUITE=measure` times attach, navigate,
 accessibility tree, screenshot and close per client, plus client memory.
 `docs/performance.md#external-clients` has the gated results. CDP call and byte
 counts are not available from either client or the gateway.
@@ -1553,6 +1555,18 @@ failed guest shutdown; see `docs/compatibility.md`. Earlier runs had looked
 like a guest stall. The cause was `bctl run` hashing the 2 GiB image on every
 run, which took 97 s in a debug build, and `a11b620` fixed it. The host's
 load stayed between 7 and 25, so the Linux timings are not measured.
+
+**E6 macOS Nanos rerun, 2026-11-11:** Hydrogen `6dc7d43e` on libkrun, image
+`nanos-helium` sha256 `399f8ca5…`, bctl `e1d1d62`. `BCTL_RUNTIME=nanos sh
+tests/interop/run.sh` passed 113 of 113 twice. The file checks run. An
+earlier run, before the suite ignored Chromium's temporary download names,
+failed that download check. `dev/test.sh virtiofs` under HVF passed 5 of 5
+at one and two CPUs, and the host saw the guest's 1000-byte file.
+`cargo test -p bctl-runtime-nanos` passed, including
+`remove_stops_a_supervisor_whose_control_socket_is_gone` and the lock tests.
+SmolVM, run twice on the helium tar that this image build re-saved, was 112
+of 113 each time. The misses were a gateway socket and an empty cookie eval.
+The file checks passed, and the mac-smolvm row is unchanged.
 
 **Stop conditions:** uncertain authority, unexpected automatic browser
 provisioning or billing, sandbox being disabled, unbounded file access,
