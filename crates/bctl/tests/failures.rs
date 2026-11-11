@@ -431,7 +431,7 @@ fn killing_the_daemon_during_a_run_interrupts_it_and_the_adopted_vm_is_later_rel
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn filling_the_guest_disk_during_a_run_reaches_named_states_and_leaves_no_leak() {
     let _serial = serial();
-    let fixture = if common::nanos() && cfg!(target_os = "macos") {
+    let fixture = if common::nanos() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let output = Command::new("sh").arg(root.join("tests/runtime-nanos/full-disk-image.sh")).output().unwrap();
         assert_ok(&output);
