@@ -3,7 +3,7 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--link GUEST:TARGET]... [--dir GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--size SIZE] [--trace] BINARY
+	die "usage: dev/image.sh -o IMAGE [--root DIR] [--lib HOST]... [--file HOST:GUEST]... [--tree HOSTDIR:GUESTDIR]... [--link GUEST:TARGET]... [--dir GUESTDIR]... [--mount TAG:GUESTDIR]... [--arg ARG]... [--env K=V]... [--klib NAME]... [--size SIZE] [--trace] BINARY
        --tree preserves symbolic links and requires fd"
 }
 
@@ -11,7 +11,7 @@ quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 invocation=dev/image.sh
 for a in "$@"; do invocation="$invocation $(quote "$a")"; done
 
-out='' root='' trace=0 binary='' klibs='' size=''
+out='' root='' trace=0 binary='' klibs='' size='' mounts=''
 files=$(mktemp "$WORK/tmp/image-files.XXXXXX")
 args=$(mktemp "$WORK/tmp/image-args.XXXXXX")
 envs=$(mktemp "$WORK/tmp/image-envs.XXXXXX")
@@ -37,6 +37,7 @@ while [ $# -gt 0 ]; do
 		shift 2 ;;
 	--link) printf '%s\tlink:%s\n' "${2%%:*}" "${2#*:}" >>"$files"; shift 2 ;;
 	--dir) printf '%s\t\n' "$2" >>"$files"; shift 2 ;;
+	--mount) printf '%s\t\n' "${2#*:}" >>"$files"; mounts="$mounts ${2%%:*}:${2#*:}"; shift 2 ;;
 	--arg) printf '%s\n' "$2" >>"$args"; shift 2 ;;
 	--env) printf '%s\n' "$2" >>"$envs"; shift 2 ;;
 	--klib) klibs="$klibs $2"; shift 2 ;;
@@ -131,6 +132,7 @@ trap 'rm -f "$files" "$args" "$envs" "$manifest"' EXIT
 	printf 'environment:(PWD:/'
 	while IFS= read -r e; do printf ' %s:%s' "${e%%=*}" "${e#*=}"; done <"$envs"
 	printf ')\n'
+	[ -z "$mounts" ] || printf 'mounts:(%s)\n' "${mounts# }"
 	printf 'debug_exit:t\nfault:t\n'
 	[ "$trace" -eq 0 ] || printf 'trace:t\n'
 	printf ')\n'

@@ -78,6 +78,7 @@ SRCS-kernel.elf= \
 	$(SRCDIR)/net/netsyscall.c \
 	$(RUNTIME) \
 	$(SRCDIR)/fs/9p.c \
+	$(SRCDIR)/fs/virtiofs.c \
 	$(SRCDIR)/fs/fs.c \
 	$(SRCDIR)/fs/tfs.c \
 	$(SRCDIR)/fs/tlog.c \
@@ -111,6 +112,7 @@ SRCS-kernel.elf= \
 	$(SRCDIR)/unix/vsock.c \
 	$(SRCDIR)/virtio/virtio.c \
 	$(SRCDIR)/virtio/virtio_9p.c \
+	$(SRCDIR)/virtio/virtio_fs.c \
 	$(SRCDIR)/virtio/virtio_balloon.c \
 	$(SRCDIR)/virtio/virtio_mmio.c \
 	$(SRCDIR)/virtio/virtio_net.c \

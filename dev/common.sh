@@ -18,6 +18,7 @@ MUSL_LOADER=ld-musl-$ARCH.so.1
 MUSL_SONAME=libc.musl-$ARCH.so.1
 BUILDER=hydrogen/aarch64-builder
 KRUN_RUN=$WORK/build/krun-run
+VIRTIOFSD=${VIRTIOFSD:-virtiofsd}
 CCACHE_DIR=$WORK/ccache
 export TMPDIR CCACHE_DIR
 

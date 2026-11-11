@@ -523,6 +523,7 @@ void detect_devices(kernel_heaps kh, storage_attach sa)
         init_ata_pci(kh, sa);
 
         init_virtio_9p(kh);
+        init_virtio_fs(kh);
         init_virtio_socket(kh);
     }
 

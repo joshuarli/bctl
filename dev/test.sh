@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -13,7 +13,8 @@ case_verdict() {
 	shift 5
 	image=$IMAGES/$name.img
 	linux "$ROOT/dev/image.sh" -o "$image" "$@" >/dev/null
-	line=$("$ROOT/dev/run.sh" --smp "$smp" --mem "${case_mem:-1G}" --timeout "$timeout" --label "$name-smp$smp" "$image" || :)
+	line=$("$ROOT/dev/run.sh" --smp "$smp" --mem "${case_mem:-1G}" --timeout "$timeout" ${case_virtiofs:+--virtiofs "$case_virtiofs"} \
+		--label "$name-smp$smp" "$image" || :)
 	got=${line%% dir=*}
 	got=${got#RUN verdict=}
 	dir=${line##* dir=}
@@ -29,6 +30,20 @@ case_verdict() {
 	[ "$status" != FAIL ] || failures=$((failures + 1))
 	printf '%-9s %-18s smp=%s  %s\n' "$status" "$name" "$smp" "$note"
 	[ "$status" = PASS ] || printf '          log: %s\n' "$dir"
+}
+
+# The guest checks the share from inside; the host then checks what the guest left behind.
+case_virtiofs_files() {
+	smp=$1 share=$WORK/tmp/virtiofs-share-$1
+	rm -rf "$share"
+	mkdir -p "$share/host_dir"
+	printf 'hello from the host\n' >"$share/from_host"
+	case_virtiofs=shared:$share case_verdict virtiofs_files "$smp" 60 PASS '' --mount shared:/shared "$FIXTURES/virtiofs_files"
+	if [ "$(wc -c <"$share/from_guest" 2>/dev/null)" != 1000 ] || [ -e "$share/gdir" ]; then
+		failures=$((failures + 1))
+		printf 'FAIL      %-18s smp=%s  host sees from_guest=%s bytes, gdir %s\n' virtiofs_host "$smp" \
+			"$(wc -c <"$share/from_guest" 2>/dev/null || echo none)" "$([ -e "$share/gdir" ] && echo left || echo removed)"
+	fi
 }
 
 fixture_native() {
@@ -93,6 +108,7 @@ suite_harness() {
 		case_verdict tcp_loopback "$smp" 180 PASS '' "$FIXTURES/tcp_loopback"
 		case_verdict unix_cow_read "$smp" 60 PASS '' "$FIXTURES/unix_cow_read"
 		case_verdict write_from_mapped_file "$smp" 30 PASS '' --klib tmpfs --dir /tmp "$FIXTURES/write_from_mapped_file"
+		case_virtiofs_files "$smp"
 	done
 	fixture_native userns unshare -Ur
 	fixture_native pidns env
@@ -305,6 +321,7 @@ mkdir -p "$IMAGES"
 for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
+	virtiofs) linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/virtiofs_files"; for smp in 1 2; do case_virtiofs_files "$smp"; done ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

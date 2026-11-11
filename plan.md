@@ -266,6 +266,20 @@ only when every slice in it is accepted on `main`.
   `HELIUM_ARCHIVE` must name the pinned arm64 Helium 0.20.3.1-r6 archive;
   Alpine's aarch64 musl package is checked by its pinned sha256 only, because
   `apk verify` needs an Alpine host.
+- **Host directories over virtio-fs.** `nanos/src/virtio/virtio_fs.c` speaks
+  FUSE 7.31 over a virtio-fs device (PCI or MMIO), and `nanos/src/fs/virtiofs.c`
+  mounts it as the volume named by the device's tag, so a manifest's
+  `mounts:(TAG:/path)` places it. `image.sh --mount TAG:/path` writes that
+  entry. `run.sh --virtiofs TAG:DIR` shares DIR: under QEMU it starts
+  `$VIRTIOFSD` (default `virtiofsd` on `PATH`, unprivileged with
+  `--sandbox=none`) and backs guest memory with a shared memfd; under HVF it
+  passes the share to libkrun, which has virtio-fs built in.
+  `dev/test.sh virtiofs` checks reads, listings, multi-chunk writes, fsync,
+  rename, unlink and truncate from the guest, then the result from the host.
+  Freeing a file's handle keeps its metadata, because a regular file's tuple
+  has no parent link that `fs_cleanup_dir_entry` could detach. `9p.c` has the
+  same free path, which by reading would leave the parent's entry pointing at
+  freed memory; that is untested.
 - **Result protocol and storage.** Fixtures print
   `MINI_CHROMIUM_TEST name=<n> status=PASS|FAIL [detail=…]` and one
   `MINI_CHROMIUM_RESULT status=… passed=N failed=M`. Each run writes

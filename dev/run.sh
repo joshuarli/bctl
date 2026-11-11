@@ -3,11 +3,11 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--exit-only] [--label NAME] IMAGE
+	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--virtiofs TAG:DIR] [--exit-only] [--label NAME] IMAGE
        dev/run.sh --native [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--label NAME] BINARY [ARG...]"
 }
 
-smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0
+smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0 virtiofs=''
 expected=$(mktemp "$WORK/tmp/run-expected.XXXXXX")
 trap 'rm -f "$expected"' EXIT
 while [ $# -gt 0 ]; do
@@ -18,6 +18,7 @@ while [ $# -gt 0 ]; do
 	--exit) want_exit=$2; shift 2 ;;
 	--expect-test) printf '%s\n' "$2" >>"$expected"; shift 2 ;;
 	--net) net=1; shift ;;
+	--virtiofs) virtiofs=$2; shift 2 ;;
 	--label) label=$2; shift 2 ;;
 	--native) native=1; shift ;;
 	--exit-only) exit_only=1; shift ;;
@@ -27,6 +28,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$image" ] && [ -f "$image" ] || usage
 [ "$native" -eq 1 ] || [ $# -eq 0 ] || usage
+[ -z "$virtiofs" ] || [ "$native" -eq 0 ] || usage
+[ -z "$virtiofs" ] || [ -d "${virtiofs#*:}" ] || die "no virtiofs directory ${virtiofs#*:}"
 kernel=$NANOS_OUT/platform/$PLATFORM/bin/kernel.img
 [ "$native" -eq 1 ] || [ -f "$kernel" ] || die "missing $kernel: run dev/build.sh"
 [ -n "$label" ] || label=$(basename -- "$image" .img)
@@ -59,16 +62,31 @@ if [ "$native" -eq 1 ]; then
 	( cd "$dir" && exec "$@" ) >"$serial" 2>"$dir/stderr.log" &
 elif [ "$hvf" -eq 1 ]; then
 	set -- "$KRUN_RUN" "$image" "$HYDROGEN_KRUN/firmware.fd" "$smp" "$mib"
+	[ -z "$virtiofs" ] || set -- "$@" "${virtiofs%%:*}" "$(realpath "${virtiofs#*:}")"
 	qemu_cmd=$*
 	start=$(now)
 	"$@" >"$serial" 2>"$dir/qemu.log" &
 else
 if [ "$net" -eq 1 ]; then nic='user,model=virtio-net-pci'; else nic='none'; fi
-set -- qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp "$smp" -m "$mem" \
+machine=q35,accel=kvm
+if [ -n "$virtiofs" ]; then
+	command -v "$VIRTIOFSD" >/dev/null || die "missing $VIRTIOFSD: set VIRTIOFSD to a virtiofsd binary"
+	vfs_socket=$dir/virtiofs.sock
+	"$VIRTIOFSD" --socket-path="$vfs_socket" --shared-dir="$(realpath "${virtiofs#*:}")" --sandbox=none \
+		--cache=auto >"$dir/virtiofsd.log" 2>&1 &
+	vfs_pid=$!
+	i=0
+	while [ ! -S "$vfs_socket" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+	[ -S "$vfs_socket" ] || die "virtiofsd did not start; see $dir/virtiofsd.log"
+	machine=$machine,memory-backend=mem
+fi
+set -- qemu-system-x86_64 -machine "$machine" -cpu host -smp "$smp" -m "$mem" \
 	-display none -monitor none -serial "file:$serial" -no-reboot \
 	-device isa-debug-exit -device virtio-rng-pci -device virtio-balloon-pci,free-page-reporting=on,vectors=5 \
 	-drive "if=none,id=hd0,format=raw,file=$image" -device virtio-scsi-pci,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=hd0 \
 	-nic "$nic" -kernel "$kernel"
+[ -z "$virtiofs" ] || set -- "$@" -object "memory-backend-memfd,id=mem,size=$mem,share=on" \
+	-chardev "socket,id=vfs,path=$vfs_socket" -device "vhost-user-fs-pci,chardev=vfs,tag=${virtiofs%%:*}"
 qemu_cmd=$*
 
 start=$(now)
@@ -83,6 +101,7 @@ rc=$?
 set -e
 kill "$wpid" 2>/dev/null || :
 wait "$wpid" 2>/dev/null || :
+[ -z "${vfs_pid:-}" ] || { kill "$vfs_pid" 2>/dev/null || :; wait "$vfs_pid" 2>/dev/null || :; }
 end=$(now)
 [ -f "$serial" ] || : >"$serial"
 tr -d '\r' <"$serial" >"$dir/serial.txt"
