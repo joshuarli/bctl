@@ -32,9 +32,13 @@ fn guest_connects(home: &Home, machine: &str, command: &str) -> bool {
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
 fn the_guest_network_obeys_the_runtime_egress_boundary() {
-    if common::nanos() && cfg!(target_os = "macos") {
+    if common::nanos() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let output = Command::new("python3").arg(root.join("tests/runtime-nanos/network-isolation.py")).output().unwrap();
+        let output = Command::new("python3")
+            .arg(root.join("tests/runtime-nanos/network-isolation.py"))
+            .env("BCTL_BIN", env!("CARGO_BIN_EXE_bctl"))
+            .output()
+            .unwrap();
         assert_ok(&output);
         return;
     }
