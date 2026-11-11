@@ -604,12 +604,13 @@ fn closing_the_last_tab_keeps_headless_or_names_the_headed_failure() {
     let outside = outside_client(&home, s);
     let closed = block_on(outside.call(Scope::Browser, &CloseTarget { target_id: target }, common::soon())).unwrap();
     assert!(closed.success, "the outside CDP client closed the only page");
+    let _ = block_on(outside.shutdown());
 
     if common::nanos() {
         eventually("the last page to close", || tabs(&home, s).targets.is_empty().then_some(()));
         assert_eq!(session(&home, s).state, "ready");
         assert_eq!(one_run(&home, run.id).state, "running");
-        assert!(browser_answers(&home, s));
+        eventually("the browser to answer once the outside controller is gone", || browser_answers(&home, s).then_some(()));
         assert_control(port, &address, &as_viewer, s, "automation");
         assert_ok(&home.bctl(&["cancel", &run.id.to_string()]));
         let cancelled = ended(&home, run.id, Duration::from_secs(60));
