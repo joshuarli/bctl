@@ -155,7 +155,7 @@ E1 qualified the first row on macOS arm64; the other rows are not qualified.
 | Human takeover | no cooperative contract | no bctl-specific cooperative contract | refuse until controller releases (E2: done) |
 | File upload | existing remote-byte fallback, test it | host path cannot work remotely | staged or streamed guest bytes (E4: a guest path in the files directory) |
 | File download | external-CDP uses browser's download directory | guest-side download paths | bounded artifact collection (E4: downloads land in the files directory) |
-| Named provider | external `Browser(...)` recipe first | `browser.provider` plugin | managed launch + opaque cleanup |
+| Named provider | external `Browser(...)` recipe first | `browser.provider` plugin | managed launch + opaque cleanup (E5: `bctl agent-browser-plugin`) |
 | Persisted profiles | supplied by bctl, not library | supplied by bctl, not CLI | durable backing and exclusive writer |
 
 **Runtime matrix**, interpreted as observed bctl status (not an upstream

@@ -15,7 +15,7 @@ pub struct Request {
     pub job: Option<Box<JobRequest>>,
     /// For `tab-use` and `tab-close`: a CDP target id from `tab-list`.
     pub target: Option<String>,
-    /// For `tab-new`: where the new target opens; absent opens `about:blank`.
+    /// For `tab-new`: where the new target opens; absent opens `about:blank`. For `cdp-revoke`: the one URL to revoke.
     pub url: Option<String>,
     /// For `page-snapshot`; absent takes the default snapshot.
     pub snapshot: Option<Box<SnapshotRequest>>,

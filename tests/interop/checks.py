@@ -542,6 +542,94 @@ async def file_checks(scratch: Path) -> None:
 		check('files', 'rm removes files_dir', not other_shared.exists(), other_shared)
 
 
+def plugin(*args: str, request: dict | None = None, kind: str = 'browser.launch') -> dict:
+	"""Sends one agent-browser.plugin.v1 request to `bctl agent-browser-plugin ARGS`; returns its response."""
+	envelope = {'protocol': 'agent-browser.plugin.v1', 'type': kind, 'capability': 'plugin.manifest' if kind == 'plugin.manifest' else 'browser.provider',
+				'request': request or {}}  # fmt: skip
+	done = subprocess.run([os.environ['BCTL'], 'agent-browser-plugin', *args], input=json.dumps(envelope), capture_output=True, text=True, timeout=120)
+	return json.loads(done.stdout or '{}')
+
+
+def provider(session: str, *args: str, plugin_args: tuple[str, ...]) -> subprocess.CompletedProcess:
+	"""Runs agent-browser with bctl as its `browser.provider` plugin, configured explicitly and not over CDP."""
+	config = [{'name': 'bctl', 'command': os.environ['BCTL'], 'args': ['agent-browser-plugin', *plugin_args], 'capabilities': ['browser.provider']}]
+	environment = {k: v for k, v in os.environ.items() if k != 'AGENT_BROWSER_CDP'}
+	environment |= {'AGENT_BROWSER_SESSION': session, 'AGENT_BROWSER_PLUGINS': json.dumps(config), 'AGENT_BROWSER_NO_AUTO_DIALOG': '1'}
+	return subprocess.run([os.environ['AGENT_BROWSER'], *args], capture_output=True, text=True, timeout=120, env=environment)
+
+
+def gateway_answers(url: str) -> bool:
+	try:
+		return urllib.request.urlopen(f'{url}/json/version', timeout=10).status == 200
+	except (urllib.error.URLError, OSError):
+		return False
+
+
+def plugin_checks() -> None:
+	c = 'ab-provider'
+	owned = ('--image', os.environ['BCTL_IMAGE'], '--allow-private', '100.96.0.0/30')
+	home = Path(os.environ['BCTL_HOME'])
+	manifest = plugin(kind='plugin.manifest').get('manifest', {})
+	check(c, 'manifest', manifest.get('name') == 'bctl' and manifest.get('capabilities') == ['browser.provider'], manifest)
+
+	s = f'p{os.getpid()}'
+	opened = provider(s, '--provider', 'bctl', 'open', SITE + '/form', plugin_args=owned)
+	title = out(provider(s, 'get', 'title', plugin_args=owned))
+	view = session_view(f'ab-{s}')
+	check(c, 'launch starts an owned session', opened.returncode == 0 and title == 'form' and view.get('state') == 'ready', f'{out(opened)} {title} {view.get("state")}')
+	closed = provider(s, 'close', plugin_args=owned)
+	gone = 'NO_SUCH_SESSION' in bctl('inspect', f'ab-{s}', '--json').stdout
+	check(c, 'close removes the owned session', closed.returncode == 0 and gone and not (home / 'agent-browser' / f'ab-{s}.json').exists(), out(closed))
+	again = plugin(request={'lease': 'owned', 'session': f'ab-{s}', 'url': 'http://x.localhost:1', 'generation': 1}, kind='browser.close')
+	check(c, 'repeated close is a no-op', again.get('success') is True, again)
+
+	s = f'p{os.getpid()}dead'
+	provider(s, '--provider', 'bctl', 'open', 'about:blank', plugin_args=owned)
+	first = (home / 'agent-browser' / f'ab-{s}.json').read_text() if (home / 'agent-browser' / f'ab-{s}.json').exists() else ''
+	socket_dir = Path(os.environ.get('AGENT_BROWSER_SOCKET_DIR') or Path.home() / '.agent-browser')
+	pid = int((socket_dir / f'{s}.pid').read_text().strip())
+	os.kill(pid, 9)
+	time.sleep(1)
+	relaunched = provider(s, '--provider', 'bctl', 'open', SITE + '/form', plugin_args=owned)
+	second = (home / 'agent-browser' / f'ab-{s}.json').read_text() if (home / 'agent-browser' / f'ab-{s}.json').exists() else ''
+	first_url = json.loads(first or '{}').get('url', '')
+	check(c, 'owner death: relaunch reclaims', relaunched.returncode == 0 and first and second and first != second and not gateway_answers(first_url),
+		  f'{out(relaunched)}')  # fmt: skip
+	provider(s, 'close', plugin_args=owned)
+	check(c, 'reclaimed session closes', 'NO_SUCH_SESSION' in bctl('inspect', f'ab-{s}', '--json').stdout)
+
+	s = f'p{os.getpid()}bad'
+	failed = provider(s, '--provider', 'bctl', 'open', 'about:blank', plugin_args=('--image', 'no-such-image'))
+	left = bctl('inspect', f'ab-{s}', '--json').stdout
+	provider(s, 'close', plugin_args=('--image', 'no-such-image'))
+	check(c, 'failed launch leaves nothing', failed.returncode != 0 and 'NO_SUCH_SESSION' in left and not (home / 'agent-browser' / f'ab-{s}.json').exists(),
+		  out(failed))  # fmt: skip
+
+	lent = plugin('--session', SESSION, request={'provider': 'bctl', 'session': 'x', 'launchOptions': {'headed': False, 'engine': 'chrome'}})
+	browser = lent.get('browser', {})
+	url = browser.get('cdpUrl', '')
+	check(c, 'borrowed lease answers CDP', gateway_answers(url) and browser.get('metadata', {}).get('lease') == 'borrowed', browser.get('metadata'))
+	closed = plugin('--session', SESSION, request=browser.get('cleanup', {}), kind='browser.close')
+	check(c, 'borrowed close revokes only its URL', closed.get('success') is True and not gateway_answers(url) and gateway_answers(cdp_url)
+		  and session_view().get('state') == 'ready', closed)  # fmt: skip
+
+	refused = plugin(*owned, request={'session': f'p{os.getpid()}x', 'launchOptions': {'engine': 'lightpanda'}})
+	check(c, 'other engines refused', refused.get('success') is False and 'lightpanda' in refused.get('error', ''), refused)
+	headed = plugin(*owned, request={'session': f'p{os.getpid()}h', 'launchOptions': {'headed': True}})
+	expected = os.environ['BCTL_RUNTIME'] == 'smolvm'
+	check(c, 'headed only where the runtime is', headed.get('success') is expected, headed.get('error') or headed.get('browser', {}).get('metadata'))
+	if headed.get('success'):
+		plugin(request=headed['browser']['cleanup'], kind='browser.close')
+	check(c, 'no plugin session left', not [v['name'] for v in json.loads(bctl('status', '--json').stdout).get('sessions', []) if v['name'].startswith('ab-')])
+	prefix = f'bctl-ab-p{os.getpid()}'
+	if os.environ['BCTL_RUNTIME'] == 'smolvm':
+		listed = subprocess.run([str(home / 'runtime/smolvm/smolvm'), 'machine', 'ls', '--json'], capture_output=True, text=True).stdout
+		machines = [m['name'] for m in json.loads(listed or '[]') if m['name'].startswith(prefix)]
+	else:
+		machines = subprocess.run(['pgrep', '-f', f'machines/{prefix}'], capture_output=True, text=True).stdout.split()
+	check(c, 'no plugin machine left running', not machines, machines)
+
+
 async def revocation_checks() -> None:
 	held = f'interop{os.getpid()}held'
 	agent_browser(held, 'open', SITE + '/form')
@@ -571,6 +659,7 @@ async def main() -> None:
 	await browser_use_checks(scratch)
 	agent_browser_checks(scratch)
 	await file_checks(scratch)
+	plugin_checks()
 	await revocation_checks()
 	job_checks(scratch)
 	print(json.dumps({'helium': helium}))

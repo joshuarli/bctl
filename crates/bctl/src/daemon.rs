@@ -421,7 +421,11 @@ impl Daemon {
                 Ok(Response { url: Some(url), ..Response::empty() })
             }
             Op::CdpRevoke => {
-                gateway::revoke_cdp(self, &session()?);
+                let name = session()?;
+                match &request.url {
+                    Some(url) => gateway::revoke_cdp_url(self, url),
+                    None => gateway::revoke_cdp(self, &name),
+                }
                 Ok(Response::empty())
             }
             Op::Up => {

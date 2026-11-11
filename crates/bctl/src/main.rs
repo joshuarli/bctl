@@ -1,3 +1,4 @@
+mod agent_browser;
 mod authority;
 mod daemon;
 mod gateway;
@@ -34,7 +35,7 @@ const USAGE: &str = "usage:
   bctl inspect NAME [--json]                         one session in detail
   bctl serve [--open] [--json]                        print (or open) a one-time dashboard login link
   bctl cdp-url NAME [--json]                         mint a revocable CDP control URL for a ready session
-  bctl cdp-revoke NAME [--json]                      revoke every CDP control URL of a session
+  bctl cdp-revoke NAME [--url URL] [--json]          revoke one CDP control URL of a session, or all of them
   bctl profile list [--json]                         profiles and the session holding each
   bctl profile login PROFILE [--image IMAGE]          start a session on PROFILE and open it to sign in by hand
   bctl grab URL... --session S [--json]              crawl URLs with Grab in session S
@@ -70,6 +71,8 @@ const USAGE: &str = "usage:
       An action waits up to --timeout MS (default 5000) for its element to be there, visible, enabled, still,
       and not covered, then sends its input once. Page commands act on the target `bctl tab use` selected;
       every one takes --json.
+  bctl agent-browser-plugin [--session NAME | --image IMAGE [--allow-private CIDR]...]
+                                                     agent-browser's browser.provider plugin (docs/agent-browser.md)
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
@@ -77,6 +80,7 @@ enum Cli {
     Request { op: Op, request: Box<Request>, json: bool, open: bool },
     Doctor { json: bool },
     ProfileLogin { profile: String, image: Option<String> },
+    AgentBrowserPlugin(agent_browser::Lease),
     Daemon,
 }
 
@@ -117,6 +121,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "grab" | "run" | "runs" | "logs" | "pause" | "resume" | "cancel" => return parse_run_command(&command, parser),
         "tab" => return parse_tab_command(parser),
         "page" => return parse_page_command(parser),
+        "agent-browser-plugin" => return parse_agent_browser_plugin(parser),
         "doctor" | "daemon" => (Op::Ping, false),
         other => return Err(format!("unknown command {other:?}").into()),
     };
@@ -130,6 +135,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
             Long("profile") if op == Op::Up => request.profile = Some(parser.value()?.string()?),
             Long("image") if op == Op::Up => request.image = Some(parser.value()?.string()?),
             Long("allow-private") if op == Op::Up => request.allow_private.push(parser.value()?.string()?),
+            Long("url") if op == Op::CdpRevoke => request.url = Some(parser.value()?.string()?),
             Value(v) if needs_session && request.session.is_none() => request.session = Some(v.string()?),
             _ => return Err(arg.unexpected()),
         }
@@ -142,6 +148,26 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "daemon" => Cli::Daemon,
         _ => Cli::Request { op, request: Box::new(request), json, open },
     })
+}
+
+const PLUGIN_USAGE: &str = "usage: bctl agent-browser-plugin [--session NAME | --image IMAGE [--allow-private CIDR]...]";
+
+fn parse_agent_browser_plugin(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    let (mut borrow, mut image, mut allow_private) = (None, None, Vec::new());
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Long("session") => borrow = Some(parser.value()?.string()?),
+            Long("image") => image = Some(parser.value()?.string()?),
+            Long("allow-private") => allow_private.push(parser.value()?.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    let lease = match borrow {
+        Some(_) if image.is_some() || !allow_private.is_empty() => return Err(PLUGIN_USAGE.into()),
+        Some(name) => agent_browser::Lease::Borrowed(bctl_core::SessionName::new(&name).map_err(|e| e.to_string())?),
+        None => agent_browser::Lease::Owned { image, allow_private },
+    };
+    Ok(Cli::AgentBrowserPlugin(lease))
 }
 
 fn parse_run_command(command: &str, mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
@@ -449,6 +475,7 @@ fn main() -> ExitCode {
         },
         Cli::Doctor { json } => doctor(&paths, json),
         Cli::ProfileLogin { profile, image } => profile_login(&paths, profile, image),
+        Cli::AgentBrowserPlugin(lease) => agent_browser::run(&paths, &lease),
         Cli::Request { op, request, json, open } => match call(&paths, &request) {
             Ok(response) => {
                 let code = render(op, &response, json, request.run.is_some());
