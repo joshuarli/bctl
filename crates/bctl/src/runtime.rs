@@ -194,6 +194,56 @@ impl Runtime {
         }
     }
 
+    /// The runtime's receipt for `bctl doctor`, or why it cannot run sessions.
+    pub(crate) fn receipt(&self, paths: &Paths) -> Result<String, String> {
+        if let Err((missing, hint)) = self.installed(paths) {
+            return Err(format!("missing {}: {hint}", missing.display()));
+        }
+        match self {
+            Runtime::SmolVm(_) => {
+                let runtime = paths.runtime();
+                match std::process::Command::new(&runtime).arg("--version").output() {
+                    Ok(output) if output.status.success() => {
+                        Ok(format!("{} ({})", String::from_utf8_lossy(&output.stdout).trim(), runtime.display()))
+                    }
+                    _ => Err(format!("{} --version failed", runtime.display())),
+                }
+            }
+            Runtime::Nanos(_) if cfg!(target_os = "macos") => Ok(format!("nanos on libkrun ({})", paths.nanos_runtime().display())),
+            Runtime::Nanos(_) => Ok(format!("nanos on QEMU ({})", paths.nanos_runtime().display())),
+        }
+    }
+
+    /// The images in `paths.images()` this runtime can boot, and those missing a file they need beside them.
+    pub(crate) fn images(&self, paths: &Paths) -> (Vec<String>, Vec<String>) {
+        let suffix = match self {
+            Runtime::SmolVm(_) => ".tar",
+            Runtime::Nanos(_) => ".img",
+        };
+        let mut names: Vec<String> = std::fs::read_dir(paths.images())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.strip_suffix(suffix).map(str::to_string))
+            .filter(|name| !matches!(self, Runtime::Nanos(_)) || !(name.ends_with(".profile") || name.ends_with(".kernel")))
+            .collect();
+        names.sort();
+        let (mut complete, mut incomplete) = (Vec::new(), Vec::new());
+        for name in names {
+            let image = self.image_path(paths, &name);
+            let companions = match self {
+                Runtime::SmolVm(_) => vec![],
+                Runtime::Nanos(_) if cfg!(target_os = "macos") => vec![image.with_extension("profile.img")],
+                Runtime::Nanos(_) => vec![image.with_extension("profile.img"), bctl_runtime_nanos::image_kernel(&image)],
+            };
+            match companions.iter().find(|path| !path.is_file()) {
+                Some(missing) => incomplete.push(format!("{name} (no {})", missing.file_name().unwrap_or_default().to_string_lossy())),
+                None => complete.push(name),
+            }
+        }
+        (complete, incomplete)
+    }
+
     pub(crate) fn image_path(&self, paths: &Paths, name: &str) -> PathBuf {
         match self {
             Runtime::SmolVm(_) => paths.image(name),
@@ -205,10 +255,10 @@ impl Runtime {
         match self {
             Runtime::SmolVm(_) => format!("build it with `images/build.sh {name}` and copy the archive there"),
             Runtime::Nanos(_) if cfg!(target_os = "macos") => format!(
-                "build it with `BCTL_BROWSER_ARCHIVE=DIR sh images/{name}/build-macos.sh` and copy .work/images/{name}.img there"
+                "build it with `BCTL_BROWSER_ARCHIVE=DIR sh images/{name}/build-macos.sh` and copy .work/images/{name}.img and .work/images/{name}.profile.img there"
             ),
             Runtime::Nanos(_) => format!(
-                "build it with `images/{name}/build.sh` and copy .work/images/{name}.img and .work/images/{name}.kernel.img there"
+                "build it with `images/{name}/build.sh` and copy .work/images/{name}.img, .work/images/{name}.profile.img and .work/images/{name}.kernel.img there"
             ),
         }
     }
@@ -282,5 +332,30 @@ impl Runtime {
             Runtime::SmolVm(smolvm) => Ok(smolvm.wait_ready(machine, endpoints, cdp_socket, timeout, on_stage)?),
             Runtime::Nanos(nanos) => Ok(nanos.wait_ready(&machine.to_string(), cdp_socket, timeout, on_stage)?),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_lists_nanos_images_and_names_a_missing_companion() {
+        let home = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp").join(format!("doctor-images-{}", std::process::id()));
+        let images = home.join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let mut files = vec!["complete.img", "complete.profile.img", "bare.img", "other.tar"];
+        if !cfg!(target_os = "macos") {
+            files.push("complete.kernel.img");
+        }
+        for file in files {
+            std::fs::write(images.join(file), b"").unwrap();
+        }
+        let paths = Paths { home: home.clone() };
+        let runtime = Runtime::new(RuntimeKind::Nanos, &paths).unwrap();
+        assert_eq!(runtime.images(&paths), (vec!["complete".to_string()], vec!["bare (no bare.profile.img)".to_string()]));
+        let smolvm = Runtime::new(RuntimeKind::SmolVm, &paths).unwrap();
+        assert_eq!(smolvm.images(&paths), (vec!["other".to_string()], vec![]));
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

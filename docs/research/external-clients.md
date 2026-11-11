@@ -226,8 +226,9 @@ Findings that a recipe must account for:
   another site, started from page JavaScript, was blocked.
 - **`Agent.run()` does not raise when the attach is refused.** It logs the
   error and returns no result. `Browser(cdp_url=...).start()` raises.
-- **`bctl doctor` checks only SmolVM.** It reports a Nanos home as failing.
-  That is a bctl gap outside E1.
+- **`bctl doctor` checked only SmolVM** and reported a Nanos home as
+  failing. It now checks the host's runtime, and names a Nanos image missing
+  its `profile.img` (or, on Linux, its `kernel.img`).
 
 ## Security and correctness gates
 

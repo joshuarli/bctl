@@ -19,6 +19,7 @@ use lexopt::prelude::*;
 use miniserde::json;
 
 use paths::Paths;
+use runtime::{Runtime, RuntimeKind};
 use protocol::{
     ActionRequest, ActionView, BrowserRequest, ErrorBody, ErrorCode, ExecRequest, GrabRequest, JobRequest, Op, Request, ResourcesView, Response, RunView,
     SessionView, SnapshotRequest, TabView,
@@ -712,30 +713,27 @@ fn print_session(s: &SessionView) {
 }
 
 fn doctor(paths: &Paths, json_output: bool) -> ExitCode {
-    let runtime = paths.runtime();
-    let version = Command::new(&runtime).arg("--version").output().ok().filter(|o| o.status.success());
-    let images: Vec<String> = std::fs::read_dir(paths.images())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".tar").map(str::to_string))
-        .collect();
+    let runtime = RuntimeKind::for_host().and_then(|kind| Runtime::new(kind, paths));
+    let (runtime_check, images_check) = match &runtime {
+        Ok(runtime) => {
+            let receipt = runtime.receipt(paths);
+            let (complete, incomplete) = runtime.images(paths);
+            let images = if complete.is_empty() && incomplete.is_empty() {
+                (false, format!("none in {}", paths.images().display()))
+            } else if incomplete.is_empty() {
+                (true, complete.join(", "))
+            } else {
+                (false, complete.into_iter().chain(incomplete).collect::<Vec<_>>().join(", "))
+            };
+            ((receipt.is_ok(), receipt.unwrap_or_else(|e| e)), images)
+        }
+        Err(error) => ((false, error.clone()), (false, error.clone())),
+    };
     let daemon = send(paths, &Request { op: Op::Ping.as_str().to_string(), ..Request::empty() }).is_ok();
     let checks = [
         ("home", true, paths.home.display().to_string()),
-        (
-            "runtime",
-            version.is_some(),
-            match &version {
-                Some(o) => format!("{} ({})", String::from_utf8_lossy(&o.stdout).trim(), runtime.display()),
-                None => format!("missing at {}: build with runtime/build.sh and copy .work/runtime/smolvm there", runtime.display()),
-            },
-        ),
-        (
-            "images",
-            !images.is_empty(),
-            if images.is_empty() { format!("none in {}", paths.images().display()) } else { images.join(", ") },
-        ),
+        ("runtime", runtime_check.0, runtime_check.1),
+        ("images", images_check.0, images_check.1),
         ("daemon", true, if daemon { "running".into() } else { "not running (starts on demand)".to_string() }),
     ];
     if json_output {
