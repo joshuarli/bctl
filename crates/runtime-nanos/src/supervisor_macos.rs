@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -245,9 +245,8 @@ fn serve(config: &Config) -> Result<(), String> {
 }
 
 fn copy_template(template: &Path, scratch: &Path) -> io::Result<()> {
-    let mut source = File::open(template)?;
-    let mut target = OpenOptions::new().write(true).create_new(true).mode(0o600).open(scratch)?;
-    io::copy(&mut source, &mut target).map(drop)
+    fs::copy(template, scratch)?;
+    fs::set_permissions(scratch, fs::Permissions::from_mode(0o600))
 }
 
 fn stop_vm(child: &mut Child, socket_dir: &Path) -> Result<(), String> {
@@ -295,6 +294,7 @@ fn relay(client: UnixStream, vsock: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn failed_launch_preserves_an_existing_cdp_socket() {
@@ -313,6 +313,20 @@ mod tests {
         assert!(cdp_socket.exists());
         assert!(!dir.join(CONTROL_SOCKET).exists());
         drop(listener);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_profile_cloned_from_a_sparse_template_stays_sparse() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp").join(format!("nanos-sparse-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let template = dir.join("template");
+        File::create(&template).unwrap().set_len(256 << 20).unwrap();
+        let disk = prepare_profile(&dir.join("profile"), &template, copy_template).unwrap();
+        let meta = fs::metadata(&disk).unwrap();
+        assert_eq!(meta.len(), 256 << 20);
+        assert!(meta.blocks() * 512 < 1 << 20, "{} bytes allocated", meta.blocks() * 512);
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         fs::remove_dir_all(dir).unwrap();
     }
 }
