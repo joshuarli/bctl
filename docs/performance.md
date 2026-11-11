@@ -287,40 +287,42 @@ lifecycle, resources and browser only.
 | | Linux | Mac |
 | --- | --- | --- |
 | Host | MS-A1, AMD Ryzen 9 9950X, 32 CPUs, 60 GiB, Alpine Linux edge (7.2.9) | Mac17,7, Apple M5 Max, 18 CPUs, 48 GiB, macOS 27.0.1 (26A434) |
-| Runtime | hydrogen `bea1e222`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 with the half-close patch | hydrogen `12600ce1`, libkrun on Hypervisor.framework (`nanos-krun`) |
+| Runtime | hydrogen `bea1e222`, QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0 with the half-close patch | hydrogen `bbeea356` (both CPUs online), libkrun on Hypervisor.framework (`nanos-krun`) |
 | Guest | `nanos-helium` (Helium 0.20.3.1 r5), 2 CPUs, 4096 MiB, headless | `nanos-helium` arm64 (Helium 0.20.3.1), 2 CPUs, 4096 MiB, headless |
-| Tree | main `602bfde` (uBlock Origin disabled), release build | main `0442223` with the profile clone fix, release build |
-| Quiet host | every sample passed | every time sample passed at 0.25 load per core; 2 of 5 idle CPU windows overlapped load and were discarded |
+| Tree | main `602bfde` (uBlock Origin disabled), release build | main `6500b15`, release build |
+| Quiet host | every sample passed | every time sample passed at 0.25 load per core; 2 of 7 idle CPU windows overlapped load and were discarded |
 
 | Measure | Nanos, Linux | Nanos, Mac | SmolVM, Mac |
 | --- | --- | --- | --- |
-| Cold `up` to ready | 938 ms (904 to 1043) | 2728 ms (2711 to 2880) | 1466 ms |
-| Warm `up` to ready | 982 ms (931 to 990) | 1296 ms (1246 to 1355) | 1455 ms |
-| `down` | 164 ms (109 to 165) | 332 ms (251 to 362) | 112.8 ms |
-| Daemon start | 100.7 ms | 113.5 ms | 114.8 ms |
+| Cold `up` to ready | 938 ms (904 to 1043) | 584 ms (574 to 611) | 1466 ms |
+| Warm `up` to ready | 982 ms (931 to 990) | 561 ms (554 to 579) | 1455 ms |
+| `down` | 164 ms (109 to 165) | 289 ms (259 to 376) | 112.8 ms |
+| Daemon start | 100.7 ms | 113.6 ms | 114.8 ms |
 | TodoMVC workflow | 144 ms (120 to 283) | not run | 277 ms |
 | `goto`, `fill`, `press`, `check`, `snapshot` p50 | 38.8, 4.2, 4.3, 41.9, 3.5 ms | not run | 39.5, 14.3, 15.4, 65.7, 11.9 ms |
 | `Runtime.evaluate` p50 direct / gateway | 281 / 289 us | not run | 170 / 256 us |
-| Speedometer 3.1 score (7 of 7 runs) | 28.2 (26.8 to 28.7) | 28.4 (27.0 to 28.7) | 31.4 |
-| News site `responseEnd` / `loadEventEnd` / LCP (35 loads) | 3.9 / 82.4 / 152 ms | 5.8 / 98.2 / 176 ms | 14.2 / 71.9 / 140 ms |
-| VMM memory 30 s after ready | 515 MiB RSS (513 to 519) | 296 MiB footprint (294 to 296); 757 MiB RSS | 458 MiB footprint |
-| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 100 percent (100.0 to 100.1), one CPU online | 3.6 |
+| Speedometer 3.1 score (7 of 7 runs) | 28.2 (26.8 to 28.7) | 38.6 (38.3 to 39.7) | 31.4 |
+| News site `responseEnd` / `loadEventEnd` / LCP (35 loads) | 3.9 / 82.4 / 152 ms | 4.0 / 64.2 / 112 ms | 14.2 / 71.9 / 140 ms |
+| VMM memory 30 s after ready | 515 MiB RSS (513 to 519) | 295 MiB footprint (294 to 296); 758 MiB RSS | 458 MiB footprint |
+| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 0.48 percent (0.48 to 0.53) | 3.6 |
 | Machine disk | 3.8 MiB (3.1 to 3.8), qcow2 overlay | 636 MiB, an APFS clone of the image that `du` counts in full | 683 MiB |
 | Profile disk, before browsing | — | 3.9 MiB (3.8 to 4.5) | — |
-| Daemon RSS, one session | 5.0 MiB | 4.8 MiB | 12.6 MiB |
+| Daemon RSS, one session | 5.0 MiB | 4.8 MiB (4.7 to 5.0) | 12.6 MiB |
 
-- **The Mac column ran with one guest CPU online.** Its idle VMM held a
-  core busy because the second vCPU never started: an AP took a spinlock
-  before enabling its MMU, and under Hypervisor.framework an exclusive
-  access to non-cacheable memory never succeeds, so the AP spun and the
-  kernel gave up on it after 500 ms. Hydrogen `bbeea356` starts APs one at
-  a time without that lock; its `cpus_online` case runs a thread on each
-  CPU. With it, an idle 2-CPU session uses 0.2 percent of a core (one
-  `ps` reading, not a gated sample). Every Mac Nanos number above predates
-  the fix; the suites have not been rerun.
-- **Cold `up` on the Mac is 1.4 s slower than warm, all before the guest
-  answers** (first probe 2371 ms cold, 898 ms warm). Cold starts a fresh
-  daemon and profile; the suite does not split that time further.
+- **The Mac column was rerun on 2026-11-11 with both guest CPUs online.**
+  The earlier run had only one: an AP took a spinlock before enabling its
+  MMU, and under Hypervisor.framework an exclusive access to non-cacheable
+  memory never succeeds, so the AP spun and the kernel gave up on it.
+  Hydrogen `bbeea356` starts APs one at a time without that lock. Compared
+  with the one-CPU run:
+  - Speedometer rose from 28.4 to 38.6;
+  - cold `up` fell from 2728 to 584 ms, its first probe from 2371 to 438 ms;
+  - idle VMM CPU fell from 100 to 0.48 percent of a core.
+
+  The SmolVM column is from the earlier run on this host.
+- **Cold and warm `up` on the Mac now differ by 23 ms** (first probe 438 ms
+  cold, 421 ms warm). With one CPU online, cold was 1.4 s slower, all before
+  the guest answered.
 - **A new Mac profile filled its 2 GiB sparse template.** The supervisor
   copied the template byte by byte, writing every hole: 2062 MiB per profile.
   It now clones the template, and a profile costs 3.9 MiB until the browser
