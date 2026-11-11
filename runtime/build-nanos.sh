@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-hydrogen_commit=b14efeac5bef11e77548784feecd64b2174f7243
+hydrogen_commit=df9490871da51096c05953b5e70f3866164de73e
 vhost_vsock_version=0.3.0
 vhost_vsock_sha256=52ce95d81af89ad693d067c650e42df0f217addfbc96cc4820f7c62eb4a28b13
 vhost_vsock_patch=vhost-device-vsock-0001-forward-guest-half-close.patch
