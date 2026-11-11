@@ -307,7 +307,10 @@ check that `/json/version` reports `Helium/`. Unmerged lane branches
 Resume: `continue the campaign from docs/CAMPAIGN-ROADMAP.md Status`.
 
 M8C (external clients): E1 to E6 passed on the Mac with SmolVM and Nanos
-(2026-11-11); the Linux x86_64 Nanos leg of every E is pending.
+(2026-11-11). On Linux x86_64 Nanos, the E1 to E5 checks and E6's interop
+suite passed 105 of 105, but in only 2 of 6 runs. The others hit an
+intermittent stall of the guest browser (`docs/compatibility.md`). E6's Linux
+measurement is pending a quiet host.
 
 ## Charter
 
@@ -1301,7 +1304,7 @@ Helium works.
 
 ### M8C: external browser clients (browser-use 1.0.0 and agent-browser v0.42.0)
 
-**Status: E1 to E6 passed on macOS arm64, 2026-11-11; Linux x86_64 unverified.** This
+**Status: E1 to E6 passed on macOS arm64, 2026-11-11. On Linux x86_64 Nanos, E1 to E5 and E6's checks passed in 2 of 6 runs, with an intermittent guest browser stall; the Linux measurement is pending.** This
 extends bctl's *consumer* surface; it does not replace M3N's native automation,
 Shadowdriver, Grab, or the active M7N work. See
 [the pinned integration research](research/external-clients.md). The initial
@@ -1538,8 +1541,14 @@ the commands that reproduce them, and the failing cases.
 on Nanos, both passing. `BCTL_INTEROP_SUITE=measure` times attach, navigate,
 accessibility tree, screenshot and close per client, plus client memory.
 `docs/performance.md#external-clients` has the gated results. CDP call and byte
-counts are not available from either client or the gateway. Linux x86_64 is
-unverified.
+counts are not available from either client or the gateway.
+
+**E6 Linux x86_64 result, 2026-11-11:** the linux-nanos tuple (Hydrogen
+`df949087`, QEMU 11.1.2) passed 105 of 105 twice in six runs. The other four
+failed: three hit a guest browser stall and two had an owned provider session
+outlive its `close`, so one run had both. The stall is not explained; see
+`docs/compatibility.md`. The host's load stayed between 4 and 25 throughout,
+so the Linux timings are not measured.
 
 **Stop conditions:** uncertain authority, unexpected automatic browser
 provisioning or billing, sandbox being disabled, unbounded file access,
