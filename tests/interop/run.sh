@@ -20,7 +20,7 @@ mkdir -p "$work" "$TMPDIR"
 
 venv=$work/venv
 if ! "$venv/bin/python" -c 'import browser_use, sys; sys.exit(browser_use.__version__ != "1.0.0")' 2>/dev/null; then
-    uv venv -q --python 3.12 "$venv" || fail "cannot create the browser-use virtualenv"
+    uv venv -q --clear --python 3.12 "$venv" || fail "cannot create the browser-use virtualenv"
     VIRTUAL_ENV=$venv uv pip install -q "browser-use @ git+https://github.com/browser-use/browser-use@$browser_use_rev" ||
         fail "cannot install browser-use $browser_use_rev"
 fi
