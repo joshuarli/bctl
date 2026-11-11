@@ -304,17 +304,20 @@ lifecycle, resources and browser only.
 | Speedometer 3.1 score (7 of 7 runs) | 28.2 (26.8 to 28.7) | 28.4 (27.0 to 28.7) | 31.4 |
 | News site `responseEnd` / `loadEventEnd` / LCP (35 loads) | 3.9 / 82.4 / 152 ms | 5.8 / 98.2 / 176 ms | 14.2 / 71.9 / 140 ms |
 | VMM memory 30 s after ready | 515 MiB RSS (513 to 519) | 296 MiB footprint (294 to 296); 757 MiB RSS | 458 MiB footprint |
-| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 100 percent (100.0 to 100.1) | 3.6 |
+| VMM idle CPU | 0.30 percent of a core (0.27 to 0.32) | 100 percent (100.0 to 100.1), one CPU online | 3.6 |
 | Machine disk | 3.8 MiB (3.1 to 3.8), qcow2 overlay | 636 MiB, an APFS clone of the image that `du` counts in full | 683 MiB |
 | Profile disk, before browsing | — | 3.9 MiB (3.8 to 4.5) | — |
 | Daemon RSS, one session | 5.0 MiB | 4.8 MiB | 12.6 MiB |
 
-- **An idle Nanos VM on the Mac holds one core busy.** `sample` of the
-  idle VMM shows vCPU 0 waiting in Hypervisor.framework's
-  `wait_for_interrupt`, as a halted vCPU should, and vCPU 1 inside guest code
-  for every sample. The second vCPU never halts, whether in Hydrogen's arm64
-  idle path or a guest thread that spins; the host cannot tell which. Open,
-  in hydrogen.
+- **The Mac column ran with one guest CPU online.** Its idle VMM held a
+  core busy because the second vCPU never started: an AP took a spinlock
+  before enabling its MMU, and under Hypervisor.framework an exclusive
+  access to non-cacheable memory never succeeds, so the AP spun and the
+  kernel gave up on it after 500 ms. Hydrogen `bbeea356` starts APs one at
+  a time without that lock; its `cpus_online` case runs a thread on each
+  CPU. With it, an idle 2-CPU session uses 0.2 percent of a core (one
+  `ps` reading, not a gated sample). Every Mac Nanos number above predates
+  the fix; the suites have not been rerun.
 - **Cold `up` on the Mac is 1.4 s slower than warm, all before the guest
   answers** (first probe 2371 ms cold, 898 ms warm). Cold starts a fresh
   daemon and profile; the suite does not split that time further.
