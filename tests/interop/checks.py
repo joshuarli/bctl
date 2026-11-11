@@ -464,11 +464,15 @@ def guest_text(session: str, url: str) -> str:
 	return bctl('page', 'eval', session, 'document.body.innerText').stdout.strip()
 
 
+def finished_download(name: str) -> bool:
+	return not name.endswith('.crdownload') and not name.startswith('.')
+
+
 def arrived(directory: Path, before: set[str], timeout: float = 30) -> list[Path]:
 	"""Waits for new finished files in `directory`; returns them."""
 	deadline = time.monotonic() + timeout
 	while time.monotonic() < deadline:
-		new = sorted(p for p in directory.iterdir() if p.name not in before and not p.name.endswith('.crdownload'))
+		new = sorted(p for p in directory.iterdir() if p.name not in before and finished_download(p.name))
 		if new:
 			return new
 		time.sleep(0.5)
