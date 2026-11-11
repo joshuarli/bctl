@@ -63,6 +63,11 @@ impl Home {
             Runtime::Nanos => {
                 if cfg!(target_os = "macos") {
                     link(root.join(".work/runtime/nanos-krun"), path.join("runtime/nanos"))?;
+                    let profile = root.join(format!(".work/images/{image}.profile.img"));
+                    if !profile.exists() {
+                        return Err(format!("no {}; run BCTL_BROWSER_ARCHIVE=DIR sh images/{image}/build-macos.sh", profile.display()));
+                    }
+                    link(profile, path.join(format!("images/{image}.profile.img")))?;
                 } else {
                     std::fs::create_dir_all(path.join("runtime/nanos")).map_err(|e| e.to_string())?;
                     let built = root.join(".work/runtime/nanos");
