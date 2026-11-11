@@ -14,3 +14,7 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 
+
+# Every run records its image's SHA-256, and an unoptimized hash of a 2 GiB Nanos disk takes over a minute.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -47,6 +47,7 @@ pub(crate) struct Daemon {
     observed: Mutex<HashMap<SessionName, Observed>>,
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
     busy: Mutex<HashSet<SessionName>>,
+    disk_digests: runs::DiskDigests,
     pub(crate) gateway: SharedGateway,
     pub(crate) browsers: Browsers,
     pub(crate) authority: Authorities,
@@ -85,6 +86,7 @@ pub fn run(paths: Paths) -> Result<(), String> {
         observed: Mutex::default(),
         live: Mutex::default(),
         busy: Mutex::default(),
+        disk_digests: runs::DiskDigests::default(),
         gateway: Mutex::default(),
         browsers: Mutex::default(),
         authority: Authorities::default(),
@@ -948,7 +950,7 @@ impl Daemon {
         let image_path = self.runtime.image_path(&self.paths, &record.image);
         let image_digest = match self.runtime.kind() {
             RuntimeKind::SmolVm => runs::image_digest(&image_path),
-            RuntimeKind::Nanos => runs::disk_image_digest(&image_path),
+            RuntimeKind::Nanos => self.disk_digests.digest(&image_path),
         }.map_err(internal)?;
         let config = RunConfig {
             job: job.name.clone(),

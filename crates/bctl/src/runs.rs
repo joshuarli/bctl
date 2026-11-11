@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -879,6 +881,42 @@ pub(crate) fn image_digest(archive: &Path) -> Result<String, String> {
         many => Err(format!("{} lists {} manifests, expected one", archive.display(), many.len())),
     }
 }
+/// Digests of raw disk images, reused while an image file keeps the same identity: hashing a 2 GiB image
+/// takes seconds, and every run records its image's digest.
+#[derive(Default)]
+pub(crate) struct DiskDigests(Mutex<HashMap<PathBuf, (FileStamp, String)>>);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime_ns: i128,
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Result<FileStamp, String> {
+        let meta = fs::metadata(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        Ok(FileStamp { dev: meta.dev(), ino: meta.ino(), len: meta.len(), mtime_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()) })
+    }
+}
+
+impl DiskDigests {
+    pub(crate) fn digest(&self, image: &Path) -> Result<String, String> {
+        let before = FileStamp::of(image)?;
+        if let Some((stamp, digest)) = lock(&self.0).get(image)
+            && *stamp == before
+        {
+            return Ok(digest.clone());
+        }
+        let digest = disk_image_digest(image)?;
+        if FileStamp::of(image)? == before {
+            lock(&self.0).insert(image.to_path_buf(), (before, digest.clone()));
+        }
+        Ok(digest)
+    }
+}
+
 
 pub(crate) fn disk_image_digest(image: &Path) -> Result<String, String> {
     let mut file = File::open(image).map_err(|error| format!("cannot read {}: {error}", image.display()))?;
@@ -920,6 +958,22 @@ fn tar_member(archive: &Path, wanted: &str) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_rewritten_disk_image_gets_a_new_digest() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("disk-digests-{}", std::process::id()));
+        let digests = DiskDigests::default();
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(digests.digest(&path).unwrap(), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(digests.digest(&path).unwrap(), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let replacement = dir.join(format!("disk-digests-{}.new", std::process::id()));
+        fs::write(&replacement, b"abd").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        assert_eq!(digests.digest(&path).unwrap(), format!("sha256:{}", Sha256::digest(b"abd").iter().map(|b| format!("{b:02x}")).collect::<String>()));
+        fs::remove_file(&path).unwrap();
+    }
+
 
     #[test]
     fn raw_disk_digest_identifies_its_contents() {
