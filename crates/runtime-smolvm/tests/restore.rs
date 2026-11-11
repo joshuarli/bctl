@@ -64,6 +64,7 @@ fn launch_spec(session: &SessionName, checkpoint: PathBuf, vnc_port: u16) -> Lau
         machine: MachineName { session: session.clone(), generation: Generation(1) },
         source: LaunchSource::Checkpoint(checkpoint),
         profile_dir: None,
+        files_dir: None,
         endpoints: Endpoints { vnc_port },
         cdp_socket: cdp_dir("session").join("s"),
         display: (1280, 800),

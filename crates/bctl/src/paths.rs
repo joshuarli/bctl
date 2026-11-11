@@ -65,6 +65,11 @@ impl Paths {
         self.home.join("profiles").join(profile)
     }
 
+    /// A session's files directory, shared with its guest on runtimes that mount host directories.
+    pub fn files_dir(&self, session: &str) -> PathBuf {
+        self.home.join("files").join(session)
+    }
+
     pub fn image(&self, name: &str) -> PathBuf {
         self.images().join(format!("{name}.tar"))
     }

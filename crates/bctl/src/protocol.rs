@@ -606,8 +606,16 @@ pub struct SessionView {
     pub failure: Option<String>,
     pub machine: Option<String>,
     pub vnc_port: Option<u16>,
-    /// `interactive` or `view-only`, once the guest has reported it.
+    /// `interactive`, `view-only` or `headless`, once the guest has reported it.
     pub input: Option<String>,
+    /// `headed` or `headless`, once the guest has reported its input.
+    pub display: Option<String>,
+    /// Whether `bctl pause` can checkpoint the session's VM, while it holds one.
+    pub pausable: Option<bool>,
+    /// On SmolVM: the host directory the guest sees at `guest_files_dir`, kept until `bctl rm`.
+    pub files_dir: Option<String>,
+    /// On SmolVM: where the guest sees `files_dir`, which is also where the browser saves downloads.
+    pub guest_files_dir: Option<String>,
 }
 
 /// One run and its attempts. Every resolved input is here, so `bctl runs ID --json` is the run's full record.

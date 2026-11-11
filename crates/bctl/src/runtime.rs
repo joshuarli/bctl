@@ -92,6 +92,8 @@ pub(crate) struct MachineLaunch {
     pub(crate) machine: MachineName,
     pub(crate) image: PathBuf,
     pub(crate) profile_dir: PathBuf,
+    /// SmolVM only: the session's files directory, mounted at the browser's download directory.
+    pub(crate) files_dir: Option<PathBuf>,
     pub(crate) endpoints: Endpoints,
     pub(crate) cdp_socket: PathBuf,
     pub(crate) display: (u16, u16),
@@ -106,6 +108,7 @@ impl MachineLaunch {
             machine: self.machine.clone(),
             source: LaunchSource::Image(self.image.clone()),
             profile_dir: Some(self.profile_dir.clone()),
+            files_dir: self.files_dir.clone(),
             endpoints: self.endpoints,
             cdp_socket: self.cdp_socket.clone(),
             display: self.display,

@@ -176,6 +176,11 @@ timeout = "10m"
   recipe closes it on exit and on `SIGTERM`. An unreachable URL fails the job
   and starts no local Chrome.
 
+On SmolVM, a job also gets `BCTL_FILES_DIR`, the session's files directory
+on the host, and `BCTL_GUEST_FILES_DIR`, where the guest sees it. A client
+uploads a file there by its guest path and finds the browser's downloads
+there; see [files](files.md).
+
 Closing either client leaves the session `ready`; only `bctl down` stops the
 browser. A cancelled, timed-out or interrupted attempt is not retried, so an
 action the client had already performed is not performed again. Run

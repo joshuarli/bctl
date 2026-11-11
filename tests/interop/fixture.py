@@ -2,11 +2,15 @@
 
 The guest reaches the host at 100.96.0.1. The cross-origin iframe uses the IPv4-mapped IPv6 form of the same address,
 which Chromium treats as another site, so the frame gets its own process and CDP target. GET /_records returns every
-/record query string the pages sent, as JSON. Prints the port on its first line of output.
+/record query string the pages sent, as JSON; a POST to /upload records its body's SHA-256 the same way.
+/blob.bin is an attachment of random bytes, fixed for the server's lifetime. Prints the port on its first line of
+output.
 """
 
+import hashlib
 import http.server
 import json
+import os
 import sys
 import threading
 from urllib.parse import urlsplit
@@ -14,6 +18,7 @@ from urllib.parse import urlsplit
 HOST = '100.96.0.1'
 OTHER_SITE = '[::ffff:100.96.0.1]'
 records: list[str] = []
+BLOB = os.urandom(200_000)
 lock = threading.Lock()
 
 
@@ -45,6 +50,14 @@ def page(path: str, query: str, port: int) -> str | None:
 			f'<!doctype html><title>inner-{frame}</title>'
 			f"<button id=b onclick=\"fetch('/record?frame={frame}'); this.textContent = 'clicked'\">Press</button>"
 		)
+	if path == '/upload':
+		return (
+			'<!doctype html><title>upload</title><input type=file id=f>'
+			"<button id=send onclick=\"fetch('/upload', {method: 'POST', body: document.getElementById('f').files[0]})"
+			".then(r => out.textContent = r.ok ? 'uploaded' : 'failed')\">Send</button><p id=out></p>"
+		)
+	if path == '/download':
+		return '<!doctype html><title>download</title><a id=dl href=/blob.bin>Get the file</a>'
 	return None
 
 
@@ -59,14 +72,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
 			with lock:
 				body = json.dumps(records).encode()
 			self.reply(200, 'application/json', body)
+		elif url.path == '/blob.bin':
+			self.reply(200, 'application/octet-stream', BLOB, {'Content-Disposition': 'attachment; filename="blob.bin"'})
 		elif (html := page(url.path, url.query, self.server.server_port)) is not None:
 			self.reply(200, 'text/html', html.encode())
 		else:
 			self.reply(404, 'text/plain', b'not found')
 
-	def reply(self, status: int, content_type: str, body: bytes) -> None:
+	def do_POST(self) -> None:
+		if urlsplit(self.path).path != '/upload':
+			return self.reply(404, 'text/plain', b'not found')
+		body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+		with lock:
+			records.append(f'upload={hashlib.sha256(body).hexdigest()}&bytes={len(body)}')
+		self.reply(204, 'text/plain', b'')
+
+	def reply(self, status: int, content_type: str, body: bytes, headers: dict[str, str] | None = None) -> None:
 		self.send_response(status)
 		self.send_header('Content-Type', content_type)
+		for name, value in (headers or {}).items():
+			self.send_header(name, value)
 		self.send_header('Content-Length', str(len(body)))
 		self.send_header('Cache-Control', 'no-store')
 		self.end_headers()

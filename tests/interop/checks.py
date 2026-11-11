@@ -453,6 +453,95 @@ def job_checks(scratch: Path) -> None:
 			check(c, 'bad URL redacted in output', not TOKEN.search(done.stdout + done.stderr + json.dumps(result)))
 
 
+def session_view(session: str = SESSION) -> dict:
+	return (json.loads(bctl('inspect', session, '--json').stdout or '{}').get('sessions') or [{}])[0]
+
+
+def guest_text(session: str, url: str) -> str:
+	"""Opens `url` in a new tab of `session` and returns its body text, as JSON."""
+	bctl('tab', 'new', session, url)
+	bctl('page', 'wait', session, '--load', 'load')
+	return bctl('page', 'eval', session, 'document.body.innerText').stdout.strip()
+
+
+def arrived(directory: Path, before: set[str], timeout: float = 30) -> list[Path]:
+	"""Waits for new finished files in `directory`; returns them."""
+	deadline = time.monotonic() + timeout
+	while time.monotonic() < deadline:
+		new = sorted(p for p in directory.iterdir() if p.name not in before and not p.name.endswith('.crdownload'))
+		if new:
+			return new
+		time.sleep(0.5)
+	return []
+
+
+async def file_checks(scratch: Path) -> None:
+	import hashlib
+
+	view = session_view()
+	runtime = os.environ['BCTL_RUNTIME']
+	fields = {k: view.get(k) for k in ('display', 'input', 'pausable', 'guest_files_dir')}
+	expected = {'smolvm': {'display': 'headed', 'pausable': True, 'guest_files_dir': '/home/browser/Downloads'},
+				'nanos': {'display': 'headless', 'input': 'headless', 'pausable': False, 'guest_files_dir': None}}[runtime]  # fmt: skip
+	check('capabilities', 'inspect names what the runtime does', all(fields[k] == v for k, v in expected.items()), fields)
+	if runtime != 'smolvm':
+		return
+	shared, guest = Path(view['files_dir']), view['guest_files_dir']
+
+	blob = urllib.request.urlopen(f'http://127.0.0.1:{FIXTURE_PORT}/blob.bin', timeout=10).read()
+	payload = shared / 'payload.bin'
+	payload.write_bytes(os.urandom(150_000))
+	sent = f'upload={hashlib.sha256(payload.read_bytes()).hexdigest()}&bytes={payload.stat().st_size}'
+	note = shared / 'note.txt'
+	note.write_text('from the host')
+	check('files', 'guest reads a host file', guest_text(SESSION, f'file://{guest}/note.txt') == '"from the host"')
+
+	c = 'browser-use'
+	host_payload = scratch / 'payload.bin'
+	host_payload.write_bytes(payload.read_bytes())
+	before = {p.name for p in shared.iterdir()}
+	cells = [
+		'R = {}',
+		guarded(
+			f"new_tab({SITE + '/upload'!r}); wait_for_load()\nR['set'] = upload_file('#f', {str(host_payload)!r})\n{click('#send')}\n"
+			"for _ in range(100):\n\tif js(\"document.querySelector('#out').textContent\"): break\n\twait(0.1)\n"
+			"R['out'] = js(\"document.querySelector('#out').textContent\")"
+		),
+		guarded(
+			f"goto_url({SITE + '/download'!r}); wait_for_load()\n"
+			f"cdp('Browser.setDownloadBehavior', behavior='allow', downloadPath={guest!r})\n"
+			f"{click('#dl')}\nwait(1)"
+		),
+	]
+	value, _ = await agent_run(cells, 'json.dumps(R)')
+	r = json.loads(value or '{}')
+	check(c, 'upload_file of a host path', sent in records() and r.get('out') == 'uploaded', f'{r} {[x for x in records() if x.startswith("upload=")]}')
+	new = arrived(shared, before)
+	check(c, 'download lands in files_dir', [p.read_bytes() == blob for p in new] == [True], [p.name for p in new])
+
+	c, s = 'agent-browser', f'interop{os.getpid()}files'
+	before_records = len(records())
+	log = steps(s, ('tab', 'new', SITE + '/upload'), ('upload', '#f', f'{guest}/payload.bin'), ('click', '#send'), ('wait', '--text', 'uploaded'))
+	check(c, 'upload of a guest_files_dir path', sent in records()[before_records:], f'{records()[before_records:]} after {log}')
+	agent_browser(s, 'close')
+
+	other = f'{SESSION}-other'
+	up = bctl('up', other, '--profile', f'{SESSION}-other', '--image', os.environ['BCTL_IMAGE'], '--allow-private', '100.96.0.0/30')
+	if check('profiles', 'second session on another profile', up.returncode == 0, up.stderr.strip()[-200:]):
+		bctl('tab', 'new', SESSION, SITE + '/form')
+		bctl('page', 'eval', SESSION, "document.cookie = 'e4=first; max-age=3600'")
+		bctl('tab', 'new', other, SITE + '/form')
+		bctl('page', 'wait', other, '--load', 'load')
+		cookie = bctl('page', 'eval', other, 'document.cookie').stdout.strip()
+		check('profiles', 'cookies stay in their profile', cookie == '""', cookie)
+		other_shared = Path(session_view(other).get('files_dir') or scratch / 'missing')
+		listing = guest_text(other, f'file://{guest}/')
+		check('files', 'files stay in their session', other_shared != shared and 'note.txt' not in listing, f'{other_shared} {listing[:200]}')
+		bctl('down', other)
+		bctl('rm', other)
+		check('files', 'rm removes files_dir', not other_shared.exists(), other_shared)
+
+
 async def revocation_checks() -> None:
 	held = f'interop{os.getpid()}held'
 	agent_browser(held, 'open', SITE + '/form')
@@ -481,6 +570,7 @@ async def main() -> None:
 	helium = gateway_checks()
 	await browser_use_checks(scratch)
 	agent_browser_checks(scratch)
+	await file_checks(scratch)
 	await revocation_checks()
 	job_checks(scratch)
 	print(json.dumps({'helium': helium}))

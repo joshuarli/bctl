@@ -83,12 +83,14 @@ impl Supervisor {
         let runtime = layout::runtime_dir(browser.uid);
         let profile = layout::profile_dir();
         let cdp_port = layout::cdp_tcp_port()?;
-        for directory in [Path::new(layout::STATE_DIR), &runtime, &profile, &browser.home] {
+        let downloads = layout::downloads_dir(&browser.home);
+        for directory in [Path::new(layout::STATE_DIR), &runtime, &profile, &browser.home, &downloads] {
             fs::create_dir_all(directory).map_err(io_error(directory))?;
         }
         own(&runtime, &browser, Some(0o700))?;
         own(&profile, &browser, None)?;
         own(&browser.home, &browser, None)?;
+        own(&downloads, &browser, None)?;
         let browser_log = layout::log("browser.log");
         File::create(&browser_log).map_err(io_error(&browser_log))?;
         own(&browser_log, &browser, None)?;

@@ -90,6 +90,7 @@ fn launch(runtime: &SmolVm, root: &Path, kind: Kind, round: usize, checkpoint: &
         machine: MachineName { session, generation: Generation(1) },
         source: kind.source(&root.join(".work/images").join(format!("{IMAGE}.tar")), checkpoint),
         profile_dir: None,
+        files_dir: None,
         endpoints: Endpoints { vnc_port: free_port()? },
         cdp_socket: cdp.join("s"),
         display: (1280, 800),

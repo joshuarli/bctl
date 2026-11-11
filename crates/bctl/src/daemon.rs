@@ -469,6 +469,12 @@ impl Daemon {
                         return Err(internal(format!("forgot {name} but cannot remove {}: {error}", dir.display())).into());
                     }
                 }
+                let files = self.paths.files_dir(name.as_str());
+                if let Err(error) = fs::remove_dir_all(&files)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(internal(format!("forgot {name} but cannot remove {}: {error}", files.display())).into());
+                }
                 Ok(Response::empty())
             }
             Op::Run => {
@@ -543,6 +549,10 @@ impl Daemon {
                 InputSupport::ViewOnly => "view-only".to_string(),
                 InputSupport::Headless => "headless".to_string(),
             }),
+            display: observed.and_then(|o| o.input).filter(|_| holds).map(|i| if i == InputSupport::Headless { "headless" } else { "headed" }.to_string()),
+            pausable: holds.then_some(self.runtime.kind() == RuntimeKind::SmolVm),
+            files_dir: self.files_dir(&record.name).map(|d| d.display().to_string()),
+            guest_files_dir: self.files_dir(&record.name).map(|_| bctl_runtime_smolvm::GUEST_FILES_DIR.to_string()),
         }
     }
 
@@ -641,6 +651,13 @@ impl Daemon {
                 return Err(internal(error).into());
             }
         };
+        let files_dir = match self.files_dir(name).map(|dir| private_dir(&dir).map(|()| dir)).transpose() {
+            Ok(dir) => dir,
+            Err(error) => {
+                let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+                return Err(internal(error).into());
+            }
+        };
         let image_path = match self.runtime.image_path(&self.paths, &image).canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -660,6 +677,7 @@ impl Daemon {
             machine: machine.clone(),
             image: image_path,
             profile_dir,
+            files_dir,
             endpoints,
             cdp_socket,
             display,
@@ -749,6 +767,7 @@ impl Daemon {
             machine: machine.clone(),
             image,
             profile_dir: self.paths.profile_dir(record.profile.as_str()),
+            files_dir: self.files_dir(&record.name),
             endpoints,
             cdp_socket: self.paths.cdp_socket(&machine.to_string()),
             display,
@@ -775,9 +794,13 @@ impl Daemon {
 
     fn ensure_profile_dir(&self, profile: &ProfileName) -> Result<std::path::PathBuf, String> {
         let path = self.paths.profile_dir(profile.as_str());
-        fs::create_dir_all(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        private_dir(&path)?;
         Ok(path)
+    }
+
+    /// The session's files directory, on runtimes that can mount one into the guest.
+    pub(crate) fn files_dir(&self, session: &SessionName) -> Option<PathBuf> {
+        (self.runtime.kind() == RuntimeKind::SmolVm).then(|| self.paths.files_dir(session.as_str()))
     }
 
     pub(crate) fn run_dir(&self, run: i64) -> PathBuf {
@@ -973,7 +996,8 @@ impl Daemon {
         let files = RunFiles::new(self.paths.run_dir(run));
         let launched = automation_cdp_url(self, session).map_err(|e| format!("cannot issue a CDP URL: {e}")).and_then(|cdp_url| {
             let ledger = Arc::new(RunLedger { daemon: Arc::clone(self), session: session.clone(), cdp_url: cdp_url.clone() });
-            runs::launch(Launch { run, attempt, number, config, files, cdp_url: cdp_url.clone() }, ledger).inspect_err(|_| gateway::revoke_cdp_url(self, &cdp_url))
+            let shared = self.files_dir(session);
+            runs::launch(Launch { run, attempt, number, config, files, cdp_url: cdp_url.clone(), shared }, ledger).inspect_err(|_| gateway::revoke_cdp_url(self, &cdp_url))
         });
         match launched {
             Ok(handle) => {
@@ -1160,6 +1184,11 @@ fn automation_cdp_url(daemon: &Arc<Daemon>, session: &SessionName) -> std::io::R
 /// Chromium marks a profile in use with `Singleton*` links naming the guest's hostname, which is the machine
 /// name, so a lock left by a removed generation reads as another computer holding the profile. A session that
 /// has begun starting holds its profile exclusively, so any lock there is stale.
+fn private_dir(path: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| format!("cannot restrict {}: {e}", path.display()))
+}
+
 fn clear_stale_browser_lock(profile_dir: &std::path::Path) -> Result<(), String> {
     for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
         let path = profile_dir.join(name);

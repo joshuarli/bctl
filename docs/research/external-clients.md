@@ -153,8 +153,8 @@ E1 qualified the first row on macOS arm64; the other rows are not qualified.
 | Multiple CDP sockets | domain guard uses extra one | client may create many sessions | single *logical* controlling lease (E2: done) |
 | Browser survives client close | externally owned semantics | external process is not launched by client | bctl owns `down` |
 | Human takeover | no cooperative contract | no bctl-specific cooperative contract | refuse until controller releases (E2: done) |
-| File upload | existing remote-byte fallback, test it | host path cannot work remotely | staged or streamed guest bytes |
-| File download | external-CDP uses browser's download directory | guest-side download paths | bounded artifact collection |
+| File upload | existing remote-byte fallback, test it | host path cannot work remotely | staged or streamed guest bytes (E4: a guest path in the files directory) |
+| File download | external-CDP uses browser's download directory | guest-side download paths | bounded artifact collection (E4: downloads land in the files directory) |
 | Named provider | external `Browser(...)` recipe first | `browser.provider` plugin | managed launch + opaque cleanup |
 | Persisted profiles | supplied by bctl, not library | supplied by bctl, not CLI | durable backing and exclusive writer |
 

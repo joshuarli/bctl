@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const STATE_DIR: &str = "/run/bctl";
 pub const SEAT_SOCKET: &str = "/run/seatd.sock";
@@ -35,6 +35,11 @@ fn setting(name: &str, default: &str) -> String {
 
 pub fn profile_dir() -> PathBuf {
     PathBuf::from(setting("BCTL_PROFILE_DIR", "/profile"))
+}
+
+/// The browser's default download directory, where the host's runtime may mount a session's files directory.
+pub fn downloads_dir(home: &Path) -> PathBuf {
+    home.join("Downloads")
 }
 
 pub fn cdp_socket() -> PathBuf {
