@@ -39,10 +39,12 @@ case_virtiofs_files() {
 	mkdir -p "$share/host_dir"
 	printf 'hello from the host\n' >"$share/from_host"
 	case_virtiofs=shared:$share case_verdict virtiofs_files "$smp" 60 PASS '' --mount shared:/shared "$FIXTURES/virtiofs_files"
-	if [ "$(wc -c <"$share/from_guest" 2>/dev/null)" != 1000 ] || [ -e "$share/gdir" ]; then
+	# BSD wc pads the count; GNU wc does not.
+	bytes=$(wc -c <"$share/from_guest" 2>/dev/null | tr -d '[:space:]')
+	if [ "$bytes" != 1000 ] || [ -e "$share/gdir" ]; then
 		failures=$((failures + 1))
 		printf 'FAIL      %-18s smp=%s  host sees from_guest=%s bytes, gdir %s\n' virtiofs_host "$smp" \
-			"$(wc -c <"$share/from_guest" 2>/dev/null || echo none)" "$([ -e "$share/gdir" ] && echo left || echo removed)"
+			"${bytes:-none}" "$([ -e "$share/gdir" ] && echo left || echo removed)"
 	fi
 }
 
