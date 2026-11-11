@@ -1,5 +1,6 @@
 mod accounts;
 mod browser;
+mod cdp;
 mod check;
 mod devices;
 mod headless;

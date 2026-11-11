@@ -19,7 +19,8 @@ use crate::layout;
 
 const TICK: Duration = Duration::from_millis(100);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(60);
-const BROWSER_GRACE: Duration = Duration::from_secs(15);
+const BROWSER_CLOSE_GRACE: Duration = Duration::from_secs(8);
+const BROWSER_GRACE: Duration = Duration::from_secs(7);
 
 fn io_error(what: impl AsRef<Path>) -> impl FnOnce(io::Error) -> String {
     move |error| format!("{}: {error}", what.as_ref().display())
@@ -166,6 +167,19 @@ fn hold(signals: &Signals, child: &mut Child, stopping: &AtomicBool) -> Result<E
 fn stop_browser(child: &mut Child) -> Result<(), String> {
     if matches!(child.try_wait(), Ok(Some(_))) {
         return Ok(());
+    }
+    match crate::cdp::close_browser() {
+        Ok(()) => {
+            let deadline = Instant::now() + BROWSER_CLOSE_GRACE;
+            while Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return Ok(());
+                }
+                thread::sleep(TICK);
+            }
+            eprintln!("bctl-guest: the browser ignored Browser.close for {BROWSER_CLOSE_GRACE:?}; sending SIGTERM");
+        }
+        Err(error) => eprintln!("bctl-guest: Browser.close: {error}; sending SIGTERM"),
     }
     if let Err(error) = send(child.id(), libc::SIGTERM)
         && error.raw_os_error() != Some(libc::ESRCH)
