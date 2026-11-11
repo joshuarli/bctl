@@ -80,7 +80,7 @@ impl From<bctl_runtime_nanos::RuntimeError> for RuntimeError {
 }
 
 fn reject_nanos_profile(dir: &Path) -> Result<(), RuntimeError> {
-    let path = dir.join("nanos-profile.img");
+    let path = dir.join(bctl_runtime_nanos::profile::PROFILE_DISK);
     match std::fs::symlink_metadata(&path) {
         Ok(_) => Err(RuntimeError::IncompatibleProfile { message: format!("{} is a Nanos profile and cannot be opened by SmolVM", dir.display()) }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -119,7 +119,6 @@ impl MachineLaunch {
         bctl_runtime_nanos::LaunchSpec {
             machine: self.machine.to_string(),
             image: self.image.clone(),
-            #[cfg(target_os = "macos")]
             profile_dir: self.profile_dir.clone(),
             cdp_socket: self.cdp_socket.clone(),
             memory_mib: self.memory_mib,

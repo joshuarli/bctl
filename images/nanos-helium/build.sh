@@ -9,6 +9,7 @@ images=$root/.work/images
 work=$images/nanos-helium
 out=$images/nanos-helium.img
 kernel_out=$images/nanos-helium.kernel.img
+profile_out=$images/nanos-helium.profile.img
 dl=$images/dl/chromium-build/$chromium_build_rev
 chromium_scripts="install-runtime.py runtime_install.py linux_runtime.py"
 archives=${BCTL_BROWSER_ARCHIVE:?set BCTL_BROWSER_ARCHIVE to a directory holding one helium-*-linux-x86_64-musl.tar.xz with its sidecars}
@@ -235,17 +236,22 @@ mv "$rootfs_stamp.new" "$rootfs_stamp"
 
 image_stamp=$work/image.stamp
 pack_id=$(pack_identity | digest)
-if [ "$force" != 1 ] && stamp_valid "$image_stamp" "$pack_id" "$out" "$kernel_out"; then
+if [ "$force" != 1 ] && stamp_valid "$image_stamp" "$pack_id" "$out" "$kernel_out" "$profile_out"; then
     echo "image: reused"
 else
     cp "$kernel" "$kernel_out.new"
     sh "$tree/dev/image.sh" -o "$out" --size 2g --klib tmpfs --klib shmem --root "$rootfs" --tree "$rootfs:/" \
         --link /usr/local/bin/browser:/opt/browser/helium \
         --dir /profile --dir /tmp --dir /dev/shm \
-        --arg run-headless "$guest" >/dev/null || { rm -f "$kernel_out.new" "$out"; fail "mkfs failed"; }
+        --arg run-headless-persistent "$guest" >/dev/null || { rm -f "$kernel_out.new" "$out"; fail "mkfs failed"; }
+    "$mkfs" -s 2g -k "$kernel" -b "$boot" -t '(mounts:(profile:"/profile"))' "$out.new" <"$out.manifest" >/dev/null &&
+        "$mkfs" -e -l profile -s 2g "$profile_out.new" >/dev/null ||
+        { rm -f "$kernel_out.new" "$out" "$out.new" "$profile_out.new"; fail "cannot create the persistent profile volumes"; }
+    mv "$out.new" "$out"
+    mv "$profile_out.new" "$profile_out"
     mv "$kernel_out.new" "$kernel_out"
-    write_stamp "$image_stamp" "$pack_id" "$out" "$kernel_out"
+    write_stamp "$image_stamp" "$pack_id" "$out" "$kernel_out" "$profile_out"
     echo "image: built"
 fi
 
-echo "$out ($version, hydrogen $(cat "$tree/COMMIT")), kernel $kernel_out"
+echo "$out ($version, hydrogen $(cat "$tree/COMMIT")), kernel $kernel_out, profile template $profile_out"

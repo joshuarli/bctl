@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_browser};
 
 pub mod egress;
+pub mod profile;
 #[cfg(not(target_os = "macos"))]
 pub mod supervisor;
 #[cfg(target_os = "macos")]
@@ -21,7 +22,7 @@ pub mod supervisor;
 pub const GUEST_CDP_PORT: u32 = 9222;
 /// The guest vsock port that answers with the headless readiness report.
 pub const GUEST_CHECK_PORT: u32 = 9223;
-#[cfg(target_os = "macos")]
+/// The guest vsock port that asks a persistent guest to stop the browser and flush its profile volume.
 pub const GUEST_STOP_PORT: u32 = 9224;
 /// The host vsock port the guest relays the browser's SOCKS5 proxy connections to.
 pub const GUEST_EGRESS_PORT: u32 = 1080;
@@ -77,7 +78,6 @@ pub enum Backend {
 pub struct LaunchSpec {
     pub machine: String,
     pub image: PathBuf,
-    #[cfg(target_os = "macos")]
     pub profile_dir: PathBuf,
     /// Host path where the CDP socket appears; its directory must already exist and be private.
     pub cdp_socket: PathBuf,
@@ -123,7 +123,6 @@ impl HeadlessReport {
     }
 
     pub fn first_missing(&self) -> Option<Stage> {
-        #[cfg(target_os = "macos")]
         if self.profile != Some(true) {
             return Some(Stage::Guest);
         }
@@ -248,7 +247,6 @@ impl Nanos {
             .arg("--cpus")
             .arg(spec.cpus.to_string());
         command.arg("--socket-dir").arg(&socket_dir);
-        #[cfg(target_os = "macos")]
         command.arg("--profile-dir").arg(&spec.profile_dir);
         match &self.tools.backend {
             #[cfg(not(target_os = "macos"))]
@@ -387,7 +385,6 @@ mod tests {
         assert!(HeadlessReport::parse("browser ok\nsandbox ok\ninput ok\n").is_err());
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn an_older_image_without_a_profile_report_is_not_ready() {
         let report = HeadlessReport::parse("browser ok\nsandbox ok\ninput absent\n").unwrap();

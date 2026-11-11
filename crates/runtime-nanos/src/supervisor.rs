@@ -12,7 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
-use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
+use crate::profile::prepare_profile;
+use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
 const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH [--allow-private CIDR]...";
 const VHOST_SOCKET: &str = "vhost.sock";
@@ -20,6 +21,7 @@ const QMP_SOCKET: &str = "qmp.sock";
 const DISK: &str = "disk.qcow2";
 const GUEST_CID: u32 = 3;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+const GUEST_STOP_TIMEOUT: Duration = Duration::from_secs(18);
 const QUIT_GRACE: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_millis(50);
 
@@ -28,6 +30,7 @@ struct Config {
     dir: PathBuf,
     sockets: PathBuf,
     image: PathBuf,
+    profile_dir: PathBuf,
     cdp_socket: PathBuf,
     memory_mib: u32,
     cpus: u8,
@@ -49,6 +52,7 @@ impl Config {
             dir: path("--dir")?,
             sockets: path("--socket-dir")?,
             image: path("--image")?,
+            profile_dir: path("--profile-dir")?,
             cdp_socket: path("--cdp-socket")?,
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
             cpus: value("--cpus")?.parse().map_err(|_| "--cpus is not a number")?,
@@ -143,7 +147,7 @@ fn remove_stale(path: &Path) -> Result<(), String> {
     }
 }
 
-fn qemu_command(config: &Config) -> Result<Command, String> {
+fn qemu_command(config: &Config, profile: &Path) -> Result<Command, String> {
     let dir = &config.dir;
     let serial = dir.join(CONSOLE_LOG);
     let mut command = Command::new(&config.qemu);
@@ -158,6 +162,8 @@ fn qemu_command(config: &Config) -> Result<Command, String> {
         .args(["-device", "virtio-balloon-pci,free-page-reporting=on,vectors=5"])
         .args(["-drive", &format!("if=none,id=hd0,format=qcow2,file={}", dir.join(DISK).display())])
         .args(["-device", "virtio-scsi-pci,id=scsi0", "-device", "scsi-hd,bus=scsi0.0,drive=hd0"])
+        .args(["-drive", &format!("if=none,id=profile,format=qcow2,file={}", profile.display())])
+        .args(["-device", "scsi-hd,bus=scsi0.0,drive=profile"])
         .args(["-nic", "none"])
         .args(["-chardev", &format!("socket,id=vsock,path={}", config.sockets.join(VHOST_SOCKET).display())])
         .args(["-device", "vhost-user-vsock-pci,chardev=vsock"])
@@ -183,6 +189,10 @@ fn serve(config: &Config) -> Result<(), String> {
         return Err(format!("qemu-img create: {}", String::from_utf8_lossy(&created.stderr).trim()));
     }
 
+    let profile = prepare_profile(&config.profile_dir, &config.image.with_extension("profile.img"), |template, scratch| {
+        convert_template(&config.qemu_img, template, scratch)
+    })?;
+
     let vhost = config.sockets.join(VHOST_SOCKET);
     let vsock = config.sockets.join(VSOCK_SOCKET);
     let mut backend = Command::new(&config.vsock_backend)
@@ -198,14 +208,14 @@ fn serve(config: &Config) -> Result<(), String> {
         return Err(error);
     }
 
-    let mut qemu = match qemu_command(config)?.spawn() {
+    let mut qemu = match qemu_command(config, &profile)?.spawn() {
         Ok(qemu) => qemu,
         Err(error) => {
             let _ = backend.kill();
             return Err(format!("{}: {error}", config.qemu.display()));
         }
     };
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(Stop::default());
     let started = wait_for(&config.sockets.join(QMP_SOCKET), &mut qemu, "qemu")
         .and_then(|()| listen(config, &vsock, Arc::clone(&stop)))
         .and_then(|()| {
@@ -222,11 +232,19 @@ fn serve(config: &Config) -> Result<(), String> {
     }
 
     let mut quit_sent_at: Option<Instant> = None;
+    let mut flushed_at: Option<Instant> = None;
     let status = loop {
         if let Some(status) = qemu.try_wait().map_err(io_error("qemu"))? {
             break status;
         }
-        if stop.load(Ordering::SeqCst) {
+        if stop.flushed.load(Ordering::SeqCst) {
+            let at = *flushed_at.get_or_insert_with(Instant::now);
+            if at.elapsed() > GUEST_STOP_TIMEOUT {
+                eprintln!("bctl-nanos-vm: the guest did not power off within {GUEST_STOP_TIMEOUT:?} after flushing; quitting qemu");
+                stop.quit.store(true, Ordering::SeqCst);
+            }
+        }
+        if stop.quit.load(Ordering::SeqCst) {
             match quit_sent_at {
                 None => {
                     if let Err(error) = qmp_quit(&config.sockets.join(QMP_SOCKET)) {
@@ -251,6 +269,15 @@ fn serve(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+fn convert_template(qemu_img: &Path, template: &Path, scratch: &Path) -> io::Result<()> {
+    let output = Command::new(qemu_img).args(["convert", "-q", "-f", "raw", "-O", "qcow2"]).arg(template).arg(scratch).output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("qemu-img convert: {}", String::from_utf8_lossy(&output.stderr).trim())))
+    }
+}
+
 fn egress_socket(sockets: &Path) -> PathBuf {
     sockets.join(format!("{VSOCK_SOCKET}_{GUEST_EGRESS_PORT}"))
 }
@@ -268,7 +295,7 @@ fn cleanup(config: &Config) {
     }
 }
 
-fn listen(config: &Config, vsock: &Path, stop: Arc<AtomicBool>) -> Result<(), String> {
+fn listen(config: &Config, vsock: &Path, stop: Arc<Stop>) -> Result<(), String> {
     let control_path = config.sockets.join(CONTROL_SOCKET);
     remove_stale(&control_path)?;
     let control = UnixListener::bind(&control_path).map_err(io_error(&control_path))?;
@@ -289,12 +316,14 @@ fn listen(config: &Config, vsock: &Path, stop: Arc<AtomicBool>) -> Result<(), St
             }
         }
     });
+    let vsock = vsock.to_path_buf();
+    let guest = vsock.clone();
     thread::spawn(move || {
         for client in control.incoming().flatten() {
-            serve_control(client, &stop);
+            let (stop, guest) = (Arc::clone(&stop), guest.clone());
+            thread::spawn(move || serve_control(client, &stop, &guest));
         }
     });
-    let vsock = vsock.to_path_buf();
     thread::spawn(move || {
         for client in cdp.incoming() {
             match client {
@@ -309,21 +338,52 @@ fn listen(config: &Config, vsock: &Path, stop: Arc<AtomicBool>) -> Result<(), St
     Ok(())
 }
 
-fn serve_control(client: UnixStream, stop: &AtomicBool) {
+fn serve_control(client: UnixStream, stop: &Stop, vsock: &Path) {
     let mut line = String::new();
     if BufReader::new(&client).read_line(&mut line).is_err() {
         return;
     }
     let reply = match line.trim() {
-        "status" if stop.load(Ordering::SeqCst) => "stopping",
-        "status" => "running",
+        "status" if stop.requested() => "stopping".to_string(),
+        "status" => "running".to_string(),
         "stop" => {
-            stop.store(true, Ordering::SeqCst);
-            "stopping"
+            match stop_guest(vsock) {
+                Ok(()) => {
+                    stop.flushed.store(true, Ordering::SeqCst);
+                    "stopping".to_string()
+                }
+                Err(error) => {
+                    stop.quit.store(true, Ordering::SeqCst);
+                    error
+                }
+            }
         }
-        _ => "unknown command",
+        _ => "unknown command".to_string(),
     };
     let _ = (&client).write_all(format!("{reply}\n").as_bytes());
+}
+
+#[derive(Default)]
+struct Stop {
+    flushed: AtomicBool,
+    quit: AtomicBool,
+}
+
+impl Stop {
+    fn requested(&self) -> bool {
+        self.flushed.load(Ordering::SeqCst) || self.quit.load(Ordering::SeqCst)
+    }
+}
+
+fn stop_guest(vsock: &Path) -> Result<(), String> {
+    let stream = connect_guest(vsock, GUEST_STOP_PORT, Duration::from_secs(5)).map_err(|e| format!("request guest shutdown: {e}"))?;
+    stream.set_read_timeout(Some(GUEST_STOP_TIMEOUT)).map_err(|e| e.to_string())?;
+    let mut reply = String::new();
+    BufReader::new(stream).read_line(&mut reply).map_err(|e| format!("guest shutdown: {e}"))?;
+    match reply.trim() {
+        "ok" => Ok(()),
+        other => Err(format!("guest shutdown failed: {other}")),
+    }
 }
 
 fn relay(client: UnixStream, vsock: &Path) {

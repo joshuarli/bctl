@@ -74,10 +74,10 @@ impl Home {
         std::fs::create_dir_all(path.join("images")).unwrap();
         let image = if nanos() {
             let name = image();
+            let profile = format!("{name}.profile.img");
+            std::os::unix::fs::symlink(workspace.join(".work/images").join(&profile), path.join("images").join(&profile)).unwrap();
             if cfg!(target_os = "macos") {
                 std::os::unix::fs::symlink(workspace.join(".work/runtime/nanos-krun"), path.join("runtime/nanos")).unwrap();
-                let profile = format!("{name}.profile.img");
-                std::os::unix::fs::symlink(workspace.join(".work/images").join(&profile), path.join("images").join(&profile)).unwrap();
             } else {
                 let built = workspace.join(".work/runtime/nanos");
                 std::fs::create_dir_all(path.join("runtime/nanos")).unwrap();

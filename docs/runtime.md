@@ -195,17 +195,22 @@ from it is installed as:
 <BCTL_HOME>/runtime/nanos/vhost-device-vsock
 <BCTL_HOME>/images/<image>.img
 <BCTL_HOME>/images/<image>.kernel.img
+<BCTL_HOME>/images/<image>.profile.img
 ```
 
 The image and its kernel are a pair. `images/nanos-helium/build.sh` writes
-`.work/images/nanos-helium.img` and `.work/images/nanos-helium.kernel.img`
+`.work/images/nanos-helium.img`, `.work/images/nanos-helium.kernel.img` and
+the empty profile volume template `.work/images/nanos-helium.profile.img`
 together, copying the kernel from the hydrogen tree whose `tmpfs` and `shmem`
 klibs the image packs. Copy both files: bctl boots
 `<BCTL_HOME>/images/<image>.kernel.img` beside `<image>.img`. A kernel from a
 different build than the image's klibs crashes in `klib_initialize`, so there
 is no separate `runtime/nanos/kernel.img`; that directory holds only
 `vhost-device-vsock`. Starting a session with an image but no kernel beside it
-fails with both paths and the build command.
+fails with both paths and the build command. On Linux each profile's disk is
+a qcow2 file converted once from the template, so it starts at a few
+megabytes and grows with the profile; QEMU's image lock keeps two sessions
+from opening it at once.
 
 On Apple Silicon, the experimental Nanos backend uses libkrun and an EFI disk
 image containing its own kernel. Run `runtime/guest.sh` and
@@ -218,11 +223,14 @@ to `<BCTL_HOME>/images`. The second file is the empty profile volume template.
 The image embeds the kernel and modules built together; it needs no separate kernel file. Set
 `BCTL_RUNTIME=nanos` to select this backend; SmolVM remains the macOS default.
 Ready headless sessions report no VNC port and reject viewer input.
-Internal VM sockets use private, short directories under `<BCTL_HOME>/ns` so
-long session names fit macOS's Unix socket path limit.
+
+On both platforms, internal VM sockets use private, short directories under
+`<BCTL_HOME>/ns` so long session names fit the Unix socket path limit.
 Each profile has its own Nanos disk, initialized from the template only once
-and locked while in use. Stopping a session waits for the browser to exit and
-the guest to flush the disk. Profiles from the SmolVM backend use a different
+and locked while in use. Stopping a session asks the guest to close the
+browser through CDP `Browser.close`, which commits the cookie store's pending
+writes (SIGTERM drops up to 30 s of them), and waits for the guest to flush
+the disk and power off. Profiles from the SmolVM backend use a different
 format and cannot be opened as Nanos profiles, or vice versa; bctl refuses to
 open a profile in the other runtime rather than replacing its state.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`

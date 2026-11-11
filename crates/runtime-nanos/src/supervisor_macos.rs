@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
+use crate::profile::prepare_profile;
 use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -141,7 +142,7 @@ fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
 
 fn serve(config: &Config) -> Result<(), String> {
     let policy = Policy::new(&config.allow_private)?;
-    let profile = prepare_profile(&config.profile_dir, &config.image.with_extension("profile.img"))?;
+    let profile = prepare_profile(&config.profile_dir, &config.image.with_extension("profile.img"), copy_template)?;
     let disk = config.dir.join("disk.img");
     fs::copy(&config.image, &disk).map_err(|error| format!("copy {} to {}: {error}", config.image.display(), disk.display()))?;
     let mut cleanup = SocketCleanup(Vec::new());
@@ -243,35 +244,10 @@ fn serve(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_profile(dir: &Path, template: &Path) -> Result<PathBuf, String> {
-    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let disk = dir.join("nanos-profile.img");
-    match fs::symlink_metadata(&disk) {
-        Ok(meta) if meta.file_type().is_file() => return Ok(disk),
-        Ok(_) => return Err(format!("{} is not a regular file", disk.display())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", disk.display())),
-    }
-    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_name().to_string_lossy().starts_with(".nanos-profile-init-") {
-            return Err(format!("{} contains a profile in a different format", dir.display()));
-        }
-    }
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
-    let temp = dir.join(format!(".nanos-profile-init-{}-{nonce}", std::process::id()));
-    let result = (|| -> io::Result<()> {
-        let mut source = File::open(template)?;
-        let mut target = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
-        io::copy(&mut source, &mut target)?;
-        target.sync_all()?;
-        fs::hard_link(&temp, &disk)?;
-        File::open(dir)?.sync_all()?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(&temp);
-    result.map_err(|e| format!("initialize {} from {}: {e}", disk.display(), template.display()))?;
-    Ok(disk)
+fn copy_template(template: &Path, scratch: &Path) -> io::Result<()> {
+    let mut source = File::open(template)?;
+    let mut target = OpenOptions::new().write(true).create_new(true).mode(0o600).open(scratch)?;
+    io::copy(&mut source, &mut target).map(drop)
 }
 
 fn stop_vm(child: &mut Child, socket_dir: &Path) -> Result<(), String> {
@@ -337,26 +313,6 @@ mod tests {
         assert!(cdp_socket.exists());
         assert!(!dir.join(CONTROL_SOCKET).exists());
         drop(listener);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn profile_initialization_preserves_existing_data_and_rejects_other_formats() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/tmp").join(format!("nanos-profile-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let template = dir.join("template");
-        fs::write(&template, b"empty profile").unwrap();
-        let profile_dir = dir.join("profile");
-        let disk = prepare_profile(&profile_dir, &template).unwrap();
-        assert_eq!(fs::read(&disk).unwrap(), b"empty profile");
-        fs::write(&disk, b"saved data").unwrap();
-        fs::remove_file(&template).unwrap();
-        assert_eq!(fs::read(prepare_profile(&profile_dir, &template).unwrap()).unwrap(), b"saved data");
-        let other = dir.join("other");
-        fs::create_dir(&other).unwrap();
-        fs::write(other.join("Preferences"), b"existing profile").unwrap();
-        assert!(prepare_profile(&other, &template).is_err());
-        assert_eq!(fs::read(other.join("Preferences")).unwrap(), b"existing profile");
         fs::remove_dir_all(dir).unwrap();
     }
 }
