@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
 use crate::profile::prepare_profile;
+use crate::supervisor_lock;
 use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
 const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH [--allow-private CIDR]...";
@@ -177,6 +178,7 @@ fn qemu_command(config: &Config, profile: &Path) -> Result<Command, String> {
 
 fn serve(config: &Config) -> Result<(), String> {
     let dir = &config.dir;
+    let _lock = supervisor_lock::hold(dir)?;
     let image = fs::canonicalize(&config.image).map_err(io_error(&config.image))?;
     let disk = dir.join(DISK);
     let created = Command::new(&config.qemu_img)

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
 use crate::profile::prepare_profile;
+use crate::supervisor_lock;
 use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -141,6 +142,7 @@ fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
 }
 
 fn serve(config: &Config) -> Result<(), String> {
+    let _lock = supervisor_lock::hold(&config.dir)?;
     let policy = Policy::new(&config.allow_private)?;
     let profile = prepare_profile(&config.profile_dir, &config.image.with_extension("profile.img"), copy_template)?;
     let disk = config.dir.join("disk.img");

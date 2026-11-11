@@ -17,6 +17,7 @@ pub mod supervisor;
 #[cfg(target_os = "macos")]
 #[path = "supervisor_macos.rs"]
 pub mod supervisor;
+mod supervisor_lock;
 
 /// The guest vsock port `bctl-guest run-headless` relays to the browser's CDP endpoint.
 pub const GUEST_CDP_PORT: u32 = 9222;
@@ -300,6 +301,7 @@ impl Nanos {
                 return Err(RuntimeError::Supervisor { operation: "remove", message: format!("{machine} did not stop within 45 s") });
             }
         }
+        supervisor_lock::stop_holder(&dir).map_err(|message| RuntimeError::Supervisor { operation: "remove", message })?;
         let sockets = self.socket_dir(machine);
         if sockets.exists() {
             fs::remove_dir_all(&sockets).map_err(|e| RuntimeError::Supervisor { operation: "remove", message: format!("{}: {e}", sockets.display()) })?;
@@ -440,5 +442,49 @@ mod tests {
         assert!(runtime.is_running(&machine));
         server.join().unwrap();
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn remove_stops_a_supervisor_whose_control_socket_is_gone() {
+        use std::fs::{File, OpenOptions};
+        use std::os::unix::process::CommandExt;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let dir = root.join(".work/tmp").join(format!("nanos-orphan-{}", std::process::id()));
+        let runtime = Nanos::new(dir.join("machines"), Toolchain {
+            supervisor: PathBuf::new(), supervisor_args: Vec::new(),
+            #[cfg(target_os = "macos")]
+            backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
+            #[cfg(not(target_os = "macos"))]
+            backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new() },
+        });
+        let machine = "orphan";
+        let machine_dir = runtime.machine_dir(machine);
+        fs::create_dir_all(&machine_dir).unwrap();
+        let mut supervisor = Command::new("/bin/sh").arg("-c").arg("sleep 60 & wait").process_group(0).spawn().unwrap();
+        let group = supervisor.id();
+        let mut lock: File = OpenOptions::new().create(true).truncate(true).write(true).open(machine_dir.join("supervisor.lock")).unwrap();
+        lock.try_lock().unwrap();
+        writeln!(lock, "{group}").unwrap();
+        let released = thread::spawn(move || {
+            supervisor.wait().unwrap();
+            drop(lock);
+        });
+
+        let removed = runtime.remove(machine);
+        let alive = || Command::new("pgrep").arg("-g").arg(group.to_string()).stdout(std::process::Stdio::null()).status().unwrap().success();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while alive() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let survived = alive();
+        if survived {
+            let _ = Command::new("/bin/kill").args(["-s", "KILL"]).arg(format!("-{group}")).status();
+        }
+        released.join().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(!survived, "the supervisor's process group {group} survived remove");
+        removed.unwrap();
+        assert!(!machine_dir.exists());
     }
 }
