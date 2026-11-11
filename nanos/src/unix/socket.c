@@ -1387,7 +1387,30 @@ closure_func_basic(fdesc_ioctl, sysreturn, unixsock_ioctl,
                    unsigned long request, vlist ap)
 {
     unixsock s = struct_from_field(closure_self(), unixsock, ioctl);
-    return socket_ioctl(&s->sock, request, ap);
+    switch (request) {
+    case FIONREAD: {
+        int nbytes = 0;
+        unixsock_lock(s);
+        if (s->data) {
+            if (s->sock.type == SOCK_STREAM) {
+                u64 avail = s->sock.rx_len;
+                nbytes = avail > 0x7fffffff ? 0x7fffffff : (int)avail;
+            } else {
+                unixsock_msg msg = queue_peek(s->data);
+                if (msg != INVALID_ADDRESS) {
+                    u64 avail = buffer_length(msg->b);
+                    nbytes = avail > 0x7fffffff ? 0x7fffffff : (int)avail;
+                }
+            }
+        }
+        unixsock_unlock(s);
+        if (!set_user_value(varg(ap, int *), nbytes))
+            return -EFAULT;
+        return 0;
+    }
+    default:
+        return socket_ioctl(&s->sock, request, ap);
+    }
 }
 
 closure_func_basic(fdesc_close, sysreturn, unixsock_close,

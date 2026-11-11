@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <runtime.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -138,6 +139,51 @@ static void blocking_read_test(void)
     close(fd[1]);
 }
 
+static void fionread_test(void)
+{
+    int fd[2];
+    int nbytes = -1;
+    char byte;
+    int ret = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+
+    if (ret < 0) {
+        test_perror("socketpair fionread test: socketpair");
+    }
+    if ((ioctl(fd[1], FIONREAD, &nbytes) != 0) || (nbytes != 0)) {
+        test_error("socketpair fionread test: empty socket reported %d", nbytes);
+    }
+    if (write(fd[0], "abcd", 4) != 4) {
+        test_error("socketpair fionread test: write");
+    }
+    nbytes = -1;
+    if ((ioctl(fd[1], FIONREAD, &nbytes) != 0) || (nbytes != 4)) {
+        test_error("socketpair fionread test: pending bytes %d", nbytes);
+    }
+    if (read(fd[1], &byte, 1) != 1) {
+        test_error("socketpair fionread test: read");
+    }
+    nbytes = -1;
+    if ((ioctl(fd[1], FIONREAD, &nbytes) != 0) || (nbytes != 3)) {
+        test_error("socketpair fionread test: remainder %d", nbytes);
+    }
+    close(fd[0]);
+    close(fd[1]);
+
+    nbytes = -1;
+    ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fd);
+    if (ret < 0) {
+        test_perror("socketpair fionread test: datagram socketpair");
+    }
+    if (write(fd[0], "abcd", 4) != 4 || write(fd[0], "xy", 2) != 2) {
+        test_error("socketpair fionread test: datagram write");
+    }
+    if ((ioctl(fd[1], FIONREAD, &nbytes) != 0) || (nbytes != 4)) {
+        test_error("socketpair fionread test: next datagram %d", nbytes);
+    }
+    close(fd[0]);
+    close(fd[1]);
+}
+
 static void nonblocking_test(void)
 {
     int fd[2];
@@ -161,6 +207,7 @@ int main(int argc, char **argv)
     hangup_test();
     blocking_read_test();
     nonblocking_test();
+    fionread_test();
     printf("socketpair tests OK\n");
     return EXIT_SUCCESS;
 }
