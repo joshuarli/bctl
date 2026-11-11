@@ -55,6 +55,7 @@ suite_harness() {
 		case_verdict hello_static "$smp" 20 PASS '' "$FIXTURES/hello_static"
 		case_verdict hello_stdio "$smp" 20 PASS '' "$FIXTURES/hello_stdio"
 		case_verdict hello_pthread "$smp" 20 PASS '' "$FIXTURES/hello_pthread"
+		case_verdict cpus_online "$smp" 20 PASS '' --arg "$smp" "$FIXTURES/cpus_online"
 		case_verdict writev_iov "$smp" 20 PASS '' "$FIXTURES/writev_iov"
 		case_verdict wait_nochild "$smp" 20 PASS '' "$FIXTURES/wait_nochild"
 		case_verdict low_user_va "$smp" 20 PASS '' "$FIXTURES/low_user_va"
