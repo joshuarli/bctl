@@ -281,3 +281,29 @@ corrects two conclusions above:
 The loops fail about once per 420 cycles in that run. Next steps are the
 vhost-user start sequence between QEMU and vhost-device-vsock for the idle
 hang, and the write-after-free search for the boot fault.
+
+## Repairs after `47bc0255`
+
+- vhost-device-vsock ended its vring worker on any handler error, and a
+  host connection that arrived after QEMU's `SET_MEM_TABLE` but before the
+  rings were ready failed with `IterateQueue`. The device then consumed
+  nothing: the idle hang. bctl `2792fcc` patches the backend to ignore host
+  events until both rings are ready. Upstream rust-vmm has the same bug.
+- The guest wrote its stop reply and powered off before the vsock backend
+  consumed it, so the host read an empty reply. bctl `a098bbb` holds the
+  connection until the host closes it.
+- `5ece982a`: `sg_fault_in` only read-touched read destinations, so a
+  copy-on-write buffer faulted during the copy under the page-cache node and
+  state locks. That deadlocked against the vmap lock or a TLB rendezvous.
+  `file_cow_read` hung 4 of 4 runs before the repair and passes 5 of 5
+  after.
+- `e4aad9cc`: `heaplock_management` allocated its closures from the
+  unlocked general heap at stage-3 startup while other CPUs allocated from
+  it through the locked heap. Both captured stale virtio-scsi completions
+  called memory holding `heaplock_set` or `heaplock_iterate` closures.
+  Causation rests on that evidence and on the rate: no heap or SCSI
+  fault in the next 3,200 cycles.
+
+With those repairs the loops ran about 2,300 cycles with one failure, a
+null scheduler task. Interop at `e4aad9cc` passes 113 of 113 in 2 of 2
+runs.

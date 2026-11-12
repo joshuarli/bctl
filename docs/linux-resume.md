@@ -21,26 +21,31 @@ records interop, and [TODO.md](../TODO.md) holds the review findings.
   - page-cache commits under spinlocks;
   - the unlocked symbol table;
   - the futex requeue reference race.
-- Interop at `47bc0255` passes 113 of 113 in the last three runs.
+- Since `47bc0255`:
+  - the vsock idle hang (bctl `2792fcc`, a vhost-device-vsock patch);
+  - the empty guest stop reply (bctl `a098bbb`);
+  - copy-on-write faults under the page-cache locks (`5ece982a`);
+  - unlocked allocation of locked-heap management (`e4aad9cc`), the
+    source of the stale virtio-scsi completions.
+- Interop at `e4aad9cc` passes 113 of 113 in 2 of 2 runs.
 
 ## Remaining work
 
-Four parallel `bctl up`/`bctl down` loops fail about once per 420 cycles
-across copied and fresh (`FRESH=1`) profiles. Fix in this order and rerun
-both loop kinds after each repair:
+Four parallel `bctl up`/`bctl down` loops at `e4aad9cc` ran about 2,300
+cycles with one failure. Two faults remain:
 
-1. **Idle hang after `bctl-guest: ready`.** The vsock device never consumes
-   any queue, and its backend threads are idle. `capture-stacks.py` records
-   the virtqueue indices and backend thread states. Investigate the
-   vhost-user start sequence between QEMU and vhost-device-vsock. Setting
-   `DRIVER_OK` before the first rx kick did not help.
-2. **Stale virtio-scsi completion in early boot.** It persists after
-   `d771804c`. Find the writer before changing code.
-3. **Null scheduler task.** `sched_enqueue` finds a null element in a run
-   queue.
+1. **Null scheduler task.** `sync_complete` reaches `sched_enqueue`, and
+   `pqueue_insert` compares a null element in a run queue. It survived the
+   heap-management repair, so it is not the same double allocation.
+2. **Browser ignores `SIGKILL` at shutdown.** Seen twice in about 1,500
+   cycles, once on a control kernel without `5ece982a`. The guest logs that
+   the browser ignored `Browser.close` and `SIGTERM`, then both CPUs idle
+   and the host's 18 s stop read times out. The `debug/kill-watch` branch
+   prints each thread's syscall and wait 3 s after a `SIGKILL`; it did not
+   recur in 2,300 cycles with that probe.
 
-Then repeat interop twice and refresh final gate acceptance. macOS and
-AArch64 were not tested in this Linux session.
+Then repeat interop and refresh final gate acceptance. macOS and AArch64
+were not tested in this Linux session.
 
 ## Tools
 
@@ -54,7 +59,9 @@ AArch64 were not tested in this Linux session.
   home in place.
 - **Pin after a loop run:** the driver rewrites `runtime/build-nanos.sh`.
   Restore the committed pin when you finish.
-- **Debug probes:** the unpushed branches `debug/scsi-stale-completion`
+- **Debug probes:** the unpushed branch `debug/kill-watch`
+  (`.work/wt/kill-watch`) reports the threads of a process that outlives
+  `SIGKILL`. The older unpushed branches `debug/scsi-stale-completion`
   (`.work/wt/scsi-debug`) and `debug/null-get` (`.work/wt/get-debug`) carry
   them. Neither is for release:
   - a stale virtio-scsi completion check;
