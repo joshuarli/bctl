@@ -1720,7 +1720,8 @@ static void fill_stat(int type, filesystem fs, fsfile f, tuple n, struct stat *s
         s->st_rdev = makedev(UNIX98_PTY_SLAVE_MAJOR, 0);
         break;
     case FDESC_TYPE_SPECIAL:
-        s->st_rdev = filesystem_get_rdev(fs, n);
+        if (n)
+            s->st_rdev = filesystem_get_rdev(fs, n);
         break;
     case FDESC_TYPE_SYMLINK:
         if (n && linktarget(n))
