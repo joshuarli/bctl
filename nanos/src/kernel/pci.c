@@ -450,6 +450,6 @@ void init_pci(kernel_heaps kh)
     pci_bridges = allocate_rangemap(heap_general(kh));
     assert(pci_bridges != INVALID_ADDRESS);
     devices = allocate_vector(heap_general(kh), 8);
-    drivers = allocate_vector(heap_general(kh), 8);
+    drivers = allocate_vector(heap_locked(kh), 8);
     spin_lock_init(&pci_lock);
 }

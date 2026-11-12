@@ -437,7 +437,7 @@ closure_function(2, 1, boolean, vmxnet3_net_probe,
 
 void init_vmxnet3_network(kernel_heaps kh)
 {
-    heap h = heap_general(kh);
+    heap h = heap_locked(kh);
     register_pci_driver(closure(h, vmxnet3_net_probe, h, (heap)heap_linear_backed(kh)), 0);
 }
 

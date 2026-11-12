@@ -770,7 +770,7 @@ void kernel_runtime_init(kernel_heaps kh)
     count_cpus_present();
 
     init_debug("init_kernel_contexts");
-    init_kernel_contexts(misc);
+    init_kernel_contexts(locked);
 
     init_debug("init_interrupts");
     init_interrupts(kh);
@@ -809,7 +809,7 @@ void kernel_runtime_init(kernel_heaps kh)
     status_handler start = closure(locked, kern_start, 0);
     assert(start != INVALID_ADDRESS);
     merge m = allocate_merge(locked, start);
-    storage_attach sa = closure(misc, attach_storage, start, apply_merge(m));
+    storage_attach sa = closure(locked, attach_storage, start, apply_merge(m));
     status_handler complete = apply_merge(m);
 
     init_debug("detect_devices");
