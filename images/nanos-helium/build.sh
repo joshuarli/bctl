@@ -239,17 +239,25 @@ pack_id=$(pack_identity | digest)
 if [ "$force" != 1 ] && stamp_valid "$image_stamp" "$pack_id" "$out" "$kernel_out" "$profile_out"; then
     echo "image: reused"
 else
-    cp "$kernel" "$kernel_out.new"
-    sh "$tree/dev/image.sh" -o "$out" --size 2g --klib tmpfs --klib shmem --root "$rootfs" --tree "$rootfs:/" \
+    stage=$(mktemp -d "$images/.nanos-helium.pack.XXXXXX")
+    trap 'rm -rf "$stage"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    cp "$kernel" "$stage/kernel.img"
+    sh "$tree/dev/image.sh" -o "$stage/base.img" --size 2g --klib tmpfs --klib shmem --root "$rootfs" --tree "$rootfs:/" \
         --link /usr/local/bin/browser:/opt/browser/helium \
         --dir /profile --dir /tmp --dir /dev/shm --dir /home/browser/Downloads \
-        --arg run-headless-persistent "$guest" >/dev/null || { rm -f "$kernel_out.new" "$out"; fail "mkfs failed"; }
-    "$mkfs" -s 2g -k "$kernel" -b "$boot" -t '(mounts:(profile:"/profile" files:"/home/browser/Downloads"))' "$out.new" <"$out.manifest" >/dev/null &&
-        "$mkfs" -e -l profile -s 2g "$profile_out.new" >/dev/null ||
-        { rm -f "$kernel_out.new" "$out" "$out.new" "$profile_out.new"; fail "cannot create the persistent profile volumes"; }
-    mv "$out.new" "$out"
-    mv "$profile_out.new" "$profile_out"
-    mv "$kernel_out.new" "$kernel_out"
+        --arg run-headless-persistent "$guest" >/dev/null || fail "mkfs failed"
+    "$mkfs" -s 2g -k "$kernel" -b "$boot" -t '(mounts:(profile:"/profile" files:"/home/browser/Downloads"))' "$stage/image.img" <"$stage/base.img.manifest" >/dev/null &&
+        "$mkfs" -e -l profile -s 2g "$stage/profile.img" >/dev/null ||
+        fail "cannot create the persistent profile volumes"
+    mv "$stage/base.img.manifest" "$out.manifest"
+    sed "s|$stage/base.img|$out|g" "$stage/base.img.reproduce" >"$out.reproduce"
+    mv "$stage/image.img" "$out"
+    mv "$stage/profile.img" "$profile_out"
+    mv "$stage/kernel.img" "$kernel_out"
+    rm -rf "$stage"
+    trap - EXIT INT TERM
     write_stamp "$image_stamp" "$pack_id" "$out" "$kernel_out" "$profile_out"
     echo "image: built"
 fi
