@@ -10,7 +10,7 @@ passed it. Anything not listed is unverified.
 |-------|------|---------|-------|--------|
 | mac-smolvm | macOS 27.0.1, Apple M5 Max (arm64) | smolvm 1.34.0 | `helium` sha256:a91a0ab8… | 113 of 113 |
 | mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `6dc7d43e` | `nanos-helium` sha256:399f8ca5… | 113 of 113, twice |
-| linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `47bc0255` | `nanos-helium` sha256:37a3d096… | 113 of 113 in the last 4 of 6 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
+| linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `e4aad9cc` | `nanos-helium` sha256:b054dc54… | 113 of 113 in 2 of 2 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
 
 Every tuple uses Helium 0.20.3.1 and the same client pins:
 
