@@ -7,6 +7,7 @@ endpoints to automation, and manages sessions, profiles, and jobs.
 | --- | --- | --- |
 | Apple Silicon macOS | SmolVM, the default | Headed browser with a live dashboard and keyboard/pointer input |
 | Linux x86_64 with KVM | Nanos, the default | Headless browser with CDP and job controls |
+| Linux x86_64 with KVM | Experimental SmolVM, selected with `BCTL_RUNTIME=smolvm` | Headed browser with a live dashboard and keyboard/pointer input |
 | Apple Silicon macOS | Experimental Nanos, selected with `BCTL_RUNTIME=nanos` | Headless browser with CDP and job controls |
 
 ## Install

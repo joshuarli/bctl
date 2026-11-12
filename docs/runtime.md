@@ -44,6 +44,30 @@ target/debug/bctl doctor
 by the [image contract](image-contract.md). Reference images under `images/`
 remain available for diagnostics through `bctl up NAME --image IMAGE`.
 
+### SmolVM on Linux x86_64
+
+Headed sessions also run under KVM. Install Docker, `jaq`, `patchelf`, a C
+compiler named `cc`, the pinned Rust toolchain and `stable`, and Alpine's
+`virglrenderer` and `libepoxy` runtime libraries; the display is libkrun's 2D
+scanout, so no host GPU or Vulkan driver is used. `runtime/build.sh` fetches
+libclang from the pinned llvm-prebuilt-musl release.
+
+```sh
+runtime/build.sh
+BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium
+bctl_state="${BCTL_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/bctl}"
+mkdir -p "$bctl_state/runtime" "$bctl_state/images"
+ln -sfn "$PWD/.work/runtime/smolvm" "$bctl_state/runtime/smolvm"
+ln -sf "$PWD/.work/images/helium.tar" "$bctl_state/images/helium.tar"
+BCTL_RUNTIME=smolvm target/debug/bctl doctor
+```
+
+`DIR` contains one accepted x86_64 Helium archive, r5 or later, and its
+sidecars. Shared directories such as `/profile` use virtual ownership on
+Linux, as on macOS: host files belong to the invoking user and the guest's
+owner and mode live in the `user.containers.override_stat` xattr, so the
+profile directory needs a filesystem with user xattrs.
+
 ### Nanos
 
 Follow [Nanos runtime layout](#nanos-runtime-layout) for Linux builds and
@@ -76,8 +100,6 @@ revision and archive SHA-256, the ordered patch list with each patch's tree and
 digest, and the two Rust toolchains. The importer checks the whole-tree source
 identity before replacing an existing import. The host build checks patch
 digests and applicability, but does not check that whole-tree identity.
-The committed tree currently fails the import check; [BCTL-8](../TODO.md#bctl-8--p2--the-committed-smolvm-source-fails-its-own-import-identity-check)
-tracks reconciliation.
 
 Each source tree keeps its own license: `smolvm/LICENSE` and
 `smolvm/THIRD-PARTY-NOTICES.md`, `libkrun/LICENSE` and
@@ -115,6 +137,10 @@ already applied. Preserve these contracts when refreshing the patches:
   virtio-MMIO cause is acknowledged, and 16-bit firmware writes are handled.
   ACPI describes the configured CPUs and MMIO devices through fw_cfg.
   Firmware-backed checkpoints remain unavailable until fw_cfg state is saved.
+- **Linux shared directories:** user virtiofs mounts use libkrun's
+  override-stat ownership on Linux, as macOS's server always does. Without
+  it the unprivileged Linux server refuses any guest write whose gid is not
+  the host user's, and the browser runs as gid `video`.
 - **Cryptography:** graviola is the sole provider. TLS users select providerless
   features, rcgen signs through a graviola `RemoteKeyPair`, and certificates
   explicitly supply serial numbers and subject key identifiers. The s3fs
