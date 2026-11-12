@@ -48,8 +48,13 @@ Two faults are not yet closed:
    prints each thread's syscall and wait 3 s after a `SIGKILL`; it did not
    recur in 2,300 cycles with that probe.
 
-Then repeat interop and refresh final gate acceptance. macOS and AArch64
-were not tested in this Linux session.
+Interop at `44f4b61f` passes 113 of 113 in 2 of 2 runs, and final gate
+acceptance at `409d61e1` passes G0 through G5 (see `plan.md`). The long
+loops were relaxed, so both faults stay open on that evidence and close if
+they do not recur in use; HYD-3 and HYD-4 in `TODO.md` track them. The P
+gate needs a quiet host. bctl now runs headed sessions on Linux through
+SmolVM and keeps Nanos as its headless runtime; macOS and AArch64 work
+continues from bctl's `docs/handoffs/2026-11-12-macos.md`.
 
 ## Tools
 
