@@ -10,7 +10,7 @@ export TMPDIR=$root/.work/tmp PYTHONDONTWRITEBYTECODE=1
 fail() { echo "tests/interop/run.sh: $*" >&2; exit 1; }
 
 case ${BCTL_RUNTIME:-} in
-'') if [ "$(uname -s)" = Darwin ]; then runtime=smolvm; else runtime=nanos; fi ;;
+'') runtime=smolvm ;;
 smolvm | nanos) runtime=$BCTL_RUNTIME ;;
 *) fail "BCTL_RUNTIME must be smolvm or nanos" ;;
 esac

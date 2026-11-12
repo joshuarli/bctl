@@ -1161,6 +1161,12 @@ Slices, in order, one writer:
 
 ### M7H: headed Helium on Nanos (Linux amd64)
 
+Superseded 2026-11-12: headed sessions on Linux x86_64 now run on SmolVM
+under KVM (`81f3e29`, `smolvm-0004`, `smolvm-0005`), which passes interop 113
+of 113 and the VM suites, and SmolVM is the default runtime on every host.
+Nanos stays the headless runtime behind `BCTL_RUNTIME=nanos`; NH0 is not
+started and is not planned. The text below records the original plan.
+
 Owner 2026-11-10: headless Nanos is a step, not the end state; Nanos
 sessions should get the live view, VNC input and human takeover that SmolVM
 sessions have. Hydrogen's "no guest graphics" non-goal is lifted for this

@@ -9,8 +9,8 @@ use bctl_runtime_smolvm::{LaunchSource, Removal, SmolVm};
 
 use crate::paths::Paths;
 
-/// Which VMM a host runs sessions on. One host runs one runtime: SmolVM on Apple Silicon macOS, hydrogen's
-/// Nanos on Linux x86_64 with KVM.
+/// Which VMM a host runs sessions on. One host runs one runtime: SmolVM by default, on Apple Silicon macOS and
+/// Linux x86_64 with KVM, or hydrogen's Nanos when `BCTL_RUNTIME=nanos` asks for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeKind {
     SmolVm,
@@ -25,14 +25,17 @@ impl RuntimeKind {
         }
     }
 
-    /// `BCTL_RUNTIME` picks one explicitly; otherwise the host's platform decides.
+    /// `BCTL_RUNTIME` picks one explicitly; otherwise SmolVM, the only runtime with headed sessions.
     pub(crate) fn for_host() -> Result<RuntimeKind, String> {
-        match std::env::var("BCTL_RUNTIME").as_deref() {
-            Ok("smolvm") => Ok(RuntimeKind::SmolVm),
-            Ok("nanos") => Ok(RuntimeKind::Nanos),
-            Ok(other) => Err(format!("BCTL_RUNTIME {other:?} is neither smolvm nor nanos")),
-            Err(_) if cfg!(target_os = "macos") => Ok(RuntimeKind::SmolVm),
-            Err(_) => Ok(RuntimeKind::Nanos),
+        RuntimeKind::chosen(std::env::var("BCTL_RUNTIME").ok().as_deref())
+    }
+
+    fn chosen(requested: Option<&str>) -> Result<RuntimeKind, String> {
+        match requested {
+            Some("smolvm") => Ok(RuntimeKind::SmolVm),
+            Some("nanos") => Ok(RuntimeKind::Nanos),
+            Some(other) => Err(format!("BCTL_RUNTIME {other:?} is neither smolvm nor nanos")),
+            None => Ok(RuntimeKind::SmolVm),
         }
     }
 
@@ -354,6 +357,14 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unnamed_runtime_is_smolvm_on_every_host_and_a_named_one_is_honoured() {
+        assert_eq!(RuntimeKind::chosen(None), Ok(RuntimeKind::SmolVm));
+        assert_eq!(RuntimeKind::chosen(Some("nanos")), Ok(RuntimeKind::Nanos));
+        assert_eq!(RuntimeKind::chosen(Some("smolvm")), Ok(RuntimeKind::SmolVm));
+        assert!(RuntimeKind::chosen(Some("qemu")).is_err());
+    }
 
     #[test]
     fn doctor_lists_nanos_images_and_names_a_missing_companion() {

@@ -1,8 +1,9 @@
 # Runtime
 
-bctl builds SmolVM for headed Apple Silicon sessions and Hydrogen's Nanos
-for headless Linux x86_64 and experimental Apple Silicon sessions. Runtime
-selection and default image names live in `crates/bctl/src/runtime.rs`.
+bctl builds SmolVM, the default runtime, for headed sessions on Apple Silicon
+and Linux x86_64, and Hydrogen's Nanos for headless sessions selected with
+`BCTL_RUNTIME=nanos`. Runtime selection and default image names live in
+`crates/bctl/src/runtime.rs`.
 
 SmolVM is vendored under `third_party/smolvm` at the revision recorded in
 `third_party/UPSTREAM.lock`. `runtime/build.sh` builds it into
@@ -59,7 +60,7 @@ bctl_state="${BCTL_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/bctl}"
 mkdir -p "$bctl_state/runtime" "$bctl_state/images"
 ln -sfn "$PWD/.work/runtime/smolvm" "$bctl_state/runtime/smolvm"
 ln -sf "$PWD/.work/images/helium.tar" "$bctl_state/images/helium.tar"
-BCTL_RUNTIME=smolvm target/debug/bctl doctor
+target/debug/bctl doctor
 ```
 
 `DIR` contains one accepted x86_64 Helium archive, r5 or later, and its
@@ -71,7 +72,8 @@ profile directory needs a filesystem with user xattrs.
 ### Nanos
 
 Follow [Nanos runtime layout](#nanos-runtime-layout) for Linux builds and
-installation, or its Apple Silicon instructions for the libkrun backend.
+installation, or its Apple Silicon instructions for the libkrun backend. Set
+`BCTL_RUNTIME=nanos` on either host to use it.
 
 ## Shared graphics source
 
@@ -247,7 +249,7 @@ mkdir -p "$bctl_state/runtime/nanos" "$bctl_state/images"
 ln -sf "$PWD/.work/runtime/nanos/bin/vhost-device-vsock" "$bctl_state/runtime/nanos/vhost-device-vsock"
 ln -sf "$PWD/.work/runtime/nanos/bin/virtiofsd" "$bctl_state/runtime/nanos/virtiofsd"
 cp .work/images/nanos-helium.img .work/images/nanos-helium.kernel.img .work/images/nanos-helium.profile.img "$bctl_state/images/"
-target/debug/bctl doctor
+BCTL_RUNTIME=nanos target/debug/bctl doctor
 ```
 
 `DIR` holds the accepted x86_64 Helium archive and sidecars. The build cache

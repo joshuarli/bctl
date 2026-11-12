@@ -47,9 +47,9 @@ pub struct MachineStatus {
     pub pid: Option<u32>,
 }
 
-/// The runtime every VM test boots: `BCTL_TEST_RUNTIME`, else SmolVM on macOS and Nanos elsewhere.
+/// The runtime every VM test boots: `BCTL_TEST_RUNTIME`, else SmolVM.
 pub fn runtime() -> String {
-    std::env::var("BCTL_TEST_RUNTIME").unwrap_or_else(|_| if cfg!(target_os = "macos") { "smolvm" } else { "nanos" }.to_string())
+    std::env::var("BCTL_TEST_RUNTIME").unwrap_or_else(|_| "smolvm".to_string())
 }
 
 pub fn nanos() -> bool {
