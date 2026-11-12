@@ -4,6 +4,8 @@
 /* really this should be an instance... */
 BSS_RO_AFTER_INIT static heap general;
 BSS_RO_AFTER_INIT static rangemap elf_symtable;
+/* Kernel, klib and program loads add and remove symbols from different CPUs. */
+static struct spinlock symtab_lock;
 
 typedef struct elfsym {
     struct rmnode node;
@@ -64,30 +66,39 @@ closure_func_basic(rmnode_handler, boolean, symtab_remove_sym,
     return true;
 }
 
+/* Fault reports print symbols while the lock may already be held, so this only tries the lock. */
 sstring find_elf_sym(u64 a, u64 *offset, u64 *len)
 {
     if (!elf_symtable)
         return sstring_null();
 
-    elfsym es = (elfsym)rangemap_lookup(elf_symtable, a);
-    if (es == INVALID_ADDRESS)
+    u64 flags = irq_disable_save();
+    if (!spin_try(&symtab_lock)) {
+        irq_restore(flags);
         return sstring_null();
-    range r = range_from_rmnode(&es->node);
-
-    if (offset)
-        *offset = a - r.start;
-
-    if (len)
-        *len = r.end - r.start;
-
-    return es->name;
+    }
+    sstring name = sstring_null();
+    elfsym es = (elfsym)rangemap_lookup(elf_symtable, a);
+    if (es != INVALID_ADDRESS) {
+        range r = range_from_rmnode(&es->node);
+        if (offset)
+            *offset = a - r.start;
+        if (len)
+            *len = r.end - r.start;
+        name = es->name;
+    }
+    spin_unlock(&symtab_lock);
+    irq_restore(flags);
+    return name;
 }
 
 void add_elf_syms(buffer b, u64 load_offset)
 {
-    if (elf_symtable)
+    if (elf_symtable) {
+        u64 flags = spin_lock_irq(&symtab_lock);
 	elf_symbols(b, stack_closure(elf_symtable_add, load_offset));
-    else
+        spin_unlock_irq(&symtab_lock, flags);
+    } else
 	rputs("can't add ELF symbols; symtab not initialized\n");
 }
 
@@ -112,26 +123,37 @@ void print_u64_with_sym(u64 a)
 
 boolean symtab_is_empty(void)
 {
-    return (rangemap_first_node(elf_symtable) == INVALID_ADDRESS);
+    u64 flags = spin_lock_irq(&symtab_lock);
+    boolean empty = (rangemap_first_node(elf_symtable) == INVALID_ADDRESS);
+    spin_unlock_irq(&symtab_lock, flags);
+    return empty;
 }
 
 void *symtab_get_addr(sstring sym_name)
 {
+    void *addr = INVALID_ADDRESS;
+    u64 flags = spin_lock_irq(&symtab_lock);
     rangemap_foreach(elf_symtable, n) {
         elfsym sym = struct_from_field(n, elfsym, node);
-        if (!runtime_strcmp(sym->name, sym_name))
-            return pointer_from_u64(sym->node.r.start);
+        if (!runtime_strcmp(sym->name, sym_name)) {
+            addr = pointer_from_u64(sym->node.r.start);
+            break;
+        }
     }
-    return INVALID_ADDRESS;
+    spin_unlock_irq(&symtab_lock, flags);
+    return addr;
 }
 
 void symtab_remove_addrs(range r)
 {
+    u64 flags = spin_lock_irq(&symtab_lock);
     rangemap_range_lookup(elf_symtable, r, stack_closure_func(rmnode_handler, symtab_remove_sym));
+    spin_unlock_irq(&symtab_lock, flags);
 }
 
 void init_symtab(kernel_heaps kh)
 {
     general = heap_locked(kh);
-    elf_symtable = allocate_rangemap(heap_general(kh));
+    spin_lock_init(&symtab_lock);
+    elf_symtable = allocate_rangemap(general);
 }
