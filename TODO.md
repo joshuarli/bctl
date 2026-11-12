@@ -6,7 +6,7 @@ Next: 5
 - **Area:** Concurrency
 - **Where:** `nanos/src/kernel/schedule.c:333`, `nanos/src/kernel/schedule.c:349`
 - **Problem:** The parallel bctl up/down loops at `e4aad9cc` crash about once per 2,300 cycles with a page fault at address `0x10` in `sched_sort`, reached from `sync_complete` → `sched_enqueue` → `pqueue_insert`: the priority queue compares a null element. Earlier captures showed the same null task through `sched_dequeue`. It survived the locked-heap management repair, so it is not that double allocation; the writer is unknown. Evidence is in `../bctl/.work/tmp/par-3d97a9b0-1/diagnostics/live-up-516.log`.
-- **Recommendation:** Find the writer before changing code: add a debug check that halts when a null or freed task is enqueued or found in a run queue, with the enqueuing caller, and rerun the loops; then fix the lifetime or locking defect it names, with a fixture that reproduces it.
+- **Recommendation:** `0523dbbc` moved CPU 0's run queue, whose vector reallocated from the unlocked general mcache, and every other post-SMP allocation a debug detector found there to the locked heap; the next 2,400 loop cycles had no failure. At the old rate that is about a one-in-three chance even without a repair, so run at least 5,000 more cycles on the pinned kernel: close this if none fails, otherwise add a debug check that halts when a null or freed task enters a run queue and fix what it names.
 - **Fix with:** `root-cause`
 - **Effort:** M (days)
 

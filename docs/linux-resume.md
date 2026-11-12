@@ -26,17 +26,21 @@ records interop, and [TODO.md](../TODO.md) holds the review findings.
   - the empty guest stop reply (bctl `a098bbb`);
   - copy-on-write faults under the page-cache locks (`5ece982a`);
   - unlocked allocation of locked-heap management (`e4aad9cc`), the
-    source of the stale virtio-scsi completions.
-- Interop at `e4aad9cc` passes 113 of 113 in 2 of 2 runs.
+    source of the stale virtio-scsi completions;
+  - every other unlocked general-heap allocation after the secondary
+    CPUs start, including CPU 0's run queue (`0523dbbc`).
+- Interop at `44f4b61f` (bctl `cbf338b`) passes 113 of 113 in 2 of 2 runs.
 
 ## Remaining work
 
 Four parallel `bctl up`/`bctl down` loops at `e4aad9cc` ran about 2,300
-cycles with one failure. Two faults remain:
+cycles with one failure. At `0523dbbc` they ran 2,400 cycles with none.
+Two faults are not yet closed:
 
 1. **Null scheduler task.** `sync_complete` reaches `sched_enqueue`, and
-   `pqueue_insert` compares a null element in a run queue. It survived the
-   heap-management repair, so it is not the same double allocation.
+   `pqueue_insert` compares a null element in a run queue. `0523dbbc`
+   moved CPU 0's run queue off the unlocked general heap, the likely
+   cause; close it after 5,000 more cycles without a failure.
 2. **Browser ignores `SIGKILL` at shutdown.** Seen twice in about 1,500
    cycles, once on a control kernel without `5ece982a`. The guest logs that
    the browser ignored `Browser.close` and `SIGTERM`, then both CPUs idle

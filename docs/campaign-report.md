@@ -307,3 +307,17 @@ hang, and the write-after-free search for the boot fault.
 With those repairs the loops ran about 2,300 cycles with one failure, a
 null scheduler task. Interop at `e4aad9cc` passes 113 of 113 in 2 of 2
 runs.
+
+- `0523dbbc`: CPU 0's run queue was a priority queue whose vector grew
+  from the unlocked general heap, while the other CPUs allocated from the
+  same heap through its lock. A debug detector that reports any unlocked
+  general-heap allocation after the secondary CPUs start found that queue
+  and five more sites: kernel contexts, storage attach, the PCI driver
+  vector, the x86 interrupt heap, the ACPI powerdown closures and vmxnet3.
+  All six now allocate from the locked heap.
+
+At `0523dbbc` with the detector armed, the loops ran 2,400 cycles with no
+failure and no unlocked allocation reported. At the earlier rate that run
+passes about one time in three without a repair, so the null task stays
+open until 5,000 more cycles pass. bctl `cbf338b` pins `44f4b61f`, and
+interop passes 113 of 113 in 2 of 2 runs.
