@@ -284,7 +284,9 @@ closure_function(2, 2, boolean, autoload_klib_each,
 {
     if (!is_dir(v)) {
         klib_autoload autoload = bound(autoload);
+        spin_lock(&autoload->lock);
         autoload->pending++;
+        spin_unlock(&autoload->lock);
         status_handler sh = apply_merge(bound(m));
         struct list elem;
         list_init_member(&elem);
@@ -365,11 +367,19 @@ void init_klib(kernel_heaps kh, void *fs, tuple config_root, status_handler comp
                                                        klibs_complete);
         autoload->complete = complete;
         spin_lock_init(&autoload->lock);
-        autoload->pending = 0;
+        /* Reads complete while the iteration is still issuing them, so the iteration holds a
+         * pending reference: a klib with missing dependencies must not fail before every klib
+         * that could provide them has been counted. */
+        autoload->pending = 1;
         merge m = allocate_merge(h, kl_complete);
         complete = apply_merge(m);
         iterate(c, stack_closure(autoload_klib_each,
                                  autoload, m));
+        spin_lock(&autoload->lock);
+        boolean unresolved = (--autoload->pending == 0);
+        spin_unlock(&autoload->lock);
+        if (unresolved)
+            klib_missing_deps(autoload);
     }
   done:
     apply(complete, STATUS_OK);
