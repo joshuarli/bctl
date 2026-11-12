@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs|9p|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -14,6 +14,7 @@ case_verdict() {
 	image=$IMAGES/$name.img
 	linux "$ROOT/dev/image.sh" -o "$image" "$@" >/dev/null
 	line=$("$ROOT/dev/run.sh" --smp "$smp" --mem "${case_mem:-1G}" --timeout "$timeout" ${case_virtiofs:+--virtiofs "$case_virtiofs"} \
+		${case_p9:+--9p "$case_p9"} \
 		--label "$name-smp$smp" "$image" || :)
 	got=${line%% dir=*}
 	got=${got#RUN verdict=}
@@ -325,6 +326,15 @@ for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
 	virtiofs) linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/virtiofs_files"; for smp in 1 2; do case_virtiofs_files "$smp"; done ;;
+	9p)
+		[ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "9p suite requires Linux x86_64"
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/p9_close"
+		share=$WORK/tmp/p9-share
+		mkdir -p "$share"
+		printf 'hello from the host\n' >"$share/from_host"
+		for smp in 1 2; do
+			case_p9=1:$share case_verdict p9_close "$smp" 60 PASS '' --mount virtfs1:/shared "$FIXTURES/p9_close"
+		done ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

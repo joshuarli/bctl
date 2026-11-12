@@ -198,9 +198,9 @@ closure_func_basic(status_handler, void, p9fsf_sync_complete,
     p9fs p9fs = (struct p9fs *)fs;
     filesystem_lock(fs);
     p9_dentry dentry = fsf->dentry;
-    if (!list_inserted(&dentry->l))
-        p9_dentry_delete(p9fs, dentry);
     p9_fsfile_delete(p9fs, fsf);
+    if (!dentry->md)
+        p9_dentry_delete(p9fs, dentry);
     filesystem_unlock(fs);
 }
 
@@ -216,17 +216,6 @@ closure_func_basic(thunk, void, p9_fsf_free)
          * list. */
         filesystem_unlock(fs);
         return;
-    }
-    p9_dentry dentry = fsf->dentry;
-    tuple md = dentry->md;
-    if (md && !fs_file_is_busy(fs, md)) {
-        /* dentry will be deallocated when the pagecache sync is done: delete its metadata tuple now
-         * so that it cannot be looked up (e.g. via its parent tuple). */
-        fs_cleanup_dir_entry(md);
-        dentry->md = 0;
-
-        f->md = 0;  /* so that it won't be accessed by the file write completion */
-        list_delete(&dentry->l);
     }
     list_delete(&fsf->l);
     filesystem_unlock(fs);

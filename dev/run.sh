@@ -3,11 +3,11 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 usage() {
-	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--virtiofs TAG:DIR] [--exit-only] [--label NAME] IMAGE
+	die "usage: dev/run.sh [--smp N] [--mem SIZE] [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--net] [--virtiofs TAG:DIR] [--9p ID:DIR] [--exit-only] [--label NAME] IMAGE
        dev/run.sh --native [--timeout SECONDS] [--exit CODE] [--expect-test NAME]... [--label NAME] BINARY [ARG...]"
 }
 
-smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0 virtiofs=''
+smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0 virtiofs='' p9=''
 expected=$(mktemp "$WORK/tmp/run-expected.XXXXXX")
 trap 'rm -f "$expected"' EXIT
 while [ $# -gt 0 ]; do
@@ -19,6 +19,7 @@ while [ $# -gt 0 ]; do
 	--expect-test) printf '%s\n' "$2" >>"$expected"; shift 2 ;;
 	--net) net=1; shift ;;
 	--virtiofs) virtiofs=$2; shift 2 ;;
+	--9p) p9=$2; shift 2 ;;
 	--label) label=$2; shift 2 ;;
 	--native) native=1; shift ;;
 	--exit-only) exit_only=1; shift ;;
@@ -30,6 +31,12 @@ done
 [ "$native" -eq 1 ] || [ $# -eq 0 ] || usage
 [ -z "$virtiofs" ] || [ "$native" -eq 0 ] || usage
 [ -z "$virtiofs" ] || [ -d "${virtiofs#*:}" ] || die "no virtiofs directory ${virtiofs#*:}"
+if [ -n "$p9" ]; then
+	[ "$native" -eq 0 ] && [ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "--9p requires Linux x86_64 QEMU"
+	case ${p9%%:*} in '' | *[!0-9]*) die "9p attachment ID must be numeric" ;; esac
+	[ "${p9%%:*}" -le 2147483647 ] || die "9p attachment ID is too large"
+	[ "$p9" != "${p9#*:}" ] && [ -d "${p9#*:}" ] || die "--9p requires TAG:DIR"
+fi
 kernel=$NANOS_OUT/platform/$PLATFORM/bin/kernel.img
 [ "$native" -eq 1 ] || [ -f "$kernel" ] || die "missing $kernel: run dev/build.sh"
 [ -n "$label" ] || label=$(basename -- "$image" .img)
@@ -87,6 +94,8 @@ set -- qemu-system-x86_64 -machine "$machine" -cpu host -smp "$smp" -m "$mem" \
 	-nic "$nic" -kernel "$kernel"
 [ -z "$virtiofs" ] || set -- "$@" -object "memory-backend-memfd,id=mem,size=$mem,share=on" \
 	-chardev "socket,id=vfs,path=$vfs_socket" -device "vhost-user-fs-pci,chardev=vfs,tag=${virtiofs%%:*}"
+[ -z "$p9" ] || set -- "$@" -fsdev "local,id=p9,path=$(realpath "${p9#*:}" | sed 's/,/,,/g'),security_model=none" \
+	-device "virtio-9p-pci,fsdev=p9,mount_tag=${p9%%:*}"
 qemu_cmd=$*
 
 start=$(now)
@@ -121,8 +130,9 @@ if [ -f "$dir/deadline" ]; then
 elif [ "$native" -eq 1 ]; then
 	if [ "$rc" -gt 128 ]; then fail CRASH "killed by signal $((rc - 128))"
 	elif [ "$rc" -ne "$want_exit" ]; then fail FAIL "exit=$rc want=$want_exit"; fi
-elif grep -qE '^(qemu-system-x86_64|krun-run):' "$dir/qemu.log"; then
-	fail QEMU_ERROR "$(grep -m1 -E '^(qemu-system-x86_64|krun-run):' "$dir/qemu.log")"
+elif qemu_error=$(grep -E '^(qemu-system-x86_64|qemu|krun-run):' "$dir/qemu.log" |
+	grep -vE '^qemu(-system-x86_64)?: warning:' | head -n 1) && [ -n "$qemu_error" ]; then
+	fail QEMU_ERROR "$qemu_error"
 elif grep -qE '^\*\*\* signal|^\*\*\* Thread context|assertion .* failed|kernel page fault|^panic' "$log" ||
 	{ [ $((rc & 1)) -eq 1 ] && { [ "$guest_code" -eq 126 ] || [ "$guest_code" -eq 127 ]; }; }; then
 	fail CRASH "$(grep -m1 -E '^\*\*\* signal|assertion .* failed|kernel page fault|^panic' "$log" || printf 'guest exit %s' "$guest_code")"
