@@ -4,7 +4,7 @@ set -eu
 hydrogen_commit=47bc02559361df7021afd6ddd74b91204c63a011
 vhost_vsock_version=0.3.0
 vhost_vsock_sha256=52ce95d81af89ad693d067c650e42df0f217addfbc96cc4820f7c62eb4a28b13
-vhost_vsock_patch=vhost-device-vsock-0001-forward-guest-half-close.patch
+vhost_vsock_patches="vhost-device-vsock-0001-forward-guest-half-close.patch vhost-device-vsock-0002-keep-vring-worker-before-rings-ready.patch"
 virtiofsd_version=1.14.0
 virtiofsd_sha256=7051accc9cf2816e25945c8216e6d4be2b4e75fc5e77559cd7eed5e400245cc1
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -30,7 +30,9 @@ kernel_identity() {
 vsock_identity() {
     printf 'version %s\n' "$vhost_vsock_version"
     printf 'sha256 %s\n' "$vhost_vsock_sha256"
-    printf 'patch %s\n' "$(sha "$root/runtime/patches/$vhost_vsock_patch")"
+    for patch in $vhost_vsock_patches; do
+        printf 'patch %s\n' "$(sha "$root/runtime/patches/$patch")"
+    done
     printf 'rustc %s\n' "$(rustc -V)"
     printf 'cargo %s\n' "$(cargo -V)"
 }
@@ -142,8 +144,10 @@ if [ "$force" = 1 ] || [ ! -s "$vsock_bin" ] || [ ! -x "$vsock_bin" ] || ! stamp
     rm -rf "$vhost_vsock_src"
     mkdir -p "$out/src"
     tar -xzf "$vhost_vsock_crate" -C "$out/src"
-    patch -p1 -d "$vhost_vsock_src" --batch --forward --silent -i "$root/runtime/patches/$vhost_vsock_patch" ||
-        fail "runtime/patches/$vhost_vsock_patch does not apply to vhost-device-vsock $vhost_vsock_version"
+    for patch in $vhost_vsock_patches; do
+        patch -p1 -d "$vhost_vsock_src" --batch --forward --silent -i "$root/runtime/patches/$patch" ||
+            fail "runtime/patches/$patch does not apply to vhost-device-vsock $vhost_vsock_version"
+    done
     cargo install --quiet --locked --force --root "$out" --path "$vhost_vsock_src" ||
         fail "cannot build vhost-device-vsock $vhost_vsock_version"
     [ -s "$vsock_bin" ] && [ -x "$vsock_bin" ] || fail "vhost-device-vsock built no $vsock_bin"

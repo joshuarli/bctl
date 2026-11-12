@@ -6,7 +6,8 @@ script=$root/runtime/build-nanos.sh
 out=$root/.work/runtime/nanos
 hydrogen=${HYDROGEN:-$HOME/d/hydrogen}
 tmp=$root/.work/tmp/build-nanos-cache
-patch=$(sed -n 's/^vhost_vsock_patch=//p' "$script")
+patches=$(sed -n 's/^vhost_vsock_patches="\(.*\)"$/\1/p' "$script")
+patch=${patches%% *}
 pin=$(sed -n 's/^hydrogen_commit=//p' "$script")
 
 fail() { echo "tests/build/build-nanos-cache.sh: $*" >&2; exit 1; }
@@ -20,7 +21,7 @@ $output"
     done
 }
 
-[ -n "$patch" ] || fail "cannot read vhost_vsock_patch from $script"
+[ -n "$patch" ] || fail "cannot read vhost_vsock_patches from $script"
 [ -n "$pin" ] || fail "cannot read the pinned hydrogen commit from $script"
 
 rm -rf "$tmp"
@@ -47,7 +48,7 @@ expect reused built reused
 scratch=$tmp/patch
 mkdir -p "$scratch/runtime/patches"
 cp "$script" "$scratch/runtime/build-nanos.sh"
-cp "$root/runtime/patches/$patch" "$scratch/runtime/patches/$patch"
+for p in $patches; do cp "$root/runtime/patches/$p" "$scratch/runtime/patches/$p"; done
 ln -s "$root/.work" "$scratch/.work"
 sed -i 's/send no more data/send no more data./' "$scratch/runtime/patches/$patch"
 run env FORCE=0 HYDROGEN="$hydrogen" sh "$scratch/runtime/build-nanos.sh"

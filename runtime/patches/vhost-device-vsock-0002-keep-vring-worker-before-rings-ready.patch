@@ -1,0 +1,162 @@
+--- a/src/vhu_vsock.rs
++++ b/src/vhu_vsock.rs
+@@ -10,7 +10,8 @@
+ use log::warn;
+ use thiserror::Error as ThisError;
+ use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
+-use vhost_user_backend::{VhostUserBackend, VringRwLock};
++use vhost_user_backend::{VhostUserBackend, VringRwLock, VringT};
++use virtio_queue::QueueT;
+ use virtio_bindings::bindings::{
+     virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
+     virtio_ring::VIRTIO_RING_F_EVENT_IDX,
+@@ -284,43 +285,8 @@
+     }
+ }
+ 
+-impl VhostUserBackend for VhostUserVsockBackend {
+-    type Vring = VringRwLock;
+-    type Bitmap = ();
+-
+-    fn num_queues(&self) -> usize {
+-        NUM_QUEUES
+-    }
+-
+-    fn max_queue_size(&self) -> usize {
+-        self.queue_size
+-    }
+-
+-    fn features(&self) -> u64 {
+-        (1 << VIRTIO_F_VERSION_1)
+-            | (1 << VIRTIO_F_NOTIFY_ON_EMPTY)
+-            | (1 << VIRTIO_RING_F_EVENT_IDX)
+-            | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
+-    }
+-
+-    fn protocol_features(&self) -> VhostUserProtocolFeatures {
+-        VhostUserProtocolFeatures::MQ | VhostUserProtocolFeatures::CONFIG
+-    }
+-
+-    fn set_event_idx(&self, enabled: bool) {
+-        for thread in self.threads.iter() {
+-            thread.lock().unwrap().event_idx = enabled;
+-        }
+-    }
+-
+-    fn update_memory(&self, atomic_mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
+-        for thread in self.threads.iter() {
+-            thread.lock().unwrap().mem = Some(atomic_mem.clone());
+-        }
+-        Ok(())
+-    }
+-
+-    fn handle_event(
++impl VhostUserVsockBackend {
++    fn dispatch_event(
+         &self,
+         device_event: u16,
+         evset: EventSet,
+@@ -347,6 +313,10 @@
+             }
+             BACKEND_EVENT => {
+                 thread.process_backend_evt(evset);
++                if !vring_rx.get_ref().get_queue().ready() || !vring_tx.get_ref().get_queue().ready() {
++                    warn!("Received a backend event before vring initialization");
++                    return Ok(());
++                }
+                 if let Err(e) = thread.process_tx(vring_tx, evt_idx) {
+                     match e {
+                         Error::NoMemoryConfigured => {
+@@ -372,6 +342,57 @@
+ 
+         Ok(())
+     }
++}
++
++impl VhostUserBackend for VhostUserVsockBackend {
++    type Vring = VringRwLock;
++    type Bitmap = ();
++
++    fn num_queues(&self) -> usize {
++        NUM_QUEUES
++    }
++
++    fn max_queue_size(&self) -> usize {
++        self.queue_size
++    }
++
++    fn features(&self) -> u64 {
++        (1 << VIRTIO_F_VERSION_1)
++            | (1 << VIRTIO_F_NOTIFY_ON_EMPTY)
++            | (1 << VIRTIO_RING_F_EVENT_IDX)
++            | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
++    }
++
++    fn protocol_features(&self) -> VhostUserProtocolFeatures {
++        VhostUserProtocolFeatures::MQ | VhostUserProtocolFeatures::CONFIG
++    }
++
++    fn set_event_idx(&self, enabled: bool) {
++        for thread in self.threads.iter() {
++            thread.lock().unwrap().event_idx = enabled;
++        }
++    }
++
++    fn update_memory(&self, atomic_mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
++        for thread in self.threads.iter() {
++            thread.lock().unwrap().mem = Some(atomic_mem.clone());
++        }
++        Ok(())
++    }
++
++    fn handle_event(
++        &self,
++        device_event: u16,
++        evset: EventSet,
++        vrings: &[VringRwLock],
++        thread_id: usize,
++    ) -> IoResult<()> {
++        let result = self.dispatch_event(device_event, evset, vrings, thread_id);
++        if let Err(e) = &result {
++            log::error!("vsock: event {device_event} stops the vring worker: {e}");
++        }
++        result
++    }
+ 
+     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
+         let offset = offset as usize;
+@@ -463,6 +484,34 @@
+     }
+ 
+     #[test]
++    fn test_vsock_backend_event_before_vrings_are_ready() {
++        let test_dir = tempdir().expect("Could not create a temp test directory.");
++        let config = VsockConfig::new(
++            3,
++            test_dir.path().join("early.socket"),
++            BackendType::UnixDomainSocket(test_dir.path().join("early.vsock")),
++            CONN_TX_BUF_SIZE,
++            QUEUE_SIZE,
++            vec![String::from("default")],
++        );
++        let backend =
++            VhostUserVsockBackend::new(config, Arc::new(RwLock::new(HashMap::new()))).unwrap();
++        let mem = GuestMemoryAtomic::new(
++            GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap(),
++        );
++        let vrings = [
++            VringRwLock::new(mem.clone(), 0x1000).unwrap(),
++            VringRwLock::new(mem.clone(), 0x2000).unwrap(),
++        ];
++        backend.update_memory(mem).unwrap();
++
++        backend
++            .handle_event(BACKEND_EVENT, EventSet::IN, &vrings, 0)
++            .unwrap();
++        test_dir.close().unwrap();
++    }
++
++    #[test]
+     fn test_vsock_backend_unix() {
+         const CID: u64 = 3;
+ 
