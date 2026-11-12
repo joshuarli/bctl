@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -1735,6 +1736,168 @@ static void check_robust_futex_xproc(void)
 	record("robust_futex_xproc", exited_with(status, 0) && consistent, "lock_rc=%d", rc);
 }
 
+enum { STRESS_WORKERS = 8, STRESS_CYCLES = 100, STRESS_MEMORY_SLACK_KIB = 1024 };
+static int stress_cycles = STRESS_CYCLES;
+
+static int role_stress_renderer(int argc, char **argv)
+{
+	int ipc = (int)arg_long(argc, argv, "--ipc");
+	int shm = -1, nfds = 0;
+	char work[8] = "";
+	if (recv_fds(ipc, &shm, 1, work, sizeof work - 1, &nfds) <= 0 || nfds != 1)
+		return 2;
+	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || install_renderer_policy(0))
+		return 3;
+	errno = 0;
+	if (socket(AF_INET, SOCK_STREAM, 0) >= 0 || errno != EACCES)
+		return 4;
+	unsigned char *shared = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, shm, 0);
+	if (shared == MAP_FAILED)
+		return 5;
+	memcpy(shared, "renderer-done", 14);
+	return write(ipc, "k", 1) == 1 ? 0 : 6;
+}
+
+static int stress_cycle(void)
+{
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv))
+		return 10;
+	fcntl(sv[0], F_SETFD, FD_CLOEXEC);
+	int shm = memfd_create("stress-shm", MFD_CLOEXEC);
+	if (shm < 0 || ftruncate(shm, 4096)) {
+		if (shm >= 0)
+			close(shm);
+		close(sv[0]);
+		close(sv[1]);
+		return 11;
+	}
+	char ipc_arg[32];
+	snprintf(ipc_arg, sizeof ipc_arg, "--ipc=%d", sv[1]);
+	char *extra[] = { ipc_arg };
+	pid_t pid = spawn_role("stress-renderer", extra, 1);
+	close(sv[1]);
+	int rc = 0;
+	char ack = 0;
+	if (pid < 0)
+		rc = 12;
+	else if (send_fds(sv[0], &shm, 1, "work", 4))
+		rc = 13;
+	else if (read(sv[0], &ack, 1) != 1 || ack != 'k')
+		rc = 14;
+	if (rc && pid > 0)
+		kill(pid, SIGKILL);
+	int status = 0;
+	if (pid > 0 && (!wait_exit(pid, &status) || !exited_with(status, 0)) && !rc)
+		rc = WIFEXITED(status) ? 20 + WEXITSTATUS(status) : 15;
+	if (!rc) {
+		char seen[14] = "";
+		if (pread(shm, seen, sizeof seen, 0) != (ssize_t)sizeof seen || memcmp(seen, "renderer-done", 14))
+			rc = 16;
+	}
+	close(sv[0]);
+	close(shm);
+	return rc;
+}
+
+static int stress_worker(void)
+{
+	for (int i = 0; i < stress_cycles; i++) {
+		int rc = stress_cycle();
+		if (rc)
+			return rc;
+	}
+	return 0;
+}
+
+static int count_processes(void)
+{
+	DIR *d = opendir("/proc");
+	if (!d)
+		return -1;
+	int n = 0;
+	struct dirent *e;
+	while ((e = readdir(d)))
+		if (e->d_name[0] >= '1' && e->d_name[0] <= '9')
+			n++;
+	closedir(d);
+	return n;
+}
+
+static long meminfo_free_kib(void)
+{
+	char text[4096];
+	int fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+	ssize_t n = fd < 0 ? -1 : read(fd, text, sizeof text - 1);
+	if (fd >= 0)
+		close(fd);
+	if (n <= 0)
+		return -1;
+	text[n] = 0;
+	const char *at = strstr(text, "MemFree:");
+	return at ? strtol(at + strlen("MemFree:"), 0, 10) : -1;
+}
+
+static int stress_workers(int *first_rc)
+{
+	pid_t workers[STRESS_WORKERS] = {0};
+	for (int i = 0; i < STRESS_WORKERS; i++) {
+		workers[i] = fork();
+		if (workers[i] == 0)
+			_exit(stress_worker());
+		if (workers[i] < 0) {
+			*first_rc = errno;
+			break;
+		}
+	}
+	int ok_workers = 0;
+	for (int i = 0; i < STRESS_WORKERS; i++) {
+		if (workers[i] <= 0)
+			continue;
+		int status = 0;
+		if (wait_exit(workers[i], &status) && exited_with(status, 0))
+			ok_workers++;
+		else if (!*first_rc)
+			*first_rc = WIFEXITED(status) ? WEXITSTATUS(status) : 200 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+	}
+	return ok_workers;
+}
+
+static int role_stress(int argc, char **argv)
+{
+	const char *cycles = arg_value(argc, argv, "--cycles");
+	if (cycles) {
+		char *end;
+		long n = strtol(cycles, &end, 10);
+		if (*end || n < 1 || n > 10000)
+			return 64;
+		stress_cycles = (int)n;
+	}
+	alarm(170);
+	int first_rc = 0;
+	int warm_workers = stress_workers(&first_rc);
+	record("stress_warmup", warm_workers == STRESS_WORKERS, "workers=%d,first_rc=%d", warm_workers, first_rc);
+	int procs_before = count_processes();
+	long free_before = meminfo_free_kib();
+	int ok_workers = warm_workers == STRESS_WORKERS ? stress_workers(&first_rc) : 0;
+	record("stress_renderer_cycles", ok_workers == STRESS_WORKERS, "workers=%d,cycles=%d,ok_workers=%d,first_rc=%d",
+		STRESS_WORKERS, stress_cycles, ok_workers, first_rc);
+	int procs_after = count_processes();
+	record("stress_processes_restored", procs_before > 0 && procs_after == procs_before, "before=%d,after=%d", procs_before,
+		procs_after);
+	long free_after = meminfo_free_kib();
+	long delta = free_before - free_after;
+	record("stress_memory_restored", free_before > 0 && free_after > 0 && delta <= STRESS_MEMORY_SLACK_KIB,
+		"free_before_kib=%ld,free_after_kib=%ld,delta_kib=%ld,slack_kib=%d", free_before, free_after, delta,
+		STRESS_MEMORY_SLACK_KIB);
+	char line[128];
+	int len = snprintf(line, sizeof line, "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS",
+		passed, failed);
+	emit(line, (size_t)len);
+	alarm(0);
+	return failed ? 1 : 0;
+}
+
 static sigjmp_buf watchdog_jump;
 static volatile sig_atomic_t watchdog_armed;
 
@@ -1817,5 +1980,9 @@ int main(int argc, char **argv)
 		return role_sandbox_probe();
 	if (!strcmp(role, "zygote"))
 		return role_zygote(argc, argv);
+	if (!strcmp(role, "stress"))
+		return role_stress(argc, argv);
+	if (!strcmp(role, "stress-renderer"))
+		return role_stress_renderer(argc, argv);
 	return 64;
 }

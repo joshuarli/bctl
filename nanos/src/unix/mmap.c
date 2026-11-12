@@ -1259,8 +1259,9 @@ static sysreturn vmap_update_protections_locked(process p, range q, u32 newflags
     while (range_span(r)) {
         vmap vm = (vmap)rangemap_lookup(pvmap, r.start);
         vmap_assert(vm != INVALID_ADDRESS);
+        u64 next = MIN(r.end, vm->node.r.end);
         vmap_update_flags_intersection(pvmap, q, VMAP_FLAG_PROT_MASK, newflags, vm);
-        r.start = MIN(r.end, vm->node.r.end);
+        r.start = next;
     }
     address_space_update_map_flags(p->vm->as, q.start, range_span(q), pageflags_from_vmflags(newflags));
     vmap_paranoia_locked(pvmap);

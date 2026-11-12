@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs|9p|debug|metrics|probe-native|probe|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs|9p|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -77,6 +77,7 @@ suite_harness() {
 		case_verdict writev_iov "$smp" 20 PASS '' "$FIXTURES/writev_iov"
 		case_verdict wait_nochild "$smp" 20 PASS '' "$FIXTURES/wait_nochild"
 		case_verdict low_user_va "$smp" 20 PASS '' "$FIXTURES/low_user_va"
+		case_verdict mprotect_merge "$smp" 90 PASS '' "$FIXTURES/mprotect_merge"
 		case_verdict fork_isolation "$smp" 20 PASS '' "$FIXTURES/fork_isolation"
 		case_verdict exec_self "$smp" 20 PASS '' "$FIXTURES/exec_self"
 		case_verdict process_stress "$smp" 120 PASS '' "$FIXTURES/process_stress"
@@ -168,25 +169,45 @@ probe_nanos() {
 	for n in $probe_names; do set -- "$@" --expect-test "$n"; done
 	total=$(printf '%s\n' $probe_names | wc -l)
 	for smp in 1 2 4; do
-		line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 180 --label "probe-$bin-smp$smp" "$@" "$IMAGES/$bin.img" || :)
-		dir=${line##* dir=}
-		pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
-		case $line in
-		"RUN verdict=PASS "*)
-			if [ -n "$known_red" ]; then status=FAIL note="known-red case now passes: delete its known-red marker"; failures=$((failures + 1))
-			else status=PASS note="$pass/$total checks"; fi ;;
-		*)
-			if [ -n "$known_red" ]; then status=KNOWN-RED note="$pass/$total checks pass; $known_red"
-			else status=FAIL note="${line%% dir=*}"; failures=$((failures + 1)); fi ;;
-		esac
-		printf '%-9s %-18s smp=%s  %s\n' "$status" "$bin" "$smp" "$note"
-		[ "$status" = PASS ] || printf '          log: %s\n' "$dir"
+		iteration=1
+		while [ "$iteration" -le "$probe_repeat" ]; do
+			line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 180 --label "probe-$bin-smp$smp-$iteration" "$@" "$IMAGES/$bin.img" || :)
+			dir=${line##* dir=}
+			pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
+			case $line in
+			"RUN verdict=PASS "*)
+				if [ -n "$known_red" ]; then status=FAIL note="known-red case now passes: delete its known-red marker"; failures=$((failures + 1))
+				else status=PASS note="$pass/$total checks"; fi ;;
+			*)
+				if [ -n "$known_red" ]; then status=KNOWN-RED note="$pass/$total checks pass; $known_red"
+				else status=FAIL note="${line%% dir=*}"; failures=$((failures + 1)); fi ;;
+			esac
+			printf '%-9s %-18s smp=%s  %s\n' "$status" "$bin" "$smp" "$note"
+			[ "$status" = PASS ] || printf '          log: %s\n' "$dir"
+			[ "$status" != FAIL ] || return
+			iteration=$((iteration + 1))
+		done
 	done
 }
 
 suite_probe() {
 	linux make -s -C "$ROOT/tests/mini_chromium"
+	if [ "$probe_stress" -eq 1 ]; then
+		linux "$ROOT/dev/image.sh" --klib tmpfs --klib shmem --arg --role=stress \
+			-o "$IMAGES/probe-stress.img" "$PROBES/mini_chromium" >/dev/null
+		for smp in 1 2 4; do
+			line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 180 --label "probe-stress-smp$smp" \
+				--expect-test stress_warmup --expect-test stress_renderer_cycles \
+				--expect-test stress_processes_restored --expect-test stress_memory_restored "$IMAGES/probe-stress.img" || :)
+			case $line in
+			"RUN verdict=PASS "*) printf 'PASS      renderer-stress    smp=%s\n' "$smp" ;;
+			*) failures=$((failures + 1)); printf 'FAIL      renderer-stress    smp=%s  %s\n' "$smp" "$line"; return ;;
+			esac
+		done
+		return
+	fi
 	probe_nanos mini_chromium '' --klib tmpfs --klib shmem
+	[ "$failures" -eq 0 ] || return
 	probe_nanos mini_chromium_raw ''
 }
 
@@ -320,6 +341,24 @@ suite_external() {
 }
 
 [ $# -ge 1 ] || usage
+probe_repeat=1 probe_stress=0
+if [ "$1" = probe ]; then
+	shift
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--repeat)
+			[ $# -ge 2 ] || die "probe --repeat needs a count"
+			case $2 in '' | *[!0-9]*) die "probe --repeat needs a positive integer" ;; esac
+			[ "$2" -gt 0 ] && [ "$2" -le 10000 ] || die "probe --repeat count must be 1..10000"
+			probe_repeat=$2; shift 2 ;;
+		--stress) probe_stress=1; shift ;;
+		-*) die "unknown probe option: $1" ;;
+		*) break ;;
+		esac
+	done
+	[ "$probe_repeat" -eq 1 ] || [ "$probe_stress" -eq 0 ] || die "choose --repeat or --stress"
+	set -- probe "$@"
+fi
 mkdir -p "$IMAGES"
 "$ROOT/dev/build.sh" >/dev/null
 for suite in "$@"; do

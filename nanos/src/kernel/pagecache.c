@@ -127,7 +127,7 @@ static inline void pagecache_unlock_volume(pagecache_volume pv)
 /* TODO revisit node locking */
 static inline void pagecache_lock_node(pagecache_node pn)
 {
-    spin_lock(&pn->pages_lock);
+    spin_lock_flush(&pn->pages_lock);
 }
 
 static inline boolean pagecache_trylock_node(pagecache_node pn)
