@@ -10,15 +10,6 @@ Next: 15
 - **Fix with:** `lifecycle-concurrency`
 - **Effort:** S (hours)
 
-### BCTL-14 · P3 · A command right after a daemon restart can still fail with a connection reset
-
-- **Area:** Concurrency
-- **Where:** `tests/interop/checks.py:444`, the CLI's daemon connect path in `crates/bctl/src/main.rs`
-- **Problem:** Interop's `job/daemon` check kills the daemon with `kill -9` and then polls `bctl runs N`. In 1 of 3 Linux SmolVM runs that poll failed with `DAEMON_UNREACHABLE: Connection reset by peer (os error 104)` while the new daemon was adopting the session, which aborted the suite at 102 checks. `docs/compatibility.md` records an earlier fix that treats a reset like a refused connection when the daemon lock is free; here the new daemon already held the lock.
-- **Recommendation:** Treat a reset from a socket whose daemon holds the lock but has not finished starting as retryable within the command's deadline, and cover the restart window in a daemon test.
-- **Fix with:** `lifecycle-concurrency`
-- **Effort:** S (hours)
-
 ### BCTL-10 · P3 · The web UI has no tone for paused sessions
 
 - **Area:** Types
@@ -26,4 +17,13 @@ Next: 15
 - **Problem:** The daemon reports `paused` sessions (`crates/bctl/src/daemon.rs:806`), but `SessionView["state"]` omits `paused`, so the type is wrong and `stateTone` returns undefined for a paused session's badge.
 - **Recommendation:** Add `paused` to the state union and a tone for it in `stateTone`, and check the badge renders for a paused session.
 - **Fix with:** none
+- **Effort:** S (hours)
+
+### BCTL-14 · P3 · A command right after a daemon restart can still fail with a connection reset
+
+- **Area:** Concurrency
+- **Where:** `tests/interop/checks.py:444`, the CLI's daemon connect path in `crates/bctl/src/main.rs`
+- **Problem:** Interop's `job/daemon` check kills the daemon with `kill -9` and then polls `bctl runs N`. In 1 of 3 Linux SmolVM runs that poll failed with `DAEMON_UNREACHABLE: Connection reset by peer (os error 104)` while the new daemon was adopting the session, which aborted the suite at 102 checks. `docs/compatibility.md` records an earlier fix that treats a reset like a refused connection when the daemon lock is free; here the new daemon already held the lock.
+- **Recommendation:** Treat a reset from a socket whose daemon holds the lock but has not finished starting as retryable within the command's deadline, and cover the restart window in a daemon test.
+- **Fix with:** `lifecycle-concurrency`
 - **Effort:** S (hours)
