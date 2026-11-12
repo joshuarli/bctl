@@ -91,3 +91,42 @@ remains open because 9p ownership, bctl shutdown, and external-client measuremen
 work remain. Perf gate deferred: host busy. The earlier browser-use navigation
 timeout is also unclosed. No macOS or AArch64 qualification is claimed.
 G4.2's required wall-time and per-boot median report remains outstanding.
+
+## Quiet-host resumption, 2026-11-12
+
+The seven-round Linux external-client measurement completed with both
+`perf-gate-ready` checks passing. The samples and configuration are recorded
+in [bctl performance](../../bctl/docs/performance.md#linux-x86_64-2026-11-12).
+Raw evidence: `.work/tmp/resume-external-measure.log` and
+`resume-measure-gate-{before,after}.log`. No improvement is claimed.
+
+G4.2 repetition at Hydrogen `88561473` passes all 300 cold boots in 120.46 s
+wall time, including setup and native references. The per-boot median is
+0.275 s, with range 0.12–0.84 s. Each sample covers QEMU start through guest
+exit. Both quiet-host checks pass. The main and raw probes each run 50 times
+at 1, 2, and 4 CPUs. Evidence: `.work/tmp/resume-g4-repeat.log`,
+`resume-g4-gate-{before,after}.log`, and `.work/runs/20261112T0336*` through
+`20261112T0338*`. This closes the repetition timing report for that revision.
+
+The vsock COW fixture reproduces a TLB rendezvous deadlock before repair.
+One CPU spins in `vsock_events_internal` with interrupts disabled. The other
+waits in `flush_entry_post`. Making socket-lock acquisition service TLB
+flushes repairs that two-CPU case. Four CPUs expose a second waiter in
+`virtio_sock_rx_complete`'s packet-ordering loop. That loop must also service
+TLB flushes while waiting for an earlier receive to complete.
+
+`VHOST_DEVICE_VSOCK=/path/to/vhost-device-vsock dev/test.sh vsock` now runs
+100 connections at each of 1, 2, and 4 CPUs. Each connection forks a child,
+receives 256 KiB into COW pages while another thread polls the socket,
+validates every byte, and checks the parent's pages remain unchanged.
+The original kernel passes at one CPU and times out at two. The socket-only
+repair passes at two and times out at four. Both repairs together pass all
+three configurations. Evidence: `.work/tmp/resume-vsock-before.log`,
+`resume-vsock-after.log`, `resume-vsock-after2.log`,
+`resume-vsock-cow/stacks.log`, and `resume-vsock-four-stacks.log`.
+This proves the vsock deadlocks. Browser shutdown qualification remains open
+until the refreshed image passes repeated shutdown and interop.
+
+bctl `f17507d` commits failure retention and the Linux measurement report.
+Three filesystem fault-injection tests prove that snapshot and retention
+errors cannot prevent shutdown cleanup or replace the original failure code.

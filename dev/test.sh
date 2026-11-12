@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs|9p|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -374,6 +374,12 @@ for suite in "$@"; do
 		for smp in 1 2; do
 			case_p9=1:$share case_verdict p9_close "$smp" 60 PASS '' --mount virtfs1:/shared "$FIXTURES/p9_close"
 		done ;;
+	vsock)
+		[ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "vsock suite requires Linux x86_64"
+		[ -x "${VHOST_DEVICE_VSOCK:-}" ] || die "set VHOST_DEVICE_VSOCK to the vhost-device-vsock executable"
+		make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/vsock_cow"
+		"$ROOT/dev/image.sh" -o "$IMAGES/vsock-cow.img" "$FIXTURES/vsock_cow" >/dev/null
+		python3 "$ROOT/dev/test-vsock.py" || failures=$((failures + 1)) ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

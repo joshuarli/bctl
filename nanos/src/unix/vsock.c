@@ -60,7 +60,7 @@ typedef struct vsock_rxbuf {
     u64 offset;
 } *vsock_rxbuf;
 
-#define vsock_lock(s)   spin_lock(&(s)->sock.f.lock)
+#define vsock_lock(s)   spin_lock_flush(&(s)->sock.f.lock)
 #define vsock_unlock(s) spin_unlock(&(s)->sock.f.lock)
 
 static sysreturn vsock_addr_check(struct sockaddr_vm *addr, socklen_t addrlen)

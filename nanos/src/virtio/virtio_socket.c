@@ -248,6 +248,9 @@ closure_func_basic(vqfinish, void, virtio_sock_rx_complete,
     while ((volatile u32)vs->rx_seqno != rxbuf->seqno) {
         if (++attempts == 0)
             goto out;
+        u64 flags = irq_disable_save();
+        page_invalidate_flush();
+        irq_restore(flags);
         kern_pause();
     }
 
