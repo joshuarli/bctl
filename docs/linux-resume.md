@@ -1,39 +1,35 @@
 # Linux handoff, 2026-11-12
 
-Linux qualification is incomplete. The kernel revision bctl pins is
-`dd0ba2c7`. The [campaign report](campaign-report.md) records the repairs
-and checks; [bctl compatibility](../../bctl/docs/compatibility.md) records
-interop.
+Linux qualification is incomplete. bctl `6f27d89` pins Hydrogen `47bc0255`.
+The [campaign report](campaign-report.md) records the repairs and checks;
+[bctl compatibility](../../bctl/docs/compatibility.md) records interop.
 
 ## Done
 
-- **Quiet-host measurements:** the seven-round external-client measurement,
-  and G4.2's 300-boot timing (median 0.275 s per boot).
-- **vsock:** the receive-path TLB rendezvous deadlocks.
-- **9p and mutex:** 9p dentry and fid ownership, and the mutex wakeup race.
-- **tmpfs:** the page-cache `fs_reserve` use-after-free, with the
-  `fsfile_lifetime` regression.
-- **vmap lock:** the boot hang where `mmap` slept on a filesystem mutex while
-  holding the vmap lock.
-- **bctl `3b134a4`:** pins `dd0ba2c7`. Interop passes 113 of 113 in two of
-  five runs.
+- Quiet-host measurements: the external-client run, and G4.2's 300-boot
+  timing.
+- vsock, 9p, mutex, tmpfs page-cache and vmap lock repairs.
+- Since `dd0ba2c7`:
+  - the procfs `fstat` halt;
+  - both klib dependency races;
+  - page-cache commits under spinlocks;
+  - the unlocked symbol table;
+  - the futex requeue reference race.
+- Interop at `47bc0255` passes 113 of 113 in the last three runs.
 
 ## Remaining work
 
-Repeated `bctl up`/`bctl down` on the copied failing profile still fails about
-once per 170 cycles across four parallel loops. Fix these in order and rerun
-the loops after each repair:
+Four parallel `bctl up`/`bctl down` loops fail about once per 500 cycles on
+the copied profile and once per 300 on fresh profiles (`FRESH=1`). Fix in
+this order and rerun both loop kinds after each repair:
 
-1. **Writes after free in early boot.** Evidence: a stale virtio-scsi `READ_16`
-   completion closure, objcache free-list corruption, a run-queue task pointer
-   off by one, and `table_find` faults. Find the writer before changing code.
-2. **Epoll lock-order deadlock.** `release_epollfd` and
-   `notify_dispatch_with_arg` deadlock during shutdown.
-3. **Idle hang after `bctl-guest: ready`.** Both CPUs sleep while the host's
+1. **Null scheduler task.** `sched_enqueue` finds a null element in a run
+   queue. Find what writes into the queue's vector before changing code.
+2. **Idle hang after `bctl-guest: ready`.** Both CPUs sleep while the host's
    check request times out. Suspect a lost vsock wakeup.
 
-Then repeat interop twice and refresh final gate acceptance. macOS and AArch64
-were not tested in this Linux session.
+Then repeat interop twice and refresh final gate acceptance. macOS and
+AArch64 were not tested in this Linux session.
 
 ## Tools
 
@@ -47,13 +43,17 @@ were not tested in this Linux session.
   home in place.
 - **Pin after a loop run:** the driver rewrites `runtime/build-nanos.sh`.
   Restore the committed pin when you finish.
-- **Debug probes:** the unpushed branch `debug/scsi-stale-completion`, in
-  worktree `.work/wt/scsi-debug`, carries them, each disabled for release:
+- **Debug probes:** the unpushed branches `debug/scsi-stale-completion`
+  (`.work/wt/scsi-debug`) and `debug/null-get` (`.work/wt/get-debug`) carry
+  them. Neither is for release:
   - a stale virtio-scsi completion check;
   - recording of the vmap lock owner;
   - a report when a context suspends while holding the vmap lock;
   - SCSI probe logging;
-  - `MEMDEBUG_MCACHE`, with a write-after-free check on reallocation.
+  - `MEMDEBUG_MCACHE`, with a write-after-free check on reallocation;
+  - on `debug/null-get`: a report when a context suspends holding the vmap
+    or page-cache global lock, and a double-completion check for
+    virtio-scsi requests.
 
   The write-after-free check produced false positives on 160-byte chunks;
   review it before relying on it.

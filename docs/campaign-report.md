@@ -217,3 +217,46 @@ The debug probes are on the unpushed branch `debug/scsi-stale-completion`.
 The loop drivers are `../bctl/.work/tmp/parallel-shutdown.sh` and
 `linux-shutdown-capture.sh`. Shutdown qualification and final gate
 acceptance remain open. macOS and AArch64 were not retested.
+
+## Boot and shutdown faults after `dd0ba2c7`
+
+Fresh bctl profiles failed within two up/down cycles, which made the
+remaining faults quick to capture. Each repair below was checked with four
+parallel loops.
+
+- `89012978`: `fstat` on a `/proc/<pid>/…` descriptor whose process had
+  exited halted the guest ("cannot get from unknown value"). This was the
+  shutdown fault in the original handoff. The `proc_fstat_exited` fixture
+  halts before the repair and passes after it.
+- `66c581ca`, `3b321a83`: autoloaded klibs raced their own dependency check.
+  shmem failed with "missing dependencies" when it finished loading before
+  tmpfs was counted, or before tmpfs's retry pass. No fixture reproduces the
+  race; 400 Hydrogen boots with both klibs passed before the repair.
+- `1b378efd`, `aab4bd76`: fsync committed dirty page-cache nodes under the
+  global lock, and called `fs_write` under the node lock. `tfs_write` can
+  suspend on the filesystem mutex while holding either spinlock. The first
+  commit alone made a copied profile fail sooner, after 275 cycles against
+  600 clean at `66c581ca`. The second restored 577 cycles with one unrelated
+  failure.
+- `d771804c`: the kernel symbol table had no lock and allocated from the
+  unlocked general heap. Kernel, klib and exec loads update it from different
+  CPUs while klib dependency resolution reads it. The early-boot corruption
+  (stale virtio-scsi completions, objcache free-list asserts) stopped in the
+  next 1,078 cycles. Causation is inferred from that change in rate.
+- `47bc0255`: `futex_requeue` moved its waiters' references after releasing
+  the futex locks. A requeued waiter woken in that window freed the
+  destination futex. `futex_requeue_race` crashed or hung 8 of 10 runs at
+  four CPUs before the repair and passes 10 of 10 after it.
+
+bctl `6f27d89` pins `47bc0255`. It also restarts the daemon when a dead
+daemon's socket resets a connection; two interop runs had failed that way.
+The next three interop runs pass 113 of 113.
+
+The loops now fail about once per 500 cycles on the copied profile and once
+per 300 on fresh profiles. Two faults remain open:
+
+- A null task in a scheduler run queue, reached from `sched_enqueue`. The
+  priority queue code checks out, so a write after free into the queue's
+  vector is suspected.
+- An idle hang. The guest prints `bctl-guest: ready`, both CPUs sleep in
+  `kernel_sleep`, and the host's check times out.
