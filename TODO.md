@@ -1,5 +1,23 @@
 Prefix: BCTL
-Next: 12
+Next: 14
+
+### BCTL-12 · P2 · `tab new URL` returns before the navigation commits
+
+- **Area:** Concurrency
+- **Where:** `crates/bctl/src/tabs.rs:94`, `crates/bctl/src/page.rs:308`, `tests/interop/checks.py:550`
+- **Problem:** `bctl tab new SESSION URL` returns once the target exists, while its document is still the initial `about:blank`. `bctl page wait SESSION --load load` then succeeds at once (7 to 9 ms) on that blank document, and the next `page eval` runs in it: `document.cookie` throws `SecurityError` and `location.href` is `about:blank`. Two seconds later the same tab shows the requested page. Interop's "cookies stay in their profile" check failed 3 of 3 runs on Linux SmolVM this way after passing 2 of 2 earlier, so any script that opens a tab and waits for load can act on the wrong document.
+- **Recommendation:** Make `tab new URL` return only after the navigation to URL commits, or make a load wait on a tab with a pending navigation wait for that navigation. Add a VM test that opens a tab on a slow host fixture and evaluates immediately after `page wait --load load`.
+- **Fix with:** `lifecycle-concurrency`
+- **Effort:** S (hours)
+
+### BCTL-13 · P2 · A grab waiting for a login keeps its CDP controller, so the operator cannot attach
+
+- **Area:** Architecture
+- **Where:** `crates/bctl/src/gateway.rs`, `crates/bctl/tests/runs.rs:343`, `docs/jobs.md:195`
+- **Problem:** `docs/jobs.md` says a run in `needs-interaction` is resolved by acting "in the session's browser (the dashboard or any CDP client)". Since `b8af2a8` gave each session one external CDP controller, Grab's control URL stays attached while it waits, and the operator's own URL gets `409 Another CDP controller is attached`. `cargo test -p bctl --test runs -- --ignored` fails `a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_in_the_same_browser` every run with `parse /json/version JSON` on that 409 body. Unproven whether the dashboard takeover path also fails.
+- **Recommendation:** Decide which side yields: either Grab closes its CDP sockets while it waits for interaction, or the gateway lets an operator attach while the session's run is `needs-interaction`. Keep the runs test as the regression check, and update `docs/jobs.md` to match.
+- **Fix with:** `architect`
+- **Effort:** M (days)
 
 ### BCTL-11 · P2 · Linux SmolVM guests lose module fetches to the host
 
