@@ -218,6 +218,7 @@ closure_function(4, 2, void, autoload_klib_complete,
     klib_autoload autoload = bound(autoload);
     list retry_klibs = &autoload->retry_klibs;
     status s;
+  dispatch:
     switch (rv) {
     case KLIB_INIT_IN_PROGRESS:
     case KLIB_INIT_OK: {
@@ -258,6 +259,13 @@ closure_function(4, 2, void, autoload_klib_complete,
     case KLIB_MISSING_DEP:
         bound(kl) = kl;
         spin_lock(&autoload->lock);
+        /* A dependency may have finished loading after the first attempt and before this lock,
+         * with its retry pass finding nothing to retry. */
+        rv = klib_initialize(kl, bound(sh));
+        if (rv != KLIB_MISSING_DEP) {
+            spin_unlock(&autoload->lock);
+            goto dispatch;
+        }
         if (autoload->pending-- > 1) {
             /* Missing dependencies could be satisfied by pending klibs. */
             list_push_back(retry_klibs, &bound(l));
