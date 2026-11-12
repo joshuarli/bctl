@@ -1,10 +1,12 @@
 mod common;
 
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 use bctl_cdp::protocol::{AttachToTarget, Command as CdpCommand, Effect, Empty, TargetId};
 use bctl_cdp::Scope;
-use common::{Home, assert_ok, dashboard_viewer, eventually, http, outside_client, soon};
+use common::{Fixture, Home, assert_ok, dashboard_viewer, eventually, http, outside_client, soon, up_with_fixtures};
 use futures_lite::future::block_on;
 use miniserde::{Deserialize, Serialize, json};
 
@@ -166,5 +168,37 @@ fn n2_the_binding_survives_a_daemon_kill_but_not_a_new_generation_and_waits_for_
     let stale = after.selected.unwrap();
     assert!(!fresh.targets.iter().any(|t| t.id == stale));
     assert_eq!(refused(&home, &["use", s, &stale]).code, "NO_SUCH_TARGET");
+    assert_ok(&home.bctl(&["down", s]));
+}
+
+const SLOW_RESPONSE: Duration = Duration::from_millis(1500);
+
+fn slow_site(path: &str, _port: u16) -> String {
+    thread::sleep(SLOW_RESPONSE);
+    format!("<!doctype html><title>slow</title><p id=path>{path}</p>")
+}
+
+fn stdout(home: &Home, args: &[&str]) -> String {
+    let output = home.bctl(args);
+    assert_ok(&output);
+    String::from_utf8_lossy(&output.stdout).trim().trim_matches('"').to_string()
+}
+
+#[test]
+#[ignore = "boots real VMs: needs runtime/build.sh and the BCTL_TEST_IMAGE image (default helium) in .work/images"]
+fn a_new_tab_with_a_slow_page_returns_on_that_page_so_a_load_wait_and_the_next_command_act_on_it() {
+    let fixture = Fixture::start(slow_site);
+    let home = Home::new("tabs-slow");
+    let session = format!("{}-s", home.prefix());
+    let s = session.as_str();
+    up_with_fixtures(&home, s, "tabs-slow");
+
+    let url = fixture.url("/slow.html");
+    let opened = listed(&home, &["new", s, &url]);
+    assert!(opened.selected.is_some(), "a new tab is selected");
+
+    assert_ok(&home.bctl(&["page", "wait", s, "--load", "load"]));
+    assert_eq!(stdout(&home, &["page", "eval", s, "location.href"]), url);
+    assert_eq!(stdout(&home, &["page", "eval", s, "document.title"]), "slow");
     assert_ok(&home.bctl(&["down", s]));
 }

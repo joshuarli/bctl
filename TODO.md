@@ -1,15 +1,6 @@
 Prefix: BCTL
 Next: 14
 
-### BCTL-12 · P2 · `tab new URL` returns before the navigation commits
-
-- **Area:** Concurrency
-- **Where:** `crates/bctl/src/tabs.rs:94`, `crates/bctl/src/page.rs:308`, `tests/interop/checks.py:550`
-- **Problem:** `bctl tab new SESSION URL` returns once the target exists, while its document is still the initial `about:blank`. `bctl page wait SESSION --load load` then succeeds at once (7 to 9 ms) on that blank document, and the next `page eval` runs in it: `document.cookie` throws `SecurityError` and `location.href` is `about:blank`. Two seconds later the same tab shows the requested page. Interop's "cookies stay in their profile" check failed 3 of 3 runs on Linux SmolVM this way after passing 2 of 2 earlier, so any script that opens a tab and waits for load can act on the wrong document.
-- **Recommendation:** Make `tab new URL` return only after the navigation to URL commits, or make a load wait on a tab with a pending navigation wait for that navigation. Add a VM test that opens a tab on a slow host fixture and evaluates immediately after `page wait --load load`.
-- **Fix with:** `lifecycle-concurrency`
-- **Effort:** S (hours)
-
 ### BCTL-13 · P2 · A grab waiting for a login keeps its CDP controller, so the operator cannot attach
 
 - **Area:** Architecture

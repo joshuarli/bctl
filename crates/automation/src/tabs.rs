@@ -1,11 +1,14 @@
 use std::fmt;
 use std::time::Instant;
 
-use bctl_cdp::protocol::{Command, Effect, Empty, GetTargets, TargetId, TargetInfo};
+use bctl_cdp::protocol::{AttachToTarget, Command, DetachFromTarget, Effect, Empty, GetTargets, TargetId, TargetInfo};
 use bctl_cdp::{CallError, Connection, Generation, Scope};
 use miniserde::{Deserialize, Serialize};
 
+use crate::commands::Navigate;
 use crate::{COMMAND_DEADLINE, SafeUrl, TargetScope};
+
+const BLANK: &str = "about:blank";
 
 /// A page target: one tab or popup. Its CDP `targetId` is its identity for its whole life.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,12 +193,29 @@ impl<'a, S: BindingStore> Tabs<'a, S> {
         Ok(Listing { selection: Selection::Selected(page.id.clone()), targets })
     }
 
-    /// Opens a page target at `url` and selects it.
+    /// Opens a page target at `url` and selects it. Returns once the navigation to `url` has committed, or has
+    /// committed the browser's error page for it, so the target never shows its initial `about:blank` in place
+    /// of a page that was asked for. A navigation that commits no document, such as a download, leaves the
+    /// target blank.
     pub async fn open(&self, url: &str) -> Result<Listing, TabError> {
-        let created = self.call(&CreateTarget { url: url.to_string() }).await?;
+        let created = self.call(&CreateTarget { url: BLANK.to_string() }).await?;
         self.store.save(self.generation(), &Binding { target: created.target_id.clone(), url: SafeUrl::new(url) })?;
+        if url != BLANK {
+            self.commit(&created.target_id, url).await?;
+        }
         let targets = self.pages().await?;
         Ok(Listing { selection: Selection::Selected(created.target_id), targets })
+    }
+
+    async fn commit(&self, target: &TargetId, url: &str) -> Result<(), CallError> {
+        let session = self.call(&AttachToTarget::new(target.clone())).await?.session_id;
+        let navigated = self.connection.call(Scope::Session(&session), &Navigate { url: url.to_string() }, Instant::now() + COMMAND_DEADLINE).await;
+        let detached = self.call(&DetachFromTarget { session_id: session }).await;
+        navigated?;
+        match detached {
+            Ok(_) | Err(CallError::Protocol { .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Closes a page target. Closing the selected one leaves nothing selected.

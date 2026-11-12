@@ -63,6 +63,11 @@ struct CreateParams {
 }
 
 #[derive(Deserialize)]
+struct NavigateParams {
+    url: String,
+}
+
+#[derive(Deserialize)]
 struct CloseParams {
     #[serde(rename = "targetId")]
     target_id: String,
@@ -121,6 +126,13 @@ impl Browser {
                 self.targets.push(Target { id: id.clone(), kind: "page", url, opener: None });
                 format!(r#"{{"targetId":"{id}"}}"#)
             }
+            "Target.attachToTarget" => r#"{"sessionId":"S1"}"#.to_string(),
+            "Page.navigate" => {
+                let url = json::from_str::<Params<NavigateParams>>(&request.text).unwrap().params.url;
+                self.targets.last_mut().unwrap().url = url;
+                r#"{"frameId":"F","loaderId":"L"}"#.to_string()
+            }
+            "Target.detachFromTarget" => "{}".to_string(),
             "Target.closeTarget" => {
                 let id = json::from_str::<Params<CloseParams>>(&request.text).unwrap().params.target_id;
                 self.vanish(&id);
@@ -236,8 +248,20 @@ fn opening_a_target_selects_it() {
     browser.serve(|| block_on(tabs.select(&id("A")))).unwrap();
     let listing = browser.serve(|| block_on(tabs.open("https://example.com/new?secret=1"))).unwrap();
     assert_eq!(ids(&listing.targets), ["A", "NEW1"]);
+    assert_eq!(listing.targets[1].url.as_str(), "https://example.com/new");
     assert_eq!(listing.selection, Selection::Selected(id("NEW1")));
+    let order: Vec<&str> = browser.methods.iter().map(String::as_str).filter(|m| !m.ends_with("getTargets")).collect();
+    assert_eq!(order, ["Target.createTarget", "Target.attachToTarget", "Page.navigate", "Target.detachFromTarget"]);
     assert_eq!(store.get(generation()), Some(Binding { target: id("NEW1"), url: SafeUrl::new("https://example.com/new") }));
+}
+
+#[test]
+fn opening_about_blank_attaches_to_nothing() {
+    let (mut browser, connection, _driver) = Browser::start(&[("A", "about:blank")]);
+    let store = MemoryStore::default();
+    let tabs = Tabs::new(&connection, &store);
+    browser.serve(|| block_on(tabs.open("about:blank"))).unwrap();
+    assert_eq!(browser.methods.iter().filter(|m| !m.ends_with("getTargets")).collect::<Vec<_>>(), ["Target.createTarget"]);
 }
 
 #[test]
