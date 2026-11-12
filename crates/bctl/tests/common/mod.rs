@@ -81,7 +81,9 @@ impl Home {
             } else {
                 let built = workspace.join(".work/runtime/nanos");
                 std::fs::create_dir_all(path.join("runtime/nanos")).unwrap();
-                std::os::unix::fs::symlink(built.join("bin/vhost-device-vsock"), path.join("runtime/nanos/vhost-device-vsock")).unwrap();
+                for tool in ["vhost-device-vsock", "virtiofsd"] {
+                    std::os::unix::fs::symlink(built.join("bin").join(tool), path.join("runtime/nanos").join(tool)).unwrap();
+                }
                 let kernel = format!("{name}.kernel.img");
                 std::os::unix::fs::symlink(workspace.join(".work/images").join(&kernel), path.join("images").join(&kernel)).unwrap();
             }
