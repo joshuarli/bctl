@@ -34,5 +34,5 @@ sha2 = "0.11"
 workspace = true
 
 [dev-dependencies]
-shadowdriver = { git = "https://github.com/joshuarli/shadowdriver", rev = "b69409e3034a478b0e8a3703e6dee84332eec90c" }
+shadowdriver = { git = "https://github.com/joshuarli/shadowdriver", rev = "b1e7b18d3a1f390eb0c56be0f29013687a19dcec" }
 async-io = "2"
