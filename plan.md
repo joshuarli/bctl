@@ -12,7 +12,9 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
 
 - **macOS resume (2026-11-12):** ARM harness, process probes, Helium, and
   200 fresh virtio-fs boots pass after moving filesystem initialization out
-  of the storage spinlock. Linux 9p, virtio-fs, and process regressions pass.
+  of the storage spinlock. Another 200 persistent appliance boots pass after
+  moving virtio-MMIO devices and queue vectors to the locked heap.
+  Linux 9p, virtio-fs, and process regressions pass.
   [macOS qualification](docs/macos-qualification.md) records the failure,
   repair, evidence, and independent-review gap.
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
