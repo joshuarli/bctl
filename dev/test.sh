@@ -327,17 +327,43 @@ suite_external() {
 	for bin in $EXTERNAL_BINS; do
 		line=$("$ROOT/dev/run.sh" --native --timeout 120 --label "external-$bin" "$EXTERNAL/$bin" || :)
 		case $line in
-		"RUN verdict=PASS "*) printf 'PASS      %-30s native\n' "$bin" ;;
+		"RUN verdict=PASS "*) ;;
 		*) failures=$((failures + 1)); printf 'FAIL      %-30s native  %s\n' "$bin" "${line%% dir=*}"; continue ;;
 		esac
+		ndir=${line##* dir=}
+		expected=$(jaq -r '.tests[].name' "$ndir/result.json" 2>/dev/null || :)
+		if [ -z "$expected" ]; then
+			failures=$((failures + 1)); printf 'FAIL      %-30s native  no case records\n          log: %s\n' "$bin" "$ndir"
+			continue
+		fi
+		printf 'PASS      %-30s native\n' "$bin"
 		"$ROOT/dev/image.sh" -o "$IMAGES/$bin.img" "$EXTERNAL/$bin" >/dev/null
 		for smp in 1 2; do
-			line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 120 --label "external-$bin-smp$smp" "$IMAGES/$bin.img" || :)
+			rc=0
+			line=$("$ROOT/dev/run.sh" --smp "$smp" --timeout 120 --label "external-$bin-smp$smp" "$IMAGES/$bin.img") || rc=$?
 			dir=${line##* dir=}
+			verdict=$(jaq -r 'select((.verdict | type) == "string" and (.tests | type) == "array") | .verdict' "$dir/result.json" 2>/dev/null || :)
+			detail=$(jaq -r '.detail // empty' "$dir/result.json" 2>/dev/null || :)
+			bad=''
+			case $verdict in
+			'') bad="verdict=none  no valid result.json (runner exit $rc)" ;;
+			PASS) [ "$rc" -eq 0 ] || bad="verdict=PASS  runner exit $rc" ;;
+			FAIL) case $detail in exit=* | test=*) ;; *) bad="verdict=FAIL detail=$detail" ;; esac ;;
+			*) bad="verdict=$verdict${detail:+ detail=$detail}" ;;
+			esac
+			if [ -n "$bad" ]; then
+				failures=$((failures + 1)); printf 'FAIL      %-30s smp=%s  %s\n          log: %s\n' "$bin" "$smp" "$bad" "$dir"
+				continue
+			fi
 			pass=$(jaq '[.tests[] | select(.status == "PASS")] | length' "$dir/result.json")
 			total=$(jaq '.tests | length' "$dir/result.json")
+			missing=$(jaq -r --arg want "$expected" '[.tests[].name] as $have | [$want | split("\n")[] | select(. as $n | $have | any(. == $n) | not)] | join(",")' "$dir/result.json")
 			lost=$(jaq -r --arg keep "$EXTERNAL_PASSING_ON_NANOS" '($keep | split(" ")) as $k | [.tests[] | select(.status != "PASS") | .name | select(. as $n | $k | any(. == $n or ($n | startswith(. + "_"))))] | join(",")' "$dir/result.json")
-			if [ -n "$lost" ]; then failures=$((failures + 1)); printf 'FAIL      %-30s smp=%s  regressed: %s\n          log: %s\n' "$bin" "$smp" "$lost" "$dir"
+			msg=''
+			[ -z "$missing" ] || msg="missing: $missing"
+			[ -z "$lost" ] || msg="${msg:+$msg; }regressed: $lost"
+			[ -n "$msg" ] || [ "$pass" != "$total" ] || [ "$verdict" = PASS ] || msg="verdict=$verdict with no failing case"
+			if [ -n "$msg" ]; then failures=$((failures + 1)); printf 'FAIL      %-30s smp=%s  %s\n          log: %s\n' "$bin" "$smp" "$msg" "$dir"
 			elif [ "$pass" = "$total" ]; then printf 'PASS      %-30s smp=%s  %s/%s\n' "$bin" "$smp" "$pass" "$total"
 			else printf 'KNOWN-RED %-30s smp=%s  %s/%s pass\n' "$bin" "$smp" "$pass" "$total"; fi
 		done

@@ -1,15 +1,6 @@
 Prefix: HYD
 Next: 3
 
-### HYD-1 · P1 · External regression suite reports crashed and incomplete runs as passing
-
-- **Area:** Tests
-- **Where:** `dev/test.sh:323`, `dev/test.sh:335`, `dev/test.sh:339`
-- **Problem:** `suite_external` discards the guest runner's exit status and overall verdict, then judges only the case records that exist. A crash before the first record produces zero passing cases, zero total cases, and no explicitly failing required name. The suite prints `PASS ... 0/0` and returns success. An incomplete list containing only passing cases has the same acceptance problem. At `e4aad9cc`, a bounded probe executed the unchanged suite function with controlled build and runner edges: the native run passed, both guest runs returned exit 1 with `verdict=CRASH` and `tests=[]`, and the suite printed two `PASS ... 0/0` lines with `failures=0` and exit 0. This proves the result adapter, not a new kernel crash.
-- **Recommendation:** Reject crashed, timed-out, malformed, or incomplete attempts before considering expected per-case failures. Capture the successful native run's case names and require the guest attempt to account for the expected cohort. Keep explicit failure allowances separate from terminal failure and missing records. Verify empty-crash, partial-crash, timeout, complete-pass, and complete-known-failure outcomes through this adapter.
-- **Fix with:** `test-audit`
-- **Effort:** S (hours)
-
 ### HYD-2 · P2 · The run harness leaves child processes alive on timeout and startup failure
 
 - **Area:** Concurrency
