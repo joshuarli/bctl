@@ -98,6 +98,7 @@ suite_harness() {
 		case_verdict unmap_empty "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/unmap_empty"
 		case_verdict fsfile_lifetime "$smp" 90 PASS '' --klib tmpfs --klib shmem "$FIXTURES/fsfile_lifetime"
 		case_verdict proc_fstat_exited "$smp" 40 PASS '' "$FIXTURES/proc_fstat_exited"
+		case_verdict futex_requeue_race "$smp" 90 PASS '' "$FIXTURES/futex_requeue_race"
 		case_verdict ipc_xproc "$smp" 60 PASS '' "$FIXTURES/ipc_xproc"
 		case_verdict creds_procfs "$smp" 60 PASS '' --klib tmpfs --klib shmem "$FIXTURES/creds_procfs"
 		case_verdict seccomp "$smp" 60 PASS '' "$FIXTURES/seccomp"

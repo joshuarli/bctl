@@ -309,13 +309,15 @@ static sysreturn futex_requeue(int *uaddr, boolean private, int nr_wake, int nr_
         moved = futex_requeue_locked(f, f2, nr_requeue);
         rv += moved;
     }
-    futex_unlock_pair(f, f2);
+    /* A requeued waiter can wake and drop its references on f2 as soon as f2 is unlocked, so its
+     * references must move with it before then. */
     if (moved && f != f2) {
         spin_lock(&futex_table.lock);
         f2->refcount += moved;
         f->refcount -= moved;
         spin_unlock(&futex_table.lock);
     }
+    futex_unlock_pair(f, f2);
   out:
     futex_put(f2);
     futex_put(f);
