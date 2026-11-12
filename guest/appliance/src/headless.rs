@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -81,11 +81,27 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
         echo_log_tail(&browser_log);
     }
     unsafe { libc::sync() };
-    if let Ok(mut stream) = shutdown_rx.try_recv() {
-        let _ = stream.write_all(if outcome.is_ok() { b"ok\n" } else { b"error\n" });
-        let _ = stream.shutdown_write();
+    if let Ok(stream) = shutdown_rx.try_recv() {
+        answer_stop(stream, outcome.is_ok());
     }
     outcome
+}
+
+trait HalfClose: Read + Write {
+    fn shutdown_write(&self) -> io::Result<()>;
+}
+
+impl HalfClose for VsockStream {
+    fn shutdown_write(&self) -> io::Result<()> {
+        VsockStream::shutdown_write(self)
+    }
+}
+
+fn answer_stop(mut stream: impl HalfClose, ok: bool) {
+    let _ = stream.write_all(if ok { b"ok\n" } else { b"error\n" });
+    let _ = stream.shutdown_write();
+    // Powering off can discard vsock data the host has not consumed yet, so wait until the host closes after reading the reply.
+    let _ = io::copy(&mut stream, &mut io::sink());
 }
 
 const LOG_TAIL_BYTES: usize = 16 * 1024;
@@ -198,4 +214,35 @@ fn stop_browser(child: &mut Child) -> Result<(), String> {
         eprintln!("bctl-guest: kill the browser: {error}");
     }
     Err(format!("the browser did not stop within {BROWSER_GRACE:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufRead;
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    impl HalfClose for UnixStream {
+        fn shutdown_write(&self) -> io::Result<()> {
+            self.shutdown(Shutdown::Write)
+        }
+    }
+
+    #[test]
+    fn the_stop_answer_holds_the_connection_until_the_host_has_read_it() {
+        let (host, guest) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let answering = thread::spawn(move || {
+            answer_stop(guest, true);
+            done_tx.send(()).unwrap();
+        });
+        let mut reply = String::new();
+        io::BufReader::new(&host).read_line(&mut reply).unwrap();
+        assert_eq!(reply, "ok\n");
+        assert_eq!(done_rx.recv_timeout(Duration::from_millis(200)), Err(mpsc::RecvTimeoutError::Timeout));
+        drop(host);
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        answering.join().unwrap();
+    }
 }
