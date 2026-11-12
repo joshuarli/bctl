@@ -260,3 +260,24 @@ per 300 on fresh profiles. Two faults remain open:
   vector is suspected.
 - An idle hang. The guest prints `bctl-guest: ready`, both CPUs sleep in
   `kernel_sleep`, and the host's check times out.
+
+## Remaining faults at `47bc0255`
+
+A longer run, about 2,100 cycles alternating copied and fresh profiles,
+corrects two conclusions above:
+
+- The early-boot stale virtio-scsi closure fault still occurs. `d771804c`
+  made it less frequent but did not remove it; its commit message overstates
+  the evidence.
+- The idle hang is not a lost guest interrupt. At four stalls, the guest's
+  vsock virtqueues show the device consumed nothing: `used.idx` equals
+  `last_used_idx`, rx has 64 buffers available, and tx has pending
+  descriptors. Both vhost-device-vsock queue threads sleep in
+  `futex_do_wait`. In copied-profile stalls rx `used.idx` is 0, so the
+  backend never processed a queue after boot.
+  Setting `DRIVER_OK` before the first rx kick, which the virtio spec
+  requires, did not change the rate. It was not committed.
+
+The loops fail about once per 420 cycles in that run. Next steps are the
+vhost-user start sequence between QEMU and vhost-device-vsock for the idle
+hang, and the write-after-free search for the boot fault.

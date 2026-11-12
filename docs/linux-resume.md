@@ -19,14 +19,19 @@ The [campaign report](campaign-report.md) records the repairs and checks;
 
 ## Remaining work
 
-Four parallel `bctl up`/`bctl down` loops fail about once per 500 cycles on
-the copied profile and once per 300 on fresh profiles (`FRESH=1`). Fix in
-this order and rerun both loop kinds after each repair:
+Four parallel `bctl up`/`bctl down` loops fail about once per 420 cycles
+across copied and fresh (`FRESH=1`) profiles. Fix in this order and rerun
+both loop kinds after each repair:
 
-1. **Null scheduler task.** `sched_enqueue` finds a null element in a run
-   queue. Find what writes into the queue's vector before changing code.
-2. **Idle hang after `bctl-guest: ready`.** Both CPUs sleep while the host's
-   check request times out. Suspect a lost vsock wakeup.
+1. **Idle hang after `bctl-guest: ready`.** The vsock device never consumes
+   any queue, and its backend threads are idle. `capture-stacks.py` records
+   the virtqueue indices and backend thread states. Investigate the
+   vhost-user start sequence between QEMU and vhost-device-vsock. Setting
+   `DRIVER_OK` before the first rx kick did not help.
+2. **Stale virtio-scsi completion in early boot.** It persists after
+   `d771804c`. Find the writer before changing code.
+3. **Null scheduler task.** `sched_enqueue` finds a null element in a run
+   queue.
 
 Then repeat interop twice and refresh final gate acceptance. macOS and
 AArch64 were not tested in this Linux session.
