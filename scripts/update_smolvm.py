@@ -551,7 +551,7 @@ def patch_records(patch_dir: Path) -> List[Tuple[str, str, str]]:
         tree = patch.name.split("-", 1)[0]
         if tree not in SOURCE_TREES:
             raise UpdateError(f"source patch names an unknown tree: {patch.name}")
-        records.append((patch.name, tree, hashlib.sha256(patch.read_bytes()).hexdigest()))
+        records.append((patch.name, "." if tree == "smolvm" else tree, hashlib.sha256(patch.read_bytes()).hexdigest()))
     return records
 
 
