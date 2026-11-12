@@ -498,6 +498,12 @@ fn send(paths: &Paths, request: &Request) -> std::io::Result<Response> {
     json::from_str(&line).map_err(|_| std::io::Error::new(ErrorKind::InvalidData, format!("daemon sent {line:?}")))
 }
 
+/// A killed daemon's socket can reset connections until its last descriptor closes. Only a free
+/// daemon lock proves no daemon took the request, so only then is it safe to start one and resend.
+fn no_daemon_owns(paths: &Paths) -> bool {
+    std::fs::File::open(paths.lock()).is_ok_and(|lock| lock.try_lock().is_ok())
+}
+
 /// Sends `request`, starting the daemon first if nothing is listening. Closing the CLI never stops the daemon.
 fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     let unreachable = |e: std::io::Error| {
@@ -506,6 +512,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     match send(paths, request) {
         Ok(response) => return Ok(response),
         Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {}
+        Err(e) if e.kind() == ErrorKind::ConnectionReset && no_daemon_owns(paths) => {}
         Err(e) => return Err(unreachable(e)),
     }
     let log = daemon::open_log(paths).map_err(unreachable)?;
