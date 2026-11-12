@@ -569,7 +569,7 @@ def apply_patches(root: Path, patch_dir: Path, records: List[Tuple[str, str, str
             detail = check.stderr.strip() or check.stdout.strip()
             raise UpdateError(f"source patch conflict: {name}: {detail}")
         applied = subprocess.run(
-            ["patch", "-p1", "-d", str(target), "--batch", "--forward", "-i", str(patch)],
+            ["patch", "-p1", "-d", str(target), "--batch", "--forward", "--no-backup-if-mismatch", "-i", str(patch)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

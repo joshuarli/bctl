@@ -51,6 +51,24 @@ class PatchTreeTest(unittest.TestCase):
                 )
                 self.assertEqual(check.returncode, 0, name)
 
+    def test_a_patch_applied_with_fuzz_leaves_no_backup_file(self):
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            patches = work / "patches"
+            patches.mkdir()
+            (patches / "smolvm-0001-change.patch").write_text(
+                "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n one\n-old\n+new\n three\n"
+            )
+            root = work / "stage"
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "main.rs").write_text("zero\none\nold\nTHREE\n")
+
+            records = update_smolvm.patch_records(patches)
+            update_smolvm.apply_patches(root, patches, records)
+
+            self.assertEqual((root / "src" / "main.rs").read_text(), "zero\none\nnew\nTHREE\n")
+            self.assertEqual(sorted(p.name for p in (root / "src").iterdir()), ["main.rs"])
+
 
 if __name__ == "__main__":
     unittest.main()
