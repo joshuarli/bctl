@@ -1,8 +1,14 @@
 # Linux handoff, 2026-11-12
 
-Linux qualification is incomplete. bctl `6f27d89` pins Hydrogen `47bc0255`.
-The [campaign report](campaign-report.md) records the repairs and checks;
-[bctl compatibility](../../bctl/docs/compatibility.md) records interop.
+This is the historical qualification checkpoint at Hydrogen `47bc0255` and
+bctl `6f27d89`. Later kernel repairs in `5ece982a` and `e4aad9cc` address
+page-cache destination faults and locked-heap management allocation. Recheck
+the current code before resuming the investigations below; these later
+commits do not constitute a new full qualification run.
+
+The [campaign report](campaign-report.md) retains the measured results.
+[bctl compatibility](https://github.com/joshuarli/bctl/blob/main/docs/compatibility.md)
+records interop, and [TODO.md](../TODO.md) holds the review findings.
 
 ## Done
 

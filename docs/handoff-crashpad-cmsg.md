@@ -1,7 +1,8 @@
 # Handoff: crashpad rejects Nanos's recvmsg control data
 
-For the session that owns G2.1 (`nanos/src/unix/socket.c`). This is the
-current blocker for starting Helium on Nanos.
+Historical handoff for G2.1 (`nanos/src/unix/socket.c`). The later
+[campaign report](campaign-report.md) records passing cmsg and Helium checks.
+The investigation below describes the earlier startup blocker.
 
 ## Symptom
 

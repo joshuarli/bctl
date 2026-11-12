@@ -6,7 +6,18 @@ Cases ported to plain C from gVisor's syscall tests (Apache-2.0) at commit
 `dev/run.sh` reads it natively (`--native`) and on Nanos unchanged. Each case
 runs under a 10 s `SIGALRM` watchdog that records `detail=watchdog`.
 
-Build: `make -C tests/external` (output in `.work/build/external/gvisor_<file>`).
+Build with `make -C tests/external` after `dev/bootstrap.sh` installs the
+pinned guest compiler and musl sysroot. Outputs live in
+`.work/build/external/gvisor_<file>`. The harness also needs `jaq`; image tree
+packaging needs `fd` alongside the pinned build tools.
+
+Run the corpus with `dev/test.sh external`. Its outer adapter currently can
+print `PASS 0/0` after a guest crash. Check each attempt's `result.json`, its
+terminal verdict, and expected case coverage until
+[HYD-1](../../TODO.md#hyd-1--p1--external-regression-suite-reports-crashed-and-incomplete-runs-as-passing)
+is fixed. The results and corpus-selection notes below describe the original
+baseline. They are historical measurements and planning notes; they do not
+establish current qualification or current kernel capabilities.
 
 Changes from upstream, none of which weakens an observation:
 
