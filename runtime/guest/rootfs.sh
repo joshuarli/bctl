@@ -204,8 +204,15 @@ run agent cargo +"$rust_toolchain" build -Zbuild-std=std,panic_abort --locked --
     -p smolvm-agent --manifest-path "$src/Cargo.toml" --target "$rust_target" --target-dir "$work/target"
 run krun-init cargo +"$rust_toolchain" build -Zbuild-std=std,panic_abort --locked --release \
     --manifest-path "$src/libkrun/init/Cargo.toml" --target "$rust_target" --target-dir "$work/target"
+tinyland_rev=$(cat "$repo/guest/tinyland.rev")
+case $tinyland_rev in *[!0-9a-f]*|'') echo "rootfs.sh: invalid guest/tinyland.rev" >&2; exit 1 ;; esac
+[ "${#tinyland_rev}" -eq 40 ] || { echo "rootfs.sh: guest/tinyland.rev must be a full commit" >&2; exit 1; }
+rm -rf "$build/tinyland"
+mkdir -p "$build/tinyland"
+curl -fsSL --retry 3 "https://github.com/laputa-systems/tinyland/archive/$tinyland_rev.tar.gz" |
+    tar -xz -C "$build/tinyland" --strip-components=1
 run seatd cargo +"$rust_toolchain" build -Zbuild-std=std,panic_abort --locked --release \
-    -p seatd --manifest-path "$repo/guest/Cargo.toml" --target "$rust_target" --target-dir "$work/target-seatd"
+    -p seatd --manifest-path "$build/tinyland/Cargo.toml" --target "$rust_target" --target-dir "$work/target-seatd"
 cp "$work/target/$rust_target/release-small/smolvm-agent" "$out/smolvm-agent"
 cp "$work/target/$rust_target/release/krun-init" "$out/krun-init"
 cp "$work/target-seatd/$rust_target/release/seatd" "$out/seatd"
