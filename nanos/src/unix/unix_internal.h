@@ -505,6 +505,7 @@ typedef struct fdesc {
     fdesc_close close;
     fdesc_et_handler edge_trigger_handler;
     closure_struct(io_completion, io_complete);
+    closure_struct(thunk, deferred_close);
 
     u64 refcnt;
     int type;
@@ -874,6 +875,7 @@ static inline void fdesc_put(fdesc f)
 }
 
 void init_fdesc(heap h, fdesc f, int type);
+void fdesc_put_deferred(fdesc f);
 void release_fdesc(fdesc f);
 
 static inline int fdesc_type(fdesc f)

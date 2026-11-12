@@ -710,7 +710,7 @@ static void deallocate_vmap_locked(rangemap rm, vmap vm)
     if (vmap_may_write_cache_node(vm))
         pagecache_node_unmap_writable(vm->cache_node);
     if (!(vm->flags & VMAP_FLAG_TAIL_BSS) && vm->fd)
-        fdesc_put(vm->fd);
+        fdesc_put_deferred(vm->fd);
     if (vm->shared_anon)
         refcount_release(&vm->shared_anon->refcount);
     deallocate(rm->h, vm, sizeof(struct vmap));
@@ -1477,6 +1477,15 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
     sysreturn ret = -EINVAL;
     boolean fixed = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) != 0;
     range q = irangel(u64_from_pointer(addr), len);
+    /* file_perms() takes the filesystem mutex, which must not be taken under the vmap spinlock. */
+    u32 file_allowed = 0;
+    if (!(flags & MAP_ANONYMOUS)) {
+        desc = fdesc_get(p, fd);
+        if (!desc)
+            return -EBADF;
+        if (desc->type == FDESC_TYPE_REGULAR)
+            file_allowed = file_perms(p, (file)desc);
+    }
     vmap_lock(p);
     if (fixed) {
 	/* Must be page-aligned */
@@ -1520,11 +1529,6 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             vmflags |= VMAP_FLAG_THP;
         }
     } else {
-        desc = fdesc_get(p, fd);
-        if (!desc) {
-            ret = -EBADF;
-            goto out_unlock;
-        }
         switch (desc->type) {
         case FDESC_TYPE_REGULAR:
             thread_log(current, "   fd %d: file-backed (regular)", fd);
@@ -1532,7 +1536,7 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             file f = (file)desc;
             fsf = f->fsf;
             assert(fsf);
-            allowed_flags = file_perms(p, f);
+            allowed_flags = file_allowed;
             if (!(vmflags & VMAP_FLAG_SHARED)) {
                 if (!(allowed_flags & VMAP_FLAG_EXEC) || !proc_is_exec_protected(p))
                     allowed_flags |= VMAP_FLAG_WRITABLE;

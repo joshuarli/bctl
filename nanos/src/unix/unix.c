@@ -221,10 +221,24 @@ closure_func_basic(io_completion, void, fdesc_io_complete,
     apply(syscall_io_complete, rv);
 }
 
+closure_func_basic(thunk, void, fdesc_deferred_close)
+{
+    fdesc f = struct_from_field(closure_self(), fdesc, deferred_close);
+    apply(f->close, 0, io_completion_ignore);
+}
+
+/* For callers holding a spinlock: the final close can wait on a filesystem mutex. */
+void fdesc_put_deferred(fdesc f)
+{
+    if (fetch_and_add(&f->refcnt, -1) == 1)
+        async_apply((thunk)&f->deferred_close);
+}
+
 void init_fdesc(heap h, fdesc f, int type)
 {
     zero(f, sizeof(*f));
     init_closure_func(&f->io_complete, io_completion, fdesc_io_complete);
+    init_closure_func(&f->deferred_close, thunk, fdesc_deferred_close);
     f->refcnt = 1;
     f->type = type;
     f->ns = allocate_notify_set(h);
