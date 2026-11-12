@@ -496,17 +496,15 @@ fn send(paths: &Paths, request: &Request) -> std::io::Result<Response> {
     line.push('\n');
     stream.write_all(line.as_bytes())?;
     let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line)?;
+    if BufReader::new(&stream).read_line(&mut line)? == 0 {
+        return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "daemon closed without answering"));
+    }
     json::from_str(&line).map_err(|_| std::io::Error::new(ErrorKind::InvalidData, format!("daemon sent {line:?}")))
 }
 
 /// How long a command waits for a daemon to start and answer.
 const DAEMON_START_DEADLINE: Duration = Duration::from_secs(15);
 
-/// Whether a failed `send` proves no daemon ever read the request. A connection that was never made did not
-/// deliver it, and a write after the peer closed delivers nothing. A reset means the peer closed with unread bytes in its receive queue, or closed its listener
-/// with this connection still queued; a daemon that has read the request line closes with an empty queue,
-/// so a daemon killed after that reads as end of file, which is not retried.
 fn never_delivered(error: &std::io::Error) -> bool {
     matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe)
 }
@@ -527,18 +525,22 @@ fn spawn_daemon(paths: &Paths) -> std::io::Result<()> {
         .map(drop)
 }
 
-/// Sends `request`, starting the daemon if none holds the lock. While one is starting, or the last one's socket
-/// still resets, the request is sent again until `DAEMON_START_DEADLINE`. Closing the CLI never stops the daemon.
+// macOS reports EOF when a Unix peer closes with unread bytes, so only a side-effect-free ping can safely retry EOF.
 fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     let unreachable = |e: std::io::Error| {
         Box::new(ErrorBody::new(ErrorCode::DaemonUnreachable, e.to_string(), Some(format!("see {}", paths.log().display()))))
     };
     let mut deadline = None;
     let mut spawned = false;
+    let ping = Request { op: Op::Ping.as_str().into(), ..Request::empty() };
     loop {
-        let error = match send(paths, request) {
-            Ok(response) => return Ok(response),
-            Err(e) if never_delivered(&e) => e,
+        let error = match send(paths, &ping) {
+            Ok(_) => match send(paths, request) {
+                Ok(response) => return Ok(response),
+                Err(e) if never_delivered(&e) => e,
+                Err(e) => return Err(unreachable(e)),
+            },
+            Err(e) if never_delivered(&e) || e.kind() == ErrorKind::UnexpectedEof => e,
             Err(e) => return Err(unreachable(e)),
         };
         let deadline = *deadline.get_or_insert_with(|| Instant::now() + DAEMON_START_DEADLINE);

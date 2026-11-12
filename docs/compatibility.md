@@ -69,13 +69,13 @@ this suite.
 - **Intermittent failures on linux-nanos.** Two of six runs at Hydrogen
   `47bc0255` stopped in the `job/daemon` check. Right after `kill -9` of the
   daemon, `bctl runs <id>` got `Connection reset by peer` from the dead
-  daemon's socket, and the CLI gave up instead of starting a new daemon. The
-  The CLI now treats a reset like a refused connection when the daemon lock is
-  free. The next three runs passed. One later linux-smolvm run still got the
-  reset while the new daemon already held the lock. A reset proves no daemon
-  read the request, so the CLI now sends it again until its 15 s start
-  deadline whether or not the lock is held; a daemon killed after it read the
-  request reads as end of file, and the CLI does not resend.
+  daemon's socket, and the CLI gave up instead of starting a new daemon.
+  One later linux-smolvm run got the reset while the new daemon already
+  held the lock. On macOS, closing the same unread socket produces EOF.
+  The CLI now probes with a side-effect-free `ping` before sending the
+  operation. It retries dropped pings until its 15 s start deadline,
+  whether or not a daemon holds the lock. An operation that loses its
+  answer is retried only when transport failure proves it was not delivered.
 
   Outside the suite, four parallel loops of `bctl up` and `bctl down` used to
   fail about once per 400 cycles, when the guest kernel crashed on a null task

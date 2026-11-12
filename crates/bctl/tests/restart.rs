@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -169,10 +169,16 @@ fn a_request_the_daemon_read_before_dying_is_never_sent_again() {
     let listener = bind(&home.socket());
 
     let client = home.client();
+    let (mut ping, _) = listener.accept().unwrap();
+    let mut request = String::new();
+    BufReader::new(&ping).read_line(&mut request).unwrap();
+    assert!(request.contains("\"op\":\"ping\""), "{request:?}");
+    writeln!(ping, "{{\"error\":null,\"sessions\":[],\"profiles\":[],\"runs\":[],\"url\":null,\"log\":null,\"tabs\":null,\"page\":null}}").unwrap();
+    drop(ping);
     let (stream, _) = listener.accept().unwrap();
     let mut request = String::new();
     BufReader::new(&stream).read_line(&mut request).unwrap();
-    assert!(request.contains("\"op\""), "{request:?}");
+    assert!(request.contains("\"op\":\"runs\""), "{request:?}");
     drop(stream);
 
     let (output, text) = finish(client);
