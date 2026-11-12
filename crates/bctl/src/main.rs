@@ -492,47 +492,64 @@ fn main() -> ExitCode {
 
 fn send(paths: &Paths, request: &Request) -> std::io::Result<Response> {
     let mut stream = UnixStream::connect(paths.socket())?;
-    writeln!(stream, "{}", json::to_string(request))?;
+    let mut line = json::to_string(request);
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
     json::from_str(&line).map_err(|_| std::io::Error::new(ErrorKind::InvalidData, format!("daemon sent {line:?}")))
 }
 
-/// A killed daemon's socket can reset connections until its last descriptor closes. Only a free
-/// daemon lock proves no daemon took the request, so only then is it safe to start one and resend.
-fn no_daemon_owns(paths: &Paths) -> bool {
-    std::fs::File::open(paths.lock()).is_ok_and(|lock| lock.try_lock().is_ok())
+/// How long a command waits for a daemon to start and answer.
+const DAEMON_START_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Whether a failed `send` proves no daemon ever read the request. A connection that was never made did not
+/// deliver it, and a write after the peer closed delivers nothing. A reset means the peer closed with unread bytes in its receive queue, or closed its listener
+/// with this connection still queued; a daemon that has read the request line closes with an empty queue,
+/// so a daemon killed after that reads as end of file, which is not retried.
+fn never_delivered(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe)
 }
 
-/// Sends `request`, starting the daemon first if nothing is listening. Closing the CLI never stops the daemon.
+fn daemon_owns_lock(paths: &Paths) -> bool {
+    std::fs::File::open(paths.lock()).is_ok_and(|lock| lock.try_lock().is_err())
+}
+
+fn spawn_daemon(paths: &Paths) -> std::io::Result<()> {
+    let log = daemon::open_log(paths)?;
+    Command::new(std::env::current_exe()?)
+        .arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .process_group(0)
+        .spawn()
+        .map(drop)
+}
+
+/// Sends `request`, starting the daemon if none holds the lock. While one is starting, or the last one's socket
+/// still resets, the request is sent again until `DAEMON_START_DEADLINE`. Closing the CLI never stops the daemon.
 fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     let unreachable = |e: std::io::Error| {
         Box::new(ErrorBody::new(ErrorCode::DaemonUnreachable, e.to_string(), Some(format!("see {}", paths.log().display()))))
     };
-    match send(paths, request) {
-        Ok(response) => return Ok(response),
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {}
-        Err(e) if e.kind() == ErrorKind::ConnectionReset && no_daemon_owns(paths) => {}
-        Err(e) => return Err(unreachable(e)),
-    }
-    let log = daemon::open_log(paths).map_err(unreachable)?;
-    let exe = std::env::current_exe().map_err(unreachable)?;
-    Command::new(exe)
-        .arg("daemon")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().map_err(unreachable)?)
-        .stderr(log)
-        .process_group(0)
-        .spawn()
-        .map_err(unreachable)?;
-    let ping = Request { op: Op::Ping.as_str().to_string(), ..Request::empty() };
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut deadline = None;
+    let mut spawned = false;
     loop {
-        match send(paths, &ping) {
-            Ok(_) => return send(paths, request).map_err(unreachable),
-            Err(e) if Instant::now() > deadline => return Err(unreachable(e)),
-            Err(_) => thread::sleep(Duration::from_millis(100)),
+        let error = match send(paths, request) {
+            Ok(response) => return Ok(response),
+            Err(e) if never_delivered(&e) => e,
+            Err(e) => return Err(unreachable(e)),
+        };
+        let deadline = *deadline.get_or_insert_with(|| Instant::now() + DAEMON_START_DEADLINE);
+        if Instant::now() > deadline {
+            return Err(unreachable(error));
         }
+        if !spawned && !daemon_owns_lock(paths) {
+            spawn_daemon(paths).map_err(unreachable)?;
+            spawned = true;
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
