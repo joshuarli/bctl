@@ -97,20 +97,23 @@ static value heaplock_management(heap h)
 
     v = timm("type", "heaplock");
     assert(v);
-    tuple ft = allocate_function_tuple(closure(hl->meta, heaplock_get, hl),
-                                       closure(hl->meta, heaplock_set, hl),
-                                       closure(hl->meta, heaplock_iterate, hl));
+    tuple ft = allocate_function_tuple(closure(h, heaplock_get, hl),
+                                       closure(h, heaplock_set, hl),
+                                       closure(h, heaplock_iterate, hl));
     set(v, sym(parent), ft);
 
     value pm = heap_management(hl->parent);
     lock_heap(hl);
-    hl->mgmt = v;
-    hl->parent_mgmt = pm;
+    if (!hl->mgmt) {
+        hl->parent_mgmt = pm;
+        hl->mgmt = v;
+    }
+    v = hl->mgmt;
     unlock_heap(hl);
     return v;
 }
 
-/* meta only used on creation */
+/* Allocations from meta are not serialized: use it only before the heap is shared. */
 heap locking_heap_wrapper(heap meta, heap parent)
 {
     heaplock hl = allocate(meta, sizeof(*hl));
