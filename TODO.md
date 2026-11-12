@@ -1,15 +1,6 @@
 Prefix: BCTL
 Next: 14
 
-### BCTL-11 · P2 · Linux SmolVM guests lose module fetches to the host
-
-- **Area:** Concurrency
-- **Where:** `crates/bctl/tests/host_http.rs:113`, `runtime/patches/`, `third_party/smolvm/src/` (the guest network relay)
-- **Problem:** On Linux x86_64 with KVM, `BCTL_TEST_RUNTIME=smolvm cargo test -p bctl --test host_http -- --ignored` failed 2 of 3 runs. The guest page lost 6 and 10 of 60 rounds whose module scripts never arrived over reused keep-alive connections to the host at `100.96.0.1`. macOS passed 24 of 24 at SmolVM 1.34.0. Headed browsing that loads many subresources from host services can stall the same way. Unproven whether the 1.34.1 update or the Linux relay is the cause.
-- **Recommendation:** Capture one failing round at the relay (host-side connection states and the guest's TCP view), then fix the dropped or stalled stream in a patch and keep `host_http` as the regression test.
-- **Fix with:** `root-cause`
-- **Effort:** M (days)
-
 ### BCTL-9 · P2 · A macOS Nanos startup timeout can leave the libkrun runner running
 
 - **Area:** Concurrency

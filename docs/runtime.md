@@ -141,6 +141,10 @@ already applied. Preserve these contracts when refreshing the patches:
   override-stat ownership on Linux, as macOS's server always does. Without
   it the unprivileged Linux server refuses any guest write whose gid is not
   the host user's, and the browser runs as gid `video`.
+- **Guest network:** the agent turns off IPv6 duplicate address detection on
+  the guest NIC. Otherwise the kernel's link-local address leaves its
+  tentative state about a second after boot, and the address event makes
+  Chromium fail in-flight requests with `ERR_NETWORK_CHANGED`.
 - **Cryptography:** graviola is the sole provider. TLS users select providerless
   features, rcgen signs through a graviola `RemoteKeyPair`, and certificates
   explicitly supply serial numbers and subject key identifiers. The s3fs

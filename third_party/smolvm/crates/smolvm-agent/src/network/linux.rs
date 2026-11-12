@@ -80,6 +80,7 @@ pub fn configure_interface(
     set_mac_address(ifname, &mac)?;
     set_mtu(ifname, mtu)?;
     add_address_v4(ifindex, address, prefix_len)?;
+    disable_duplicate_address_detection(ifname)?;
     bring_interface_up(ifname)?;
     if let Some(gateway_mac) = gateway_mac {
         add_neigh_static_v4(gateway, gateway_mac, ifindex)?;
@@ -195,6 +196,29 @@ fn set_mtu(ifname: &str, mtu: u16) -> Result<(), String> {
         libc::close(sock);
     }
     Ok(())
+}
+
+/// Skip duplicate address detection for every IPv6 address the kernel adds to
+/// `ifname`, including the link-local address it generates when the link comes
+/// up.
+///
+/// The kernel keeps that link-local address tentative for about a second and
+/// then announces the flag change as an address event. A browser running by
+/// then treats the event as a network change and fails its in-flight requests
+/// with `ERR_NETWORK_CHANGED`.
+///
+/// Shell equivalent:
+///
+/// ```text
+/// echo 0 > /proc/sys/net/ipv6/conf/<ifname>/accept_dad
+/// ```
+fn disable_duplicate_address_detection(ifname: &str) -> Result<(), String> {
+    let path = format!("/proc/sys/net/ipv6/conf/{ifname}/accept_dad");
+    match std::fs::write(&path, "0") {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("failed to write {path}: {err}")),
+    }
 }
 
 /// Mark the interface `IFF_UP`.
