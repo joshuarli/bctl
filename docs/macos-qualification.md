@@ -31,6 +31,8 @@ Evidence is retained under `.work/`:
 - Register capture: `runs/20261112T223515Z-virtiofs-register-2-57772/qemu.log`.
 - Regression: `tmp/macos-storage-repeat.log`.
 - Final ARM suites: `tmp/macos-kernel-final.log`.
+- ARM harness and probes after the MMIO repair: `tmp/macos-mmio-kernel-final.log`.
+- Helium after the MMIO repair: `tmp/macos-mmio-helium-final.log`.
 - Invalid mount: `runs/20261112T224849Z-mount-invalid-22427/`.
 
 ## Virtio-MMIO heap race
@@ -59,7 +61,7 @@ shutdown, and waits for the VMM to exit.
 
 Evidence in the sibling bctl checkout includes these files:
 
-- First failure: `.work/tmp/nanos-lifecycle/machines/lifecycle-5/console.log`.
+- First failure: `.work/tmp/nanos-lifecycle-f6567853-failure/machines/lifecycle-5/console.log`.
 - Captured failures: `.work/tmp/nbp-72892/29/` and `.work/tmp/nbp-74564/40/`.
 - Unlocked calls: `.work/tmp/nbp-79377/0/console.log`.
 - Detector after the fix: `.work/tmp/nbp-83220/0/console.log`.
@@ -70,7 +72,7 @@ Evidence in the sibling bctl checkout includes these files:
 | Check | Result |
 | --- | --- |
 | `dev/test.sh virtiofs --repeat 100` on macOS | 200 fresh boots pass, 100 each on 1 and 2 vCPUs |
-| `dev/test.sh harness probe helium` on macOS | Pass, including virtio-fs and all harness failure classifications |
+| `dev/test.sh harness probe` and `dev/test.sh helium` on macOS | Pass after the MMIO repair, including virtio-fs and all harness failure classifications |
 | Process probe on macOS | 55/55 and raw 6/6, native and on 1, 2, and 4 vCPUs |
 | Helium on macOS | 10/10 records, including renderer sandbox and clean exit |
 | Persistent bctl appliance after the MMIO heap repair | 200 boots pass in two loops, with CDP readiness and guest shutdown checked each time |
@@ -78,11 +80,17 @@ Evidence in the sibling bctl checkout includes these files:
 | Linux virtio-fs on threadripper | 20 fresh boots pass, 10 each on 1 and 2 vCPUs |
 | Linux 9p on threadripper | Close, retained-descriptor, and host-mutation checks pass on 1 and 2 vCPUs |
 | Linux process probe on threadripper | 55/55 and raw 6/6, native and on 1, 2, and 4 vCPUs |
+| Linux after the MMIO repair | Native kernel build and virtio-fs on 1 and 2 vCPUs pass |
 
 The Linux checks use an isolated checkout. Its first run lacked `jaq` on
 SSH's PATH. A subsequent virtio-fs launch exceeded the Unix socket path limit.
 The final run uses the required PATH and the shorter `.work/wt/ms` checkout.
-The earlier successful 9p checks remain valid for the unchanged kernel source.
+The earlier successful 9p checks remain valid for the unchanged PCI and storage
+paths. After the MMIO repair, the native Linux kernel build also passes.
+Its virtio-fs smoke check reuses the existing static fixture after confirming
+its source is unchanged. The isolated checkout lacks the installed compiler's
+target binary. Build and smoke receipts remain on threadripper under
+`.work/tmp/macos-mmio-linux/`.
 
 ## Verification limits
 
