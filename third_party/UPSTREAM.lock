@@ -1,7 +1,7 @@
 [import]
 format = 1
 target = "main@8b851e6f357bc4e00d3b12060ad7dfa1e638a15a"
-source_identity = "sha256:44d7e0aa11f446be58c2000c7f6f034b4cd7e70294ee98052587163daf20e896"
+source_identity = "sha256:4261c3201f7d8bb22796739355e1e4e68d77899678189c45c59021aa67f18d3e"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
 patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "smolvm-0001-graviola-only-crypto.patch", "libkrun-0002-gpu-2d-snapshot.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch", "libkrun-0008-vsock-close.patch"]
 

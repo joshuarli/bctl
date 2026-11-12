@@ -16,6 +16,8 @@ lock() { jaq -r --from toml "$1" "$pin"; }
 command -v jaq >/dev/null || fail "jaq is required"
 [ -f "$pin" ] || fail "third_party/UPSTREAM.lock is missing; run scripts/update-smolvm.sh"
 [ -f "$source_dir/Cargo.toml" ] || fail "vendored SmolVM source is missing; run scripts/update-smolvm.sh"
+python3 -I "$root/scripts/update_smolvm.py" --repo-root "$root" --verify-source >/dev/null ||
+    fail "vendored SmolVM source differs from third_party/UPSTREAM.lock"
 virgl=$(brew --prefix virglrenderer-krun 2>/dev/null) || fail "brew install libkrun/krun/virglrenderer-krun"
 epoxy=$(brew --prefix libepoxy 2>/dev/null) || fail "brew install libepoxy"
 moltenvk=$(brew --prefix molten-vk 2>/dev/null) || fail "brew install molten-vk"

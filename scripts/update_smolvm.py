@@ -541,7 +541,7 @@ def validate_layout(root: Path) -> None:
 
 
 def patch_records(patch_dir: Path) -> List[Tuple[str, str, str]]:
-    patches = sorted(patch_dir.glob("*.patch"))
+    patches = sorted(p for tree in SOURCE_TREES for p in patch_dir.glob(f"{tree}-*.patch"))
     if not patches:
         raise UpdateError(f"no ordered source patches found in {patch_dir}")
     records = []
@@ -783,6 +783,13 @@ def fetch_kernel_cache(
     return download_kernel_archive(url, cache_dir, filename, archive_digest, kernel_name)
 
 
+def verify_source(repo_root: Path) -> str:
+    third_party = repo_root / "third_party"
+    if not existing_source(third_party, third_party / "UPSTREAM.lock"):
+        raise UpdateError("no vendored source or UPSTREAM.lock to verify")
+    return source_identity(third_party / "smolvm")[0]
+
+
 def import_source(args: argparse.Namespace) -> None:
     repo_root = require_repo_root(args.repo_root)
     require_ignored_work(repo_root)
@@ -869,8 +876,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("release", nargs="?", help="a stable vX.Y.Z tag to pin instead of the default-branch tip")
     parser.add_argument("--source-root", type=Path, help="offline source root holding smolvm/, libkrun/, libkrunfw/")
     parser.add_argument("--fetch-kernel", type=Path, help="verify the pinned kernel archive into this cache directory")
+    parser.add_argument("--verify-source", action="store_true", help="check the vendored source against UPSTREAM.lock and exit")
     parser.add_argument("--repo-root", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.verify_source and (args.release or args.source_root or args.fetch_kernel):
+        parser.error("--verify-source cannot be combined with a source update or kernel fetch")
     if args.source_root and not args.release:
         parser.error("--source-root requires a release tag")
     if args.fetch_kernel and (args.release or args.source_root):
@@ -881,7 +891,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         args = parse_args(argv)
-        if args.fetch_kernel:
+        if args.verify_source:
+            print(f"vendored source matches UPSTREAM.lock ({verify_source(args.repo_root)})")
+        elif args.fetch_kernel:
             print(f"verified kernel source cached at {fetch_locked_kernel(args.repo_root, args.fetch_kernel)}")
         else:
             import_source(args)
