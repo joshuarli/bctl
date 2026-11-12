@@ -293,6 +293,9 @@ to `<BCTL_HOME>/images`. The second file is the empty profile volume template.
 The image embeds the kernel and modules built together; it needs no separate kernel file. Set
 `BCTL_RUNTIME=nanos` to select this backend; SmolVM remains the macOS default.
 Ready headless sessions report no VNC port and reject viewer input.
+The arm64 builder pins Hydrogen `f6567853`, including the qualified Linux
+repairs and the ARM storage mount deadlock repair. Its kernel checks are
+recorded in [Hydrogen's macOS qualification](../../hydrogen/docs/macos-qualification.md).
 
 On both platforms, internal VM sockets use private, short directories under
 `<BCTL_HOME>/ns` so long session names fit the Unix socket path limit.
