@@ -11,7 +11,11 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
 ## Status
 
 - **Goal:** gates G0–G5 below, then the optimization pass and close.
-- **Last accepted revision:** G1 gate (see `git log`).
+- **Last accepted revision:** `bc164807` (Linux CPU fixture build repair).
+  Current Linux evidence and remaining work: [Linux resume](docs/linux-resume.md).
+  The 2026-11-12 harness rerun has one failing TCP RTT assertion on the
+  shared host. Its cause is unestablished; current harness qualification
+  remains open despite the historical H acceptance below.
 - **Accepted:** G0. H. **G1** (G1.1 address spaces; G1.2 COW,
   zombies/wait, clone flags, vfork; G1.3 `execve`/`execveat`, per-slot
   close-on-exec, the lost-signal race in `blockq_check` plus signal IPIs;
@@ -52,8 +56,9 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
   `MSG_DONTWAIT`, thread exit, `/proc/<pid>/cmdline`, per-process
   `RLIMIT_DATA` (V8 code range), stream-socket `EPOLLOUT` wakeups, and brk
   over mprotect-split heaps.
-  **Red:** `process_visible_pid` still reports root-namespace pids (probe
-  `scm_credentials_translated` only checks `pid > 1`). setrlimit accepts
+  `process_visible_pid` translates through `pid_nr_ns` (`24355d89`); the
+  probe checks that an invisible sender has pid 0.
+  **Red:** setrlimit accepts
   and drops resources it does not model (`RLIMIT_AS`, `RLIMIT_CPU`, ...),
   `RLIMIT_DATA` bounds brk but not private writable mmaps, and
   `prlimit64` on another pid reads and writes the caller's limits.
@@ -66,12 +71,14 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
   G4.1 accepted: the probe's 55 named checks are identical natively and on
   Nanos at 1, 2 and 4 vCPUs and cover every Acceptance row; the raw variant
   passes.
-- **Running lane:** none. G4.2 is parked on `lane/g4.2-stress`: a stress role
-  (8 workers × 100 sandboxed renderer launches) passes on Nanos, but 8 × 400
-  hangs the guest silently, and `probe --repeat` is not written.
-- **Next:** root-cause the 8 × 400 stress hang, then finish G4.2; the
-  owner's session maps `process_visible_pid` through `pid_nr_ns`.
-- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1–G3.4 accepted; process_visible_pid translation open) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Running lane:** none. G4.2 is parked on `lane/g4.2-stress`.
+  Its 8 × 400 renderer launches complete on the current kernel with 2 and
+  4 vCPUs (2026-11-12). The old hang is not reproduced or attributed.
+  The diagnostic's placeholder memory allowance is not acceptance evidence.
+- **Next:** investigate the stress test's roughly 12 MiB free-memory drop,
+  replace its placeholder memory allowance, and implement `probe --repeat`
+  and `probe --stress` to finish G4.2.
+- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1–G3.4 and PID translation accepted; full gate acceptance not refreshed) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
