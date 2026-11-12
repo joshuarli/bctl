@@ -2592,8 +2592,6 @@ closure_func_basic(thunk, void, pagecache_node_free)
     deallocate_closure(pn->cache_read);
     if (pn->fs_write)
         deallocate_closure(pn->fs_write);
-    if (pn->fs_reserve)
-        deallocate_closure(pn->fs_reserve);
     deallocate_closure(pn->cache_write);
     pagecache pc = pn->pv->pc;
     destruct_rbtree(&pn->pages, stack_closure(pagecache_page_release, pc));
@@ -2610,6 +2608,11 @@ closure_func_basic(thunk, void, pagecache_node_queue_free)
 
 void pagecache_deallocate_node(pagecache_node pn)
 {
+    /* fs_reserve may be embedded in the caller's file, which is freed before the node. */
+    if (pn->fs_reserve) {
+        deallocate_closure(pn->fs_reserve);
+        pn->fs_reserve = 0;
+    }
     refcount_release(&pn->refcount);
 }
 
