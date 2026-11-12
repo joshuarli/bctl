@@ -347,7 +347,10 @@ def write_jobs(scratch: Path) -> Path:
 
 
 def run_record(run: int) -> dict:
-	return json.loads(bctl('runs', str(run), '--json').stdout)['runs'][0]
+	response = json.loads(bctl('runs', str(run), '--json').stdout)
+	if not response['runs']:
+		raise RuntimeError(f'bctl runs {run}: {response["error"]}')
+	return response['runs'][0]
 
 
 def start_job(config: Path, name: str) -> int:

@@ -10,15 +10,15 @@ passed it. Anything not listed is unverified.
 |-------|------|---------|-------|--------|
 | mac-smolvm | macOS 27.0.1, Apple M5 Max (arm64) | smolvm 1.34.0 | `helium` sha256:a91a0ab8… | 113 of 113 |
 | mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `6dc7d43e` | `nanos-helium` sha256:399f8ca5… | 113 of 113, twice |
-| linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `6dc7d43e` | `nanos-helium` sha256:b8239e70… | 113 of 113 in 2 of 4 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
+| linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `dd0ba2c7` | `nanos-helium` sha256:0eeb974f… | 113 of 113 in 2 of 5 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
 
 Every tuple uses Helium 0.20.3.1 and the same client pins:
 
 - browser-use 1.0.0 (`070be98`), with browser-harness 0.1.13
 - agent-browser 0.42.0 (`e751995`)
 
-The linux-nanos receipts are from bctl `d0da931`; one of its two runs there
-passed. The other two runs were on the same code before it was committed.
+The linux-nanos receipts are from bctl `f17507d` with the Hydrogen pin
+above. Runs three to five also include this row's `run_record` change.
 The mac-nanos receipts are from bctl `e1d1d62` and Hydrogen `6dc7d43e`.
 Both of those runs passed.
 
@@ -65,18 +65,21 @@ this suite.
 - **agent-browser time limit.** It gives `open` 30 s in total, including a
   provider launch, so a session that takes longer to boot fails the launch
   even though the plugin's own limit is 60 s.
-- **Intermittent failures on linux-nanos.** Two of four runs failed one or
-  two checks each:
-  - browser-use's `ultrafast` cell had a `Page.navigate` time out after
-    20 s, so it saw no popup.
-  - `bctl down` of the suite's second session failed with an empty reply to
-    the guest's shutdown request, so `bctl rm` kept its files directory. The
-    same empty reply came once in 84 up/down cycles outside the suite. No
-    failing run kept the guest console, so the cause is not known.
+- **Intermittent failures on linux-nanos.** Three of five runs at Hydrogen
+  `dd0ba2c7` failed:
+  - Two runs stopped in the `job/daemon` check. Right after `kill -9` of the
+    daemon, `bctl runs <id> --json` returned no run, and `checks.py` then
+    failed with `IndexError`, hiding the daemon's error. `run_record` now
+    raises with that error; the next three runs did not reach it again.
+  - One run failed three checks: the browser-use domain guard found a CDP
+    socket already open before it started (`before=1`), and `cookies stay in
+    their profile` failed. Its evidence is under `.work/interop/failures/`.
 
-  The "guest stall" recorded here before was not a stall. `bctl run` hashed
-  the 2 GiB image on every run, which took 97 s in a debug build, and that
-  was fixed in `a11b620`.
+  Outside the suite, four parallel loops of `bctl up` and `bctl down` on one
+  copied profile fail about once per 170 cycles. The guest kernel faults or
+  hangs in early boot or shutdown, so the host sees an empty or timed-out
+  reply. [Hydrogen's campaign report](../../hydrogen/docs/campaign-report.md)
+  lists the kernel faults captured so far, and which are fixed.
 - **Provider launch options.** The provider plugin cannot honour
   `userAgent` or `colorScheme`, and refuses them.
 
