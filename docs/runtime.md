@@ -303,6 +303,11 @@ open a profile in the other runtime rather than replacing its state.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
 checks reconnects, shutdown and port reuse with a bounded host descriptor limit.
 
+On either host, a failed Nanos start terminates the supervisor's process group,
+allowing five seconds for TERM and five seconds for KILL. If processes remain,
+the launcher exits with status 3 and keeps the machine and socket directories
+for recovery.
+
 An ordinary `bctl down` of a SmolVM session runs `machine stop` with a 30 s
 timeout, which covers the headed appliance's 25 s stop sequence, and then
 deletes the stopped machine. A stop that fails still deletes the VM and is

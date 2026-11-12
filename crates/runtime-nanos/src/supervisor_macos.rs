@@ -11,9 +11,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
+use crate::process_group::OwnedGroup;
 use crate::profile::prepare_profile;
 use crate::supervisor_lock;
-use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
+use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, UNTERMINATED_EXIT, VSOCK_SOCKET, connect_guest};
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
@@ -30,6 +31,7 @@ struct Config {
     runner: PathBuf,
     firmware: PathBuf,
     allow_private: Vec<String>,
+    start_timeout: Duration,
 }
 
 struct SocketCleanup(Vec<PathBuf>);
@@ -70,22 +72,39 @@ impl Config {
             runner: path("--runner")?,
             firmware: path("--firmware")?,
             allow_private: args.windows(2).filter(|pair| pair[0] == "--allow-private").map(|pair| pair[1].clone()).collect(),
+            start_timeout: match args.iter().position(|arg| arg == "--start-timeout-ms") {
+                None => START_TIMEOUT,
+                Some(at) => Duration::from_millis(
+                    args.get(at + 1).and_then(|value| value.parse().ok()).ok_or("--start-timeout-ms needs a number of milliseconds")?,
+                ),
+            },
         })
     }
 }
 
 pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     let result = match args.split_first() {
-        Some((command, rest)) if command == "launch" => Config::parse(rest).and_then(|config| launch(prefix, &config, rest)),
-        Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)),
-        _ => Err("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --profile-dir DIR --files-dir DIR --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]...".into()),
+        Some((command, rest)) if command == "launch" => Config::parse(rest).map_err(Failure::from).and_then(|config| launch(prefix, &config, rest)),
+        Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)).map_err(Failure::from),
+        _ => Err(Failure::from("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --profile-dir DIR --files-dir DIR --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]... [--start-timeout-ms N]".to_string())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("bctl-nanos-vm: {message}");
-            ExitCode::FAILURE
+        Err(failure) => {
+            eprintln!("bctl-nanos-vm: {}", failure.message);
+            if failure.unterminated { ExitCode::from(UNTERMINATED_EXIT as u8) } else { ExitCode::FAILURE }
         }
+    }
+}
+
+struct Failure {
+    message: String,
+    unterminated: bool,
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self { message, unterminated: false }
     }
 }
 
@@ -94,29 +113,33 @@ fn log_file(dir: &Path, name: &str) -> Result<File, String> {
     OpenOptions::new().create(true).append(true).open(&path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), String> {
+fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Failure> {
     let exe = std::env::current_exe().map_err(|error| format!("current executable: {error}"))?;
     let mut child = Command::new(&exe).args(prefix).arg("serve").args(args).process_group(0)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log_file(&config.dir, SUPERVISOR_LOG)?)
         .spawn().map_err(|error| format!("{}: {error}", exe.display()))?;
     let stdout = child.stdout.take().expect("stdout was piped");
+    let mut group = OwnedGroup::new(child);
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
         let _ = BufReader::new(stdout).read_line(&mut line);
         let _ = sender.send(line);
     });
-    match receiver.recv_timeout(START_TIMEOUT) {
-        Ok(line) if line.trim() == "ready" => Ok(()),
+    match receiver.recv_timeout(config.start_timeout) {
+        Ok(line) if line.trim() == "ready" => {
+            drop(group.disarm());
+            Ok(())
+        }
         outcome => {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = Command::new("/bin/kill").arg("-TERM").arg("--").arg(format!("-{}", child.id())).status();
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+            let terminated = group.terminate();
             let log = fs::read_to_string(config.dir.join(SUPERVISOR_LOG)).unwrap_or_default();
             let last = log.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no message");
-            Err(format!("the supervisor did not start libkrun ({outcome:?}): {last}"))
+            let mut message = format!("the supervisor did not start libkrun ({outcome:?}): {last}");
+            if let Err(error) = &terminated {
+                message = format!("{message}; {error}");
+            }
+            Err(Failure { message, unterminated: terminated.is_err() })
         }
     }
 }
@@ -130,13 +153,13 @@ fn bind(path: &Path) -> Result<UnixListener, String> {
 }
 
 fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
-    let deadline = Instant::now() + START_TIMEOUT;
+    let deadline = Instant::now() + config.start_timeout;
     while !socket(&config.socket_dir, GUEST_CDP_PORT).exists() || !socket(&config.socket_dir, GUEST_CHECK_PORT).exists() {
         if let Some(status) = child.try_wait().map_err(|error| format!("libkrun: {error}"))? {
             return Err(format!("libkrun exited before creating its sockets: {status}"));
         }
         if Instant::now() >= deadline {
-            return Err(format!("libkrun did not create its sockets within {START_TIMEOUT:?}"));
+            return Err(format!("libkrun did not create its sockets within {:?}", config.start_timeout));
         }
         thread::sleep(TICK);
     }
@@ -312,6 +335,7 @@ mod tests {
         let config = Config {
             dir: dir.clone(), socket_dir: dir.clone(), image, profile_dir: dir.join("profile"), files_dir: dir.join("files"), cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
             runner: dir.join("runner"), firmware: dir.join("firmware"), allow_private: Vec::new(),
+            start_timeout: START_TIMEOUT,
         };
         assert!(serve(&config).is_err());
         assert!(cdp_socket.exists());

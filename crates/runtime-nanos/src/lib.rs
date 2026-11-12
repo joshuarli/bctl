@@ -17,7 +17,6 @@ pub mod supervisor;
 #[cfg(target_os = "macos")]
 #[path = "supervisor_macos.rs"]
 pub mod supervisor;
-#[cfg(not(target_os = "macos"))]
 mod process_group;
 mod supervisor_lock;
 
@@ -34,7 +33,6 @@ const CONTROL_SOCKET: &str = "control.sock";
 const VSOCK_SOCKET: &str = "vsock.sock";
 const CONSOLE_LOG: &str = "console.log";
 const SUPERVISOR_LOG: &str = "supervisor.log";
-#[cfg(not(target_os = "macos"))]
 const UNTERMINATED_EXIT: i32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,7 +279,6 @@ impl Nanos {
             return Ok(());
         }
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        #[cfg(not(target_os = "macos"))]
         if output.status.code() == Some(UNTERMINATED_EXIT) {
             return Err(RuntimeError::Supervisor { operation: "launch", message: format!("{message}; {} and {} are kept because processes remain", dir.display(), socket_dir.display()) });
         }
