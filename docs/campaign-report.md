@@ -162,3 +162,58 @@ The bctl image built from `4f508a09` completes 100/100 shutdown cycles using
 a copy of the original failing persistent profile, with guest instrumentation
 removed. Evidence: `.work/tmp/resume-shutdown-vsock.log`. The original profile
 remains preserved. Full interop on the final ownership repair is still pending.
+
+That 100/100 run did not repeat. The same profile and loop fail at
+`4f508a09`, `534f1052`, and `eeda1d00` after 7 to 95 cycles, so the earlier
+result does not qualify shutdown.
+
+## Page-cache lifetime and vmap lock repairs
+
+Ten parallel Helium guests crashed one guest in `pagecache_node_free`. It
+read the `fs_reserve` closure of a tmpfs file that had already been freed.
+Every filesystem except tfs embeds that closure in its file object and frees
+the object right after `pagecache_deallocate_node`, while the node is freed
+later. `eeda1d00` releases `fs_reserve` before the caller's file is freed.
+The `fsfile_lifetime` fixture churns memfds while unix datagrams refill freed
+heap objects. It crashed in 3 of 4 runs before the repair and passes 28 of 28
+after. The harness, `helium`, `helium-stress` (10 of 10 parallel), `upstream`,
+and `external` suites then pass; the 14 declared upstream failures are
+unchanged. `2ecb3ae4` drops the per-run QMP socket. Its path exceeds the
+108-byte `sun_path` limit in deep checkouts, and no committed tool reads it.
+
+bctl attaches two disks to one virtio-scsi controller and boots Chromium from
+a persistent profile. Four parallel `bctl up`/`bctl down` loops on copies of
+the failing profile expose faults that the Hydrogen suites do not. A debug
+build recording the vmap lock owner, plus a check for any context suspending
+while it holds that lock, caught `mmap` suspending in `mutex_lock` through
+`file_perms` → `filesystem_get_meta`. `mmap` read file metadata under the
+irq-disabled vmap spinlock. When the filesystem mutex was contended, the
+holder parked while every fault and user-memory check spun. `dd0ba2c7` reads
+the permissions before taking the lock. It also defers a final file close
+from `deallocate_vmap_locked`, which takes the same mutex. The hang appeared
+in three runs before the repair and in none of about 400 lane-cycles after
+it. No fixture reproduces it: two attempts passed on the unrepaired kernel,
+so none was committed.
+
+## Linux qualification at `dd0ba2c7`
+
+bctl `3b134a4` pins `dd0ba2c7`. Interop passes 113 of 113 in two of five runs.
+The failures are recorded in
+[bctl compatibility](../../bctl/docs/compatibility.md#known-failing-or-unsupported-cases).
+The parallel up/down loops fail about once per 170 cycles. Faults captured
+there, all still open:
+
+- Writes after free in early boot. They show up as a stale virtio-scsi
+  `READ_16` completion closure, objcache free-list corruption
+  (`f->head < o->objs_per_page`), a run-queue task pointer off by one, and
+  faults in `table_find`. `MEMDEBUG_MCACHE` makes them more frequent; its
+  redzones have not caught the writer.
+- A lock-order deadlock between `release_epollfd` and
+  `notify_dispatch_with_arg` during shutdown.
+- An idle hang. The guest prints `bctl-guest: ready`, then both CPUs sleep
+  in `kernel_sleep`, while the host's check request times out.
+
+The debug probes are on the unpushed branch `debug/scsi-stale-completion`.
+The loop drivers are `../bctl/.work/tmp/parallel-shutdown.sh` and
+`linux-shutdown-capture.sh`. Shutdown qualification and final gate
+acceptance remain open. macOS and AArch64 were not retested.
