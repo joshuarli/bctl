@@ -12,6 +12,10 @@ use miniserde::{Deserialize, json};
 
 const GUEST_CDP_SOCKET: &str = "/run/bctl/cdp.sock";
 
+// The guest appliance stops a headed session in up to 15s for the browser, 5s for the compositor and 5s for the seat
+// (guest/appliance/src/supervise.rs), and a headless one in 8s plus 7s (headless.rs), before it syncs.
+pub const GRACEFUL_STOP_SECS: u64 = 30;
+
 /// Why a smolvm operation failed. `Smolvm` carries smolvm's own stable error code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -141,6 +145,14 @@ pub struct TemplateSpec {
 
 const TEMPLATE_WORKLOAD: &str =
     r#"{"entrypoint":["/usr/local/bin/smolvm-branch-ready","--","/usr/local/bin/bctl-guest","run"],"forkable":true}"#;
+
+/// How a machine left. `Forced` means the guest was not asked to stop, or did not stop, before its VM was deleted,
+/// so what its workload would have saved on a clean stop may be lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removal {
+    Stopped,
+    Forced { stop_failure: RuntimeError },
+}
 
 pub struct SmolVm {
     binary: PathBuf,
@@ -277,9 +289,30 @@ impl SmolVm {
         self.run("machine resume", &["machine", "resume", "--name", &name], &display_env(spec)).map(drop)
     }
 
-    /// Stops and deletes the VM, running or paused; a machine that is already gone is not an error.
+    /// Deletes the VM at once, killing its workload without a graceful stop; a machine that is already gone is not
+    /// an error.
     pub fn remove(&self, machine: &MachineName) -> Result<(), RuntimeError> {
         self.delete_named(&machine.to_string())
+    }
+
+    /// Gives the guest [`GRACEFUL_STOP_SECS`] to stop its workload and sync, then deletes the VM. A guest that
+    /// cannot be stopped is deleted anyway and reported as [`Removal::Forced`]. A paused machine has no running
+    /// workload to stop, so it is deleted directly.
+    pub fn stop_and_remove(&self, machine: &MachineName) -> Result<Removal, RuntimeError> {
+        let name = machine.to_string();
+        let paused = self.list().is_ok_and(|machines| machines.iter().any(|m| m.name == name && m.state == MachineState::Paused));
+        let removal = if paused {
+            Removal::Stopped
+        } else {
+            let timeout = GRACEFUL_STOP_SECS.to_string();
+            match self.run("machine stop", &["machine", "stop", "--name", &name, "--timeout", &timeout], &[]) {
+                Ok(_) => Removal::Stopped,
+                Err(RuntimeError::Smolvm { code, .. }) if code == "NOT_FOUND" => Removal::Stopped,
+                Err(stop_failure) => Removal::Forced { stop_failure },
+            }
+        };
+        self.delete_named(&name)?;
+        Ok(removal)
     }
 
     pub fn delete_named(&self, name: &str) -> Result<(), RuntimeError> {

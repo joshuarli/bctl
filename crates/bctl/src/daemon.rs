@@ -14,6 +14,7 @@ use bctl_core::{
     Outcome as RunOutcome, ProfileName, Progress, Resources, RunKind, RunRecord, SessionName, SessionRecord, SessionState, Store, StoreError, reconcile,
 };
 use bctl_runtime::{InputSupport, cdp_socket_browser};
+use bctl_runtime_smolvm::Removal;
 use miniserde::json;
 
 use crate::authority::{Authorities, Control};
@@ -1258,11 +1259,19 @@ impl Daemon {
 
     fn finish_stop(&self, record: &SessionRecord, machine: &MachineName) {
         let generation: Generation = record.generation;
-        match self.runtime.remove(machine) {
-            Ok(()) => {
+        match self.runtime.stop_and_remove(machine) {
+            Ok(removal) => {
+                let note = match removal {
+                    Removal::Stopped => None,
+                    Removal::Forced { stop_failure } => {
+                        let note = format!("the guest did not stop gracefully and its VM was deleted by force: {stop_failure}");
+                        eprintln!("bctl daemon: {machine}: {note}");
+                        Some(note)
+                    }
+                };
                 self.discard_endpoints(machine);
                 self.observe(&record.name, |o| *o = Observed::default());
-                let _ = self.store().transition(&record.name, generation, SessionState::Stopped, None);
+                let _ = self.store().transition(&record.name, generation, SessionState::Stopped, note.as_deref());
             }
             Err(error) => {
                 eprintln!("bctl daemon: could not stop {machine}: {error}");
@@ -1347,6 +1356,12 @@ mod tests {
 ctl="$(dirname "$0")/ctl"
 echo "$@" >> "$ctl/calls"
 case "$1 $2" in
+"machine stop")
+    if [ -e "$ctl/stop-fail" ]; then
+        echo '{"error":{"code":"BUSY","message":"guest did not confirm filesystem synchronization"}}' >&2
+        exit 1
+    fi
+    ;;
 "machine delete")
     touch "$ctl/deleting"
     while [ -e "$ctl/block" ]; do sleep 0.05; done
@@ -1545,6 +1560,34 @@ exit 0
         fixture.daemon.down(&a).ok().expect("down succeeds once the VM is gone");
         let stopped = fixture.record(&a);
         assert_eq!((stopped.state, stopped.failure.as_deref()), (SessionState::Stopped, Some("browser crashed")));
+    }
+
+    #[test]
+    fn ordinary_down_stops_the_guest_gracefully_before_deleting_its_vm() {
+        let fixture = Fixture::new("graceful");
+        let (a, _) = fixture.ready("a", "shared");
+
+        fixture.daemon.down(&a).ok().expect("down succeeds");
+        let stopped = fixture.record(&a);
+        assert_eq!((stopped.state, stopped.failure), (SessionState::Stopped, None));
+        let calls = fixture.calls();
+        let stop = calls.find("machine stop --name bctl-a-1 --timeout 30").expect("down never asked the guest to stop");
+        let delete = calls.find("machine delete --name bctl-a-1 -f").expect("down never deleted the VM");
+        assert!(stop < delete, "{calls}");
+    }
+
+    #[test]
+    fn down_deletes_by_force_when_the_guest_will_not_stop_and_records_that() {
+        let fixture = Fixture::new("forced");
+        let (a, _) = fixture.ready("a", "shared");
+        fixture.set("stop-fail");
+
+        fixture.daemon.down(&a).ok().expect("a forced removal still completes down");
+        let stopped = fixture.record(&a);
+        assert_eq!(stopped.state, SessionState::Stopped);
+        let note = stopped.failure.expect("a forced removal is distinguishable from a graceful one");
+        assert!(note.contains("deleted by force") && note.contains("filesystem synchronization"), "{note}");
+        assert!(fixture.calls().contains("machine delete --name bctl-a-1 -f"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::time::Duration;
 use bctl_core::{Endpoints, MachineName, MachineObservation, MachineState};
 use bctl_runtime::{Ready, Stage};
 use bctl_runtime_nanos::{Backend, Nanos, Toolchain};
-use bctl_runtime_smolvm::{LaunchSource, SmolVm};
+use bctl_runtime_smolvm::{LaunchSource, Removal, SmolVm};
 
 use crate::paths::Paths;
 
@@ -315,6 +315,17 @@ impl Runtime {
         match self {
             Runtime::SmolVm(smolvm) => Ok(smolvm.remove(machine)?),
             Runtime::Nanos(nanos) => Ok(nanos.remove(&machine.to_string())?),
+        }
+    }
+
+    /// Stops the guest gracefully before deleting its VM; the Nanos supervisor's removal already does.
+    pub(crate) fn stop_and_remove(&self, machine: &MachineName) -> Result<Removal, RuntimeError> {
+        match self {
+            Runtime::SmolVm(smolvm) => Ok(smolvm.stop_and_remove(machine)?),
+            Runtime::Nanos(nanos) => {
+                nanos.remove(&machine.to_string())?;
+                Ok(Removal::Stopped)
+            }
         }
     }
 

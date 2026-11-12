@@ -100,7 +100,9 @@ impl Supervisor {
         devices::expose(video)?;
 
         let seatd_log = private_log("seatd.log")?;
-        let seatd = Command::new(layout::SEATD)
+        let mut seatd = Command::new(layout::SEATD);
+        self.signals.unblock_in(&mut seatd);
+        let seatd = seatd
             .args(["-g", layout::DEVICE_GROUP])
             .env("SEATD_VTBOUND", "0")
             .stdin(Stdio::null())
@@ -112,7 +114,9 @@ impl Supervisor {
         self.await_stage("seat", || is_socket(Path::new(layout::SEAT_SOCKET)))?;
 
         let compositor_log = private_log("compositor.log")?;
-        let tinyland = Command::new(layout::TINYLAND)
+        let mut tinyland = Command::new(layout::TINYLAND);
+        self.signals.unblock_in(&mut tinyland);
+        let tinyland = tinyland
             .args(["--seat", "--socket", layout::WAYLAND_SOCKET, "--", layout::SELF, "browser"])
             .uid(browser.uid)
             .gid(browser.gid)

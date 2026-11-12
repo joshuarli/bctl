@@ -58,16 +58,7 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
         .env("HOME", &browser.home)
         .env("USER", layout::BROWSER_USER)
         .stdin(Stdio::null());
-    unsafe {
-        command.pre_exec(|| {
-            let mut set = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGCHLD] {
-                libc::sigaddset(&mut set, signal);
-            }
-            if libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
-        });
-    }
+    signals.unblock_in(&mut command);
     let mut child = command.spawn()
         .map_err(io_error(layout::SELF))?;
 
