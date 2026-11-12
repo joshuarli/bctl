@@ -12,6 +12,7 @@ path = "src/bin/bctl-nanos-vm.rs"
 
 [dependencies]
 bctl-runtime = { path = "../runtime" }
+rustix = { version = "1", features = ["process"] }
 
 [lints]
 workspace = true

@@ -2,6 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::ops::{Deref, DerefMut};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -12,11 +13,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::egress::{self, Policy};
+use crate::process_group::OwnedGroup;
 use crate::profile::prepare_profile;
 use crate::supervisor_lock;
-use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, VSOCK_SOCKET, connect_guest};
+use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, UNTERMINATED_EXIT, VSOCK_SOCKET, connect_guest};
 
-const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --files-dir DIR --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH --virtiofsd PATH [--allow-private CIDR]...";
+const USAGE: &str = "usage: bctl-nanos-vm launch|serve --dir DIR --image IMAGE --cdp-socket PATH --memory-mib N --cpus N --files-dir DIR --qemu PATH --qemu-img PATH --kernel PATH --vsock-backend PATH --virtiofsd PATH [--allow-private CIDR]... [--start-timeout-ms N]";
 const VHOST_SOCKET: &str = "vhost.sock";
 const VIRTIOFS_SOCKET: &str = "virtiofs.sock";
 /// The virtio-fs tag the image mounts at the guest's files directory.
@@ -45,6 +47,7 @@ struct Config {
     vsock_backend: PathBuf,
     virtiofsd: PathBuf,
     allow_private: Vec<String>,
+    start_timeout: Duration,
 }
 
 impl Config {
@@ -69,6 +72,12 @@ impl Config {
             vsock_backend: path("--vsock-backend")?,
             virtiofsd: path("--virtiofsd")?,
             allow_private: args.windows(2).filter(|pair| pair[0] == "--allow-private").map(|pair| pair[1].clone()).collect(),
+            start_timeout: match args.iter().position(|a| a == "--start-timeout-ms") {
+                None => START_TIMEOUT,
+                Some(at) => Duration::from_millis(
+                    args.get(at + 1).and_then(|v| v.parse().ok()).ok_or("--start-timeout-ms needs a number of milliseconds")?,
+                ),
+            },
         })
     }
 }
@@ -77,16 +86,51 @@ impl Config {
 /// those to reach this function again, so `launch` can start `serve` from the same binary.
 pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     let result = match args.split_first() {
-        Some((command, rest)) if command == "launch" => Config::parse(rest).and_then(|config| launch(prefix, &config, rest)),
-        Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)),
-        _ => Err(USAGE.to_string()),
+        Some((command, rest)) if command == "launch" => Config::parse(rest).map_err(Failure::from).and_then(|config| launch(prefix, &config, rest)),
+        Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)).map_err(Failure::from),
+        _ => Err(Failure::from(USAGE.to_string())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("bctl-nanos-vm: {message}");
-            ExitCode::FAILURE
+        Err(failure) => {
+            eprintln!("bctl-nanos-vm: {}", failure.message);
+            if failure.unterminated { ExitCode::from(UNTERMINATED_EXIT as u8) } else { ExitCode::FAILURE }
         }
+    }
+}
+
+struct Failure {
+    message: String,
+    /// Processes the failed launch started could not be terminated.
+    unterminated: bool,
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Failure {
+        Failure { message, unterminated: false }
+    }
+}
+
+/// Owns a helper process from the moment it is spawned and kills and reaps it when dropped.
+struct Helper(Child);
+
+impl Deref for Helper {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl DerefMut for Helper {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Helper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -99,7 +143,7 @@ fn log_file(dir: &Path, name: &str) -> Result<File, String> {
     OpenOptions::new().create(true).append(true).open(&path).map_err(io_error(&path))
 }
 
-fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), String> {
+fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Failure> {
     let exe = std::env::current_exe().map_err(io_error("current executable"))?;
     let mut serve = Command::new(&exe)
         .args(prefix)
@@ -112,35 +156,43 @@ fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Strin
         .spawn()
         .map_err(io_error(&exe))?;
     let stdout = serve.stdout.take().expect("stdout was piped");
+    let mut group = OwnedGroup::new(serve);
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
         let _ = BufReader::new(stdout).read_line(&mut line);
         let _ = sender.send(line);
     });
-    match receiver.recv_timeout(START_TIMEOUT) {
-        Ok(line) if line.trim() == "ready" => Ok(()),
+    let timeout = config.start_timeout;
+    match receiver.recv_timeout(timeout) {
+        Ok(line) if line.trim() == "ready" => {
+            drop(group.disarm());
+            Ok(())
+        }
         outcome => {
-            let _ = serve.kill();
-            let _ = serve.wait();
+            let terminated = group.terminate();
             let log = fs::read_to_string(config.dir.join(SUPERVISOR_LOG)).unwrap_or_default();
             let last = log.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no message");
-            Err(match outcome {
+            let mut message = match outcome {
                 Ok(_) => format!("the supervisor stopped before QEMU ran: {last}"),
-                Err(_) => format!("the supervisor did not report QEMU running within {START_TIMEOUT:?}: {last}"),
-            })
+                Err(_) => format!("the supervisor did not report QEMU running within {timeout:?}: {last}"),
+            };
+            if let Err(error) = &terminated {
+                message = format!("{message}; {error}");
+            }
+            Err(Failure { message, unterminated: terminated.is_err() })
         }
     }
 }
 
-fn wait_for(path: &Path, child: &mut Child, what: &str) -> Result<(), String> {
-    let deadline = Instant::now() + START_TIMEOUT;
+fn wait_for(path: &Path, child: &mut Child, what: &str, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
     while !path.exists() {
         if let Some(status) = child.try_wait().map_err(io_error(what))? {
             return Err(format!("{what} exited before creating {}: {status}", path.display()));
         }
         if Instant::now() >= deadline {
-            return Err(format!("{what} did not create {} within {START_TIMEOUT:?}", path.display()));
+            return Err(format!("{what} did not create {} within {timeout:?}", path.display()));
         }
         thread::sleep(TICK);
     }
@@ -206,48 +258,29 @@ fn serve(config: &Config) -> Result<(), String> {
 
     let vhost = config.sockets.join(VHOST_SOCKET);
     let vsock = config.sockets.join(VSOCK_SOCKET);
-    let mut backend = Command::new(&config.vsock_backend)
+    let mut backend = Helper(Command::new(&config.vsock_backend)
         .arg("--vm")
         .arg(format!("guest-cid={GUEST_CID},socket={},uds-path={}", vhost.display(), vsock.display()))
         .stdin(Stdio::null())
         .stdout(log_file(dir, "vsock.log")?)
         .stderr(log_file(dir, "vsock.log")?)
         .spawn()
-        .map_err(io_error(&config.vsock_backend))?;
-    if let Err(error) = wait_for(&vhost, &mut backend, "vhost-device-vsock") {
-        let _ = backend.kill();
-        return Err(error);
-    }
-    let mut files = match spawn_virtiofsd(config) {
-        Ok(files) => files,
-        Err(error) => {
-            let _ = backend.kill();
-            return Err(error);
-        }
-    };
+        .map_err(io_error(&config.vsock_backend))?);
+    wait_for(&vhost, &mut backend, "vhost-device-vsock", config.start_timeout)?;
+    let files = spawn_virtiofsd(config)?;
 
-    let mut qemu = match qemu_command(config, &profile)?.spawn() {
-        Ok(qemu) => qemu,
-        Err(error) => {
-            let _ = files.kill();
-            let _ = backend.kill();
-            return Err(format!("{}: {error}", config.qemu.display()));
-        }
-    };
+    let mut qemu = Helper(qemu_command(config, &profile)?.spawn().map_err(io_error(&config.qemu))?);
     let stop = Arc::new(Stop::default());
-    let started = wait_for(&config.sockets.join(QMP_SOCKET), &mut qemu, "qemu")
+    let started = wait_for(&config.sockets.join(QMP_SOCKET), &mut qemu, "qemu", config.start_timeout)
         .and_then(|()| listen(config, &vsock, Arc::clone(&stop)))
         .and_then(|()| {
             let mut stdout = io::stdout().lock();
             writeln!(stdout, "ready").and_then(|()| stdout.flush()).map_err(io_error("stdout"))
         });
     if let Err(error) = started {
-        let _ = qemu.kill();
-        let _ = qemu.wait();
-        let _ = files.kill();
-        let _ = files.wait();
-        let _ = backend.kill();
-        let _ = backend.wait();
+        drop(qemu);
+        drop(files);
+        drop(backend);
         cleanup(config);
         return Err(error);
     }
@@ -284,20 +317,19 @@ fn serve(config: &Config) -> Result<(), String> {
         thread::sleep(TICK);
     };
     eprintln!("bctl-nanos-vm: qemu exited: {status}");
-    let _ = files.kill();
-    let _ = files.wait();
-    let _ = backend.kill();
-    let _ = backend.wait();
+    drop(qemu);
+    drop(files);
+    drop(backend);
     cleanup(config);
     Ok(())
 }
 
 /// Serves the session's files directory to the guest. The namespace sandbox confines virtiofsd to that
 /// directory, so the guest cannot reach the rest of the host's files through it.
-fn spawn_virtiofsd(config: &Config) -> Result<Child, String> {
+fn spawn_virtiofsd(config: &Config) -> Result<Helper, String> {
     let socket = config.sockets.join(VIRTIOFS_SOCKET);
     remove_stale(&socket)?;
-    let mut files = Command::new(&config.virtiofsd)
+    let mut files = Helper(Command::new(&config.virtiofsd)
         .arg(format!("--socket-path={}", socket.display()))
         .arg(format!("--shared-dir={}", config.files_dir.display()))
         .args(["--sandbox=namespace", "--log-level=warn"])
@@ -305,12 +337,8 @@ fn spawn_virtiofsd(config: &Config) -> Result<Child, String> {
         .stdout(log_file(&config.dir, "virtiofsd.log")?)
         .stderr(log_file(&config.dir, "virtiofsd.log")?)
         .spawn()
-        .map_err(io_error(&config.virtiofsd))?;
-    if let Err(error) = wait_for(&socket, &mut files, "virtiofsd") {
-        let _ = files.kill();
-        let _ = files.wait();
-        return Err(error);
-    }
+        .map_err(io_error(&config.virtiofsd))?);
+    wait_for(&socket, &mut files, "virtiofsd", config.start_timeout)?;
     Ok(files)
 }
 
