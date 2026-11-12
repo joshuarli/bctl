@@ -6,7 +6,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-LOADER = PurePosixPath("/lib/ld-musl-aarch64.so.1")
+ARCHITECTURES = {
+    "aarch64": ("AArch64", PurePosixPath("/lib/ld-musl-aarch64.so.1")),
+    "x86_64": ("Advanced Micro Devices X86-64", PurePosixPath("/lib/ld-musl-x86_64.so.1")),
+}
 SYSTEM_PATH = (PurePosixPath("/lib"), PurePosixPath("/usr/local/lib"), PurePosixPath("/usr/lib"))
 BROWSER_ROOT = PurePosixPath("/opt/browser")
 BROWSER_LIBRARY_PATH = (BROWSER_ROOT / "lib",)
@@ -153,17 +156,18 @@ class Rootfs:
         return order
 
 
-def qualify(root: Path) -> dict:
+def qualify(root: Path, architecture: str) -> dict:
+    machine, loader = ARCHITECTURES[architecture]
     rootfs = Rootfs(root)
     failures: list[str] = []
     paths = rootfs.files()
     for path in paths:
         elf = rootfs.load(path)
-        if elf.elf_class != "ELF64" or elf.machine != "AArch64":
-            failures.append(f"{path}: {elf.elf_class} {elf.machine}, not ELF64 AArch64")
+        if elf.elf_class != "ELF64" or elf.machine != machine:
+            failures.append(f"{path}: {elf.elf_class} {elf.machine}, not ELF64 {machine}")
         if elf.interpreter is not None:
-            if elf.interpreter != LOADER:
-                failures.append(f"{path}: interpreter {elf.interpreter}, not {LOADER}")
+            if elf.interpreter != loader:
+                failures.append(f"{path}: interpreter {elf.interpreter}, not {loader}")
             elif rootfs.resolve(elf.interpreter) is None:
                 failures.append(f"{path}: interpreter {elf.interpreter} is missing")
     unresolved: dict[str, list[str]] = {}
@@ -201,11 +205,11 @@ def qualify(root: Path) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: qualify.py ROOTFS", file=sys.stderr)
+    if len(sys.argv) != 3 or sys.argv[2] not in ARCHITECTURES:
+        print(f"usage: qualify.py ROOTFS {'|'.join(ARCHITECTURES)}", file=sys.stderr)
         return 2
     try:
-        report = qualify(Path(sys.argv[1]))
+        report = qualify(Path(sys.argv[1]), sys.argv[2])
     except Refusal as error:
         print(f"qualify.py: {error}", file=sys.stderr)
         return 1

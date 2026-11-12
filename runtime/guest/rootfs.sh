@@ -9,14 +9,29 @@ deps=$work/deps
 build=$work/build
 out=$work/bin
 rootfs=$work/rootfs
-rust_target=aarch64-unknown-linux-musl
-c_target=aarch64-linux-musl
+guest_arch=${GUEST_ARCH:?}
+rust_target=$guest_arch-unknown-linux-musl
+c_target=$guest_arch-linux-musl
 clang=/opt/llvm/bin/clang
 sysroot=/opt/musl
 rust_toolchain=${RUST_TOOLCHAIN:?}
 
-llvm_url=https://github.com/laputa-systems/llvm-prebuilt-musl/releases/download/llvm-musl-23.1.5-3afbb74/clang%2Bllvm-23.1.5-aarch64-linux-musl.tar.xz
-llvm_sha=ca1c593163ac37d6656a5fddebec4c2714050c7345d9326e5afa8ea46949cede
+llvm_base=https://github.com/laputa-systems/llvm-prebuilt-musl/releases/download/llvm-musl-23.1.5-3afbb74
+case $guest_arch in
+    aarch64)
+        llvm_url=$llvm_base/clang%2Bllvm-23.1.5-aarch64-linux-musl.tar.xz
+        llvm_sha=ca1c593163ac37d6656a5fddebec4c2714050c7345d9326e5afa8ea46949cede
+        go_arch=arm64
+        go_sha=3f4227ce7b206a513e794f1393adb473a07b46e94d18bd15d1c684bbb7319797
+        ;;
+    x86_64)
+        llvm_url=$llvm_base/clang%2Bllvm-23.1.5-x86_64-linux-musl.tar.xz
+        llvm_sha=c7c29a9c5eb56ab7f395b5cc9e2d6aa44b16fa07a4d22bcf0014d7d67f7a30fb
+        go_arch=amd64
+        go_sha=ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5
+        ;;
+    *) echo "rootfs.sh: unsupported GUEST_ARCH $guest_arch" >&2; exit 1 ;;
+esac
 musl_version=1.2.6
 musl_sha=d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
 busybox_version=1.38.0
@@ -41,7 +56,6 @@ curl_version=8.23.0
 curl_sha=8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5
 ca_bundle_sha=427c064216761a1e72a8b30f0d954d08cb6e4435a82091fb865afd20c8497285
 go_version=1.26.10
-go_sha=3f4227ce7b206a513e794f1393adb473a07b46e94d18bd15d1c684bbb7319797
 crane_version=0.22.1
 
 cflags="--target=$c_target --sysroot=$sysroot -O2"
@@ -181,9 +195,9 @@ fi
 RUSTUP_TOOLCHAIN=$rust_toolchain
 export RUSTUP_TOOLCHAIN
 export RUSTFLAGS="-Clinker=$clang -Clink-self-contained=no -Clink-arg=--target=$c_target -Clink-arg=--sysroot=$sysroot"
-export CC_aarch64_unknown_linux_musl=$clang
-export CFLAGS_aarch64_unknown_linux_musl="--target=$c_target --sysroot=$sysroot"
-export AR_aarch64_unknown_linux_musl=/opt/llvm/bin/llvm-ar
+export "CC_${guest_arch}_unknown_linux_musl=$clang"
+export "CFLAGS_${guest_arch}_unknown_linux_musl=--target=$c_target --sysroot=$sysroot"
+export "AR_${guest_arch}_unknown_linux_musl=/opt/llvm/bin/llvm-ar"
 
 rm -rf "$work/target"
 run agent cargo +"$rust_toolchain" build -Zbuild-std=std,panic_abort --locked --profile release-small \
@@ -196,15 +210,15 @@ cp "$work/target/$rust_target/release-small/smolvm-agent" "$out/smolvm-agent"
 cp "$work/target/$rust_target/release/krun-init" "$out/krun-init"
 cp "$work/target-seatd/$rust_target/release/seatd" "$out/seatd"
 
-fetch "https://go.dev/dl/go$go_version.linux-arm64.tar.gz" "$go_sha" go.tar.gz
+fetch "https://go.dev/dl/go$go_version.linux-$go_arch.tar.gz" "$go_sha" go.tar.gz
 rm -rf /opt/go
 tar -xzf "$dl/go.tar.gz" -C /opt
-GOROOT=/opt/go GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+GOROOT=/opt/go GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=$go_arch \
     GOPATH="$work/gopath" GOMODCACHE="$work/gomodcache" PATH="/opt/go/bin:$PATH" \
     /opt/go/bin/go install -trimpath -ldflags='-s -w' "github.com/google/go-containerregistry/cmd/crane@v$crane_version" \
     >"$build/crane.log" 2>&1 || { tail -n 40 "$build/crane.log" >&2; exit 1; }
-if [ -f "$work/gopath/bin/linux_arm64/crane" ]; then
-    cp "$work/gopath/bin/linux_arm64/crane" "$out/crane"
+if [ -f "$work/gopath/bin/linux_$go_arch/crane" ]; then
+    cp "$work/gopath/bin/linux_$go_arch/crane" "$out/crane"
 else
     cp "$work/gopath/bin/crane" "$out/crane"
 fi
@@ -255,10 +269,10 @@ chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp"
 chmod -R a+rX "$rootfs"
 chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp"
 
-bash "$repo/runtime/guest/check-purity.sh" "$rootfs" aarch64 /opt/llvm/bin
+bash "$repo/runtime/guest/check-purity.sh" "$rootfs" "$guest_arch" /opt/llvm/bin
 rm -rf "$work/krun-only"
 mkdir -p "$work/krun-only"
 cp "$out/krun-init" "$work/krun-only/krun-init"
-bash "$repo/runtime/guest/check-purity.sh" "$work/krun-only" aarch64 /opt/llvm/bin
+bash "$repo/runtime/guest/check-purity.sh" "$work/krun-only" "$guest_arch" /opt/llvm/bin
 
 echo "guest rootfs built at $rootfs"
