@@ -1165,8 +1165,14 @@ define_closure_function(3, 1, void, pagecache_commit_dirty_ranges,
             rp->start = start;
         if (range_span(r) == 0)
             break;
-        apply(pn->fs_write, sg, r,
-              closure(pc->h, pagecache_commit_complete, pc, first_page, page_count, sg, apply_merge(m)));
+        status_handler written = closure(pc->h, pagecache_commit_complete, pc, first_page,
+                                         page_count, sg, apply_merge(m));
+        /* The filesystem write can take a filesystem mutex and suspend; the pages it covers are
+         * held in WRITING state, so the node lock is not needed across it. */
+        pagecache_unlock_node(pn);
+        apply(pn->fs_write, sg, r, written);
+        pagecache_lock_node(pn);
+        limit = pn->length;
     }
     pagecache_unlock_node(pn);
     apply(sh, s);
