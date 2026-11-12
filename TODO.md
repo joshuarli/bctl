@@ -1,5 +1,5 @@
 Prefix: BCTL
-Next: 14
+Next: 15
 
 ### BCTL-9 · P2 · A macOS Nanos startup timeout can leave the libkrun runner running
 
@@ -7,6 +7,15 @@ Next: 14
 - **Where:** `crates/runtime-nanos/src/supervisor_macos.rs:97`, `crates/runtime-nanos/src/supervisor_macos.rs:109`, `crates/runtime-nanos/src/supervisor_macos.rs:113`
 - **Problem:** On its startup timeout `launch` sends one TERM to the supervisor's process group through `/bin/kill`, then kills and waits for only the supervisor. Nothing confirms the group is empty or escalates to KILL, so a runner that ignores TERM outlives the failed start, the same defect BCTL-4's fix removed from the Linux supervisor. Unproven: the module does not build on Linux and no macOS run was made.
 - **Recommendation:** Build `process_group::OwnedGroup` for macOS as well and use it in the macOS `launch`, so a failed start terminates and reaps the whole group with bounded escalation. Port `crates/runtime-nanos/tests/failed_start.rs` to the macOS launcher and run it on an Apple Silicon host.
+- **Fix with:** `lifecycle-concurrency`
+- **Effort:** S (hours)
+
+### BCTL-14 · P3 · A command right after a daemon restart can still fail with a connection reset
+
+- **Area:** Concurrency
+- **Where:** `tests/interop/checks.py:444`, the CLI's daemon connect path in `crates/bctl/src/main.rs`
+- **Problem:** Interop's `job/daemon` check kills the daemon with `kill -9` and then polls `bctl runs N`. In 1 of 3 Linux SmolVM runs that poll failed with `DAEMON_UNREACHABLE: Connection reset by peer (os error 104)` while the new daemon was adopting the session, which aborted the suite at 102 checks. `docs/compatibility.md` records an earlier fix that treats a reset like a refused connection when the daemon lock is free; here the new daemon already held the lock.
+- **Recommendation:** Treat a reset from a socket whose daemon holds the lock but has not finished starting as retryable within the command's deadline, and cover the restart window in a daemon test.
 - **Fix with:** `lifecycle-concurrency`
 - **Effort:** S (hours)
 
