@@ -73,17 +73,17 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
   G4.1 accepted: the probe's 55 named checks are identical natively and on
   Nanos at 1, 2 and 4 vCPUs and cover every Acceptance row; the raw variant
   passes.
-- **Running lane:** none. G4.2's stress implementation is integrated.
-  `probe --repeat 50` passes 300 guest cold boots. `probe --stress` passes
-  at 1, 2, and 4 CPUs with process recovery and a 1 MiB memory allowance.
-  The stronger four-CPU run completes 6400 launches, including warm-up,
-  with 4 KiB post-warm-up free-memory loss. The captured deadlock and
-  traversal fault are repaired. G4.2's timing report remains outstanding.
-- **Next:** capture the bctl shutdown kernel stack, reproduce and repair
-  the remaining 9p ownership cases, then refresh final gate acceptance.
-  Perf gate deferred: host busy. Preserve the failing profiles and pending
-  bctl changes listed in the handoff.
-- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 NOT RUN (G3.1–G3.4 and PID translation accepted; full gate acceptance not refreshed) · G4 NOT RUN · G5 NOT RUN · P NOT RUN.
+- **Running lane:** none. G4.2's stress implementation is integrated, and
+  its timing report is in `docs/campaign-report.md`.
+- **Final acceptance at `409d61e1`:** `g0` (harness on 1 and 2 vCPUs,
+  upstream matching **Baseline**, the debug check), `9p`, `vsock`,
+  `probe --native`, `probe` (55/55 and raw 6/6 at 1, 2 and 4 vCPUs),
+  `probe --repeat 50`, `probe --stress` (1, 2, 4 vCPUs), `helium` (10/10
+  records), `helium-stress` (10/10 parallel boots) and `external` all pass.
+- **Next:** the open tickets in `TODO.md`: HYD-3 (null scheduler task,
+  2,400 clean loop cycles since `0523dbbc`) and HYD-4 (browser outlives
+  `SIGKILL` at shutdown). Perf gate deferred: host busy.
+- **Gate matrix:** G0 PASS · H PASS · G1 PASS · G2 PASS · G3 PASS · G4 PASS · G5 PASS · P NOT RUN.
 
 Only `PASS`, `FAIL`, `BLOCKED` and `NOT RUN` are allowed. A gate is `PASS`
 only when every slice in it is accepted on `main`.
