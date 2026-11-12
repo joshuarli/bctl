@@ -155,19 +155,18 @@ taking it, is refused with HTTP 409 and changes nothing. A native command is
   any such step, and the rest) fail with `HUMAN_IN_CONTROL` before doing
   anything. Reads (`snapshot`, `resolve`, `get`, `wait`, `screenshot`, `tab
   list`, `tab use`) still run.
-- **Commands in flight.** A takeover ends a settling command with
-  `TAKEN_OVER` anywhere before it sends input or changes the page: while an
-  action prepares (finding its element, checking it, scrolling it into view,
-  hit-testing it), during a `wait`, or between batch steps, within about
-  20 ms plus one CDP call. A command that has begun sending input runs to its
-  end, and a `goto` waiting for its page to load ends within 20 ms; it has
-  already sent its navigation. Nothing is retried. The browser, the selected
-  tab, and the profile are untouched.
-- **No input after a takeover.** Right before its first input, a command asks
-  the session's authority once more, under the lock that a takeover takes to
-  leave `automation`, with nothing awaited between the answer and sending the
-  input. So either the takeover came first and nothing is sent, or the input
-  began under `automation` and `human` waits for the command to end.
+- **Commands in flight.** Settling commands check for takeover while an
+  action prepares, during a `wait`, between batch steps, and just before
+  their first input. A check that observes a takeover returns `TAKEN_OVER`.
+  A command that has begun sending input runs to its end; a `goto` waiting
+  for its page to load can end after its navigation was sent. Takeover does
+  not undo an input or navigation already sent. Nothing is retried, and
+  takeover itself does not close the browser or change the selected tab.
+- **Dispatch during takeover.** A command checks authority before its first
+  input, then releases that lock before dispatch. A takeover can enter
+  `yielding` between that check and the send. Human input still waits for the
+  tracked command to finish: `Control` enters `human` only after its settling
+  commands drain. The authority check and CDP send are separate operations.
 - **The RFB input lease** is held exactly in `human`: until then the viewer's
   keyboard and pointer input is dropped, and the dashboard shows `Yielding`
   with the number of commands it waits for.

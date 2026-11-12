@@ -1,13 +1,53 @@
 # Runtime
 
-bctl runs its VMs on a SmolVM runtime that it builds from source. The source is
-vendored under `third_party/smolvm`, pinned by `third_party/UPSTREAM.lock`, and
-built by `runtime/build.sh` into `.work/runtime/smolvm`.
+bctl builds SmolVM for headed Apple Silicon sessions and Hydrogen's Nanos
+for headless Linux x86_64 and experimental Apple Silicon sessions. Runtime
+selection and default image names live in `crates/bctl/src/runtime.rs`.
 
-The engine is the upstream default-branch tip, not a release bundle. bctl keeps
-it in-tree because it fixes SmolVM itself: the 512-entry TCP relay table in
-`crates/smolvm-network/src/tcp_relay.rs` and pause/checkpoint for its own
-sessions come later. Nothing has been reported upstream.
+SmolVM is vendored under `third_party/smolvm` at the revision recorded in
+`third_party/UPSTREAM.lock`. `runtime/build.sh` builds it into
+`.work/runtime/smolvm`. Nanos uses the Hydrogen revisions selected by
+`runtime/build-nanos.sh` and `runtime/build-nanos-arm64.sh`.
+
+## Build and install
+
+Build the dashboard before the CLI: `crates/bctl/build.rs` embeds `web/dist`
+and refuses a missing build. Use the Rust toolchain in `rust-toolchain.toml`
+and the Node and pnpm versions in `web/package.json`.
+
+```sh
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
+cargo build -p bctl --locked
+```
+
+The CLI is `target/debug/bctl`. Runtime and image installation is separate.
+
+### SmolVM on Apple Silicon
+
+Install Xcode Command Line Tools, Docker, `jaq`, the pinned Rust toolchain
+and `stable`, and Homebrew's `libkrun/krun/virglrenderer-krun`, `libepoxy`,
+and `molten-vk`. Add the `aarch64-unknown-linux-musl` target to the pinned
+toolchain. The guest builder uses the pinned Alpine container described below.
+
+```sh
+runtime/build.sh
+BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium
+bctl_state="${BCTL_HOME:-$HOME/Library/Application Support/bctl}"
+mkdir -p "$bctl_state/runtime" "$bctl_state/images"
+ln -sfn "$PWD/.work/runtime/smolvm" "$bctl_state/runtime/smolvm"
+ln -sf "$PWD/.work/images/helium.tar" "$bctl_state/images/helium.tar"
+target/debug/bctl doctor
+```
+
+`DIR` contains one accepted arm64 Helium archive and its sidecars, as defined
+by the [image contract](image-contract.md). Reference images under `images/`
+remain available for diagnostics through `bctl up NAME --image IMAGE`.
+
+### Nanos
+
+Follow [Nanos runtime layout](#nanos-runtime-layout) for Linux builds and
+installation, or its Apple Silicon instructions for the libkrun backend.
 
 ## What is vendored
 
@@ -22,8 +62,11 @@ sessions come later. Nothing has been reported upstream.
 `UPSTREAM.lock` records, for one build: the SmolVM commit and branch, the
 libkrun and libkrunfw revisions, the Linux kernel version, its stable Git
 revision and archive SHA-256, the ordered patch list with each patch's tree and
-digest, and the two Rust toolchains. The source identity covers the whole tree,
-so a build that does not match it is refused.
+digest, and the two Rust toolchains. The importer checks the whole-tree source
+identity before replacing an existing import. The host build checks patch
+digests and applicability, but does not check that whole-tree identity.
+The committed tree currently fails the import check; [BCTL-8](../TODO.md#bctl-8--p2--the-committed-smolvm-source-fails-its-own-import-identity-check)
+tracks reconciliation.
 
 Each source tree keeps its own license: `smolvm/LICENSE` and
 `smolvm/THIRD-PARTY-NOTICES.md`, `libkrun/LICENSE` and
@@ -38,75 +81,37 @@ helpers. `smolvm/AGENTS.md` stays because the CLI embeds it in `--help`.
 
 ## Local patches
 
-`runtime/patches/` holds bctl's patches, applied in the order `UPSTREAM.lock`
-lists them. Each patch names the tree it applies to in its filename
-(`<tree>-<order>-<slug>.patch`).
+`UPSTREAM.lock` owns the ordered patch list, target trees, and digests.
+`runtime/patches/` contains the inputs. The importer applies them to fresh
+source; the host build accepts a patch only when it applies forward or is
+already applied. Preserve these contracts when refreshing the patches:
 
-`libkrun-0001-rutabaga-2d-beside-3d.patch` keeps a 2D rutabaga component
-beside the default one. macOS virglrenderer is built for Venus only and rejects
-`RESOURCE_CREATE_2D` with `EINVAL`, so no CPU-rendered scanout reaches the host.
-The patch creates a resource the default component refuses on the 2D component,
-and every later operation on that resource (backing attach and detach,
-transfer, flush, unref) is routed by the resource's own component. This is what
-makes `RESOURCE_CREATE_2D` work, and Tinyland's dumb buffers need it too.
+- **Graphics:** macOS's Venus-only virglrenderer refuses CPU-rendered 2D
+  resources. A separate rutabaga 2D component owns those resources and every
+  subsequent operation on them. Tinyland's dumb buffers use this path.
+- **Checkpoints:** `KRUN_GPU_BACKEND=2d` has no 3D capsets. Checkpoints retain
+  resource backing ranges, scanout state, and virtio-input queues. Pixels
+  are restored from guest RAM instead of duplicating framebuffers in the
+  16 MiB device-state stream. The restored frame is presented before the
+  guest runs. Machine records retain launch arguments and published socket
+  paths; restored listeners replace old connections. Host-backed archives
+  are checked against their recorded content digest. Virgl/Venus GPUs,
+  `local-dir:` layers, and Docker-socket checkpoints remain refused.
+- **Keyboard input:** noVNC can send a shifted keysym without a Shift event.
+  The adapter supplies Shift around those symbols while preserving clients
+  that send real modifier events.
+- **ARM firmware:** the HVF GIC level interrupt is lowered after the last
+  virtio-MMIO cause is acknowledged, and 16-bit firmware writes are handled.
+  ACPI describes the configured CPUs and MMIO devices through fw_cfg.
+  Firmware-backed checkpoints remain unavailable until fw_cfg state is saved.
+- **Cryptography:** graviola is the sole provider. TLS users select providerless
+  features, rcgen signs through a graviola `RemoteKeyPair`, and certificates
+  explicitly supply serial numbers and subject key identifiers. The s3fs
+  client uses reqwest in place of ureq's provider-selecting TLS feature;
+  SHA-256 call sites use `sha2`.
 
-`smolvm-0001-graviola-only-crypto.patch` makes graviola the tree's only
-cryptography provider, so no `ring` or `aws-lc-rs` package is built or linked.
-rustls keeps no crypto backend; every TLS config takes `rustls-graviola`'s
-provider, installed once as the process default, and reqwest, hyper-rustls,
-tokio-rustls and axum-server use their `*-no-provider` features. Certificates
-rcgen used to sign through ring are generated and signed by graviola P-256
-through rcgen's `RemoteKeyPair`; the serial number and subject key identifier
-are supplied explicitly because a crypto-less rcgen cannot derive them.
-`smolvm-s3fs` uses reqwest's blocking client in place of ureq, whose `tls`
-feature hard-enables ring, and the SHA-256 call sites use the tree's existing
-`sha2` instead of ring's digest.
-
-`libkrun-0002-gpu-2d-snapshot.patch` makes a virtio-gpu device that runs on
-rutabaga's 2D component alone checkpointable. `KRUN_GPU_BACKEND=2d` now builds
-no virglrenderer component and advertises no capsets, so the device is a 2D KMS
-scanout and nothing else. Its device state carries the 2D resources, their
-guest backing ranges and the scanout assignment, but no pixels: a restore
-re-attaches each backing, reloads the resource from it (the backing in the
-checkpointed guest RAM holds everything the guest ever transferred), reconfigures
-the host scanout and presents the frame before the guest runs. Saving pixels
-instead put every framebuffer in the device state and overran the checkpoint
-stream's 16 MiB state limit after the first resume. The patch also gives virtio-input a device state
-(negotiated features and both queue rings), so a restored guest keeps its
-event and status queues instead of finding them silently reset.
-
-`smolvm-0002-pause-2d-sessions.patch` records the GPU backend on the machine
-(`--gpu-mode 2d|3d`), selects it at every launch, and admits a paused session
-with a 2D GPU, exposed Unix sockets, and host-backed image layers. An exposed
-socket's listener is re-created at the same host path on resume, because every
-launch from the machine record now carries the record's published sockets,
-Docker socket and CUDA flag (resume used to drop them); its live connections
-are dropped. A runtime refusal on the checkpoint stream is reported with its own
-reason instead of as an invalid stream. A host-backed image archive is admitted only under its
-recorded content digest, which resume re-checks and refuses with the expected
-and actual digests if the archive changed. Virgl/Venus GPUs, `local-dir:` image
-layers and the Docker socket stay refused.
-
-`smolvm-0003-vnc-shifted-keysyms.patch` holds Shift around a shifted keysym
-(`:`, `"`, `A`, and the rest of the US layout's shifted symbols) when the VNC
-client sent no Shift key event of its own. The keysym table maps `:` and `;` to
-the same key, so before this patch a client that sends only the shifted symbol,
-as noVNC does for synthesized keys, typed `;`. Clients that send real Shift
-events are unchanged.
-
-`libkrun-0003-arm-mmio-interrupts.patch` lowers an HVF GIC level interrupt
-when the guest acknowledges its last virtio-MMIO cause. It also supports
-16-bit MMIO writes from arm64 firmware.
-
-`libkrun-0004-arm-efi-acpi.patch` supplies ACPI tables to arm64 EFI guests
-through fw_cfg. The tables describe the configured CPUs and attached MMIO
-devices. Firmware-backed guests cannot be checkpointed until fw_cfg state is
-included in the checkpoint.
-
-The importer applies every patch to freshly imported source, so a patch that no
-longer matches the tip fails the import, not a later build. `runtime/build.sh`
-verifies each patch's digest and that it applies to either the pristine or the
-already-patched tree.
+The vsock connection-lifetime and receive-header patches are also recorded
+in the lock. Their exact scope and ordering remain in the patch inputs.
 
 ## What `runtime/build.sh` builds
 
@@ -151,9 +156,9 @@ BusyBox lacks; e2fsprogs for `mkfs.ext4`, `fsck.ext4`, `e2fsck` and
 seatd. There is no CUDA runner, Vulkan bundle, or Rosetta wrapper: bctl uses
 none of them.
 
-`runtime/guest.sh` does only that container work. It is skipped when its four
-outputs are present, so a host rebuild of libkrun and the CLI does not rebuild
-the kernel; set `FORCE=1` to rebuild them anyway. The kernel archive is verified
+`runtime/guest.sh` does only that container work. It reuses existing kernel,
+init, rootfs, and disk-template outputs without comparing their source inputs.
+Set `FORCE=1` after changing guest inputs or pins. The kernel archive is verified
 against `UPSTREAM.lock` before it enters the container, and `krun-init` from
 that build is embedded into the host `libkrun.dylib` rather than rebuilt on the
 host, so the host and guest agree on it by construction.
@@ -187,9 +192,25 @@ Venus-only build whose 2D refusal the patch works around.
 
 ## Nanos runtime layout
 
-On Linux x86_64 with `/dev/kvm`, bctl also runs hydrogen's Nanos.
-`runtime/build-nanos.sh` builds under `.work/runtime/nanos`; what bctl needs
-from it is installed as:
+On Linux x86_64, the builder requires `/dev/kvm`, QEMU, GCC, ccache, Rust,
+and the kernel build tools named by Hydrogen's `dev/toolchain.lock`.
+Image packaging also needs Python 3 and `fd`.
+`virtiofsd` also needs the host libseccomp and libcap-ng runtime libraries.
+Use a Hydrogen checkout containing the commit pinned in the builder:
+
+```sh
+HYDROGEN="$PWD/../hydrogen" sh runtime/build-nanos.sh
+BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build.sh
+bctl_state="${BCTL_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/bctl}"
+mkdir -p "$bctl_state/runtime/nanos" "$bctl_state/images"
+ln -sf "$PWD/.work/runtime/nanos/bin/vhost-device-vsock" "$bctl_state/runtime/nanos/vhost-device-vsock"
+ln -sf "$PWD/.work/runtime/nanos/bin/virtiofsd" "$bctl_state/runtime/nanos/virtiofsd"
+cp .work/images/nanos-helium.img .work/images/nanos-helium.kernel.img .work/images/nanos-helium.profile.img "$bctl_state/images/"
+target/debug/bctl doctor
+```
+
+`DIR` holds the accepted x86_64 Helium archive and sidecars. The build cache
+is described in [build-loop.md](build-loop.md). Installed paths are:
 
 ```
 <BCTL_HOME>/runtime/nanos/vhost-device-vsock
@@ -203,7 +224,7 @@ The image and its kernel are a pair. `images/nanos-helium/build.sh` writes
 `.work/images/nanos-helium.img`, `.work/images/nanos-helium.kernel.img` and
 the empty profile volume template `.work/images/nanos-helium.profile.img`
 together, copying the kernel from the hydrogen tree whose `tmpfs` and `shmem`
-klibs the image packs. Copy both files: bctl boots
+klibs the image packs. Install all three files: bctl boots
 `<BCTL_HOME>/images/<image>.kernel.img` beside `<image>.img`. A kernel from a
 different build than the image's klibs crashes in `klib_initialize`, so there
 is no separate `runtime/nanos/kernel.img`; that directory holds only
@@ -230,7 +251,7 @@ Ready headless sessions report no VNC port and reject viewer input.
 On both platforms, internal VM sockets use private, short directories under
 `<BCTL_HOME>/ns` so long session names fit the Unix socket path limit.
 Each profile has its own Nanos disk, initialized from the template only once
-and locked while in use. Stopping a session asks the guest to close the
+and locked while in use. Stopping a Nanos session asks the guest to close the
 browser through CDP `Browser.close`, which commits the cookie store's pending
 writes (SIGTERM drops up to 30 s of them), and waits for the guest to flush
 the disk and power off. Profiles from the SmolVM backend use a different
@@ -238,6 +259,11 @@ format and cannot be opened as Nanos profiles, or vice versa; bctl refuses to
 open a profile in the other runtime rather than replacing its state.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
 checks reconnects, shutdown and port reuse with a bounded host descriptor limit.
+
+SmolVM currently removes sessions through forced machine deletion, which sends
+SIGKILL to the appliance workload. bctl's ordinary `down` path for SmolVM does
+not provide the Nanos graceful-close sequence; [BCTL-1](../TODO.md#bctl-1--p2--ordinary-smolvm-shutdown-immediately-kills-the-guest-workload)
+tracks that lifecycle repair.
 
 ## Verification
 
@@ -299,16 +325,28 @@ data, pinned by SHA-256, not a binary. The Homebrew GPU dylibs are third-party
 dependencies, not SmolVM release files, and they are what the release bundle
 ships too.
 
-## Using it
+## Tests
 
-bctl finds the runtime at `<BCTL_HOME>/runtime/smolvm/smolvm`. Put the built
-tree there:
+Build the dashboard first, as above. The SmolVM VM tests and proofs read
+`.work/runtime/smolvm` directly.
 
 ```sh
-home="$HOME/Library/Application Support/bctl"
-mkdir -p "$home/runtime"
-ln -sfn "$PWD/.work/runtime/smolvm" "$home/runtime/smolvm"
-target/debug/bctl doctor
+cargo test --workspace                                   # no VMs
+cargo test -p bctl-runtime-smolvm --test lifecycle -- --ignored
+cargo test -p bctl --test daemon -- --ignored
+cargo test -p bctl --test profiles -- --ignored
+cargo test -p bctl --test cdp -- --ignored
+cargo test -p bctl --test egress -- --ignored
+cargo test -p bctl --test tabs -- --ignored
+cargo test -p bctl --test snapshots -- --ignored
+cargo test -p bctl --test actions -- --ignored
+cargo test -p bctl --test batches -- --ignored
+cargo test -p bctl --test authority -- --ignored
+BCTL_GRAB="$PWD/../shadowdriver/grab/.venv/bin/grab" cargo test -p bctl --test runs -- --ignored
+cargo run -p bctl-proof -- m1 --runs 10
+BCTL_PROOF_IMAGE=.work/images/ref-alpine-tinyland.tar cargo run -p bctl-proof -- m1
+pnpm --dir web exec playwright test                      # needs cargo build -p bctl
 ```
 
-The VM-backed tests and the proofs read `.work/runtime/smolvm` directly.
+The ignored tests and the proofs boot real VMs from `.work/runtime` and
+`.work/images`.

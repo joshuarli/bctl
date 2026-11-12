@@ -203,7 +203,10 @@ a new attempt over the same output directory, which continues from Grab's
 run; a Grab that has not stopped 60 seconds later is sent `SIGTERM`.
 
 A crawl Grab reports as succeeded counts as a success only after `grab verify`
-replays every mirror it wrote.
+replays every mirror it wrote. Cancellation during verification currently sends
+TERM without a KILL deadline, so an unresponsive verifier can keep the attempt
+live; [BCTL-6](../TODO.md#bctl-6--p2--cancellation-can-leave-grab-verification-running-indefinitely)
+tracks that gap.
 
 ### In the dashboard
 

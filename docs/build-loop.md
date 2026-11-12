@@ -1,15 +1,14 @@
 # Nanos runtime build loop
 
-`runtime/build-nanos.sh` builds three independent parts under
-`.work/runtime/nanos`: the Nanos kernel and tools, the patched
-`vhost-device-vsock` backend, and the LLVM toolchain named by the hydrogen
-tree's `dev/toolchain.lock`.
+`runtime/build-nanos.sh` builds four parts under `.work/runtime/nanos`:
+the Nanos kernel and tools, patched `vhost-device-vsock`, `virtiofsd`, and
+the LLVM toolchain named by Hydrogen's `dev/toolchain.lock`.
 
 Each part has a stamp beside its output. A part is skipped only when the
 stamp records the same input identity and every output still exists with the
 SHA-256 the stamp records. The stamp stores output paths relative to
 `.work/runtime/nanos`, so moving the worktree or reaching it through a
-symlink does not invalidate it. `FORCE=1` rebuilds all three.
+symlink does not invalidate it. `FORCE=1` rebuilds all four.
 
 ## What each part keys on
 
@@ -17,13 +16,15 @@ symlink does not invalidate it. `FORCE=1` rebuilds all three.
 |---|---|---|
 | kernel and tools | pinned hydrogen commit, `ccache gcc`, `gcc --version`, `ccache --version`, make targets `kernel tools` | `kernel.img`, `boot.img`, `mkfs` |
 | vhost-device-vsock | crate version, crates.io SHA-256, patch digest, `rustc -V`, `cargo -V` | `bin/vhost-device-vsock` |
+| virtiofsd | crate version, crates.io SHA-256, `rustc -V`, `cargo -V` | `bin/virtiofsd` |
 | LLVM | `LLVM_URL`, `LLVM_SHA256`, `LLVM_DIR`, `LLVM_RELEASE` from `dev/toolchain.lock` | `llvm/bin/clang` |
 
 The LLVM inputs come from `git show <commit>:dev/toolchain.lock` in the
 hydrogen clone, so an LLVM-only rebuild does not need the exported kernel
 tree. The script prints one line per part, `kernel: reused` or `kernel:
-built` (and likewise for `vhost-device-vsock` and `llvm`), which
-`tests/build/build-nanos-cache.sh` reads to assert which parts ran.
+built`, with equivalent lines for `vhost-device-vsock`, `virtiofsd`, and
+`llvm`. `tests/build/build-nanos-cache.sh` currently checks the kernel,
+vsock, and LLVM parts.
 
 The kernel builds with `ccache gcc`; the tree path is the same on every
 build, so a from-scratch tree hits the cache. The kernel and its klibs
@@ -67,7 +68,7 @@ skip this check.
 | installer | archive SHA-256, chromium-build pin, SHA-256 of the three scripts | stamp matches and the scripts are present |
 | rootfs | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, `guest/appliance/rootfs/etc/{passwd,group}` | stamp matches and the rootfs integrity digest matches |
 | guest | none: cargo decides | cargo does not say `Compiling bctl-guest` |
-| image | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, kernel/boot/mkfs SHA-256, rootfs digest, guest SHA-256, this script | stamp matches and both `.img` and `.kernel.img` match their recorded SHA-256 |
+| image | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, kernel/boot/mkfs SHA-256, rootfs digest, guest SHA-256, this script | stamp matches and `.img`, `.kernel.img`, and `.profile.img` match their recorded SHA-256 |
 
 The three chromium-build scripts are cached under
 `.work/images/dl/chromium-build/<pinned-rev>/` and fetched only when absent.
@@ -77,24 +78,25 @@ the installer's `--verify-extract` rather than trusting the old result.
 The rootfs integrity digest is the sorted `stat` output for every entry below
 the rootfs: type, mode, size, name, and a symlink's target. It does not read
 file contents. That is deliberate: the rootfs is 907 MiB and 542 entries, and
-hashing it would cost more than the extraction it guards. A removed,
-truncated, extra, or replaced entry changes the digest; a same-size edit to a
-file's contents does not, but the rootfs is rebuilt
-from the archive whenever its input identity changes, and a rooted rebuild is
-the response to any integrity miss. The digest is cheap (metadata only) and
-covers the failure that matters here: a half-written or partly deleted cached
-rootfs being packed into an image.
+hashing it would cost more than the extraction it guards. A removal,
+addition, or change to the recorded metadata changes the digest.
+A same-size content edit or replacement with identical metadata does not.
+An input-identity change or metadata-integrity miss rebuilds the rootfs from
+the archive. This is a metadata check, not a content-integrity guarantee.
 
 The guest builds with `CARGO_TARGET_DIR=.work/images/nanos-helium/target`,
 which survives every run; a source change recompiles incrementally instead of
 starting from an empty target directory. The image and its kernel are one
 unit: the pack step writes `.work/images/nanos-helium.img` and copies the
 exact `kernel.img` from the hydrogen tree whose `tmpfs` and `shmem` klibs it
-packs to `.work/images/nanos-helium.kernel.img`. Both SHA-256s are recorded in
-the image stamp, and a missing kernel forces a repack. The three Nanos outputs
+packs to `.work/images/nanos-helium.kernel.img`. The image stamp records
+those two outputs and the empty profile-volume template. A missing kernel
+or template forces a repack. The three Nanos outputs
 the pack uses are checked against `build-nanos.sh`'s kernel stamp first, so a
 tree whose kernel no longer matches its stamp is refused instead of paired
-with the image.
+with the image. A failed pack can currently delete the previous published
+image; [BCTL-7](../TODO.md#bctl-7--p2--a-failed-nanos-image-rebuild-deletes-the-previous-usable-image)
+tracks preserving that output through failure.
 
 ## Measured image build wall times
 
