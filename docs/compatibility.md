@@ -10,7 +10,7 @@ passed it. Anything not listed is unverified.
 |-------|------|---------|-------|--------|
 | mac-smolvm | macOS 27.0.1, Apple M5 Max (arm64) | smolvm 1.34.0 | `helium` sha256:a91a0ab8… | 113 of 113 |
 | mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `6dc7d43e` | `nanos-helium` sha256:399f8ca5… | 113 of 113, twice |
-| linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `e4aad9cc` | `nanos-helium` sha256:b054dc54… | 113 of 113 in 2 of 2 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
+| linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `44f4b61f` | `nanos-helium` sha256:9113ccc3… | 113 of 113 in 2 of 2 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
 
 Every tuple uses Helium 0.20.3.1 and the same client pins:
 
@@ -72,10 +72,10 @@ this suite.
   CLI now treats a reset like a refused connection when the daemon lock is
   free. The next three runs passed.
 
-  Outside the suite, four parallel loops of `bctl up` and `bctl down` fail
-  about once per 500 cycles on one copied profile, and once per 300 on fresh
-  profiles. The guest kernel either hangs idle after `bctl-guest: ready` or
-  crashes on a null task in its scheduler queue.
+  Outside the suite, four parallel loops of `bctl up` and `bctl down` used to
+  fail about once per 400 cycles, when the guest kernel crashed on a null task
+  in its scheduler queue. Hydrogen `0523dbbc` moved the scheduler's run queue
+  to a locked heap, and the next 2,400 cycles had no failure.
   [Hydrogen's campaign report](../../hydrogen/docs/campaign-report.md) lists
   the kernel faults fixed so far.
 - **Provider launch options.** The provider plugin cannot honour

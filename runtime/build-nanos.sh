@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-hydrogen_commit=e4aad9cc70c1a8ca2716fd0ffdc04930bf56c64c
+hydrogen_commit=44f4b61f8b2e5418133dd444c8cf248ae208faf7
 vhost_vsock_version=0.3.0
 vhost_vsock_sha256=52ce95d81af89ad693d067c650e42df0f217addfbc96cc4820f7c62eb4a28b13
 vhost_vsock_patches="vhost-device-vsock-0001-forward-guest-half-close.patch vhost-device-vsock-0002-keep-vring-worker-before-rings-ready.patch"
