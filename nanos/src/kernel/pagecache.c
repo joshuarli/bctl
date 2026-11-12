@@ -1226,27 +1226,39 @@ static void pagecache_commit_dirty_node(pagecache_node pn, status_handler comple
         apply(complete, timm_oom);
 }
 
+#define PAGECACHE_COMMIT_BATCH  16
+
+/* Committing a node can call into its filesystem, which may take a mutex and suspend, so nodes
+ * are gathered under the global lock and committed after releasing it. */
 static void pagecache_commit_dirty_pages(pagecache pc)
 {
     pagecache_debug("%s\n", func_ss);
 
-    pagecache_lock(pc);
-    list_foreach(&pc->volumes, l) {
-        pagecache_volume pv = struct_from_list(l, pagecache_volume, l);
-        pagecache_node pn = 0;
-        do {
+    pagecache_node batch[PAGECACHE_COMMIT_BATCH];
+    int count;
+    do {
+        count = 0;
+        pagecache_lock(pc);
+        list_foreach(&pc->volumes, l) {
+            pagecache_volume pv = struct_from_list(l, pagecache_volume, l);
             pagecache_lock_volume(pv);
-            list l = list_get_next(&pv->dirty_nodes);
-            pagecache_unlock_volume(pv);
-            if (l) {
-                pn = struct_from_list(l, pagecache_node, l);
-                pagecache_commit_dirty_node(pn, 0);
-            } else {
-                pn = 0;
+            list_foreach(&pv->dirty_nodes, d) {
+                if (count == PAGECACHE_COMMIT_BATCH)
+                    break;
+                pagecache_node pn = struct_from_list(d, pagecache_node, l);
+                pagecache_node_ref(pn);
+                batch[count++] = pn;
             }
-        } while (pn);
-    }
-    pagecache_unlock(pc);
+            pagecache_unlock_volume(pv);
+            if (count == PAGECACHE_COMMIT_BATCH)
+                break;
+        }
+        pagecache_unlock(pc);
+        for (int i = 0; i < count; i++) {
+            pagecache_commit_dirty_node(batch[i], 0);
+            pagecache_node_unref(batch[i]);
+        }
+    } while (count == PAGECACHE_COMMIT_BATCH);
 }
 
 static void pagecache_scan(pagecache pc)
