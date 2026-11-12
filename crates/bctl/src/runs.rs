@@ -643,6 +643,10 @@ impl Supervised {
                 BoundedLog::note(&self.log, &format!("cannot signal process group {pid}: {error}"));
             }
         }
+        self.kill_overdue(pid, escalation, term_grace, now);
+    }
+
+    fn kill_overdue(&self, pid: u32, escalation: &mut Escalation, term_grace: Duration, now: Instant) {
         if let Some(termed) = escalation.termed
             && !escalation.killed
             && now.duration_since(termed) >= term_grace
@@ -683,6 +687,10 @@ impl Supervised {
     }
 
     fn verify(&self) -> AttemptEnd {
+        self.verify_within(GRAB_TERM_GRACE)
+    }
+
+    fn verify_within(&self, term_grace: Duration) -> AttemptEnd {
         let Some(program) = &self.grab_program else { return ended(Outcome::JobError, "a grab attempt has no Grab program") };
         let mut mirrors: Vec<PathBuf> = fs::read_dir(&self.output)
             .into_iter()
@@ -707,22 +715,36 @@ impl Supervised {
             self.ledger.set_pid(self.live.attempt, pid);
             let pumps = pump_output(&mut child, &self.log);
             let mut escalation = Escalation::default();
+            let mut wait_error = None;
             let status = loop {
                 match child.try_wait() {
                     Ok(Some(status)) => break Exit::from_status(status),
                     Ok(None) => {}
-                    Err(error) => return ended(Outcome::VerificationFailed, format!("cannot wait for `grab verify`: {error}")),
+                    Err(error) => {
+                        BoundedLog::note(&self.log, &format!("cannot wait for process {pid}: {error}"));
+                        wait_error = Some(error);
+                        break Exit::Code(-1);
+                    }
                 }
                 if matches!(self.live.intent(), Intent::Cancel | Intent::Stop | Intent::Storage | Intent::Fault) {
-                    escalation.asked.get_or_insert_with(Instant::now);
+                    let now = Instant::now();
+                    escalation.asked.get_or_insert(now);
                     if escalation.termed.is_none() {
-                        escalation.termed = Some(Instant::now());
-                        let _ = signal_group(pid, Signal::TERM);
+                        escalation.termed = Some(now);
+                        if let Err(error) = signal_group(pid, Signal::TERM) {
+                            BoundedLog::note(&self.log, &format!("cannot signal process group {pid}: {error}"));
+                        }
                     }
+                    self.kill_overdue(pid, &mut escalation, term_grace, now);
                 }
                 thread::sleep(POLL);
             };
-            let _ = signal_group(pid, Signal::KILL);
+            if let Err(error) = signal_group(pid, Signal::KILL) {
+                BoundedLog::note(&self.log, &format!("cannot clear process group {pid}: {error}"));
+            }
+            if wait_error.is_some() {
+                let _ = child.wait();
+            }
             drain(pumps);
             match self.live.intent() {
                 Intent::Fault => {
@@ -732,6 +754,9 @@ impl Supervised {
                 Intent::Stop => return ended(Outcome::Cancelled, "the session was stopped during verification"),
                 Intent::Cancel => return ended(Outcome::Cancelled, "cancelled by `bctl cancel` during verification"),
                 Intent::Pause | Intent::Proceed => {}
+            }
+            if let Some(error) = wait_error {
+                return ended(Outcome::VerificationFailed, format!("cannot wait for `grab verify`: {error}"));
             }
             if status != Exit::Code(0) {
                 return ended(
@@ -956,6 +981,8 @@ fn tar_member(archive: &Path, wanted: &str) -> io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use rustix::process::test_kill_process;
+
     use super::*;
     #[test]
     fn a_rewritten_disk_image_gets_a_new_digest() {
@@ -1175,6 +1202,75 @@ mod tests {
         assert!(text.len() as u64 <= LOG_CAP_BYTES + 100, "{} bytes", text.len());
         assert_eq!(text.matches("later output is discarded").count(), 1);
         assert_eq!(lock(&second).discarded, 6);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    struct PidLedger(Mutex<Option<u32>>);
+
+    impl Ledger for PidLedger {
+        fn set_pid(&self, _attempt: i64, pid: u32) {
+            *lock(&self.0) = Some(pid);
+        }
+        fn running(&self, _attempt: i64) {}
+        fn needs_interaction(&self, _attempt: i64, _interaction: &Interaction) {}
+        fn progress(&self, _attempt: i64, _progress: Progress) {}
+        fn browser_alive(&self) -> bool {
+            true
+        }
+        fn finish(&self, _live: &Live, _end: AttemptEnd) {}
+    }
+
+    #[test]
+    fn a_verifier_that_ignores_term_is_killed_and_reaped_after_the_grace() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../.work/tmp/verify-kill-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let output = dir.join("output");
+        fs::create_dir_all(output.join("mirror/_grab")).unwrap();
+        fs::write(output.join("mirror/_grab/state.db"), b"").unwrap();
+        let program = dir.join("grab");
+        fs::write(&program, "#!/bin/sh\ntrap '' TERM\n: > ready\nsleep 60\n").unwrap();
+        fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let ledger = Arc::new(PidLedger(Mutex::new(None)));
+        let live = Arc::new(Live {
+            run: 1,
+            attempt: 1,
+            kind: RunKind::Grab,
+            control: dir.join("control"),
+            intent: Mutex::new(Intent::Proceed),
+            fault: Mutex::new(None),
+        });
+        let supervised = Supervised {
+            live: Arc::clone(&live),
+            ledger: Arc::clone(&ledger) as Arc<dyn Ledger>,
+            log: BoundedLog::open(&dir.join("log")).unwrap(),
+            events: EventTail::new(dir.join("events")),
+            lock: dir.join("lock"),
+            output: output.clone(),
+            grab_program: Some(program.to_string_lossy().into_owned()),
+            deadline: None,
+        };
+        let grace = Duration::from_millis(600);
+        let (done, result) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = done.send(supervised.verify_within(grace));
+        });
+        let started = Instant::now();
+        while !output.join("ready").exists() {
+            assert!(started.elapsed() < Duration::from_secs(10), "the verifier never installed its TERM trap");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let cancelled = Instant::now();
+        live.request(Intent::Cancel);
+        let received = result.recv_timeout(grace + Duration::from_secs(2));
+        let pid = lock(&ledger.0).unwrap();
+        if received.is_err() {
+            let _ = signal_group(pid, Signal::KILL);
+        }
+        let end = received.expect("verification outlived the TERM grace");
+        assert!(cancelled.elapsed() >= grace, "KILL must wait for the grace interval");
+        assert!(matches!(end, AttemptEnd::Ended { outcome: Outcome::Cancelled, .. }), "{end:?}");
+        let leader = Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
+        assert!(test_kill_process(leader).is_err(), "the verifier must be reaped, not left a zombie");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -37,24 +37,6 @@ Next: 9
 - **Fix with:** `lifecycle-concurrency`
 - **Effort:** M (days)
 
-### BCTL-5 · P2 · Fragmented CDP response headers can fail a healthy session
-
-- **Area:** Errors
-- **Where:** `crates/runtime/src/lib.rs:73`, `crates/runtime/src/lib.rs:89`, `crates/bctl/src/daemon.rs:245`
-- **Problem:** `version_browser` returns None when its first read lacks the complete HTTP header terminator, although the rest of a valid response may arrive in the next read. Both TCP and Unix-socket health probes use it. Three consecutive false failures reach the daemon's session-failure and removal path. A framing probe ran the original function with only the derive annotations removed and a decoder-call witness substituted: an unsplit response reached decoding, while all 70 split positions inside its valid headers returned after one read, leaving the remainder unread and never reaching decoding. The probe covers framing; JSON decoding and live-browser teardown remain untested.
-- **Recommendation:** Continue reading until the header terminator exists, then parse the headers and complete body. Add a focused check using a valid version response split across reads and assert the returned browser version, including splits inside the terminator.
-- **Fix with:** `error-model`
-- **Effort:** S (hours)
-
-### BCTL-6 · P2 · Cancellation can leave Grab verification running indefinitely
-
-- **Area:** Concurrency
-- **Where:** `crates/bctl/src/runs.rs:685`, `crates/bctl/src/runs.rs:710`, `crates/bctl/src/runs.rs:719`
-- **Problem:** The verification loop records the cancellation time and sends TERM, but never checks an escalation deadline. Its KILL occurs only after `try_wait` reports exit. A verifier that ignores TERM therefore prevents cancellation, session stop, storage failure, or browser failure from completing the attempt. A probe extracted the unchanged `verify` and `spawn_held` functions and ran a real TERM-ignoring verifier: cancellation was still unfinished after 16 seconds and the only delivered signal was TERM. The fixture's own KILL allowed the loop to return Cancelled and reap the child. Logging and ledger effects were bounded shims; the production cancellation loop and subprocess launch were unchanged.
-- **Recommendation:** Reuse the bounded termination policy already applied to the main job process. Escalate and reap a verifier after the grace interval, including wait-error exits, while preserving the intended attempt outcome. Verify a TERM-ignoring verifier through cancellation and session stop.
-- **Fix with:** `lifecycle-concurrency`
-- **Effort:** S (hours)
-
 ### BCTL-7 · P2 · A failed Nanos image rebuild deletes the previous usable image
 
 - **Area:** Build
