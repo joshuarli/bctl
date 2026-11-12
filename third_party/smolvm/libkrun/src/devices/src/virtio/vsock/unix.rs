@@ -365,7 +365,9 @@ impl UnixProxy {
             self.host_write_shutdown = true;
         }
         let both = uapi::VSOCK_FLAGS_SHUTDOWN_RCV | uapi::VSOCK_FLAGS_SHUTDOWN_SEND;
-        if self.guest_shutdown & both == both && self.host_write_shutdown {
+        if self.host_write_shutdown
+            && (self.guest_shutdown & both == both || self.local_read_shutdown)
+        {
             if !self.local_read_shutdown {
                 self.push_shutdown(uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
                 self.local_read_shutdown = true;
@@ -775,6 +777,7 @@ impl Proxy for UnixProxy {
                     update.signal_queue = true;
                     self.rx_paused = true;
                     update.polling = self.repoll();
+                    self.finish_guest_shutdown(&mut update);
                     return update;
                 } else if self.status == ProxyStatus::WaitingCreditUpdate {
                     debug!("process_event: WaitingCreditUpdate");
@@ -1079,5 +1082,35 @@ mod tests {
         let mut reply = [0; 5];
         (&proxy.sock).read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b"reply");
+    }
+
+    #[test]
+    fn complementary_write_shutdowns_release_the_host_socket_in_either_order() {
+        for host_first in [false, true] {
+            let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+            let tx = TestQueue::new(GuestAddress(0x1000), &mem, 8);
+            let rx = TestQueue::new(GuestAddress(0x4000), &mem, 8);
+            rx.dtable[0].set(HDR, (VSOCK_PKT_HDR_SIZE + 64) as u32, 2, 0);
+            rx.avail.ring[0].set(0);
+            rx.avail.idx.set(1);
+            let (mut proxy, peer) = proxy_with_peer(&mem, &rx);
+            proxy.status = ProxyStatus::Connected;
+            proxy.peer_buf_alloc = 4096;
+            if host_first {
+                peer.shutdown(Shutdown::Write).unwrap();
+                let update = proxy.process_event(EventSet::IN);
+                assert!(matches!(update.remove_proxy, ProxyRemoval::Keep));
+            }
+            let mut pkt = tx_packet(&mem, &tx, 0, 0);
+            pkt.set_flags(uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
+            let mut update = proxy.shutdown(&pkt);
+            if !host_first {
+                assert!(matches!(update.remove_proxy, ProxyRemoval::Keep));
+                peer.shutdown(Shutdown::Write).unwrap();
+                update = proxy.process_event(EventSet::IN);
+            }
+            assert!(matches!(update.remove_proxy, ProxyRemoval::Immediate), "host_first={host_first}");
+            assert_eq!(proxy.status, ProxyStatus::Closed);
+        }
     }
 }

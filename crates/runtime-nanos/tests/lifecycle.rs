@@ -128,3 +128,37 @@ fn the_guest_check_answers_every_time() {
     assert!(failures.is_empty(), "{} of 300 checks failed, slowest {slowest:?}: {failures:?}\n{logs}", failures.len());
     eprintln!("300 checks, slowest {slowest:?}");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "boots a macOS Nanos VM with a 128-descriptor host limit"]
+fn completed_cdp_connections_do_not_exhaust_the_vmm_descriptors() {
+    let dir = scratch(&format!("nanos-cdp-close-{}", std::process::id()));
+    let bundle = repo().join(".work/runtime/nanos-krun");
+    let runner = dir.join("runner");
+    fs::write(&runner, format!("#!/bin/sh\nulimit -n 128\nexec '{}' \"$@\"\n", bundle.join("nanos-krun").display())).unwrap();
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
+    let runtime = Nanos::new(dir.join("machines"), Toolchain {
+        supervisor: PathBuf::from(env!("CARGO_BIN_EXE_bctl-nanos-vm")), supervisor_args: Vec::new(),
+        backend: Backend::Libkrun { runner, firmware: bundle.join("firmware.fd") },
+    });
+    let cdp_socket = dir.join("cdp/s");
+    let spec = LaunchSpec {
+        machine: "cdp-close".into(), image: image(), profile_dir: dir.join("profile"), files_dir: files_dir(&dir),
+        cdp_socket: cdp_socket.clone(), memory_mib: 2048, cpus: 2, allow_private: Vec::new(),
+    };
+    let result = (|| -> Result<(), String> {
+        runtime.launch(&spec).map_err(|error| error.to_string())?;
+        runtime.wait_ready("cdp-close", &cdp_socket, Duration::from_secs(90), |_| {}).map_err(|error| error.to_string())?;
+        for round in 0..1000 {
+            if !cdp_socket_browser(&cdp_socket).is_some_and(|browser| browser.starts_with("Helium/")) {
+                return Err(format!("CDP stopped answering after {round} completed connections"));
+            }
+        }
+        Ok(())
+    })();
+    let logs = runtime.logs("cdp-close", 40).unwrap_or_default();
+    let removed = runtime.remove("cdp-close");
+    assert!(result.is_ok(), "{result:?}\n{logs}");
+    removed.unwrap();
+}

@@ -155,6 +155,9 @@ already applied. Preserve these contracts when refreshing the patches:
 
 The vsock connection-lifetime and receive-header patches are also recorded
 in the lock. Their exact scope and ordering remain in the patch inputs.
+When the host and guest have both shut down their write halves, the Unix
+proxy closes after draining its guest output. Either shutdown order releases
+the descriptor. A single half-close still permits traffic in the other direction.
 
 ## What `runtime/build.sh` builds
 
@@ -302,6 +305,9 @@ format and cannot be opened as Nanos profiles, or vice versa; bctl refuses to
 open a profile in the other runtime rather than replacing its state.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
 checks reconnects, shutdown and port reuse with a bounded host descriptor limit.
+The ignored `completed_cdp_connections_do_not_exhaust_the_vmm_descriptors`
+runtime test makes 1,000 fresh CDP connections with the macOS VMM limited to
+128 descriptors. It covers host-initiated connections through the guest relay.
 
 On either host, a failed Nanos start terminates the supervisor's process group,
 allowing five seconds for TERM and five seconds for KILL. If processes remain,

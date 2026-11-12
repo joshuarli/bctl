@@ -1,7 +1,7 @@
 [import]
 format = 1
 target = "main@59bdcf62d769f6491a6fc49f63f8cd8320f7ac58"
-source_identity = "sha256:348d3ad1873639ecee96617301aac281aba2ab67405abdd7f5506a3a710d22bb"
+source_identity = "sha256:f161c8e11f0fc6dbc0d1e132a9cfd9188056a5d115d49a64c9ec937f56227cd0"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
 patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "libkrun-0002-gpu-2d-snapshot.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch", "libkrun-0008-vsock-close.patch", "smolvm-0001-graviola-only-crypto.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "smolvm-0004-linux-mounts-override-stat.patch", "smolvm-0005-no-dad-on-guest-nic.patch"]
 
@@ -68,7 +68,7 @@ sha256 = "e397624702e20fe5ef1abd1a1a1e6e64144087e7a37f71c6ad837fa5ba477840"
 [[patch]]
 path = "libkrun-0008-vsock-close.patch"
 tree = "libkrun"
-sha256 = "a90cd7e3f122ebbe4ce4dc8199fa966f0733fe93f2026ee4eaea7aa0763cb9bd"
+sha256 = "21d72c2e74ddbebd7d3f4a4c95d6280c1a1288da0408e95992188e27dc06ea03"
 
 [[patch]]
 path = "smolvm-0001-graviola-only-crypto.patch"
