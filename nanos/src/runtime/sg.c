@@ -173,7 +173,7 @@ u64 sg_copy_to_buf_and_release(void *target, sg_list sg, u64 n)
 
 /* Touch n bytes from sg, without consuming the SG list or its buffers, and return whether the
  * buffers being accessed point to valid memory. */
-boolean sg_fault_in(sg_list sg, u64 n)
+boolean sg_fault_in(sg_list sg, u64 n, boolean write)
 {
     sg_buf sgb;
     u64 sgb_index = 0;
@@ -184,8 +184,12 @@ boolean sg_fault_in(sg_list sg, u64 n)
         u64 len = MIN(n, sg_buf_len(sgb));
         n -= len;
         u64 start = u64_from_pointer(sgb->buf + sgb->offset);
-        for (u64 p = start; p < start + len; p = (p & ~MASK(PAGELOG)) + PAGESIZE)
-            (void)*(volatile u8 *)pointer_from_u64(p);
+        for (u64 p = start; p < start + len; p = (p & ~MASK(PAGELOG)) + PAGESIZE) {
+            if (write)
+                __atomic_fetch_or((volatile u8 *)pointer_from_u64(p), 0, __ATOMIC_RELAXED);
+            else
+                (void)*(volatile u8 *)pointer_from_u64(p);
+        }
         sgb_index++;
     }
     context_clear_err(ctx);

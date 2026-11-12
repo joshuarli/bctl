@@ -612,7 +612,7 @@ closure_function(6, 1, void, pagecache_write_sg_finish,
         saved_ctx = bound(saved_ctx);
         prev_as = use_address_space(saved_ctx->as);
         use_fault_handler(saved_ctx->fault_handler);
-        if (!sg_fault_in(sg, q.end - (bound(pi) << page_order) - offset)) {
+        if (!sg_fault_in(sg, q.end - (bound(pi) << page_order) - offset, false)) {
             s = timm("result", "invalid user memory");
             s = timm_append(s, "fsstatus", "%d", -EFAULT);
             clear_fault_handler();
@@ -1583,7 +1583,7 @@ closure_function(4, 1, void, pagecache_read_sg_finish,
             use_fault_handler(user_ctx->fault_handler);
         }
         /* Fault in memory now to avoid page faults while spinlocks are held. */
-        if (!sg_fault_in(sg, range_span(q))) {
+        if (!sg_fault_in(sg, range_span(q), true)) {
             s = timm("result", "invalid user memory");
             s = timm_append(s, "fsstatus", "%d", -EFAULT);
         }

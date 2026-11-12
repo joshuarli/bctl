@@ -102,7 +102,7 @@ u64 sg_zero_fill(sg_list sg, u64 n);
 sg_io sg_wrapped_block_reader(block_io bio, int block_order, heap backed);
 
 #ifdef KERNEL
-boolean sg_fault_in(sg_list sg, u64 n);
+boolean sg_fault_in(sg_list sg, u64 n, boolean write);
 #else
-#define sg_fault_in(sg, n)  true
+#define sg_fault_in(sg, n, write)  true
 #endif
