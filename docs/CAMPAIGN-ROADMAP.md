@@ -1,5 +1,11 @@
 # Campaign: bctl, from first VM to first useful release
 
+Shared graphics source is now maintained in the independent Tinyland upstream.
+`guest/tinyland.rev` pins it for image builds. Earlier references to vendored
+compositor and daemon paths record historical inputs. Shared changes must land
+upstream before this repository updates the pin.
+
+
 ## Status
 
 Goal: `bctl` (browserctl) runs chromium-build's Helium browser headed inside

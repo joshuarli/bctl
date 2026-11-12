@@ -99,9 +99,9 @@ passes B1 with no SmolVM file of its own.
 | Image | Base | Browser | Compositor | Role |
 |---|---|---|---|---|
 | `ref-alpine-chromium` | Alpine 3.22 | Alpine `chromium` | Sway (pixman) | Diagnostic with a shell and the Sway stack; never a default |
-| `ref-alpine-tinyland` | Alpine 3.22 | Alpine `chromium` | `guest/tinyland` with `guest/seatd` | Diagnostic with a shell on tinyland; never a default |
-| `helium` | scratch: no base, busybox, or shell | chromium-build's Helium linux-aarch64-musl archive | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | The product image and the default: `bctl up NAME` without `--image` starts it |
-| `ref-scratch-chromium` | scratch: no base, busybox, or shell | Alpine `chromium` and its runtime closure, packed in the Helium archive layout | `guest/tinyland` with `guest/seatd`, supervised by the Rust `bctl-guest` | Diagnostic: the scratch layout around Alpine `chromium`; never a default |
+| `ref-alpine-tinyland` | Alpine 3.22 | Alpine `chromium` | pinned upstream Tinyland with seatd | Diagnostic with a shell on tinyland; never a default |
+| `helium` | scratch: no base, busybox, or shell | chromium-build's Helium linux-aarch64-musl archive | pinned upstream Tinyland with seatd, supervised by the Rust `bctl-guest` | The product image and the default: `bctl up NAME` without `--image` starts it |
+| `ref-scratch-chromium` | scratch: no base, busybox, or shell | Alpine `chromium` and its runtime closure, packed in the Helium archive layout | pinned upstream Tinyland with seatd, supervised by the Rust `bctl-guest` | Diagnostic: the scratch layout around Alpine `chromium`; never a default |
 
 Build one with `images/build.sh <image>`; the archive lands in
 `.work/images/<image>.tar`.
@@ -136,7 +136,7 @@ one `*.tar.xz`:
 The stage then replaces one file of the installed archive and records it in
 the receipt: `lib/libxkbcommon.so.0` is deleted, and kbvm's
 `libxkbcommon.so.0` (the `kbvm-xkbcommon` crate at the kbvm revision
-`guest/Cargo.lock` pins) is at `/usr/local/lib`, which musl searches after
+the upstream Tinyland `Cargo.lock` pins) is at `/usr/local/lib`, which musl searches after
 `LD_LIBRARY_PATH`.
 
 Helium archives before r5 lack two chromium-build sandbox fixes that musl

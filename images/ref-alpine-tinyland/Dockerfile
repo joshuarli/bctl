@@ -14,10 +14,8 @@ WORKDIR /src
 COPY --from=guest Cargo.toml Cargo.lock ./
 COPY --from=guest .cargo/ ./.cargo/
 COPY --from=guest appliance/ ./appliance/
-COPY --from=guest seatd-protocol/ ./seatd-protocol/
-COPY --from=guest seatd/ ./seatd/
-COPY --from=guest tinyland/ ./tinyland/
-RUN cargo build --locked --release --target aarch64-unknown-linux-musl -p tinyland -p seatd
+COPY --from=tinyland / /tinyland/
+RUN cargo build --locked --release --target aarch64-unknown-linux-musl --manifest-path /tinyland/Cargo.toml --target-dir /src/target -p tinyland -p seatd
 
 FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
 RUN apk add --no-cache chromium font-dejavu xkeyboard-config su-exec socat \

@@ -14,9 +14,7 @@ WORKDIR /src
 COPY --from=guest Cargo.toml Cargo.lock ./
 COPY --from=guest .cargo/ ./.cargo/
 COPY --from=guest appliance/ ./appliance/
-COPY --from=guest seatd-protocol/ ./seatd-protocol/
-COPY --from=guest seatd/ ./seatd/
-COPY --from=guest tinyland/ ./tinyland/
+COPY --from=tinyland / /tinyland/
 ARG LLVM_URL=https://github.com/laputa-systems/llvm-prebuilt-musl/releases/download/llvm-musl-23.1.5-3afbb74/clang%2Bllvm-23.1.5-aarch64-linux-musl.tar.xz
 ARG LLVM_SHA256=ca1c593163ac37d6656a5fddebec4c2714050c7345d9326e5afa8ea46949cede
 RUN curl --proto '=https' --tlsv1.2 -sSfL "$LLVM_URL" -o /tmp/llvm.tar.xz \
@@ -29,10 +27,11 @@ ENV CC_aarch64_unknown_linux_musl=/opt/llvm/bin/clang \
     CFLAGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl \
     CXXFLAGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl \
     RUSTFLAGS="-Clinker=/opt/llvm/bin/clang -Clink-self-contained=no -Clink-arg=--target=aarch64-linux-musl -Clink-arg=-fuse-ld=mold"
-RUN cargo build -Zbuild-std=std,panic_abort --locked --release --target aarch64-unknown-linux-musl -p tinyland -p seatd -p bctl-guest
+RUN cargo build -Zbuild-std=std,panic_abort --locked --release --target aarch64-unknown-linux-musl --manifest-path /tinyland/Cargo.toml --target-dir /src/target -p tinyland -p seatd \
+ && cargo build -Zbuild-std=std,panic_abort --locked --release --target aarch64-unknown-linux-musl -p bctl-guest
 
 FROM guest-build AS xkbcommon-build
-RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\([0-9a-f]*\)#.*|\1|p' Cargo.lock | sort -u) \
+RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\([0-9a-f]*\)#.*|\1|p' /tinyland/Cargo.lock | sort -u) \
  && [ "$(printf '%s\n' "$rev" | grep -c .)" = 1 ] \
  && git init -q /kbvm \
  && git -C /kbvm fetch -q --depth 1 https://github.com/laputa-systems/kbvm "$rev" \

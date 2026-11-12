@@ -49,6 +49,17 @@ remain available for diagnostics through `bctl up NAME --image IMAGE`.
 Follow [Nanos runtime layout](#nanos-runtime-layout) for Linux builds and
 installation, or its Apple Silicon instructions for the libkrun backend.
 
+## Shared graphics source
+
+Tinyland and its seatd daemon come from the commit in `guest/tinyland.rev` in
+[the Tinyland upstream](https://github.com/laputa-systems/tinyland).
+`guest/harness/tinyland-context.sh` supplies the named Git build context to
+all image builders. `guest/` contains only the bctl appliance crate.
+
+Land shared fixes, adjustments, and features upstream first. Update the pin
+and verify the consuming image afterward. Do not restore local source copies
+or consumer-only patches. bctl owns its appliance, image assembly, and VM proof.
+
 ## What is vendored
 
 `third_party/smolvm` holds three source trees with no nested Git repository:

@@ -1,5 +1,10 @@
 # Driving tinyland through WLCS
 
+This report describes the earlier local implementation. Current conformance
+work belongs in the independent Tinyland upstream, under
+`tinyland/harness/wlcs/`; the local `guest/tinyland` tree has been removed.
+
+
 **Verdict: feasible, and done.** WLCS (`canonical/wlcs`) drives tinyland through
 its `wlcs_server_integration` ABI with one library split, one test-only feature,
 and one separate cdylib crate (about 300 lines). No compositor behavior changed

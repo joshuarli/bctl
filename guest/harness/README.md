@@ -1,7 +1,7 @@
 # guest harness
 
-One arm64 SmolVM proof for the vendored laputa stack: `guest/tinyland` as
-the compositor and `guest/seatd` (built from this tree) as the broker.
+One arm64 SmolVM proof for the upstream Tinyland compositor and seatd broker,
+pinned by `guest/tinyland.rev` and fetched as a Docker Git context.
 
 ## Run
 
@@ -21,7 +21,7 @@ and `TINYLAND_SKIP_IMAGE_BUILD=1` adjust a run.
 
 ## What it proves
 
-- `image/tinyland-session` starts the vendored `/usr/local/bin/seatd` as
+- `image/tinyland-session` starts the upstream `/usr/local/bin/seatd` as
   root with `SEATD_VTBOUND=0` and socket `/run/seatd.sock`, then runs
   tinyland and foot as the unprivileged `tiny` user. The image carries no
   Alpine `seatd` or `libseat` package.
@@ -42,7 +42,8 @@ logs land under `.work/harness/`.
 
 ## Build notes
 
-`guest/` is one Cargo workspace (`appliance`, `seatd`, `seatd-protocol`, `tinyland`).
+`guest/` owns the appliance crate. The separate upstream Tinyland workspace
+owns `tinyland`, `seatd`, and `seatd-protocol`.
 `guest/.cargo/config.toml` selects `mold` for the musl targets; the
 aarch64 musl tinyland build uses the target's default `crt-static`, so the
 binary has no program interpreter and no `DT_NEEDED` (including no
@@ -50,7 +51,7 @@ libseat). `seatd` is built for the same target and copied into the image
 from this workspace.
 
 No component links libudev: tinyland reads evdev directly, and Alpine's
-foot and the vendored seatd do not use it, so libudev-zero is not
+foot and the upstream seatd do not use it, so libudev-zero is not
 installed.
 
 ## arm64 cargo tests
@@ -60,11 +61,12 @@ prefetched locked workspace dependencies.
 
 ```sh
 docker build --platform linux/arm64 --target tests \
+  --build-context "$(sh guest/harness/tinyland-context.sh)" \
   -f guest/harness/image/Dockerfile -t bctl/tinyland-smolvm-tests:local guest
-docker run --rm --platform linux/arm64 --network none -w /src/seatd \
+docker run --rm --platform linux/arm64 --network none -w /tinyland/seatd \
   bctl/tinyland-smolvm-tests:local cargo test --locked
-docker run --rm --platform linux/arm64 --network none -w /src/tinyland \
+docker run --rm --platform linux/arm64 --network none -w /tinyland/tinyland \
   bctl/tinyland-smolvm-tests:local cargo test --locked
-docker run --rm --platform linux/arm64 --network none -w /src \
+docker run --rm --platform linux/arm64 --network none -w /tinyland \
   bctl/tinyland-smolvm-tests:local cargo test -p seatd-protocol --locked
 ```

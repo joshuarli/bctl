@@ -38,7 +38,7 @@ packages = ["chromium"]
 class = "rust"
 name = "tinyland"
 reason = "the Wayland compositor"
-source = "guest/tinyland (crate tinyland)"
+source = "github.com/laputa-systems/tinyland (crate tinyland), pinned by guest/tinyland.rev"
 paths = ["/usr/local/bin/tinyland"]
 elf = true
 
@@ -46,7 +46,7 @@ elf = true
 class = "rust"
 name = "seatd"
 reason = "the seat broker"
-source = "guest/seatd (crate seatd)"
+source = "github.com/laputa-systems/tinyland (crate seatd), pinned by guest/tinyland.rev"
 paths = ["/usr/local/bin/seatd"]
 elf = true
 
@@ -88,7 +88,7 @@ packages = ["busybox", "busybox-binsh", "socat", "su-exec", "file", "libmagic", 
 [[rule]]
 class = "gap"
 name = "sway-stack"
-reason = "C compositor, seat, and input stack; replaced by tinyland, guest/seatd, and kbvm"
+reason = "C compositor, seat, and input stack; replaced by tinyland, upstream seatd, and kbvm"
 packages = ["sway", "swaybar", "swaynag", "sway-wallpapers", "wlroots", "seatd", "libseat", "libinput-libs", "libevdev", "mtdev", "libelogind", "libudev-zero", "basu", "libdisplay-info", "wayland-libs-server", "pixman", "xcb-util-renderutil", "xcb-util-wm", "vulkan-loader", "libcap2"]
 
 [[rule]]

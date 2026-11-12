@@ -20,10 +20,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo/ ./.cargo/
 COPY appliance/ ./appliance/
-COPY seatd-protocol/ ./seatd-protocol/
-COPY seatd/ ./seatd/
-COPY tinyland/ ./tinyland/
-RUN cargo build --locked --release --target aarch64-unknown-linux-musl --workspace
+COPY --from=tinyland / /tinyland/
+RUN cargo build --locked --release --target aarch64-unknown-linux-musl --manifest-path /tinyland/Cargo.toml --target-dir /src/target -p tinyland -p seatd \
+ && cargo build --locked --release --target aarch64-unknown-linux-musl --workspace
 
 FROM buildenv AS tests
 
@@ -31,10 +30,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo/ ./.cargo/
 COPY appliance/ ./appliance/
-COPY seatd-protocol/ ./seatd-protocol/
-COPY seatd/ ./seatd/
-COPY tinyland/ ./tinyland/
-RUN cargo fetch --locked
+COPY --from=tinyland / /tinyland/
+RUN cargo fetch --locked \
+ && cargo fetch --locked --manifest-path /tinyland/Cargo.toml
 
 FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS image
 
@@ -44,7 +42,7 @@ RUN apk add --no-cache busybox font-dejavu foot libgcc xkeyboard-config \
 
 COPY --from=guest-build /src/target/aarch64-unknown-linux-musl/release/tinyland /usr/local/bin/tinyland
 COPY --from=guest-build /src/target/aarch64-unknown-linux-musl/release/seatd /usr/local/bin/seatd
-COPY tinyland/guest/test-app /usr/local/bin/guest-test
+COPY --from=tinyland tinyland/guest/test-app /usr/local/bin/guest-test
 COPY harness/image/tinyland-session /usr/local/bin/tinyland-session
 
 RUN chmod 755 /usr/local/bin/tinyland /usr/local/bin/seatd /usr/local/bin/guest-test /usr/local/bin/tinyland-session

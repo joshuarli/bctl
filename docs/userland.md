@@ -1,5 +1,10 @@
 # Userland census
 
+The source paths and measurements below describe their recorded image builds.
+Current builds fetch the independent Tinyland workspace at `guest/tinyland.rev`;
+local compositor and seat-daemon copies have been removed.
+
+
 The census attributes every file in an image rootfs to one of three classes
 from the pure-Rust userland rule in `docs/CAMPAIGN-ROADMAP.md` (Decisions):
 

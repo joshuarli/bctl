@@ -14,13 +14,12 @@ WORKDIR /src
 COPY --from=guest Cargo.toml Cargo.lock ./
 COPY --from=guest .cargo/ ./.cargo/
 COPY --from=guest appliance/ ./appliance/
-COPY --from=guest seatd-protocol/ ./seatd-protocol/
-COPY --from=guest seatd/ ./seatd/
-COPY --from=guest tinyland/ ./tinyland/
-RUN cargo build --locked --release --target aarch64-unknown-linux-musl -p tinyland -p seatd -p bctl-guest
+COPY --from=tinyland / /tinyland/
+RUN cargo build --locked --release --target aarch64-unknown-linux-musl --manifest-path /tinyland/Cargo.toml --target-dir /src/target -p tinyland -p seatd \
+ && cargo build --locked --release --target aarch64-unknown-linux-musl -p bctl-guest
 
 FROM guest-build AS xkbcommon-build
-RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\([0-9a-f]*\)#.*|\1|p' Cargo.lock | sort -u) \
+RUN rev=$(sed -n 's|^source = "git+https://github.com/laputa-systems/kbvm?rev=\([0-9a-f]*\)#.*|\1|p' /tinyland/Cargo.lock | sort -u) \
  && [ "$(printf '%s\n' "$rev" | grep -c .)" = 1 ] \
  && git init -q /kbvm \
  && git -C /kbvm fetch -q --depth 1 https://github.com/laputa-systems/kbvm "$rev" \

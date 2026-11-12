@@ -58,6 +58,7 @@ esac
 
 if [ "${TINYLAND_SKIP_IMAGE_BUILD:-0}" != 1 ]; then
     docker build --platform linux/arm64 --target image \
+        --build-context "$(sh "$here/tinyland-context.sh")" \
         -f "$here/image/Dockerfile" -t "$tag" "$guest_root" \
         || fail "arm64 image build failed"
     docker save "$tag" -o "$image.part" || fail "docker save failed"
