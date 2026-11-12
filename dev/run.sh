@@ -8,8 +8,48 @@ usage() {
 }
 
 smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0 virtiofs='' p9=''
+grace=${HYDROGEN_RUN_GRACE:-5}
+owned=''
+sigall='for p; do kill -s "$sig" -- "-$p" 2>/dev/null || kill -s "$sig" "$p" 2>/dev/null || :; done'
+signal_owned() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "$2" 2>/dev/null || :; }
+spawn() {
+	if command -v setsid >/dev/null 2>&1; then setsid "$@" </dev/null &
+	elif command -v perl >/dev/null 2>&1; then perl -e 'setpgrp(0, 0); exec @ARGV or exit 127' -- "$@" </dev/null &
+	else "$@" </dev/null &
+	fi
+	owned="$owned $!"
+}
+reap_owned() {
+	trap '' INT TERM HUP
+	targets=$owned owned=''
+	[ -n "$targets" ] || return 0
+	for p in $targets; do signal_owned TERM "$p"; done
+	spawn sh -c 'sleep "$1"; shift; sig=KILL; '"$sigall" sh "$grace" $targets >/dev/null 2>&1
+	killer=$!
+	owned=''
+	for p in $targets; do wait "$p" 2>/dev/null || :; done
+	i=0
+	while [ "$i" -lt $(((grace + 2) * 10)) ]; do
+		alive=0
+		for p in $targets; do ! kill -0 -- "-$p" 2>/dev/null || alive=1; done
+		[ "$alive" -eq 1 ] || break
+		sleep 0.1
+		i=$((i + 1))
+	done
+	signal_owned KILL "$killer"
+	wait "$killer" 2>/dev/null || :
+}
 expected=$(mktemp "$WORK/tmp/run-expected.XXXXXX")
-trap 'rm -f "$expected"' EXIT
+cleanup() {
+	status=$?
+	rm -f "$expected"
+	reap_owned
+	exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 while [ $# -gt 0 ]; do
 	case $1 in
 	--smp) smp=$2; shift 2 ;;
@@ -66,22 +106,21 @@ if [ "$native" -eq 1 ]; then
 	set -- "$program_host" "$@"
 	qemu_cmd=''
 	start=$(now)
-	( cd "$dir" && exec "$@" ) >"$serial" 2>"$dir/stderr.log" &
+	spawn sh -c 'cd "$0" && exec "$@"' "$dir" "$@" >"$serial" 2>"$dir/stderr.log"
 elif [ "$hvf" -eq 1 ]; then
 	set -- "$KRUN_RUN" "$image" "$HYDROGEN_KRUN/firmware.fd" "$smp" "$mib"
 	[ -z "$virtiofs" ] || set -- "$@" "${virtiofs%%:*}" "$(realpath "${virtiofs#*:}")"
 	qemu_cmd=$*
 	start=$(now)
-	"$@" >"$serial" 2>"$dir/qemu.log" &
+	spawn "$@" >"$serial" 2>"$dir/qemu.log"
 else
 if [ "$net" -eq 1 ]; then nic='user,model=virtio-net-pci'; else nic='none'; fi
 machine=q35,accel=kvm
 if [ -n "$virtiofs" ]; then
 	command -v "$VIRTIOFSD" >/dev/null || die "missing $VIRTIOFSD: set VIRTIOFSD to a virtiofsd binary"
 	vfs_socket=$dir/virtiofs.sock
-	"$VIRTIOFSD" --socket-path="$vfs_socket" --shared-dir="$(realpath "${virtiofs#*:}")" --sandbox=none \
-		--cache=auto >"$dir/virtiofsd.log" 2>&1 &
-	vfs_pid=$!
+	spawn "$VIRTIOFSD" --socket-path="$vfs_socket" --shared-dir="$(realpath "${virtiofs#*:}")" --sandbox=none \
+		--cache=auto >"$dir/virtiofsd.log" 2>&1
 	i=0
 	while [ ! -S "$vfs_socket" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 	[ -S "$vfs_socket" ] || die "virtiofsd did not start; see $dir/virtiofsd.log"
@@ -99,19 +138,17 @@ set -- qemu-system-x86_64 -machine "$machine" -cpu host -smp "$smp" -m "$mem" \
 qemu_cmd=$*
 
 start=$(now)
-"$@" >"$dir/qemu.log" 2>&1 &
+spawn "$@" >"$dir/qemu.log" 2>&1
 fi
 qpid=$!
-( sleep "$timeout" && : >"$dir/deadline" && kill "$qpid" ) >/dev/null 2>&1 &
-wpid=$!
+spawn sh -c 'sleep "$1"; : >"$2"; g=$3; shift 3; sig=TERM; '"$sigall"'; sleep "$g"; sig=KILL; '"$sigall" \
+	sh "$timeout" "$dir/deadline" "$grace" "$qpid" >/dev/null 2>&1
 set +e
 wait "$qpid"
 rc=$?
 set -e
-kill "$wpid" 2>/dev/null || :
-wait "$wpid" 2>/dev/null || :
-[ -z "${vfs_pid:-}" ] || { kill "$vfs_pid" 2>/dev/null || :; wait "$vfs_pid" 2>/dev/null || :; }
 end=$(now)
+reap_owned
 [ -f "$serial" ] || : >"$serial"
 tr -d '\r' <"$serial" >"$dir/serial.txt"
 log=$dir/serial.txt
