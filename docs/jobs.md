@@ -196,6 +196,18 @@ stream. When Grab meets a challenge or a login wall, the run moves to
 dashboard or any CDP client), then `bctl resume RUN`. The crawl continues in
 the same browser and profile.
 
+Grab keeps its control URL's sockets open while it waits, so it stays the
+session's external controller. For that wait only, it stands aside: one other
+CDP URL (`bctl cdp-url SESSION`) can attach beside it, and a dashboard takeover
+is not refused because of Grab's sockets. Grab itself is unchanged and sends
+nothing while it waits. Outside `needs-interaction` the one-controller rule of
+[automation](automation.md#external-controllers) holds. Resuming the run, with
+`bctl resume` or the dashboard's "Resume automation", closes the operator's
+sockets within about a second and refuses that URL again while the crawl runs.
+It can attach again the next time the run needs interaction. A run that
+ends while it waits (`bctl cancel`, `bctl pause`) leaves the operator's
+sockets open, and the operator then holds the session as any controller does.
+
 `bctl pause` asks Grab to stop at its next page boundary; the run is `paused`
 and the VM keeps running. `bctl resume` of a paused or interrupted grab starts
 a new attempt over the same output directory, which continues from Grab's
@@ -219,9 +231,10 @@ When a run is `needs-interaction`, the page embeds the session's live view.
 "Take control" moves the session's authority to `yielding` and then, once
 bctl's own native commands in flight have ended, to `human`: only then does
 that viewer's keyboard and pointer reach the browser. From `yielding` on, new
-CDP attachments and native commands that change the page are refused. Grab
-leaves no tab open at a login wall, so open the named URL in the browser
-yourself. "Resume automation" hands control back to automation and sends
+CDP attachments and native commands that change the page are refused. Grab's
+open sockets do not refuse the takeover, but an operator's CDP URL that is
+attached does: close it first. Grab leaves no tab open at a login wall, so
+open the named URL in the browser yourself. "Resume automation" hands control back to automation and sends
 `resume`, as `bctl resume` does. If another viewer has control, it refuses.
 The states are described in [automation.md](automation.md#authority).
 

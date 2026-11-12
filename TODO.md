@@ -1,15 +1,6 @@
 Prefix: BCTL
 Next: 14
 
-### BCTL-13 · P2 · A grab waiting for a login keeps its CDP controller, so the operator cannot attach
-
-- **Area:** Architecture
-- **Where:** `crates/bctl/src/gateway.rs`, `crates/bctl/tests/runs.rs:343`, `docs/jobs.md:195`
-- **Problem:** `docs/jobs.md` says a run in `needs-interaction` is resolved by acting "in the session's browser (the dashboard or any CDP client)". Since `b8af2a8` gave each session one external CDP controller, Grab's control URL stays attached while it waits, and the operator's own URL gets `409 Another CDP controller is attached`. `cargo test -p bctl --test runs -- --ignored` fails `a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_in_the_same_browser` every run with `parse /json/version JSON` on that 409 body. Unproven whether the dashboard takeover path also fails.
-- **Recommendation:** Decide which side yields: either Grab closes its CDP sockets while it waits for interaction, or the gateway lets an operator attach while the session's run is `needs-interaction`. Keep the runs test as the regression check, and update `docs/jobs.md` to match.
-- **Fix with:** `architect`
-- **Effort:** M (days)
-
 ### BCTL-11 · P2 · Linux SmolVM guests lose module fetches to the host
 
 - **Area:** Concurrency

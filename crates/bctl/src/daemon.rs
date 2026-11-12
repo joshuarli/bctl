@@ -184,10 +184,14 @@ impl Ledger for RunLedger {
     }
 
     fn running(&self, attempt: i64) {
+        self.daemon.authority.of(&self.session, Control::resume_run);
         self.record(attempt, self.daemon.store().set_live(attempt, LiveState::Running, None));
     }
 
     fn needs_interaction(&self, attempt: i64, interaction: &Interaction) {
+        if let Some(controller) = gateway::cdp_url_controller(&self.cdp_url) {
+            self.daemon.authority.of(&self.session, |control| control.stand_aside(&controller));
+        }
         self.record(attempt, self.daemon.store().set_live(attempt, LiveState::NeedsInteraction, Some(interaction)));
     }
 
@@ -201,6 +205,7 @@ impl Ledger for RunLedger {
 
     fn finish(&self, live: &Live, end: AttemptEnd) {
         let mut sessions = lock(&self.daemon.live);
+        self.daemon.authority.of(&self.session, Control::run_ended);
         self.record(live.attempt, self.daemon.store().finish_attempt(live.attempt, &end, now_ms()));
         if sessions.get(&self.session).is_some_and(|current| current.attempt == live.attempt) {
             sessions.remove(&self.session);
@@ -1191,6 +1196,7 @@ impl Daemon {
             AttemptState::NeedsInteraction => {
                 let live = self.live_handle(&record).ok_or_else(|| not_live(run, record.current.state))?;
                 live.resume().map_err(|e| internal(format!("cannot write resume to run {run}'s control channel: {e}")))?;
+                self.authority.of(&record.spec.session, Control::resume_run);
                 return self.run_response(run);
             }
             AttemptState::Paused | AttemptState::Interrupted => {}

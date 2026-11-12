@@ -173,7 +173,8 @@ taking it, is refused with HTTP 409 and changes nothing. A native command is
 - **CDP attachments.** Under `yielding` and `human` the gateway refuses new
   attachments through `bctl cdp-url` capabilities with HTTP 409. Connections
   already open are not cut, but none can be: a takeover is refused while an
-  external controller is attached (below).
+  external controller is attached (below), except a run's controller waiting
+  for a person.
 - **Runs.** Resuming automation also resumes the session's run if it is in
   `needs-interaction`. A takeover does not wait for a running run: neither
   Grab nor an exec job has a boundary to pause at without ending the attempt.
@@ -200,6 +201,24 @@ While a controller is attached:
 - Native commands still run: they are automation too. bctl does not order
   them against the commands on the controller's sockets, so a program that
   uses both decides their order itself.
+
+While the session's run is `needs-interaction`, the run's own controller
+(Grab's control URL, see [jobs](jobs.md#grab-runs)) stands aside, and only
+that one:
+
+- One other URL of the session, the operator's, may attach and keep sockets
+  open beside Grab's, which stay open. A second operator URL is refused as
+  usual, and nothing is admitted while a person holds or takes control.
+- Grab's sockets do not count against a dashboard takeover. An attached
+  operator's do.
+- When the run resumes (`bctl resume`, or "Resume automation" in the
+  dashboard), the operator's sockets are closed within about a second and its
+  URL is refused again while the run is running, so the session has one
+  controller again. If the run ends while it waits, the operator keeps the
+  session as any controller does and nothing is closed.
+
+The exception ends with the `needs-interaction` attempt; in every other state
+the rules above hold.
 
 To release the session, close the client. Ending a run (`bctl cancel`) or
 running `bctl cdp-revoke NAME` closes every open socket of the session's URLs

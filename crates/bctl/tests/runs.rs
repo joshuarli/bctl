@@ -321,6 +321,49 @@ fn browser_answers(control_url: &str) -> bool {
     response.starts_with("HTTP/1.1 200") && response.contains("\"Browser\"")
 }
 
+fn gateway_get(control_url: &str, path: &str) -> (u16, String) {
+    let host = control_url.trim_start_matches("http://");
+    let port: u16 = host.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap();
+    common::http(port, host, &format!("GET {path}"), "")
+}
+
+fn hold_browser_socket(control_url: &str) -> TcpStream {
+    let (status, version) = gateway_get(control_url, "/json/version");
+    assert_eq!(status, 200, "the operator's URL is admitted while the run waits: {version}");
+    let path = version.split("ws://").nth(1).and_then(|rest| rest.find('/').map(|i| rest[i..].split('"').next().unwrap().to_string())).unwrap();
+    let host = control_url.trim_start_matches("http://");
+    let port: u16 = host.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+        head.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
+    stream
+}
+
+fn closed_within(stream: &mut TcpStream, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    let mut buf = [0u8; 4096];
+    while Instant::now() < deadline {
+        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        match stream.read(&mut buf) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
 #[test]
 #[ignore = "boots real VMs: needs runtime/build.sh, the BCTL_TEST_IMAGE image (default helium) in .work/images, and BCTL_GRAB"]
 fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_in_the_same_browser() {
@@ -340,9 +383,18 @@ fn a_grab_behind_a_login_waits_for_the_operator_then_finishes_a_verified_mirror_
     assert_eq!(fixture.hits("/a.html"), 0, "the crawl went past the login wall without a login");
 
     let operator_url = home.cdp_url(&session);
+    let mut operator_socket = hold_browser_socket(&operator_url);
     async_io::block_on(sign_in(&operator_url, &seed)).unwrap();
+    assert!(!closed_within(&mut operator_socket, Duration::from_secs(2)), "the operator's socket stayed open while the run waited");
     let resumed = home.bctl(&["resume", &grab.id.to_string()]);
     assert_ok(&resumed);
+    assert!(closed_within(&mut operator_socket, Duration::from_secs(5)), "resuming the run did not close the operator's socket");
+    if run(&home, grab.id).state == "running" {
+        let (status, refusal) = gateway_get(&operator_url, "/json/version");
+        if run(&home, grab.id).state == "running" {
+            assert_eq!(status, 409, "the operator's URL was admitted again while the run runs: {refusal}");
+        }
+    }
 
     let done = wait_for(&home, grab.id, "ended", Duration::from_secs(300), |r| !matches!(r.state.as_str(), "starting" | "running" | "needs-interaction"));
     assert_eq!((done.state.as_str(), done.outcome.as_deref()), ("succeeded", Some("succeeded")), "{done:?}\n{}", logs(&home, grab.id));

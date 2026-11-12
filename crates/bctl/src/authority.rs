@@ -92,19 +92,30 @@ pub(crate) struct Ticket {
     takeovers_seen: u64,
 }
 
+/// An attached external controller with its open CDP sockets.
+#[derive(Debug)]
+struct Held {
+    controller: Controller,
+    sockets: usize,
+    /// The run it stood aside for has resumed: its sockets are being closed and it no longer holds the session.
+    evicted: bool,
+}
+
 /// One session's authority, the native commands still settling, which a takeover waits for, and the external
-/// controller attached with its open CDP sockets.
+/// controllers attached with their open CDP sockets. Normally at most one controller is attached. While the
+/// session's run waits for a person, the run's own controller stands aside and one other may attach beside it.
 #[derive(Debug)]
 pub(crate) struct Control {
     authority: Authority,
     settling: usize,
     takeovers: u64,
-    attached: Option<(Controller, usize)>,
+    attached: Vec<Held>,
+    aside: Option<Controller>,
 }
 
 impl Default for Control {
     fn default() -> Control {
-        Control { authority: Authority::Automation, settling: 0, takeovers: 0, attached: None }
+        Control { authority: Authority::Automation, settling: 0, takeovers: 0, attached: Vec::new(), aside: None }
     }
 }
 
@@ -118,44 +129,75 @@ impl Control {
         self.settling
     }
 
-    /// The attached controller's open CDP sockets, or 0.
+    /// The open CDP sockets that hold the session, or 0: not those of a controller standing aside for a person,
+    /// nor of one being closed.
     pub(crate) fn connections(&self) -> usize {
-        self.attached.as_ref().map_or(0, |(_, sockets)| *sockets)
+        self.attached.iter().filter(|held| self.holds(held)).map(|held| held.sockets).sum()
+    }
+
+    fn holds(&self, held: &Held) -> bool {
+        !held.evicted && self.aside.as_ref() != Some(&held.controller)
     }
 
     /// Opens a CDP socket for `controller`. The first makes it the session's one controller; more from the same
     /// controller share that standing. Refused while a person holds or takes control, or another is attached.
     pub(crate) fn attach(&mut self, controller: &Controller) -> Result<(), AttachRefused> {
         self.admits(controller)?;
-        match &mut self.attached {
-            Some((_, sockets)) => *sockets += 1,
-            None => self.attached = Some((controller.clone(), 1)),
+        match self.attached.iter_mut().find(|held| held.controller == *controller) {
+            Some(held) => held.sockets += 1,
+            None => self.attached.push(Held { controller: controller.clone(), sockets: 1, evicted: false }),
         }
         Ok(())
     }
 
-    /// Whether `controller` could attach now.
+    /// Whether `controller` could attach now. The controller of a run that waits for a person is always
+    /// admitted, and does not keep another from attaching.
     pub(crate) fn admits(&self, controller: &Controller) -> Result<(), AttachRefused> {
         if self.authority != Authority::Automation {
             return Err(AttachRefused::Person);
         }
-        match &self.attached {
-            Some((held, _)) if held != controller => Err(AttachRefused::OtherController),
-            _ => Ok(()),
+        if self.aside.as_ref() == Some(controller) {
+            return Ok(());
         }
+        let refused = self.attached.iter().any(|held| if held.controller == *controller { held.evicted } else { self.holds(held) });
+        if refused { Err(AttachRefused::OtherController) } else { Ok(()) }
     }
 
     /// One of `controller`'s sockets closed; its last releases the session. A socket of a controller that no
     /// longer holds it, such as one closing after the session stopped, changes nothing.
     pub(crate) fn detach(&mut self, controller: &Controller) {
-        if let Some((held, sockets)) = &mut self.attached
-            && held == controller
-        {
-            *sockets -= 1;
-            if *sockets == 0 {
-                self.attached = None;
+        if let Some(index) = self.attached.iter().position(|held| held.controller == *controller) {
+            self.attached[index].sockets -= 1;
+            if self.attached[index].sockets == 0 {
+                self.attached.remove(index);
             }
         }
+    }
+
+    /// The session's run waits for a person, and `controller` is the run's. Until the run resumes or ends, that
+    /// controller no longer excludes another one, such as the operator's, nor a takeover.
+    pub(crate) fn stand_aside(&mut self, controller: &Controller) {
+        self.aside = Some(controller.clone());
+    }
+
+    /// The run resumes: the controllers that attached beside it are evicted. They stop holding the session at
+    /// once and their sockets are closed. Does nothing unless a run was waiting.
+    pub(crate) fn resume_run(&mut self) {
+        let Some(run) = self.aside.take() else { return };
+        for held in self.attached.iter_mut().filter(|held| held.controller != run) {
+            held.evicted = true;
+        }
+    }
+
+    /// The run ended while it waited: whoever is attached keeps the session, and the run's controller no longer
+    /// stands aside.
+    pub(crate) fn run_ended(&mut self) {
+        self.aside = None;
+    }
+
+    /// Whether `controller` was evicted and its sockets should be closed.
+    pub(crate) fn evicted(&self, controller: &Controller) -> bool {
+        self.attached.iter().any(|held| held.controller == *controller && held.evicted)
     }
 
     /// Moves to `Yielding`, or straight to `Human` if no native command is settling. Asking again
@@ -198,7 +240,8 @@ impl Control {
     /// The session stopped: whoever held control, automation holds it now, and no controller is attached.
     pub(crate) fn reset(&mut self) {
         self.authority = Authority::Automation;
-        self.attached = None;
+        self.attached.clear();
+        self.aside = None;
     }
 
     pub(crate) fn begin(&mut self, effect: Effect) -> Result<Ticket, Refused> {
@@ -261,6 +304,26 @@ impl Attachment {
     pub(crate) fn open(daemon: &Arc<Daemon>, session: &SessionName, controller: Controller) -> Result<Attachment, AttachRefused> {
         daemon.authority.of(session, |control| control.attach(&controller))?;
         Ok(Attachment { daemon: Arc::clone(daemon), session: session.clone(), controller })
+    }
+}
+
+/// What a socket's watcher asks about its controller.
+pub(crate) struct Standing {
+    daemon: Arc<Daemon>,
+    session: SessionName,
+    controller: Controller,
+}
+
+impl Standing {
+    /// Whether the controller was evicted, so the socket should close.
+    pub(crate) fn evicted(&self) -> bool {
+        self.daemon.authority.of(&self.session, |control| control.evicted(&self.controller))
+    }
+}
+
+impl Attachment {
+    pub(crate) fn standing(&self) -> Standing {
+        Standing { daemon: Arc::clone(&self.daemon), session: self.session.clone(), controller: self.controller.clone() }
     }
 }
 
@@ -490,5 +553,97 @@ mod tests {
         control.detach(&old);
         assert_eq!(control.connections(), 1, "the old controller's socket closing late does not release the new one");
         assert_eq!(control.take(&Viewer::new("v")), Err(TakeRefused::ControllerAttached { connections: 1 }));
+    }
+
+    #[test]
+    fn an_operator_attaches_beside_a_run_that_waits_for_a_person_and_is_refused_otherwise() {
+        let (run, operator, other) = (Controller::new("run"), Controller::new("operator"), Controller::new("other"));
+        let mut control = Control::default();
+        control.attach(&run).unwrap();
+        assert_eq!(control.admits(&operator), Err(AttachRefused::OtherController), "refused while the run is running");
+        assert_eq!(control.attach(&operator), Err(AttachRefused::OtherController));
+
+        control.stand_aside(&run);
+        assert_eq!(control.attach(&operator), Ok(()), "admitted while the run waits for a person");
+        assert_eq!(control.attach(&operator), Ok(()), "a second socket of the operator shares its standing");
+        assert_eq!(control.attach(&run), Ok(()), "the run's own controller is not shut out by the operator");
+        assert_eq!(control.attach(&other), Err(AttachRefused::OtherController), "the exception admits one operator, not several");
+        assert_eq!(control.connections(), 2, "the run's sockets do not count");
+    }
+
+    #[test]
+    fn resuming_the_run_evicts_the_operator_and_restores_the_one_controller_rule() {
+        let (run, operator, other) = (Controller::new("run"), Controller::new("operator"), Controller::new("other"));
+        let mut control = Control::default();
+        control.attach(&run).unwrap();
+        control.stand_aside(&run);
+        control.attach(&operator).unwrap();
+        control.attach(&operator).unwrap();
+
+        control.resume_run();
+        assert!(control.evicted(&operator) && !control.evicted(&run));
+        assert_eq!(control.attach(&operator), Err(AttachRefused::OtherController), "an evicted operator cannot attach again");
+        assert_eq!(control.attach(&other), Err(AttachRefused::OtherController), "the run's controller holds the session again");
+        assert_eq!(control.connections(), 1);
+        assert_eq!(control.attach(&run), Ok(()));
+
+        control.detach(&operator);
+        assert!(control.evicted(&operator), "the evicted operator still has a socket");
+        control.detach(&operator);
+        assert!(!control.evicted(&operator));
+        assert_eq!(control.connections(), 2);
+        assert_eq!(control.attach(&operator), Err(AttachRefused::OtherController), "refused again as another controller");
+        control.resume_run();
+        assert_eq!(control.connections(), 2, "resuming a run that was not waiting evicts no one");
+        control.stand_aside(&run);
+        control.run_ended();
+        assert_eq!(control.attach(&operator), Err(AttachRefused::OtherController), "an ended run leaves no exception behind");
+    }
+
+    #[test]
+    fn a_run_that_ends_while_waiting_leaves_the_operator_the_session() {
+        let (run, operator, other) = (Controller::new("run"), Controller::new("operator"), Controller::new("other"));
+        let mut control = Control::default();
+        control.attach(&run).unwrap();
+        control.stand_aside(&run);
+        control.attach(&operator).unwrap();
+        control.run_ended();
+        control.detach(&run);
+        assert!(!control.evicted(&operator));
+        assert_eq!(control.connections(), 1);
+        assert_eq!(control.attach(&other), Err(AttachRefused::OtherController));
+        assert_eq!(control.attach(&operator), Ok(()));
+    }
+
+    #[test]
+    fn a_takeover_goes_ahead_while_only_the_waiting_runs_controller_is_attached() {
+        let (viewer, other) = viewers();
+        let (run, operator) = (Controller::new("run"), Controller::new("operator"));
+        let mut control = Control::default();
+        control.attach(&run).unwrap();
+        assert_eq!(control.take(&viewer), Err(TakeRefused::ControllerAttached { connections: 1 }), "a running run's controller refuses it");
+        control.stand_aside(&run);
+        control.attach(&operator).unwrap();
+        assert_eq!(control.take(&viewer), Err(TakeRefused::ControllerAttached { connections: 1 }), "an operator's does too");
+        control.detach(&operator);
+        assert_eq!(control.take(&viewer), Ok(()));
+        assert_eq!(control.authority(), &Authority::Human(viewer.clone()));
+        assert_eq!(control.attach(&operator), Err(AttachRefused::Person), "no one attaches beside a person");
+        assert_eq!(control.take(&other), Err(TakeRefused::Contested));
+        assert_eq!(control.resume(&viewer), Ok(()));
+        control.resume_run();
+        assert_eq!(control.authority(), &Authority::Automation);
+        assert_eq!(control.take(&other), Err(TakeRefused::ControllerAttached { connections: 1 }), "the resumed run's controller holds the session");
+    }
+
+    #[test]
+    fn a_stopped_session_forgets_a_waiting_run() {
+        let (run, operator) = (Controller::new("run"), Controller::new("operator"));
+        let mut control = Control::default();
+        control.attach(&run).unwrap();
+        control.stand_aside(&run);
+        control.reset();
+        control.attach(&run).unwrap();
+        assert_eq!(control.attach(&operator), Err(AttachRefused::OtherController));
     }
 }

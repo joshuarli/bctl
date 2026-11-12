@@ -109,8 +109,16 @@ pub fn mint_cdp_url(daemon: &Arc<Daemon>, session: &SessionName) -> io::Result<S
     Ok(format!("http://{token}.localhost:{port}"))
 }
 
+pub(crate) fn cdp_url_controller(url: &str) -> Option<Controller> {
+    cdp_url_token(url).map(Controller::new)
+}
+
+fn cdp_url_token(url: &str) -> Option<&str> {
+    url.strip_prefix("http://").and_then(|host| host.split_once('.')).map(|(token, _)| token)
+}
+
 pub fn revoke_cdp_url(daemon: &Daemon, url: &str) {
-    let Some(token) = url.strip_prefix("http://").and_then(|host| host.split_once('.')).map(|(token, _)| token) else { return };
+    let Some(token) = cdp_url_token(url) else { return };
     daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capabilities.retain(|(candidate, _)| !constant_time_eq(candidate.as_bytes(), token.as_bytes()));
 }
 
@@ -447,10 +455,11 @@ fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, attachment: Attachment, c
     let finished = Arc::new(AtomicBool::new(false));
     let (daemon, token) = (Arc::clone(daemon), token.to_string());
     let done = Arc::clone(&finished);
+    let standing = attachment.standing();
     thread::spawn(move || {
         while !done.load(Ordering::Acquire) {
             let live = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capability_session(&token).is_some();
-            if !live {
+            if !live || standing.evicted() {
                 let _ = watched.shutdown(std::net::Shutdown::Both);
             }
             thread::sleep(Duration::from_millis(250));
