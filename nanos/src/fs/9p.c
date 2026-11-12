@@ -18,6 +18,7 @@ typedef struct p9_dentry {
     u64 qid;
     tuple md;
     boolean pinned;
+    u64 fsfile_refs;
 } *p9_dentry;
 
 typedef struct p9fs {
@@ -58,7 +59,8 @@ static u32 p9_fid_new(p9fs fs)
     /* Try to release a fid by looking for and deleting an unused directory entry. */
     list_foreach_reverse(&fs->dentries, e) {
         p9_dentry dentry = struct_from_list(e, p9_dentry, l);
-        if (!dentry->pinned && (dentry->fid != P9_NOFID) && !fs_file_is_busy(&fs->fs, dentry->md)) {
+        if (!dentry->pinned && !dentry->fsfile_refs && (dentry->fid != P9_NOFID) &&
+            !fs_file_is_busy(&fs->fs, dentry->md)) {
             p9_dentry_delete(fs, dentry);
             goto begin;
         }
@@ -81,12 +83,14 @@ static p9_dentry p9_dentry_new(p9fs fs, u32 fid, u64 qid, tuple md)
     dentry->qid = qid;
     dentry->md = md;
     dentry->pinned = false;
+    dentry->fsfile_refs = 0;
     list_insert_after(list_end(&fs->dentries), &dentry->l);
     return dentry;
 }
 
 static void p9_dentry_delete(p9fs fs, p9_dentry dentry)
 {
+    assert(dentry != &fs->root && !dentry->fsfile_refs);
     if (list_inserted(&dentry->l))
         list_delete(&dentry->l);
     if (dentry->fid != P9_NOFID)
@@ -182,6 +186,16 @@ static void p9_fsfile_delete(p9fs fs, p9_fsfile fsf)
     if (list_inserted(&fsf->l))
         list_delete(&fsf->l);
     pagecache_deallocate_node(fsf->f.cache_node);
+    p9_dentry dentry = fsf->dentry;
+    assert(dentry->fsfile_refs);
+    if (--dentry->fsfile_refs == 0) {
+        if (!list_inserted(&dentry->l)) {
+            p9_dentry_delete(fs, dentry);
+        } else if (dentry->fid != P9_NOFID) {
+            p9_fid_release(fs, dentry->fid);
+            dentry->fid = P9_NOFID;
+        }
+    }
     deallocate(fs->fs.h, fsf, sizeof(*fsf));
 }
 
@@ -197,10 +211,7 @@ closure_func_basic(status_handler, void, p9fsf_sync_complete,
     filesystem fs = f->fs;
     p9fs p9fs = (struct p9fs *)fs;
     filesystem_lock(fs);
-    p9_dentry dentry = fsf->dentry;
     p9_fsfile_delete(p9fs, fsf);
-    if (!dentry->md)
-        p9_dentry_delete(p9fs, dentry);
     filesystem_unlock(fs);
 }
 
@@ -240,7 +251,7 @@ static p9_fsfile p9_fsfile_new(p9fs fs, p9_dentry dentry)
     }
     fsf->f.get_blocks = p9_get_blocks;
     list_insert_after(list_end(&fs->fsfiles), &fsf->l);
-    dentry->pinned = true;
+    dentry->fsfile_refs++;
     return fsf;
 }
 
@@ -320,7 +331,9 @@ closure_function(2, 2, boolean, p9_dir_cleanup,
         p9_dentry dentry = p9_get_dentry_from_md(fs, v);
         if (dentry) {
             fs_notify_release(dentry->md, false);
-            p9_dentry_delete(fs, dentry);
+            list_delete(&dentry->l);
+            if (!dentry->fsfile_refs)
+                p9_dentry_delete(fs, dentry);
         } else {
             deallocate_value(v);
         }
@@ -461,6 +474,9 @@ static int p9_rename(filesystem fs, tuple old_parent, string old_name, tuple old
         p9_dentry dentry = p9_get_dentry_from_md(p9fs, new_md);
         if (dentry) {
             dentry->md = 0;
+            list_delete(&dentry->l);
+            if (!dentry->fsfile_refs)
+                p9_dentry_delete(p9fs, dentry);
         }
         *destruct_md = true;
     }
@@ -479,6 +495,9 @@ static int p9_unlink(filesystem fs, tuple parent, string name, tuple md, boolean
         p9_dentry dentry = p9_get_dentry_from_md(p9fs, md);
         if (dentry) {
             dentry->md = 0;
+            list_delete(&dentry->l);
+            if (!dentry->fsfile_refs)
+                p9_dentry_delete(p9fs, dentry);
         }
         *destruct_md = true;
     }

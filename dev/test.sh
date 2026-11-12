@@ -373,7 +373,10 @@ for suite in "$@"; do
 		printf 'hello from the host\n' >"$share/from_host"
 		for smp in 1 2; do
 			case_p9=1:$share case_verdict p9_close "$smp" 60 PASS '' --mount virtfs1:/shared "$FIXTURES/p9_close"
-		done ;;
+		done
+		make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/p9_mutation"
+		"$ROOT/dev/image.sh" --mount virtfs1:/shared -o "$IMAGES/p9-mutation.img" "$FIXTURES/p9_mutation" >/dev/null
+		python3 "$ROOT/dev/test-p9-mutation.py" || failures=$((failures + 1)) ;;
 	vsock)
 		[ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "vsock suite requires Linux x86_64"
 		[ -x "${VHOST_DEVICE_VSOCK:-}" ] || die "set VHOST_DEVICE_VSOCK to the vhost-device-vsock executable"

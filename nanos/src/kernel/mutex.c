@@ -220,13 +220,8 @@ static inline boolean mutex_lock_internal(mutex m, boolean wait)
     if (on_mcs) {
         mcs_unlock(m, current_cpu());
         on_mcs = false;
-        goto wait;
     }
-#ifdef LOCK_STATS
-    sleeps++;
-#endif
-    context_reschedule(ctx);
-    goto acquire;
+    goto wait;
 }
 
 void mutex_init(mutex m, u64 spin_iterations)

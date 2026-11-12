@@ -130,3 +130,35 @@ until the refreshed image passes repeated shutdown and interop.
 bctl `f17507d` commits failure retention and the Linux measurement report.
 Three filesystem fault-injection tests prove that snapshot and retention
 errors cannot prevent shutdown cleanup or replace the original failure code.
+
+## 9p ownership and mutex wakeup repair
+
+The distinct-file fixture retains 128 host server descriptors before repair.
+Host deletion of an open guest file followed by directory refresh also crashes
+before repair. Dentries now count live fsfiles independently of temporary pins.
+Directory refresh, unlink, and rename replacement detach referenced dentries;
+the final fsfile release destroys a detached dentry or clunks a cached fid.
+Metadata still listed by its parent tuple remains cached.
+
+The wider fixture exposed a mutex wakeup race during asynchronous close.
+After a woken waiter loses acquisition to another context, its repeated
+bottom-half rescheduling can starve interrupts on one CPU. The lock holder is
+suspended in `v9p_request`; the waiter is in `p9fsf_sync_complete`, with 849
+acquisition spinouts and an empty wait queue in the captured state. The
+waiter now rejoins the mutex wait queue after its bounded acquisition spin.
+This allows the interrupt and RPC completion to run.
+
+`dev/test.sh 9p` passes at one and two CPUs, including 200 close/stat/reopen
+cycles, zero retained descriptors after 128 distinct files, host deletion while
+open, and 32 guest unlink and rename-replacement cycles with old and new data
+checked. Before/after logs are `.work/tmp/resume-p9-before.log`,
+`resume-p9-final2.log`, `resume-p9-mutex.log`, and `resume-p9-32.log`.
+The mutex capture is `resume-p9-lock.log`; passing guest runs are
+`.work/runs/20261112T040151Z-p9-mutation-*`. Their receipts identify the dirty
+`4f508a09` parent and kernel image SHA-256
+`08cf4f27b58a6d475b6d0d5796575361df2908dfddca0824cb5f040f2be0835c`.
+
+The bctl image built from `4f508a09` completes 100/100 shutdown cycles using
+a copy of the original failing persistent profile, with guest instrumentation
+removed. Evidence: `.work/tmp/resume-shutdown-vsock.log`. The original profile
+remains preserved. Full interop on the final ownership repair is still pending.
