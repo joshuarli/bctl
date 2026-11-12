@@ -303,10 +303,11 @@ open a profile in the other runtime rather than replacing its state.
 After building the runner and kernel, `python3 tests/runtime-nanos/vsock-reconnect.py`
 checks reconnects, shutdown and port reuse with a bounded host descriptor limit.
 
-SmolVM currently removes sessions through forced machine deletion, which sends
-SIGKILL to the appliance workload. bctl's ordinary `down` path for SmolVM does
-not provide the Nanos graceful-close sequence; [BCTL-1](../TODO.md#bctl-1--p2--ordinary-smolvm-shutdown-immediately-kills-the-guest-workload)
-tracks that lifecycle repair.
+An ordinary `bctl down` of a SmolVM session runs `machine stop` with a 30 s
+timeout, which covers the headed appliance's 25 s stop sequence, and then
+deletes the stopped machine. A stop that fails still deletes the VM and is
+reported as a forced removal. Failed or stale cleanup, and a paused machine,
+are deleted at once.
 
 ## Verification
 
