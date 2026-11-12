@@ -10,15 +10,6 @@ Next: 9
 - **Fix with:** `lifecycle-concurrency`
 - **Effort:** M (days)
 
-### BCTL-2 · P2 · Failed sessions release profile ownership before their VM is removed
-
-- **Area:** Data
-- **Where:** `crates/core/src/store.rs:34`, `crates/core/src/store.rs:200`, `crates/bctl/src/daemon.rs:302`
-- **Problem:** `fail_session` transitions a Ready session to Failed before calling `runtime.remove`. Failed is outside the database's `one_writer_per_profile` index, so another session can acquire the same profile while the old VM is still stopping. If removal fails, the old VM can remain alive after ownership and its observed endpoints have been discarded. A probe executed the real schema and update statements: the second writer was rejected while the old row was Ready, then admitted immediately after the Failed transition, before any removal. The daemon ordering establishes that window; simultaneous browser writes were not exercised. Nanos image locking can reject a second disk opener, but it does not repair the daemon's ownership and recovery state.
-- **Recommendation:** Retain a profile-owning state until VM termination is confirmed. Serialize failure cleanup with start and stop operations, and retain enough machine state to retry a failed removal. Test a blocked removal and an erroring removal while another start requests the profile. Only the successful teardown may release ownership.
-- **Fix with:** `lifecycle-concurrency`
-- **Effort:** M (days)
-
 ### BCTL-3 · P2 · The Linux Nanos pin omits completed boot and shutdown repairs
 
 - **Area:** Dependencies

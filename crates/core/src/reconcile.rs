@@ -48,9 +48,14 @@ pub fn reconcile(sessions: &[SessionRecord], attempts: &[AttemptRecord], machine
                 state: SessionState::Failed,
                 reason: Some(format!("machine for generation {} vanished while bctl was not running", session.generation)),
             }),
-            (SessionState::Stopping, Some((machine, _))) | (SessionState::Starting | SessionState::Ready, Some((machine, _))) => {
+            (SessionState::Stopping | SessionState::Failing, Some((machine, _))) | (SessionState::Starting | SessionState::Ready, Some((machine, _))) => {
                 actions.push(Action::Adopt { session: session.name.clone(), machine });
             }
+            (SessionState::Failing, None) => actions.push(Action::Settle {
+                session: session.name.clone(),
+                state: SessionState::Failed,
+                reason: Some(session.failure.clone().unwrap_or_else(|| format!("machine for generation {} was removed", session.generation))),
+            }),
             (SessionState::Stopping, None) => {
                 actions.push(Action::Settle { session: session.name.clone(), state: SessionState::Stopped, reason: None });
             }
@@ -191,6 +196,25 @@ mod tests {
     fn a_stop_that_finished_while_bctl_was_down_settles_as_stopped() {
         let actions = reconcile(&[session("research", SessionState::Stopping, 2)], &[], &[machine("bctl-research-2", MachineState::Other)]);
         assert_eq!(actions, [Action::Settle { session: SessionName::new("research").unwrap(), state: SessionState::Stopped, reason: None }]);
+    }
+
+    #[test]
+    fn a_failing_session_whose_machine_survived_is_adopted_to_finish_its_removal() {
+        let mut failing = session("research", SessionState::Failing, 3);
+        failing.failure = Some("browser crashed".into());
+        let actions = reconcile(&[failing], &[], &[machine("bctl-research-3", MachineState::Running)]);
+        assert_eq!(actions, [Action::Adopt { session: SessionName::new("research").unwrap(), machine: MachineName::parse("bctl-research-3").unwrap() }]);
+    }
+
+    #[test]
+    fn a_failing_session_whose_machine_is_gone_settles_as_failed_with_its_cause() {
+        let mut failing = session("research", SessionState::Failing, 3);
+        failing.failure = Some("browser crashed".into());
+        let actions = reconcile(&[failing], &[], &[]);
+        assert_eq!(
+            actions,
+            [Action::Settle { session: SessionName::new("research").unwrap(), state: SessionState::Failed, reason: Some("browser crashed".into()) }]
+        );
     }
 
     #[test]

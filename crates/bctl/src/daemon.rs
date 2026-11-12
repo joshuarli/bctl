@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,7 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 const HEALTH_FAILURES: u32 = 3;
 const FAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const GC_INTERVAL: Duration = Duration::from_secs(60);
+const FAILING_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct Observed {
@@ -47,6 +48,8 @@ pub(crate) struct Daemon {
     observed: Mutex<HashMap<SessionName, Observed>>,
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
     busy: Mutex<HashSet<SessionName>>,
+    tearing_down: Mutex<HashSet<SessionName>>,
+    teardown_done: Condvar,
     disk_digests: runs::DiskDigests,
     pub(crate) gateway: SharedGateway,
     pub(crate) browsers: Browsers,
@@ -86,6 +89,8 @@ pub fn run(paths: Paths) -> Result<(), String> {
         observed: Mutex::default(),
         live: Mutex::default(),
         busy: Mutex::default(),
+        tearing_down: Mutex::default(),
+        teardown_done: Condvar::new(),
         disk_digests: runs::DiskDigests::default(),
         gateway: Mutex::default(),
         browsers: Mutex::default(),
@@ -205,6 +210,18 @@ impl Ledger for RunLedger {
     }
 }
 
+pub(crate) struct Teardown<'a> {
+    daemon: &'a Daemon,
+    session: SessionName,
+}
+
+impl Drop for Teardown<'_> {
+    fn drop(&mut self) {
+        lock(&self.daemon.tearing_down).remove(&self.session);
+        self.daemon.teardown_done.notify_all();
+    }
+}
+
 pub(crate) struct Busy<'a> {
     daemon: &'a Daemon,
     session: SessionName,
@@ -226,6 +243,16 @@ impl Daemon {
         Busy { daemon: self, session: session.clone() }
     }
 
+    /// Serializes everything that decides whether a session's VM is gone: failure cleanup, stop, and failed-start cleanup.
+    fn teardown(&self, session: &SessionName) -> Teardown<'_> {
+        let mut active = lock(&self.tearing_down);
+        while active.contains(session) {
+            active = self.teardown_done.wait(active).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        active.insert(session.clone());
+        Teardown { daemon: self, session: session.clone() }
+    }
+
     fn is_busy(&self, session: &SessionName) -> bool {
         lock(&self.busy).contains(session)
     }
@@ -244,6 +271,7 @@ impl Daemon {
 
     fn watch_health(self: &Arc<Self>) {
         let mut failures: HashMap<(SessionName, Generation), u32> = HashMap::new();
+        let mut retried: HashMap<SessionName, Instant> = HashMap::new();
         let mut last_gc = Instant::now();
         loop {
             thread::sleep(HEALTH_INTERVAL);
@@ -255,6 +283,8 @@ impl Daemon {
             let ready: HashSet<(SessionName, Generation)> =
                 sessions.iter().filter(|s| s.state == SessionState::Ready).map(|s| (s.name.clone(), s.generation)).collect();
             failures.retain(|key, _| ready.contains(key));
+            let failing: Vec<SessionName> = sessions.iter().filter(|s| s.state == SessionState::Failing).map(|s| s.name.clone()).collect();
+            retried.retain(|name, _| failing.contains(name));
             for record in sessions.into_iter().filter(|s| s.state == SessionState::Ready) {
                 if self.is_busy(&record.name) {
                     continue;
@@ -278,6 +308,15 @@ impl Daemon {
                 let machine = MachineName { session: record.name.clone(), generation: record.generation };
                 let cause = self.fault_cause(&machine);
                 self.fail_session(&current, &cause);
+            }
+            for name in failing {
+                if self.is_busy(&name) || retried.get(&name).is_some_and(|at| at.elapsed() < FAILING_RETRY_INTERVAL) {
+                    continue;
+                }
+                retried.insert(name.clone(), Instant::now());
+                if let Err(error) = self.retry_failing(&name) {
+                    eprintln!("bctl daemon: could not remove failing {name}: {error}");
+                }
             }
         }
     }
@@ -303,20 +342,45 @@ impl Daemon {
         eprintln!("bctl daemon: session {} failed: {cause}", record.name);
         self.stop_live_run_for(&record.name, cause);
         self.authority.of(&record.name, Control::reset);
-        if let Err(error) = self.store().transition(&record.name, record.generation, SessionState::Failed, Some(cause))
-            && !matches!(error, StoreError::StaleGeneration { .. })
-        {
-            eprintln!("bctl daemon: cannot record {}'s failure: {error}", record.name);
+        let _teardown = self.teardown(&record.name);
+        let began = self.store().begin_failure(&record.name, record.generation, cause);
+        match began {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                eprintln!("bctl daemon: cannot record {}'s failure: {error}", record.name);
+                return;
+            }
         }
-        let machine = MachineName { session: record.name.clone(), generation: record.generation };
-        if let Err(error) = self.runtime.remove(&machine) {
-            eprintln!("bctl daemon: could not remove failed {machine}: {error}");
-        }
-        self.discard_endpoints(&machine);
         tabs::close(self, &record.name);
         gateway::revoke_cdp(self, &record.name);
         self.authority.of(&record.name, Control::reset);
-        self.observe(&record.name, |o| *o = Observed::default());
+        if let Err(error) = self.remove_failing(&record.name, record.generation) {
+            let machine = MachineName { session: record.name.clone(), generation: record.generation };
+            eprintln!("bctl daemon: could not remove failed {machine}; {} keeps its profile until it is removed: {error}", record.name);
+        }
+    }
+
+    /// Removes the VM of a failing session and only then releases the session's profile. The caller holds the teardown.
+    fn remove_failing(&self, name: &SessionName, generation: Generation) -> Result<(), RuntimeError> {
+        let machine = MachineName { session: name.clone(), generation };
+        self.runtime.remove(&machine)?;
+        self.discard_endpoints(&machine);
+        self.observe(name, |o| *o = Observed::default());
+        if let Err(error) = self.store().finish_failure(name, generation) {
+            eprintln!("bctl daemon: cannot release {name} after removing {machine}: {error}");
+        }
+        Ok(())
+    }
+
+    /// Retries the removal of a session left `failing` by an earlier removal error or a daemon restart.
+    fn retry_failing(&self, name: &SessionName) -> Result<(), RuntimeError> {
+        let _teardown = self.teardown(name);
+        let Ok(record) = self.store().session(name) else { return Ok(()) };
+        if record.state != SessionState::Failing {
+            return Ok(());
+        }
+        self.remove_failing(name, record.generation)
     }
 
     fn stop_live_run_for(&self, session: &SessionName, cause: &str) {
@@ -371,7 +435,11 @@ impl Daemon {
                 Action::Adopt { session, machine } => {
                     let record = self.store().session(&session).map_err(|e| e.to_string())?;
                     eprintln!("bctl daemon: adopting {machine} ({})", record.state.as_str());
-                    if record.state == SessionState::Stopping {
+                    if record.state == SessionState::Failing {
+                        if let Err(error) = self.retry_failing(&session) {
+                            eprintln!("bctl daemon: could not remove failing {machine}: {error}");
+                        }
+                    } else if record.state == SessionState::Stopping {
                         self.finish_stop(&record, &machine);
                     } else if let Some(endpoints) = record.endpoints {
                         let daemon = Arc::clone(self);
@@ -625,6 +693,15 @@ impl Daemon {
             match record.state {
                 SessionState::Ready => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
                 SessionState::Starting | SessionState::Stopping => thread::sleep(Duration::from_millis(200)),
+                SessionState::Failing => {
+                    if let Err(error) = self.retry_failing(name) {
+                        return Err(Response::failure(
+                            ErrorCode::RuntimeError,
+                            format!("session {name} cannot start until its failed VM is removed: {error}"),
+                            Some(format!("retry `bctl down {name}`")),
+                        ).into());
+                    }
+                }
                 SessionState::Paused => {
                     return Err(Response::failure(
                         ErrorCode::Conflict,
@@ -701,7 +778,11 @@ impl Daemon {
             Err(Response::failure(
                 ErrorCode::StartFailed,
                 record.failure.unwrap_or_else(|| format!("session ended {}", record.state.as_str())),
-                Some(format!("the VM was removed; retry with `bctl up {name}`")),
+                Some(if record.state == SessionState::Failing {
+                    format!("the VM could not be removed yet; retry `bctl down {name}`")
+                } else {
+                    format!("the VM was removed; retry with `bctl up {name}`")
+                }),
             ).into())
         }
     }
@@ -864,11 +945,17 @@ impl Daemon {
         if let Ok(logs) = self.runtime.logs(machine) {
             eprintln!("bctl daemon: last lines from {machine}:\n{}", logs.trim_end());
         }
-        if let Err(e) = self.runtime.remove(machine) {
-            eprintln!("bctl daemon: could not remove {machine}: {e}");
+        let _teardown = self.teardown(&machine.session);
+        match self.runtime.remove(machine) {
+            Ok(()) => {
+                self.discard_endpoints(machine);
+                let _ = self.store().transition(&machine.session, machine.generation, SessionState::Failed, Some(&error.to_string()));
+            }
+            Err(e) => {
+                eprintln!("bctl daemon: could not remove {machine}; {} keeps its profile until it is removed: {e}", machine.session);
+                let _ = self.store().transition(&machine.session, machine.generation, SessionState::Failing, Some(&error.to_string()));
+            }
         }
-        self.discard_endpoints(machine);
-        let _ = self.store().transition(&machine.session, machine.generation, SessionState::Failed, Some(&error.to_string()));
     }
 
     fn down(&self, name: &SessionName) -> Outcome {
@@ -877,9 +964,22 @@ impl Daemon {
         gateway::revoke_cdp(self, name);
         tabs::close(self, name);
         self.authority.of(name, Control::reset);
+        let _teardown = self.teardown(name);
         let record = self.store().session(name).map_err(store_failure)?;
         match record.state {
             SessionState::Stopped => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
+            SessionState::Failing => {
+                let machine = MachineName { session: name.clone(), generation: record.generation };
+                if let Err(error) = self.runtime.remove(&machine) {
+                    eprintln!("bctl daemon: could not remove failing {machine}: {error}");
+                    return Err(Response::failure(ErrorCode::RuntimeError, error.to_string(), Some(format!("retry `bctl down {name}`"))).into());
+                }
+                self.discard_endpoints(&machine);
+                self.observe(name, |o| *o = Observed::default());
+                self.store().transition(name, record.generation, SessionState::Stopped, record.failure.as_deref()).map_err(store_failure)?;
+                let record = self.store().session(name).map_err(store_failure)?;
+                return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() });
+            }
             SessionState::Failed => {
                 let machine = MachineName { session: name.clone(), generation: record.generation };
                 if let Err(error) = self.runtime.remove(&machine) {
@@ -1239,5 +1339,227 @@ mod tests {
         assert_eq!(image_for_up(None, Some("ref-scratch-chromium"), "helium"), "ref-scratch-chromium");
         assert_eq!(image_for_up(None, None, "helium"), "helium");
         assert_eq!(image_for_up(None, None, "nanos-helium"), "nanos-helium");
+    }
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    const FAKE_SMOLVM: &str = r#"#!/bin/sh
+ctl="$(dirname "$0")/ctl"
+echo "$@" >> "$ctl/calls"
+case "$1 $2" in
+"machine delete")
+    touch "$ctl/deleting"
+    while [ -e "$ctl/block" ]; do sleep 0.05; done
+    if [ -e "$ctl/fail" ]; then
+        echo '{"error":{"code":"BUSY","message":"the VM would not stop"}}' >&2
+        exit 1
+    fi
+    ;;
+"machine ls")
+    if [ -e "$ctl/ls.json" ]; then cat "$ctl/ls.json"; else echo '[]'; fi
+    ;;
+esac
+exit 0
+"#;
+
+    struct Fixture {
+        daemon: Arc<Daemon>,
+        ctl: PathBuf,
+        _serial: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.daemon.paths.home);
+        }
+    }
+
+    impl Fixture {
+        fn new(tag: &str) -> Fixture {
+            let serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let home = std::env::temp_dir().join(format!("bctl-fail-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&home);
+            let paths = Paths { home };
+            let binary = paths.runtime();
+            let ctl = binary.parent().unwrap().join("ctl");
+            fs::create_dir_all(&ctl).unwrap();
+            fs::write(&binary, FAKE_SMOLVM).unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir_all(paths.images()).unwrap();
+            fs::write(paths.image("img"), b"").unwrap();
+            let store = Store::open_in_memory().unwrap();
+            let runtime = Runtime::new(RuntimeKind::SmolVm, &paths).unwrap();
+            let daemon = Arc::new(Daemon {
+                runtime,
+                paths,
+                store: Mutex::new(store),
+                observed: Mutex::default(),
+                live: Mutex::default(),
+                busy: Mutex::default(),
+                tearing_down: Mutex::default(),
+                teardown_done: Condvar::new(),
+                disk_digests: runs::DiskDigests::default(),
+                gateway: Mutex::default(),
+                browsers: Mutex::default(),
+                authority: Authorities::default(),
+            });
+            Fixture { daemon, ctl, _serial: serial }
+        }
+
+        fn set(&self, flag: &str) {
+            fs::write(self.ctl.join(flag), b"").unwrap();
+        }
+
+        fn clear(&self, flag: &str) {
+            let _ = fs::remove_file(self.ctl.join(flag));
+        }
+
+        fn calls(&self) -> String {
+            fs::read_to_string(self.ctl.join("calls")).unwrap_or_default()
+        }
+
+        fn ready(&self, session: &str, profile: &str) -> (SessionName, MachineName) {
+            let name = SessionName::new(session).unwrap();
+            let mut store = self.daemon.store();
+            store.create_session(&name, &ProfileName::new(profile).unwrap(), "img", Resources::DEFAULT, &[]).unwrap();
+            let machine = store.begin_start(&name, Endpoints { vnc_port: 15900 }).unwrap();
+            store.transition(&name, machine.generation, SessionState::Ready, None).unwrap();
+            drop(store);
+            fs::create_dir_all(self.endpoint_dir(&machine)).unwrap();
+            (name, machine)
+        }
+
+        fn endpoint_dir(&self, machine: &MachineName) -> PathBuf {
+            self.daemon.paths.cdp_socket(&machine.to_string()).parent().unwrap().to_path_buf()
+        }
+
+        fn record(&self, name: &SessionName) -> SessionRecord {
+            self.daemon.store().session(name).unwrap()
+        }
+
+        fn second_start_is_refused(&self, rival: &str, profile: &str, holder: &SessionName) {
+            let refusal = match self.daemon.up(&SessionName::new(rival).unwrap(), Some(profile), Some("img"), None, None) {
+                Err(refusal) => refusal,
+                Ok(response) => panic!("a second session started on profile {profile} while {holder} still held it: {:?}", response.sessions),
+            };
+            let error = refusal.0.error.expect("a refusal names its error");
+            assert_eq!(error.code, ErrorCode::ProfileBusy.as_str());
+            assert!(error.message.contains(holder.as_str()), "{}", error.message);
+        }
+    }
+
+    fn wait_for(path: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "{} never appeared", path.display());
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_failed_session_keeps_its_profile_while_its_vm_is_still_being_removed() {
+        let fixture = Fixture::new("blocked");
+        let (a, machine) = fixture.ready("a", "shared");
+        fixture.set("block");
+        let failing = {
+            let daemon = Arc::clone(&fixture.daemon);
+            let record = fixture.record(&a);
+            thread::spawn(move || daemon.fail_session(&record, "browser crashed"))
+        };
+        wait_for(&fixture.ctl.join("deleting"));
+
+        let held = fixture.record(&a);
+        assert_eq!(held.state, SessionState::Failing);
+        assert_eq!((held.failure.as_deref(), held.endpoints), (Some("browser crashed"), Some(Endpoints { vnc_port: 15900 })));
+        assert!(fixture.endpoint_dir(&machine).exists());
+        fixture.second_start_is_refused("b", "shared", &a);
+        assert_eq!(fixture.record(&SessionName::new("b").unwrap()).state, SessionState::Stopped);
+        assert_eq!(fixture.daemon.store().profiles().unwrap()[0].1, Some(a.clone()));
+
+        fixture.clear("block");
+        failing.join().unwrap();
+        assert_eq!(fixture.record(&a).state, SessionState::Failed);
+        assert_eq!(fixture.record(&a).failure.as_deref(), Some("browser crashed"));
+        assert!(!fixture.endpoint_dir(&machine).exists());
+        let b = SessionName::new("b").unwrap();
+        assert_eq!(fixture.daemon.store().begin_start(&b, Endpoints { vnc_port: 15901 }).unwrap().to_string(), "bctl-b-1");
+    }
+
+    #[test]
+    fn a_failed_removal_keeps_ownership_and_machine_state_until_a_retry_succeeds() {
+        let fixture = Fixture::new("errors");
+        let (a, machine) = fixture.ready("a", "shared");
+        fixture.set("fail");
+        fixture.daemon.fail_session(&fixture.record(&a), "browser crashed");
+
+        let held = fixture.record(&a);
+        assert_eq!(held.state, SessionState::Failing);
+        assert_eq!((held.generation, held.endpoints), (machine.generation, Some(Endpoints { vnc_port: 15900 })));
+        assert!(fixture.endpoint_dir(&machine).exists(), "the endpoints of a VM that may still be alive were discarded");
+        fixture.second_start_is_refused("b", "shared", &a);
+
+        assert!(fixture.daemon.retry_failing(&a).is_err());
+        assert_eq!(fixture.record(&a).state, SessionState::Failing);
+        let refusal = fixture.daemon.up(&a, Some("shared"), Some("img"), None, None).expect_err("up cannot start over a VM that is still being removed");
+        assert_eq!(refusal.0.error.unwrap().code, ErrorCode::RuntimeError.as_str());
+        fixture.second_start_is_refused("b", "shared", &a);
+
+        fixture.clear("fail");
+        fixture.daemon.retry_failing(&a).unwrap();
+        let released = fixture.record(&a);
+        assert_eq!((released.state, released.failure.as_deref()), (SessionState::Failed, Some("browser crashed")));
+        assert!(!fixture.endpoint_dir(&machine).exists());
+        let b = SessionName::new("b").unwrap();
+        fixture.daemon.store().begin_start(&b, Endpoints { vnc_port: 15901 }).unwrap();
+        assert_eq!(fixture.calls().matches("machine delete --name bctl-a-1 -f").count(), 4);
+    }
+
+    #[test]
+    fn a_restarted_daemon_finishes_the_removal_of_a_failing_session() {
+        let fixture = Fixture::new("restore");
+        let (a, machine) = fixture.ready("a", "shared");
+        fixture.set("fail");
+        fixture.daemon.fail_session(&fixture.record(&a), "browser crashed");
+        assert_eq!(fixture.record(&a).state, SessionState::Failing);
+
+        fixture.clear("fail");
+        fs::write(fixture.ctl.join("ls.json"), r#"[{"name":"bctl-a-1","state":"running"}]"#).unwrap();
+        fixture.daemon.restore().unwrap();
+        assert_eq!(fixture.record(&a).state, SessionState::Failed);
+        assert!(!fixture.endpoint_dir(&machine).exists());
+        assert!(fixture.calls().contains("machine delete --name bctl-a-1 -f"));
+    }
+
+    #[test]
+    fn down_retries_a_failing_session_and_stops_it_only_once_the_vm_is_gone() {
+        let fixture = Fixture::new("down");
+        let (a, _) = fixture.ready("a", "shared");
+        fixture.set("fail");
+        fixture.daemon.fail_session(&fixture.record(&a), "browser crashed");
+
+        let refusal = fixture.daemon.down(&a).expect_err("down cannot succeed while the VM is alive");
+        assert_eq!(refusal.0.error.unwrap().code, ErrorCode::RuntimeError.as_str());
+        assert_eq!(fixture.record(&a).state, SessionState::Failing);
+
+        fixture.clear("fail");
+        fixture.daemon.down(&a).ok().expect("down succeeds once the VM is gone");
+        let stopped = fixture.record(&a);
+        assert_eq!((stopped.state, stopped.failure.as_deref()), (SessionState::Stopped, Some("browser crashed")));
+    }
+
+    #[test]
+    fn a_successful_teardown_releases_the_profile() {
+        let fixture = Fixture::new("released");
+        let (a, machine) = fixture.ready("a", "shared");
+        fixture.daemon.fail_session(&fixture.record(&a), "browser crashed");
+
+        let failed = fixture.record(&a);
+        assert_eq!((failed.state, failed.failure.as_deref()), (SessionState::Failed, Some("browser crashed")));
+        assert!(!fixture.endpoint_dir(&machine).exists());
+        assert!(fixture.calls().contains("machine delete --name bctl-a-1 -f"));
+        assert_eq!(fixture.daemon.store().profiles().unwrap()[0].1, None);
+        let b = SessionName::new("b").unwrap();
+        fixture.daemon.store().create_session(&b, &ProfileName::new("shared").unwrap(), "img", Resources::DEFAULT, &[]).unwrap();
+        assert_eq!(fixture.daemon.store().begin_start(&b, Endpoints { vnc_port: 15901 }).unwrap().to_string(), "bctl-b-1");
     }
 }

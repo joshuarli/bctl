@@ -11,9 +11,16 @@ use crate::state::{
     SessionState,
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
-const SCHEMA: &str = "
+macro_rules! owning_states {
+    () => {
+        "('starting', 'ready', 'stopping', 'paused', 'failing')"
+    };
+}
+
+const SCHEMA: &str = concat!(
+    "
 CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY
 ) STRICT;
@@ -21,7 +28,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     name TEXT PRIMARY KEY,
     profile TEXT NOT NULL REFERENCES profiles(name),
     image TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'paused', 'failed')),
+    state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'paused', 'failing', 'failed')),
     generation INTEGER NOT NULL CHECK (generation >= 0),
     vnc_port INTEGER CHECK (vnc_port BETWEEN 1 AND 65535),
     failure TEXT,
@@ -32,7 +39,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     allow_private TEXT NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS one_writer_per_profile
-    ON sessions(profile) WHERE state IN ('starting', 'ready', 'stopping', 'paused');
+    ON sessions(profile) WHERE state IN ",
+    owning_states!(),
+    ";
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY,
     session TEXT NOT NULL REFERENCES sessions(name),
@@ -74,7 +83,8 @@ CREATE TABLE IF NOT EXISTS element_refs (
     next INTEGER NOT NULL CHECK (next >= 1)
 ) STRICT;
 INSERT OR IGNORE INTO element_refs (id, next) VALUES (1, 1);
-";
+"
+);
 
 const LIVE_STATES: &str = "('starting', 'running', 'needs-interaction')";
 
@@ -221,7 +231,7 @@ impl Store {
         match updated {
             Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::ConstraintViolation => {
                 let holder: String = tx.query_row(
-                    "SELECT name FROM sessions WHERE profile = ?1 AND state IN ('starting', 'ready', 'stopping', 'paused')",
+                    concat!("SELECT name FROM sessions WHERE profile = ?1 AND state IN ", owning_states!()),
                     [session.profile.as_str()],
                     |row| row.get(0),
                 )?;
@@ -252,6 +262,29 @@ impl Store {
         Ok(())
     }
 
+    /// Moves a ready session to `failing`, which still holds its profile, so the VM can be removed before anyone else
+    /// may start on it. Returns false when the session is no longer ready at `generation`.
+    pub fn begin_failure(&mut self, name: &SessionName, generation: Generation, cause: &str) -> Result<bool, StoreError> {
+        let changed = self.db.execute(
+            "UPDATE sessions SET state = 'failing', failure = ?3 WHERE name = ?1 AND generation = ?2 AND state = 'ready'",
+            params![name.as_str(), to_sql_generation(generation)?, cause],
+        )?;
+        if changed == 0 {
+            self.session(name)?;
+        }
+        Ok(changed == 1)
+    }
+
+    /// Releases the profile of a `failing` session once its VM is confirmed gone. Returns false when the session
+    /// is no longer failing at `generation`.
+    pub fn finish_failure(&mut self, name: &SessionName, generation: Generation) -> Result<bool, StoreError> {
+        let changed = self.db.execute(
+            "UPDATE sessions SET state = 'failed' WHERE name = ?1 AND generation = ?2 AND state = 'failing'",
+            params![name.as_str(), to_sql_generation(generation)?],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Forgets a session that holds no machine. Its profile and its runs stay.
     pub fn delete_session(&mut self, name: &SessionName) -> Result<(), StoreError> {
         let session = self.session(name)?;
@@ -270,7 +303,7 @@ impl Store {
     /// Every profile with the session currently holding it, if any.
     pub fn profiles(&self) -> Result<Vec<(ProfileName, Option<SessionName>)>, StoreError> {
         let mut stmt = self.db.prepare(
-            "SELECT p.name, s.name FROM profiles p LEFT JOIN sessions s ON s.profile = p.name AND s.state IN ('starting', 'ready', 'stopping', 'paused') ORDER BY p.name",
+            concat!("SELECT p.name, s.name FROM profiles p LEFT JOIN sessions s ON s.profile = p.name AND s.state IN ", owning_states!(), " ORDER BY p.name"),
         )?;
         let raw = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
         raw.into_iter()
@@ -702,7 +735,7 @@ fn migrate(db: &Connection) -> Result<(), StoreError> {
     let exists = |table: &str| -> rusqlite::Result<bool> {
         db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |row| row.get::<_, i64>(0)).map(|n| n > 0)
     };
-    let rebuild_sessions = version < 4 && exists("sessions")?;
+    let rebuild_sessions = version < 5 && exists("sessions")?;
     if rebuild_sessions {
         db.pragma_update(None, "foreign_keys", false)?;
     }
@@ -728,11 +761,11 @@ fn migrate(db: &Connection) -> Result<(), StoreError> {
         if rebuild_sessions {
             db.execute_batch(
                 "DROP INDEX IF EXISTS one_writer_per_profile;
-                 CREATE TABLE sessions_v4 (
+                 CREATE TABLE sessions_v5 (
                      name TEXT PRIMARY KEY,
                      profile TEXT NOT NULL REFERENCES profiles(name),
                      image TEXT NOT NULL,
-                     state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'paused', 'failed')),
+                     state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'paused', 'failing', 'failed')),
                      generation INTEGER NOT NULL CHECK (generation >= 0),
                      vnc_port INTEGER CHECK (vnc_port BETWEEN 1 AND 65535),
                      failure TEXT,
@@ -742,10 +775,10 @@ fn migrate(db: &Connection) -> Result<(), StoreError> {
                      memory_mib INTEGER NOT NULL,
                      allow_private TEXT NOT NULL
                  ) STRICT;
-                 INSERT INTO sessions_v4 (name, profile, image, state, generation, vnc_port, failure, viewport_width, viewport_height, cpus, memory_mib, allow_private)
+                 INSERT INTO sessions_v5 (name, profile, image, state, generation, vnc_port, failure, viewport_width, viewport_height, cpus, memory_mib, allow_private)
                      SELECT name, profile, image, state, generation, vnc_port, failure, viewport_width, viewport_height, cpus, memory_mib, allow_private FROM sessions;
                  DROP TABLE sessions;
-                 ALTER TABLE sessions_v4 RENAME TO sessions;",
+                 ALTER TABLE sessions_v5 RENAME TO sessions;",
             )?;
         }
         db.execute_batch(SCHEMA)?;
@@ -826,6 +859,105 @@ mod tests {
 
         store.transition(&name("a"), Generation(1), SessionState::Stopped, None).unwrap();
         assert_eq!(store.begin_start(&name("b"), PORTS).unwrap().to_string(), "bctl-b-1");
+    }
+
+    #[test]
+    fn a_failing_session_keeps_its_profile_until_its_machine_is_confirmed_gone() {
+        let mut store = store_with(&[("a", "personal"), ("b", "personal")]);
+        store.begin_start(&name("a"), PORTS).unwrap();
+        store.transition(&name("a"), Generation(1), SessionState::Ready, None).unwrap();
+
+        assert!(store.begin_failure(&name("a"), Generation(1), "browser crashed").unwrap());
+        let failing = store.session(&name("a")).unwrap();
+        assert_eq!((failing.state, failing.failure.as_deref(), failing.endpoints), (SessionState::Failing, Some("browser crashed"), Some(PORTS)));
+        assert!(failing.state.holds_machine());
+        match store.begin_start(&name("b"), PORTS) {
+            Err(StoreError::ProfileBusy { holder, .. }) => assert_eq!(holder.as_str(), "a"),
+            other => panic!("expected ProfileBusy, got {other:?}"),
+        }
+        assert_eq!(store.profiles().unwrap()[0].1, Some(name("a")));
+        assert!(matches!(store.begin_start(&name("a"), PORTS), Err(StoreError::NotStartable { state: SessionState::Failing, .. })));
+        assert!(matches!(store.delete_session(&name("a")), Err(StoreError::NotStartable { .. })));
+
+        assert!(!store.finish_failure(&name("a"), Generation(2)).unwrap());
+        assert_eq!(store.session(&name("a")).unwrap().state, SessionState::Failing);
+        assert!(store.finish_failure(&name("a"), Generation(1)).unwrap());
+        let failed = store.session(&name("a")).unwrap();
+        assert_eq!((failed.state, failed.failure.as_deref()), (SessionState::Failed, Some("browser crashed")));
+        assert_eq!(store.begin_start(&name("b"), PORTS).unwrap().to_string(), "bctl-b-1");
+    }
+
+    #[test]
+    fn only_a_ready_session_at_its_own_generation_begins_failing() {
+        let mut store = store_with(&[("a", "personal")]);
+        store.begin_start(&name("a"), PORTS).unwrap();
+        assert!(!store.begin_failure(&name("a"), Generation(1), "late").unwrap(), "a starting session");
+        store.transition(&name("a"), Generation(1), SessionState::Ready, None).unwrap();
+        assert!(!store.begin_failure(&name("a"), Generation(0), "late").unwrap(), "an older generation");
+        store.transition(&name("a"), Generation(1), SessionState::Stopping, None).unwrap();
+        assert!(!store.begin_failure(&name("a"), Generation(1), "late").unwrap(), "a session that is already stopping");
+        assert_eq!(store.session(&name("a")).unwrap().state, SessionState::Stopping);
+        assert!(matches!(store.begin_failure(&name("nobody"), Generation(1), "late"), Err(StoreError::NoSuchSession(_))));
+    }
+
+    #[test]
+    fn a_restart_finishes_the_removal_of_a_failing_session_before_freeing_its_profile() {
+        let mut store = store_with(&[("a", "personal"), ("b", "personal")]);
+        store.begin_start(&name("a"), PORTS).unwrap();
+        store.transition(&name("a"), Generation(1), SessionState::Ready, None).unwrap();
+        store.begin_failure(&name("a"), Generation(1), "browser crashed").unwrap();
+
+        let survivor = [MachineObservation { name: "bctl-a-1".into(), state: MachineState::Running }];
+        let plan = reconcile(&store.sessions().unwrap(), &[], &survivor);
+        store.apply(&plan, 0).unwrap();
+        assert_eq!(store.session(&name("a")).unwrap().state, SessionState::Failing);
+        assert!(matches!(store.begin_start(&name("b"), PORTS), Err(StoreError::ProfileBusy { .. })));
+
+        let plan = reconcile(&store.sessions().unwrap(), &[], &[]);
+        store.apply(&plan, 0).unwrap();
+        let a = store.session(&name("a")).unwrap();
+        assert_eq!((a.state, a.failure.as_deref()), (SessionState::Failed, Some("browser crashed")));
+        store.begin_start(&name("b"), PORTS).unwrap();
+    }
+
+    const FAILING_LESS_SCHEMA: &str = "
+        CREATE TABLE profiles (name TEXT PRIMARY KEY) STRICT;
+        CREATE TABLE sessions (
+            name TEXT PRIMARY KEY,
+            profile TEXT NOT NULL REFERENCES profiles(name),
+            image TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('stopped', 'starting', 'ready', 'stopping', 'paused', 'failed')),
+            generation INTEGER NOT NULL CHECK (generation >= 0),
+            vnc_port INTEGER CHECK (vnc_port BETWEEN 1 AND 65535),
+            failure TEXT,
+            viewport_width INTEGER NOT NULL,
+            viewport_height INTEGER NOT NULL,
+            cpus INTEGER NOT NULL,
+            memory_mib INTEGER NOT NULL,
+            allow_private TEXT NOT NULL
+        ) STRICT;
+        CREATE UNIQUE INDEX one_writer_per_profile ON sessions(profile) WHERE state IN ('starting', 'ready', 'stopping', 'paused');
+        INSERT INTO profiles VALUES ('personal'), ('other');
+        INSERT INTO sessions (name, profile, image, state, generation, vnc_port, failure, viewport_width, viewport_height, cpus, memory_mib, allow_private)
+            VALUES ('research', 'personal', 'img', 'ready', 1, 15900, NULL, 1280, 800, 2, 4096, ''),
+                   ('old', 'other', 'img', 'failed', 4, NULL, 'boom', 1280, 800, 2, 4096, '');
+        PRAGMA user_version = 4;
+    ";
+
+    #[test]
+    fn a_version_4_database_gains_the_failing_state_and_keeps_its_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(FAILING_LESS_SCHEMA).unwrap();
+        let mut store = Store::init(db).unwrap();
+        let old = store.session(&name("old")).unwrap();
+        assert_eq!((old.state, old.generation, old.failure.as_deref()), (SessionState::Failed, Generation(4), Some("boom")));
+        let research = store.session(&name("research")).unwrap();
+        assert_eq!((research.state, research.endpoints), (SessionState::Ready, Some(Endpoints { vnc_port: 15900 })));
+
+        assert!(store.begin_failure(&name("research"), Generation(1), "crashed").unwrap());
+        store.create_session(&name("rival"), &ProfileName::new("personal").unwrap(), "img", Resources::DEFAULT, &[]).unwrap();
+        assert!(matches!(store.begin_start(&name("rival"), PORTS), Err(StoreError::ProfileBusy { .. })));
+        assert_eq!(store.begin_start(&name("old"), PORTS).unwrap().to_string(), "bctl-old-5");
     }
 
     #[test]

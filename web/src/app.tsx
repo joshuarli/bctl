@@ -11,6 +11,7 @@ export function stateTone(state: SessionView["state"]): Tone {
     case "ready": return "ok";
     case "starting": return "info";
     case "stopping": return "warn";
+    case "failing": return "bad";
     case "failed": return "bad";
     case "stopped": return "neutral";
   }

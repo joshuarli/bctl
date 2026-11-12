@@ -7,6 +7,8 @@ pub enum SessionState {
     Ready,
     Stopping,
     Paused,
+    /// A VM that faulted but is not yet confirmed gone: the session still holds its profile.
+    Failing,
     Failed,
 }
 
@@ -18,19 +20,28 @@ impl SessionState {
             SessionState::Ready => "ready",
             SessionState::Stopping => "stopping",
             SessionState::Paused => "paused",
+            SessionState::Failing => "failing",
             SessionState::Failed => "failed",
         }
     }
 
     pub fn parse(s: &str) -> Option<SessionState> {
-        [SessionState::Stopped, SessionState::Starting, SessionState::Ready, SessionState::Stopping, SessionState::Paused, SessionState::Failed]
+        [
+            SessionState::Stopped,
+            SessionState::Starting,
+            SessionState::Ready,
+            SessionState::Stopping,
+            SessionState::Paused,
+            SessionState::Failing,
+            SessionState::Failed,
+        ]
             .into_iter()
             .find(|state| state.as_str() == s)
     }
 
     /// Whether a VM for this session may exist, so its profile is held and the runtime must be consulted.
     pub fn holds_machine(self) -> bool {
-        matches!(self, SessionState::Starting | SessionState::Ready | SessionState::Stopping | SessionState::Paused)
+        matches!(self, SessionState::Starting | SessionState::Ready | SessionState::Stopping | SessionState::Paused | SessionState::Failing)
     }
 }
 
