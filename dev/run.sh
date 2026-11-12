@@ -88,7 +88,7 @@ if [ -n "$virtiofs" ]; then
 	machine=$machine,memory-backend=mem
 fi
 set -- qemu-system-x86_64 -machine "$machine" -cpu host -smp "$smp" -m "$mem" \
-	-display none -monitor none -qmp "unix:$dir/qmp.sock,server=on,wait=off" -serial "file:$serial" -no-reboot \
+	-display none -monitor none -serial "file:$serial" -no-reboot \
 	-device isa-debug-exit -device virtio-rng-pci -device virtio-balloon-pci,free-page-reporting=on,vectors=5 \
 	-drive "if=none,id=hd0,format=raw,file=$image" -device virtio-scsi-pci,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=hd0 \
 	-nic "$nic" -kernel "$kernel"
