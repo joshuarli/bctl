@@ -9,7 +9,7 @@ static void *where(void *arg)
 	long cpu = (long)arg;
 	cpu_set_t set;
 	CPU_ZERO(&set);
-	CPU_SET(cpu, &set);
+	CPU_SET((size_t)cpu, &set);
 	if (sched_setaffinity(0, sizeof(set), &set))
 		return (void *)-1L;
 	long seen = -1;
