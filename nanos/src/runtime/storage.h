@@ -93,6 +93,7 @@ storage_req_handler storage_init_req_handler(closure_ref(storage_simple_req_hand
                                              block_io read, block_io write);
 
 closure_type(fs_init_complete, void, struct filesystem *fs, status s);
+/* Initializers may suspend and must invoke complete exactly once. Storage calls them outside its lock. */
 closure_type(fs_init_handler, void, boolean readonly, fs_init_complete complete);
 
 void init_volumes(heap h);
@@ -110,6 +111,7 @@ void storage_set_procfs_mount(tuple root, u64 mount_dir);
 closure_type(volume_handler, void, u8 *uuid, sstring label, struct filesystem *fs, u64 mount_dir);
 void storage_iterate(volume_handler vh);
 
+/* Completion waits for a pending initializer and any resulting filesystem unmount. */
 void storage_detach(void *priv, thunk complete);
 closure_type(mount_notification_handler, void, u64 mount_generation);
 void storage_register_mount_notify(mount_notification_handler nh);

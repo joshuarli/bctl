@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -371,30 +371,40 @@ suite_external() {
 }
 
 [ $# -ge 1 ] || usage
-probe_repeat=1 probe_stress=0
-if [ "$1" = probe ]; then
+repeat_count=1 probe_repeat=1 virtiofs_repeat=1 probe_stress=0
+repeat_suite=$1
+if [ "$repeat_suite" = probe ] || [ "$repeat_suite" = virtiofs ]; then
 	shift
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--repeat)
-			[ $# -ge 2 ] || die "probe --repeat needs a count"
-			case $2 in '' | *[!0-9]*) die "probe --repeat needs a positive integer" ;; esac
-			[ "$2" -gt 0 ] && [ "$2" -le 10000 ] || die "probe --repeat count must be 1..10000"
-			probe_repeat=$2; shift 2 ;;
-		--stress) probe_stress=1; shift ;;
-		-*) die "unknown probe option: $1" ;;
+			[ $# -ge 2 ] || die "$repeat_suite --repeat needs a count"
+			case $2 in '' | *[!0-9]*) die "$repeat_suite --repeat needs a positive integer" ;; esac
+			[ "$2" -gt 0 ] && [ "$2" -le 10000 ] || die "$repeat_suite --repeat count must be 1..10000"
+			repeat_count=$2; shift 2 ;;
+		--stress) [ "$repeat_suite" = probe ] || die "--stress requires probe"; probe_stress=1; shift ;;
+		-*) die "unknown $repeat_suite option: $1" ;;
 		*) break ;;
 		esac
 	done
-	[ "$probe_repeat" -eq 1 ] || [ "$probe_stress" -eq 0 ] || die "choose --repeat or --stress"
-	set -- probe "$@"
+	[ "$repeat_count" -eq 1 ] || [ "$probe_stress" -eq 0 ] || die "choose --repeat or --stress"
+	if [ "$repeat_suite" = probe ]; then probe_repeat=$repeat_count; else virtiofs_repeat=$repeat_count; fi
+	set -- "$repeat_suite" "$@"
 fi
 mkdir -p "$IMAGES"
 "$ROOT/dev/build.sh" >/dev/null
 for suite in "$@"; do
 	case $suite in
 	harness) suite_harness ;;
-	virtiofs) linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/virtiofs_files"; for smp in 1 2; do case_virtiofs_files "$smp"; done ;;
+	virtiofs)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/virtiofs_files"
+		iteration=1
+		while [ "$iteration" -le "$virtiofs_repeat" ]; do
+			printf 'virtiofs iteration %d/%d\n' "$iteration" "$virtiofs_repeat"
+			for smp in 1 2; do case_virtiofs_files "$smp"; done
+			[ "$failures" -eq 0 ] || break
+			iteration=$((iteration + 1))
+		done ;;
 	9p)
 		[ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "9p suite requires Linux x86_64"
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/p9_close"

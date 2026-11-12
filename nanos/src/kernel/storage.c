@@ -19,6 +19,7 @@ typedef struct volume {
     fs_init_handler init_handler;
     int attach_id;
     boolean mounting;
+    thunk detach_complete;
     filesystem fs;
     inode mount_dir;
 } *volume;
@@ -28,7 +29,6 @@ static struct {
     filesystem root_fs;
     struct list volumes;
     tuple mounts;
-    boolean mounting;
     status_handler mount_complete;
     struct spinlock lock;
     u64 mount_generation;
@@ -42,7 +42,6 @@ static struct {
 
 static void notify_mount_change_locked(void);
 
-/* Called with mutex locked. */
 static volume storage_get_volume(tuple root)
 {
     list_foreach(&storage.volumes, e) {
@@ -109,31 +108,49 @@ closure_function(2, 2, void, volume_link,
                  filesystem fs, status s)
 {
     volume v = bound(v);
+    inode mount_dir = bound(mount_dir);
+    boolean mounted = false;
     if (is_ok(s)) {
-        inode mount_dir = bound(mount_dir);
         int fss = filesystem_mount(storage.root_fs, mount_dir, fs);
         if (fss != 0) {
             msg_err("%s: cannot mount filesystem: %s", func_ss, string_from_errno(-fss));
         } else {
-            v->fs = fs;
-            v->mount_dir = mount_dir;
+            mounted = true;
             storage_debug("volume mounted, mount directory %p, filesystem %p", mount_dir, fs);
-            notify_mount_change_locked();
         }
     } else {
         msg_err("%s: cannot mount filesystem: %v", func_ss, s);
     }
+    storage_lock();
+    if (mounted) {
+        v->fs = fs;
+        v->mount_dir = mount_dir;
+    }
+    thunk detach_complete = v->detach_complete;
     v->mounting = false;
-    if (!v->fs && (fs != INVALID_ADDRESS))
-        filesystem_release(fs);
+    if (mounted && !detach_complete)
+        notify_mount_change_locked();
+    storage_unlock();
     closure_finish();
     timm_dealloc(s);
-    if (!storage.mounting)
-        storage_check_if_ready();
+    if (!mounted && (fs != INVALID_ADDRESS))
+        filesystem_release(fs);
+    if (detach_complete) {
+        deallocate(storage.h, v, sizeof(*v));
+        if (mounted)
+            filesystem_unmount(storage.root_fs, mount_dir, fs, detach_complete);
+        else
+            apply(detach_complete);
+    }
+    storage_check_if_ready();
 }
 
-static void volume_mount(volume v, buffer mount_point)
+closure_function(3, 0, void, volume_mount_start,
+                 volume, v, buffer, mount_point, filesystem_complete, complete)
 {
+    volume v = bound(v);
+    buffer mount_point = bound(mount_point);
+    filesystem_complete complete = bound(complete);
     boolean readonly = false;
     sstring cmount_point = buffer_to_sstring(mount_point);
     int i = buffer_strstr(mount_point, ss(":ro"));
@@ -147,26 +164,49 @@ static void volume_mount(volume v, buffer mount_point)
     int fss = filesystem_get_node(&fs, fs->get_inode(fs, root), cmount_point,
                                   FS_NODE_FOLLOW, &mount_dir_t, 0, 0);
     if (fss != 0) {
-        msg_err("storage: mount point %s not found", cmount_point);
-        return;
+        apply(complete, INVALID_ADDRESS, timm("result", "mount point %s not found", cmount_point));
+        goto out;
     }
     inode mount_dir = fs->get_inode(fs, mount_dir_t);
     boolean ok = (fs == storage.root_fs) && (mount_dir_t != root) && children(mount_dir_t);
     filesystem_put_node(fs, mount_dir_t);
     if (!ok) {
-        msg_err("storage: invalid mount point %s", cmount_point);
-        return;
+        apply(complete, INVALID_ADDRESS, timm("result", "invalid mount point %s", cmount_point));
+        goto out;
     }
-    filesystem_complete complete = closure(storage.h, volume_link,
-        v, mount_dir);
-    if (complete == INVALID_ADDRESS) {
-        msg_err("%s: cannot allocate closure", func_ss);
-        return;
-    }
+    closure_member(volume_link, complete, mount_dir) = mount_dir;
     storage_debug("mounting volume%s at %s", readonly ? ss(" readonly") : sstring_empty(),
                   cmount_point);
-    v->mounting = true;
     apply(v->init_handler, readonly, complete);
+  out:
+    deallocate_buffer(mount_point);
+    closure_finish();
+}
+
+static void volume_mount(volume v, buffer mount_point)
+{
+    if (v->mounting || v->fs)
+        return;
+    buffer path = clone_buffer(storage.h, mount_point);
+    if (path == INVALID_ADDRESS) {
+        msg_err("%s: cannot copy mount point", func_ss);
+        return;
+    }
+    filesystem_complete complete = closure(storage.h, volume_link, v, 0);
+    if (complete == INVALID_ADDRESS) {
+        deallocate_buffer(path);
+        msg_err("%s: cannot allocate completion", func_ss);
+        return;
+    }
+    thunk start = closure(storage.h, volume_mount_start, v, path, complete);
+    if (start == INVALID_ADDRESS) {
+        deallocate_closure(complete);
+        deallocate_buffer(path);
+        msg_err("%s: cannot allocate mount task", func_ss);
+        return;
+    }
+    v->mounting = true;
+    async_apply_bh(start);
 }
 
 static void storage_io_sg(block_io op, sg_list sg, range blocks, status_handler completion)
@@ -253,9 +293,7 @@ void storage_set_mountpoints(tuple mounts)
 {
     storage_lock();
     storage.mounts = mounts;
-    storage.mounting = true;
     iterate(mounts, stack_closure_func(binding_handler, storage_set_mountpoints_each));
-    storage.mounting = false;
     storage_unlock();
     storage_check_if_ready();
 }
@@ -303,24 +341,24 @@ boolean volume_add(u8 *uuid, char *label, void *priv, fs_init_handler init_handl
     v->init_handler = init_handler;
     v->attach_id = attach_id;
     v->mounting = false;
+    v->detach_complete = 0;
     v->fs = 0;
     v->mount_dir = 0;
     storage_lock();
     list_push_back(&storage.volumes, &v->l);
     if (storage.mounts) {
-        storage.mounting = true;
         iterate(storage.mounts, stack_closure(volume_add_mount_each, v));
-        storage.mounting = false;
     }
     storage_unlock();
-    if (storage.mounts)
-        storage_check_if_ready();
+    storage_check_if_ready();
     return true;
 }
 
 void storage_when_ready(status_handler complete)
 {
+    storage_lock();
     storage.mount_complete = complete;
+    storage_unlock();
     storage_check_if_ready();
 }
 
@@ -402,7 +440,10 @@ void storage_detach(void *priv, thunk complete)
         volume v = struct_from_list(e, volume, l);
         if (v->priv == priv) {
             list_delete(&v->l);
-            vol = v;
+            if (v->mounting)
+                v->detach_complete = complete;
+            else
+                vol = v;
             notify_mount_change_locked();
             break;
         }
