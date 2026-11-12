@@ -1209,6 +1209,9 @@ Slices, in order, one writer:
 
 ### M7M: Nanos on Apple Silicon (macOS arm64, Hypervisor.framework)
 
+The [2026-11-12 macOS qualification](handoffs/2026-11-12-macos-results.md)
+records the current runtime refresh, ARM kernel repairs, and acceptance receipts.
+
 Owner 2026-11-10: Nanos sessions should run on macOS too, at hardware speed.
 Hypervisor.framework only runs guests of the host's architecture, so this
 means an arm64 hydrogen kernel and an arm64 musl Helium. x86-64 Nanos under

@@ -8,8 +8,8 @@ passed it. Anything not listed is unverified.
 
 | Tuple | Host | Runtime | Image | Checks |
 |-------|------|---------|-------|--------|
-| mac-smolvm | macOS 27.0.1, Apple M5 Max (arm64) | smolvm 1.34.0 | `helium` sha256:a91a0ab8… | 113 of 113 |
-| mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `6dc7d43e` | `nanos-helium` sha256:399f8ca5… | 113 of 113, twice |
+| mac-smolvm | macOS 27.0.1, Apple M5 Max (arm64) | smolvm 1.34.1 (upstream `59bdcf62`, 13 patches) | `helium` sha256:a889b1d2… (tinyland `5c5da46`) | 113 of 113 in each of two runs at bctl `afe91b6` |
+| mac-nanos | macOS 27.0.1, Apple M5 Max (arm64) | Nanos on libkrun, Hydrogen `5fe102e8` | `nanos-helium` sha256:ed145673… | 113 of 113 in each of two runs |
 | linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `44f4b61f` | `nanos-helium` sha256:9113ccc3… | 113 of 113 in 2 of 2 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
 | linux-smolvm | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | smolvm 1.34.1 (upstream `59bdcf62`, 13 patches) with KVM, headed 2D display, the default runtime | `helium` sha256:c21aaf05… (tinyland `5c5da46`) | 113 of 113 in 2 of 2 runs at bctl `9ead6b5` |
 
@@ -20,8 +20,10 @@ Every tuple uses Helium 0.20.3.1 and the same client pins:
 
 The linux-nanos receipts are from bctl `3b134a4` with the Hydrogen pin
 above. The last three runs also include this row's daemon restart fix.
-The mac-nanos receipts are from bctl `e1d1d62` and Hydrogen `6dc7d43e`.
-Both of those runs passed.
+The mac-nanos receipts use the final ARM pin from bctl `afe91b6`.
+Both runs passed. The first run preceded the pin's commit.
+The refreshed macOS receipts and rebuilt artifact identities are in
+the [macOS qualification results](handoffs/2026-11-12-macos-results.md).
 
 Reproduce a tuple:
 
@@ -86,4 +88,4 @@ this suite.
 - **Provider launch options.** The provider plugin cannot honour
   `userAgent` or `colorScheme`, and refuses them.
 
-Timings for these tuples are in [performance](performance.md#external-clients).
+Earlier client timing measurements are in [performance](performance.md#external-clients).
