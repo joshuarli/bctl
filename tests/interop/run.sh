@@ -59,11 +59,32 @@ session=interop
 
 fixture_pid=''
 cleanup() {
+    cleanup_status=$?
+    set +e
+    if [ "$cleanup_status" -ne 0 ]; then
+        mkdir -p "$home/diagnostics" || printf 'cannot create diagnostics in %s\n' "$home" >&2
+        for machine in "$home"/machines/*; do
+            [ -d "$machine" ] || continue
+            for log in console.log supervisor.log; do
+                [ ! -f "$machine/$log" ] || cp "$machine/$log" "$home/diagnostics/$(basename "$machine").$log" ||
+                    printf 'cannot preserve %s/%s\n' "$machine" "$log" >&2
+            done
+        done
+    fi
     "$bctl" down "$session" >/dev/null 2>&1 || :
     daemon=$(lsof -t "$home/daemon.lock" 2>/dev/null || :)
     [ -z "$daemon" ] || kill "$daemon" 2>/dev/null || :
     [ -z "$fixture_pid" ] || kill "$fixture_pid" 2>/dev/null || :
-    rm -rf "$home"
+    if [ "$cleanup_status" -eq 0 ]; then
+        rm -rf "$home"
+    else
+        mkdir -p "$work/failures" || printf 'cannot create %s/failures\n' "$work" >&2
+        chmod 700 "$work/failures" "$home" || printf 'cannot restrict failure evidence permissions\n' >&2
+        retained=$work/failures/$(date -u +%Y%m%dT%H%M%SZ)-$$
+        mv "$home" "$retained" || retained=$home
+        printf 'failure evidence: %s\n' "$retained" >&2
+    fi
+    exit "$cleanup_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM

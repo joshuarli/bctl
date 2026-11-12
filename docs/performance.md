@@ -425,8 +425,45 @@ Memory, in MiB:
 With 7 samples, p95 is the largest sample. The first Nanos round, the
 session's first navigation, made the browser-use navigate p95 334 ms and its run
 p95 748 ms; the other six stayed near the median. Neither client reports CDP call or byte counts, and the
-gateway does not count them, so those are not measured. Linux x86_64 is not
-measured.
+gateway does not count them, so those are not measured.
+
+### Linux x86_64, 2026-11-12
+
+The same seven-round script completed on Linux 7.2.9-2-stable, with 32 host
+CPUs, QEMU/KVM, and two guest CPUs. `perf-gate-ready` passed immediately
+before and after the run. These are observations of the current configuration.
+No baseline comparison or speedup is established.
+
+| Client | Operation | Median ms | Min ms | Max ms |
+| --- | --- | ---: | ---: | ---: |
+| browser-use | attach, first cell run | 698.2 | 511.8 | 773.8 |
+| browser-use | navigate | 46.5 | 44.7 | 395.3 |
+| browser-use | accessibility tree | 5.9 | 2.0 | 44.2 |
+| browser-use | screenshot | 58.2 | 42.1 | 76.7 |
+| browser-use | run, start to finish | 845.7 | 679.0 | 1278.3 |
+| agent-browser | attach | 246.4 | 193.7 | 255.5 |
+| agent-browser | navigate | 46.2 | 45.3 | 47.6 |
+| agent-browser | accessibility tree | 4.7 | 4.4 | 13.1 |
+| agent-browser | screenshot | 34.4 | 26.9 | 42.1 |
+| agent-browser | close | 0.9 | 0.8 | 1.6 |
+
+Each row has seven successful command samples. The sample p95 equals the
+maximum with this script's estimator. The first browser-use navigation took
+395.3 ms and remains included. Browser-use's host process peaked at 152.0 MiB,
+excluding its harness daemon. Agent-browser daemon RSS had median 12.4 MiB
+and range 12.1–12.6 MiB. The measured path includes client startup and the
+host gateway. Its dominant cost has not been profiled.
+
+Receipts: bctl `5ac7b9e` with the pending kernel pin and failure-retention
+changes, Hydrogen `0bb4a9d9`, Helium 0.20.3.1, browser-use 1.0.0 at
+`070be98109c03f04a95f704533e8f6e9868d0525`, browser-harness 0.1.13,
+and agent-browser 0.42.0 at `e7519957b9067c541825afa21a792fbe1f483047`.
+Image SHA-256:
+`6083572a3320ad89684b7846919b18398aa1e4b2771a6bdc6ee3894f9a6a251f`.
+The raw samples and quiet-host receipts are in Hydrogen's
+`.work/tmp/resume-external-measure.log` and `resume-measure-gate-{before,after}.log`.
+Command completion does not close the intermittent shutdown or navigation
+qualification failures recorded in Hydrogen's Linux handoff.
 
 ## Findings
 

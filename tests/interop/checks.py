@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,16 @@ def records() -> list[str]:
 
 
 def bctl(*args: str) -> subprocess.CompletedProcess:
+	if args and args[0] == 'down':
+		home = Path(os.environ['BCTL_HOME'])
+		for name in ('console.log', 'supervisor.log'):
+			for log in (home / 'machines').glob(f'*/{name}'):
+				try:
+					evidence = home / 'diagnostics'
+					evidence.mkdir(mode=0o700, exist_ok=True)
+					shutil.copyfile(log, evidence / f'{log.parent.name}.{name}')
+				except OSError as error:
+					print(redact(f'cannot preserve {log}: {error}'), file=sys.stderr)
 	return subprocess.run([os.environ['BCTL'], *args], capture_output=True, text=True, timeout=120)
 
 
