@@ -1,26 +1,8 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index d2fd357..4ead861 100644
+index 527260e1..4f78cb3c 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -65,7 +65,7 @@ version = "1.1.5"
- source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
- dependencies = [
-- "windows-sys 0.60.2",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -76,7 +76,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
- dependencies = [
-  "anstyle",
-  "once_cell_polyfill",
-- "windows-sys 0.60.2",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -308,29 +308,6 @@ version = "1.5.1"
+@@ -296,29 +296,6 @@ version = "1.5.1"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
  
@@ -50,7 +32,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "axum"
  version = "0.8.9"
-@@ -553,17 +530,6 @@ dependencies = [
+@@ -541,17 +518,6 @@ dependencies = [
   "zbus",
  ]
  
@@ -68,7 +50,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "clap"
  version = "4.6.7"
-@@ -613,15 +579,6 @@ version = "1.1.0"
+@@ -601,15 +567,6 @@ version = "1.1.0"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
  
@@ -84,7 +66,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "colorchoice"
  version = "1.0.5"
-@@ -723,15 +680,6 @@ dependencies = [
+@@ -711,15 +668,6 @@ dependencies = [
   "libc",
  ]
  
@@ -100,7 +82,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "crc32fast"
  version = "1.5.0"
-@@ -1015,12 +963,6 @@ dependencies = [
+@@ -1003,12 +951,6 @@ dependencies = [
   "syn 2.0.117",
  ]
  
@@ -113,16 +95,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "either"
  version = "1.16.0"
-@@ -1067,7 +1009,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
- dependencies = [
-  "libc",
-- "windows-sys 0.52.0",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -1172,12 +1114,6 @@ dependencies = [
+@@ -1166,12 +1108,6 @@ dependencies = [
   "tokio",
  ]
  
@@ -135,7 +108,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "fsevent-sys"
  version = "4.1.0"
-@@ -1305,10 +1241,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -1299,10 +1235,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
  dependencies = [
   "cfg-if 1.0.4",
@@ -146,7 +119,7 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -1333,7 +1267,6 @@ dependencies = [
+@@ -1327,7 +1261,6 @@ dependencies = [
   "js-sys",
   "libc",
   "r-efi 6.0.0",
@@ -154,15 +127,15 @@ index d2fd357..4ead861 100644
   "wasip2",
   "wasip3",
   "wasm-bindgen",
-@@ -1359,6 +1292,16 @@ dependencies = [
+@@ -1353,6 +1286,16 @@ dependencies = [
   "cfg-if 0.1.10",
  ]
  
 +[[package]]
 +name = "graviola"
-+version = "0.4.4"
++version = "0.4.5"
 +source = "registry+https://github.com/rust-lang/crates.io-index"
-+checksum = "a1a15622a211648cbf64f485e0369791466d133eb6578fd99e4a61230c88a6aa"
++checksum = "bc0377ccc5ef095424121430046e475cf06658e23475b1af526655cfad0b86b2"
 +dependencies = [
 + "cfg-if 1.0.4",
 + "getrandom 0.4.2",
@@ -171,7 +144,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "h2"
  version = "0.4.20"
-@@ -1568,7 +1511,7 @@ dependencies = [
+@@ -1556,7 +1499,7 @@ dependencies = [
   "tokio",
   "tokio-rustls",
   "tower-service",
@@ -180,7 +153,7 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -1950,12 +1893,6 @@ dependencies = [
+@@ -1938,12 +1881,6 @@ dependencies = [
   "value-bag",
  ]
  
@@ -193,7 +166,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "managed"
  version = "0.8.0"
-@@ -2047,7 +1984,7 @@ dependencies = [
+@@ -2035,7 +1972,7 @@ dependencies = [
   "hashbrown 0.15.5",
   "metrics",
   "quanta",
@@ -202,16 +175,7 @@ index d2fd357..4ead861 100644
   "rand_xoshiro",
   "sketches-ddsketch",
  ]
-@@ -2210,7 +2147,7 @@ version = "0.50.3"
- source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
- dependencies = [
-- "windows-sys 0.60.2",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -2622,62 +2559,6 @@ dependencies = [
+@@ -2610,62 +2547,6 @@ dependencies = [
   "winapi",
  ]
  
@@ -229,7 +193,7 @@ index d2fd357..4ead861 100644
 - "rustc-hash",
 - "rustls",
 - "socket2",
-- "thiserror 2.0.18",
+- "thiserror 2.0.21",
 - "tokio",
 - "tracing",
 - "web-time",
@@ -251,7 +215,7 @@ index d2fd357..4ead861 100644
 - "rustls",
 - "rustls-pki-types",
 - "slab",
-- "thiserror 2.0.18",
+- "thiserror 2.0.21",
 - "tinyvec",
 - "tracing",
 - "web-time",
@@ -274,7 +238,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "quote"
  version = "1.0.45"
-@@ -2706,18 +2587,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -2694,18 +2575,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
  dependencies = [
   "rand_chacha",
@@ -294,7 +258,7 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -2727,7 +2597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -2715,7 +2585,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
  dependencies = [
   "ppv-lite86",
@@ -303,7 +267,7 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -2739,28 +2609,13 @@ dependencies = [
+@@ -2727,28 +2597,13 @@ dependencies = [
   "getrandom 0.3.4",
  ]
  
@@ -333,7 +297,7 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -2788,7 +2643,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -2776,7 +2631,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
  dependencies = [
   "pem",
@@ -341,7 +305,7 @@ index d2fd357..4ead861 100644
   "rustls-pki-types",
   "time",
   "yasna",
-@@ -2851,6 +2705,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+@@ -2839,6 +2693,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
  dependencies = [
   "base64 0.22.1",
   "bytes",
@@ -349,7 +313,7 @@ index d2fd357..4ead861 100644
   "futures-core",
   "futures-util",
   "http",
-@@ -2863,7 +2718,6 @@ dependencies = [
+@@ -2851,7 +2706,6 @@ dependencies = [
   "log",
   "percent-encoding",
   "pin-project-lite",
@@ -357,7 +321,7 @@ index d2fd357..4ead861 100644
   "rustls",
   "rustls-native-certs",
   "rustls-pki-types",
-@@ -2882,7 +2736,7 @@ dependencies = [
+@@ -2870,7 +2724,7 @@ dependencies = [
   "wasm-bindgen-futures",
   "wasm-streams",
   "web-sys",
@@ -366,8 +330,8 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -2913,12 +2767,6 @@ dependencies = [
-  "smallvec",
+@@ -2911,12 +2765,6 @@ dependencies = [
+  "sqlite-wasm-rs",
  ]
  
 -[[package]]
@@ -379,16 +343,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "rustc_version"
  version = "0.4.1"
-@@ -2960,7 +2808,7 @@ dependencies = [
-  "errno",
-  "libc",
-  "linux-raw-sys 0.12.1",
-- "windows-sys 0.52.0",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -2969,16 +2817,23 @@ version = "0.23.46"
+@@ -2967,16 +2815,23 @@ version = "0.23.46"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
  dependencies = [
@@ -415,7 +370,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "rustls-native-certs"
  version = "0.8.4"
-@@ -3006,7 +2861,6 @@ version = "1.14.1"
+@@ -3004,7 +2859,6 @@ version = "1.14.1"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
  dependencies = [
@@ -423,7 +378,7 @@ index d2fd357..4ead861 100644
   "zeroize",
  ]
  
-@@ -3016,7 +2870,6 @@ version = "0.103.16"
+@@ -3014,7 +2868,6 @@ version = "0.103.16"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
  dependencies = [
@@ -431,7 +386,7 @@ index d2fd357..4ead861 100644
   "ring",
   "rustls-pki-types",
   "untrusted",
-@@ -3211,7 +3064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -3209,7 +3062,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
  dependencies = [
   "cfg-if 1.0.4",
@@ -440,7 +395,7 @@ index d2fd357..4ead861 100644
   "digest",
  ]
  
-@@ -3222,7 +3075,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -3220,7 +3073,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
  dependencies = [
   "cfg-if 1.0.4",
@@ -449,7 +404,7 @@ index d2fd357..4ead861 100644
   "digest",
  ]
  
-@@ -3324,6 +3177,7 @@ dependencies = [
+@@ -3322,6 +3175,7 @@ dependencies = [
   "dirs",
   "futures-util",
   "getrandom 0.3.4",
@@ -457,7 +412,7 @@ index d2fd357..4ead861 100644
   "hex",
   "http-body",
   "humantime",
-@@ -3340,9 +3194,9 @@ dependencies = [
+@@ -3338,9 +3192,9 @@ dependencies = [
   "rcgen",
   "regex",
   "reqwest",
@@ -468,7 +423,7 @@ index d2fd357..4ead861 100644
   "rustls-pemfile",
   "rustls-pki-types",
   "seccompiler",
-@@ -3411,7 +3265,6 @@ version = "1.34.0"
+@@ -3409,7 +3263,6 @@ version = "1.34.1"
  dependencies = [
   "hex",
   "libc",
@@ -476,7 +431,7 @@ index d2fd357..4ead861 100644
   "serde",
   "serde_json",
   "sha2",
-@@ -3429,12 +3282,14 @@ dependencies = [
+@@ -3427,12 +3280,14 @@ dependencies = [
   "bytes",
   "futures-util",
   "getrandom 0.3.4",
@@ -491,7 +446,7 @@ index d2fd357..4ead861 100644
   "rustls-pemfile",
   "rustls-pki-types",
   "serde_json",
-@@ -3531,7 +3386,6 @@ dependencies = [
+@@ -3529,7 +3384,6 @@ dependencies = [
   "crc32fast",
   "dirs",
   "libc",
@@ -499,7 +454,7 @@ index d2fd357..4ead861 100644
   "serde",
   "serde_json",
   "sha2",
-@@ -3562,10 +3416,12 @@ dependencies = [
+@@ -3560,10 +3414,12 @@ dependencies = [
   "dirs",
   "filetime",
   "futures-util",
@@ -512,7 +467,7 @@ index d2fd357..4ead861 100644
   "rustls-native-certs",
   "serde",
   "serde_json",
-@@ -3586,9 +3442,10 @@ version = "1.34.0"
+@@ -3584,9 +3440,10 @@ version = "1.34.1"
  dependencies = [
   "hmac",
   "libc",
@@ -524,25 +479,7 @@ index d2fd357..4ead861 100644
  ]
  
  [[package]]
-@@ -3615,7 +3472,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
- dependencies = [
-  "libc",
-- "windows-sys 0.60.2",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -3728,7 +3585,7 @@ dependencies = [
-  "getrandom 0.4.2",
-  "once_cell",
-  "rustix 1.1.4",
-- "windows-sys 0.52.0",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -3821,21 +3678,6 @@ dependencies = [
+@@ -3829,21 +3686,6 @@ dependencies = [
   "zerovec",
  ]
  
@@ -564,25 +501,16 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "tokio"
  version = "1.54.1"
-@@ -4183,7 +4025,7 @@ dependencies = [
+@@ -4191,7 +4033,7 @@ dependencies = [
   "http",
   "httparse",
   "log",
 - "rand 0.9.4",
 + "rand",
   "sha1",
-  "thiserror 2.0.18",
+  "thiserror 2.0.21",
  ]
-@@ -4214,7 +4056,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
- dependencies = [
-  "memoffset 0.9.1",
-  "tempfile",
-- "windows-sys 0.60.2",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
-@@ -4259,22 +4101,6 @@ version = "0.0.4"
+@@ -4267,22 +4109,6 @@ version = "0.0.4"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
  
@@ -605,7 +533,7 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "url"
  version = "2.5.8"
-@@ -4553,25 +4379,6 @@ dependencies = [
+@@ -4561,25 +4387,6 @@ dependencies = [
   "wasm-bindgen",
  ]
  
@@ -631,17 +559,8 @@ index d2fd357..4ead861 100644
  [[package]]
  name = "webpki-roots"
  version = "1.0.10"
-@@ -4624,7 +4431,7 @@ version = "0.1.11"
- source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
- dependencies = [
-- "windows-sys 0.48.0",
-+ "windows-sys 0.61.2",
- ]
- 
- [[package]]
 diff --git a/Cargo.toml b/Cargo.toml
-index f941110..9c581b4 100644
+index 79437c0d..5cf64824 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -69,7 +69,6 @@ socket2 = "0.6"
@@ -684,9 +603,9 @@ index f941110..9c581b4 100644
 +graviola = "0.4"
  # WebSocket client for the interactive exec tests (already locked through axum).
  tokio-tungstenite = "0.29"
- smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.34.0" }
+ smolvm-protocol = { path = "crates/smolvm-protocol", version = "1.34.1" }
 diff --git a/crates/smolvm-checkpoint/Cargo.toml b/crates/smolvm-checkpoint/Cargo.toml
-index db74f91..97a0d81 100644
+index fa15666d..bee76dff 100644
 --- a/crates/smolvm-checkpoint/Cargo.toml
 +++ b/crates/smolvm-checkpoint/Cargo.toml
 @@ -12,11 +12,10 @@ smolvm-pack = { path = "../smolvm-pack", version = "1.16.2" }
@@ -703,7 +622,7 @@ index db74f91..97a0d81 100644
  [dev-dependencies]
 -sha2 = "0.10"
 diff --git a/crates/smolvm-checkpoint/src/store.rs b/crates/smolvm-checkpoint/src/store.rs
-index 4319297..522d200 100644
+index 43192975..522d2006 100644
 --- a/crates/smolvm-checkpoint/src/store.rs
 +++ b/crates/smolvm-checkpoint/src/store.rs
 @@ -3,6 +3,7 @@
@@ -729,7 +648,7 @@ index 4319297..522d200 100644
          .map(|index| ((index * 73 + index / 127) & 255) as u8)
          .collect();
 diff --git a/crates/smolvm-credentials/Cargo.toml b/crates/smolvm-credentials/Cargo.toml
-index ec4fff4..073f142 100644
+index 9c388e39..5549f0c1 100644
 --- a/crates/smolvm-credentials/Cargo.toml
 +++ b/crates/smolvm-credentials/Cargo.toml
 @@ -17,15 +17,17 @@ getrandom = { version = "0.3", features = ["std"] }
@@ -755,7 +674,7 @@ index ec4fff4..073f142 100644
  zeroize = "1"
  
 diff --git a/crates/smolvm-credentials/src/ca.rs b/crates/smolvm-credentials/src/ca.rs
-index 690fe61..6461079 100644
+index 690fe61b..6461079f 100644
 --- a/crates/smolvm-credentials/src/ca.rs
 +++ b/crates/smolvm-credentials/src/ca.rs
 @@ -9,9 +9,10 @@
@@ -920,7 +839,7 @@ index 690fe61..6461079 100644
          .build()
          .unwrap();
 diff --git a/crates/smolvm-credentials/src/intercept.rs b/crates/smolvm-credentials/src/intercept.rs
-index 621eeed..3ae7a20 100644
+index 621eeed4..3ae7a20c 100644
 --- a/crates/smolvm-credentials/src/intercept.rs
 +++ b/crates/smolvm-credentials/src/intercept.rs
 @@ -337,7 +337,7 @@ impl State {
@@ -964,7 +883,7 @@ index 621eeed..3ae7a20 100644
          let mut config = rustls::ServerConfig::builder_with_provider(provider())
              .with_safe_default_protocol_versions()
 diff --git a/crates/smolvm-credentials/src/lib.rs b/crates/smolvm-credentials/src/lib.rs
-index 4bac121..3721732 100644
+index 4bac121e..3721732e 100644
 --- a/crates/smolvm-credentials/src/lib.rs
 +++ b/crates/smolvm-credentials/src/lib.rs
 @@ -15,10 +15,19 @@
@@ -988,7 +907,7 @@ index 4bac121..3721732 100644
  pub use intercept::{Interceptor, InterceptorConfig};
  pub use policy::{
 diff --git a/crates/smolvm-pack/Cargo.toml b/crates/smolvm-pack/Cargo.toml
-index 134dcee..762d47d 100644
+index 69472dc4..382a9862 100644
 --- a/crates/smolvm-pack/Cargo.toml
 +++ b/crates/smolvm-pack/Cargo.toml
 @@ -17,7 +17,6 @@ zstd = { version = "0.14.3", features = ["zstdmt"] }
@@ -1000,7 +919,7 @@ index 134dcee..762d47d 100644
  time = { version = "0.3", features = ["formatting"] }
  
 diff --git a/crates/smolvm-pack/src/extract.rs b/crates/smolvm-pack/src/extract.rs
-index 3d4da2d..1b7f2a0 100644
+index 3d4da2d8..1b7f2a07 100644
 --- a/crates/smolvm-pack/src/extract.rs
 +++ b/crates/smolvm-pack/src/extract.rs
 @@ -4,7 +4,7 @@
@@ -1073,7 +992,7 @@ index 3d4da2d..1b7f2a0 100644
                  }
                  digest
 diff --git a/crates/smolvm-registry/Cargo.toml b/crates/smolvm-registry/Cargo.toml
-index 48a6011..0c0b624 100644
+index e05e168d..61b3bd26 100644
 --- a/crates/smolvm-registry/Cargo.toml
 +++ b/crates/smolvm-registry/Cargo.toml
 @@ -9,8 +9,9 @@ readme = "README.md"
@@ -1097,7 +1016,7 @@ index 48a6011..0c0b624 100644
 +graviola = "0.4"
 +tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 diff --git a/crates/smolvm-registry/src/client.rs b/crates/smolvm-registry/src/client.rs
-index d9b7925..c31b8eb 100644
+index d9b79258..c31b8ebc 100644
 --- a/crates/smolvm-registry/src/client.rs
 +++ b/crates/smolvm-registry/src/client.rs
 @@ -77,6 +77,7 @@ const FALLBACK_CHUNK_SIZE: usize = 8 * 1024 * 1024;
@@ -1203,7 +1122,7 @@ index d9b7925..c31b8eb 100644
          .unwrap();
          let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
 diff --git a/crates/smolvm-registry/src/lib.rs b/crates/smolvm-registry/src/lib.rs
-index effe958..b8c9195 100644
+index effe958b..b8c91950 100644
 --- a/crates/smolvm-registry/src/lib.rs
 +++ b/crates/smolvm-registry/src/lib.rs
 @@ -15,6 +15,14 @@ pub use client::{validate_digest, RegistryClient};
@@ -1222,7 +1141,7 @@ index effe958..b8c9195 100644
  
  /// OCI media type for the smolmachine config blob.
 diff --git a/crates/smolvm-registry/src/peer.rs b/crates/smolvm-registry/src/peer.rs
-index 0d0256f..dcb5bd8 100644
+index 0d0256f2..dcb5bd84 100644
 --- a/crates/smolvm-registry/src/peer.rs
 +++ b/crates/smolvm-registry/src/peer.rs
 @@ -67,6 +67,7 @@ pub(crate) fn peer_client() -> Option<&'static reqwest::Client> {
@@ -1242,7 +1161,7 @@ index 0d0256f..dcb5bd8 100644
          let data = b"the-quick-brown-fox-p2p-blob".to_vec();
          let digest = format!("sha256:{}", hex::encode(Sha256::digest(&data)));
 diff --git a/crates/smolvm-s3fs/Cargo.toml b/crates/smolvm-s3fs/Cargo.toml
-index 3978c30..f545672 100644
+index 2f5bca4a..856e2f1f 100644
 --- a/crates/smolvm-s3fs/Cargo.toml
 +++ b/crates/smolvm-s3fs/Cargo.toml
 @@ -9,5 +9,6 @@ license = "Apache-2.0"
@@ -1254,7 +1173,7 @@ index 3978c30..f545672 100644
 +rustls-graviola = "0.4"
  tracing = { workspace = true }
 diff --git a/crates/smolvm-s3fs/src/s3.rs b/crates/smolvm-s3fs/src/s3.rs
-index 4965d4d..392fff1 100644
+index 4965d4de..392fff15 100644
 --- a/crates/smolvm-s3fs/src/s3.rs
 +++ b/crates/smolvm-s3fs/src/s3.rs
 @@ -1,9 +1,8 @@
@@ -1402,7 +1321,7 @@ index 4965d4d..392fff1 100644
                  .find("<ListBucketResult")
                  .map(|start| body[start..].trim_end())
 diff --git a/crates/smolvm-s3fs/src/test_support.rs b/crates/smolvm-s3fs/src/test_support.rs
-index 7f4bb1f..45ca472 100644
+index 7f4bb1fe..45ca4723 100644
 --- a/crates/smolvm-s3fs/src/test_support.rs
 +++ b/crates/smolvm-s3fs/src/test_support.rs
 @@ -38,6 +38,7 @@ impl Server {
@@ -1414,7 +1333,7 @@ index 7f4bb1f..45ca472 100644
                      .set_read_timeout(Some(Duration::from_secs(5)))
                      .unwrap();
 diff --git a/src/api/cache_base_fetch.rs b/src/api/cache_base_fetch.rs
-index 0a0ca5c..2166467 100644
+index 0a0ca5c5..21664673 100644
 --- a/src/api/cache_base_fetch.rs
 +++ b/src/api/cache_base_fetch.rs
 @@ -12,6 +12,7 @@ use std::sync::Arc;
@@ -1478,7 +1397,7 @@ index 0a0ca5c..2166467 100644
          let url = reqwest::Url::parse(&format!("http://{}/base", listener.local_addr().unwrap()))
              .unwrap();
 diff --git a/src/api/handlers/machines.rs b/src/api/handlers/machines.rs
-index 234d43b..be3c05f 100644
+index edfea133..f0b16c66 100644
 --- a/src/api/handlers/machines.rs
 +++ b/src/api/handlers/machines.rs
 @@ -29,6 +29,7 @@ use axum::{
@@ -1505,7 +1424,7 @@ index 234d43b..be3c05f 100644
              let client = reqwest::Client::builder()
                  .redirect(reqwest::redirect::Policy::none())
                  .connect_timeout(std::time::Duration::from_secs(30))
-@@ -6742,9 +6745,8 @@ fn file_sha256(
+@@ -6756,9 +6759,8 @@ fn file_sha256(
      use std::io::Read;
      let mut file = std::fs::File::open(path)
          .map_err(|e| ApiError::internal(format!("open {}: {e}", path.display())))?;
@@ -1517,7 +1436,7 @@ index 234d43b..be3c05f 100644
      let mut buffer = vec![0_u8; 8 << 20];
      loop {
          let read = file
-@@ -6756,7 +6758,7 @@ fn file_sha256(
+@@ -6770,7 +6772,7 @@ fn file_sha256(
          hasher.update(&buffer[..read]);
          progress.touch();
      }
@@ -1526,7 +1445,7 @@ index 234d43b..be3c05f 100644
  }
  
  /// Largest cache base a create may fetch.
-@@ -6817,6 +6819,7 @@ async fn fetch_cache_base(
+@@ -6831,6 +6833,7 @@ async fn fetch_cache_base(
          // any partial download of it left behind is abandoned.
          remove_abandoned_partials(&dir, &base);
          crate::api::cache_base_budget::make_room(&fetch_state).await;
@@ -1535,10 +1454,10 @@ index 234d43b..be3c05f 100644
              .redirect(reqwest::redirect::Policy::none())
              .connect_timeout(Duration::from_secs(30))
 diff --git a/src/cli/serve.rs b/src/cli/serve.rs
-index 93be992..9a77b6e 100644
+index 01b2771a..464094fb 100644
 --- a/src/cli/serve.rs
 +++ b/src/cli/serve.rs
-@@ -1416,6 +1416,7 @@ mod tests {
+@@ -1445,6 +1445,7 @@ mod tests {
      /// pending reply plus how long the server took to return after being asked
      /// to stop.
      async fn stop_during_request((server, addr, stop, entered): TestServer) -> (Reply, Duration) {
@@ -1547,7 +1466,7 @@ index 93be992..9a77b6e 100644
              let response = reqwest::Client::new()
                  .get(format!("http://{addr}/slow"))
 diff --git a/src/cli/serve_tls.rs b/src/cli/serve_tls.rs
-index a556fb2..55f28f8 100644
+index a556fb20..55f28f86 100644
 --- a/src/cli/serve_tls.rs
 +++ b/src/cli/serve_tls.rs
 @@ -171,9 +171,9 @@ fn build_server_config(
@@ -1716,7 +1635,7 @@ index a556fb2..55f28f8 100644
              let identity_pem = format!("{}\n{}", leaf.cert.pem(), leaf.key.serialize_pem());
              reqwest::Client::builder()
 diff --git a/src/data/disk.rs b/src/data/disk.rs
-index c49840d..3669312 100644
+index c49840db..3669312f 100644
 --- a/src/data/disk.rs
 +++ b/src/data/disk.rs
 @@ -1,6 +1,7 @@
@@ -1746,7 +1665,7 @@ index c49840d..3669312 100644
          Ok(digest)
      }
 diff --git a/src/lib.rs b/src/lib.rs
-index a5e716c..2a97d4b 100644
+index a5e716c1..2a97d4b5 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -69,6 +69,18 @@ pub mod artifact_cache;
@@ -1769,7 +1688,7 @@ index a5e716c..2a97d4b 100644
  // process groups — all POSIX. GPU acceleration is unavailable on Windows anyway,
  // so the module (and its callers in cuda_host) are unix-only.
 diff --git a/src/main.rs b/src/main.rs
-index c86d6f0..76a58ac 100644
+index c86d6f06..76a58ac8 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -185,6 +185,7 @@ fn main() {
@@ -1781,7 +1700,7 @@ index c86d6f0..76a58ac 100644
      // server can present their recorded ownership.
      smolvm_pack::extract::set_host_layers_probe(smolvm::agent::host_layers_supported);
 diff --git a/src/pack_seed.rs b/src/pack_seed.rs
-index e9e1921..97b2a07 100644
+index e9e19219..97b2a076 100644
 --- a/src/pack_seed.rs
 +++ b/src/pack_seed.rs
 @@ -445,10 +445,7 @@ mod imp {
@@ -1815,7 +1734,7 @@ index e9e1921..97b2a07 100644
          use std::io::Write;
          temporary.write_all(digest.as_bytes()).map_err(fail)?;
 diff --git a/src/usage.rs b/src/usage.rs
-index 262b5ad..a516ece 100644
+index 262b5ad5..a516ece9 100644
 --- a/src/usage.rs
 +++ b/src/usage.rs
 @@ -640,6 +640,7 @@ pub fn share_now(
@@ -1826,3 +1745,135 @@ index 262b5ad..a516ece 100644
          let client = reqwest::Client::builder()
              .timeout(timeout)
              .build()
+diff --git a/crates/smolvm-credentials/src/p256.rs b/crates/smolvm-credentials/src/p256.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/smolvm-credentials/src/p256.rs
+@@ -0,0 +1,127 @@
++use anyhow::{Context, Result};
++use graviola::signing::ecdsa::{P256, SigningKey};
++use rcgen::{KeyPair, RemoteKeyPair};
++
++struct GraviolaP256 {
++    key: SigningKey<P256>,
++    public: Vec<u8>,
++}
++
++impl GraviolaP256 {
++    fn new(key: SigningKey<P256>) -> Result<Self> {
++        let mut spki = [0u8; 128];
++        let spki = key.to_spki_der(&mut spki).context("encode P-256 public key")?;
++        let public = spki[spki.len() - 65..].to_vec();
++        anyhow::ensure!(
++            public.first() == Some(&0x04),
++            "P-256 public key is not an uncompressed point"
++        );
++        Ok(Self { key, public })
++    }
++}
++
++impl RemoteKeyPair for GraviolaP256 {
++    fn public_key(&self) -> &[u8] {
++        &self.public
++    }
++
++    fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, rcgen::Error> {
++        let mut signature = [0u8; 128];
++        self.key
++            .sign_asn1::<graviola::hashing::Sha256>(&[msg], &mut signature)
++            .map(|signature| signature.to_vec())
++            .map_err(|_| rcgen::Error::RemoteKeyError)
++    }
++
++    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
++        &rcgen::PKCS_ECDSA_P256_SHA256
++    }
++}
++
++pub(crate) fn serial_number() -> rcgen::SerialNumber {
++    let mut bytes = [0u8; 20];
++    graviola::random::fill(&mut bytes).expect("certificate serial randomness");
++    bytes[0] &= 0x7f;
++    rcgen::SerialNumber::from_slice(&bytes)
++}
++
++pub(crate) struct P256Key {
++    pair: KeyPair,
++    pkcs8: Vec<u8>,
++}
++
++impl P256Key {
++    pub(crate) fn generate() -> Result<Self> {
++        loop {
++            let mut scalar = [0u8; 32];
++            graviola::random::fill(&mut scalar).context("generate P-256 scalar")?;
++            let mut sec1 = vec![0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20];
++            sec1.extend_from_slice(&scalar);
++            let Ok(signing) = SigningKey::<P256>::from_sec1_der(&sec1) else {
++                continue;
++            };
++            let mut buffer = [0u8; 256];
++            let pkcs8 = signing
++                .to_pkcs8_der(&mut buffer)
++                .context("encode P-256 key")?
++                .to_vec();
++            let pair = KeyPair::from_remote(Box::new(GraviolaP256::new(signing)?))
++                .context("build remote P-256 key")?;
++            return Ok(Self { pair, pkcs8 });
++        }
++    }
++
++    pub(crate) fn from_pkcs8_der(bytes: &[u8]) -> Result<Self> {
++        let signing = SigningKey::<P256>::from_pkcs8_der(bytes)
++            .context("parse P-256 PKCS#8 key")?;
++        let pair = KeyPair::from_remote(Box::new(GraviolaP256::new(signing)?))
++            .context("build remote P-256 key")?;
++        Ok(Self {
++            pair,
++            pkcs8: bytes.to_vec(),
++        })
++    }
++
++    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self> {
++        if bytes.starts_with(b"-----BEGIN") {
++            let key = rustls_pemfile::private_key(&mut &bytes[..])
++                .context("parse CA key PEM")?
++                .context("CA key PEM contains no private key")?;
++            match key {
++                rustls_pki_types::PrivateKeyDer::Pkcs8(key) => {
++                    Self::from_pkcs8_der(key.secret_pkcs8_der())
++                }
++                rustls_pki_types::PrivateKeyDer::Sec1(key) => {
++                    let signing = SigningKey::<P256>::from_sec1_der(key.secret_sec1_der())
++                        .context("parse P-256 SEC1 key")?;
++                    let mut buffer = [0u8; 256];
++                    let pkcs8 = signing
++                        .to_pkcs8_der(&mut buffer)
++                        .context("encode P-256 key")?
++                        .to_vec();
++                    let pair = KeyPair::from_remote(Box::new(GraviolaP256::new(signing)?))
++                        .context("build remote P-256 key")?;
++                    Ok(Self { pair, pkcs8 })
++                }
++                _ => anyhow::bail!("CA key is not a P-256 private key"),
++            }
++        } else {
++            Self::from_pkcs8_der(bytes)
++        }
++    }
++
++    pub(crate) fn key_pair(&self) -> &KeyPair {
++        &self.pair
++    }
++
++    pub(crate) fn key_identifier_method(&self) -> rcgen::KeyIdMethod {
++        let spki = self.pair.public_key_der();
++        let digest = <graviola::hashing::Sha256 as graviola::hashing::Hash>::hash(&spki);
++        let digest: &[u8] = digest.as_ref();
++        rcgen::KeyIdMethod::PreSpecified(digest[..20].to_vec())
++    }
++
++    pub(crate) fn serialize_der(&self) -> Vec<u8> {
++        self.pkcs8.clone()
++    }
++}

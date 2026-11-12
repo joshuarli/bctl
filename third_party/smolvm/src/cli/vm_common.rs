@@ -535,6 +535,9 @@ pub struct CreateVmParams {
     pub gpu_mode: Option<smolvm::data::resources::GpuMode>,
     /// Enable Rosetta 2 for x86_64 binary translation on Apple Silicon.
     pub rosetta: bool,
+    /// Image platform to pull (`os/arch`). None = Rosetta's when it is on,
+    /// else the guest's own.
+    pub oci_platform: Option<String>,
     /// Hostnames for DNS filtering (from --allow-host / [network].allow_hosts).
     pub dns_filter_hosts: Option<Vec<String>>,
     /// Credential bindings (from `--credential` / `[[network.credentials]]`).
@@ -698,6 +701,34 @@ impl CreateVmParams {
     }
 }
 
+/// Warn about each host the machine names (`--allow-host`, a credential's
+/// host) that `--block-private` keeps it from reaching, with the
+/// `--allow-private` range that reopens it. Without this the connection is
+/// refused inside the guest and nothing says why.
+pub(crate) fn warn_hosts_blocked_by_private_floor(
+    block_private: Option<&[String]>,
+    egress_rules: &[smolvm_protocol::EgressRule],
+    allowed_hosts: Option<&[String]>,
+    credentials: Option<&smolvm::credentials::CredentialPolicy>,
+) {
+    for host in smolvm::network::private_floor::hosts_blocked_by_private_floor(
+        block_private,
+        egress_rules,
+        allowed_hosts,
+        credentials,
+        crate::cli::parsers::resolve_host_to_cidrs,
+    ) {
+        eprintln!("Warning: {}", host.warning());
+    }
+}
+
+/// [`warn_hosts_blocked_by_private_floor`] for a stored machine.
+pub(crate) fn warn_record_hosts_blocked_by_private_floor(record: &VmRecord) {
+    for host in smolvm::network::private_floor::record_hosts_blocked_by_private_floor(record) {
+        eprintln!("Warning: {}", host.warning());
+    }
+}
+
 /// The record `machine create` would write for these parameters, through
 /// the same rules as every other creation path.
 pub(crate) fn build_vm_record(params: &CreateVmParams) -> smolvm::Result<VmRecord> {
@@ -766,6 +797,7 @@ impl CreateVmParams {
             gpu_vram_mib,
             gpu_mode,
             rosetta,
+            oci_platform,
             dns_filter_hosts,
             credential_policy,
             // Minted when the record is written.
@@ -825,6 +857,7 @@ impl CreateVmParams {
             gpu_vram_mib,
             gpu_mode,
             rosetta,
+            oci_platform,
             nested_virt,
             cuda,
             docker_socket,
@@ -1799,6 +1832,9 @@ fn start_vm_named_with_db(
         }
     }
 
+    // The addresses may have changed since create, so ask again.
+    warn_record_hosts_blocked_by_private_floor(&record);
+
     // Check for host port conflicts with other running VMs.
     if !ports.is_empty() {
         check_port_conflicts(name, &ports, db)?;
@@ -1963,7 +1999,7 @@ fn start_vm_named_with_db(
             Some(crate::cli::pull_with_progress_as(
                 &mut client,
                 image,
-                None,
+                record.image_platform(),
                 proxy,
                 no_proxy,
                 registry_auth,
@@ -2342,7 +2378,7 @@ pub fn start_vm_default(proxy: Option<&str>, no_proxy: Option<&str>) -> smolvm::
                 Some(crate::cli::pull_with_progress(
                     &mut client,
                     image,
-                    None,
+                    record.image_platform(),
                     proxy,
                     no_proxy,
                 )?)
@@ -2812,6 +2848,40 @@ pub fn delete_vm(name: &str, force: bool, options: DeleteVmOptions) -> smolvm::R
     let db = SmolvmDb::open()?;
     let dependent_clones = db.dependent_clones(name)?;
     ensure_fork_base_delete_is_safe(name, &dependent_clones, options.cascade)?;
+
+    // Confirm deletion unless --force (or --cascade, which is already an
+    // explicit "remove this and its clones" and runs unattended). Ask before
+    // anything below touches the machine: a refused or declined delete must
+    // leave a running machine running, so the stop comes after this.
+    if !force && !options.cascade {
+        // Without a terminal there is nobody to answer the prompt: the read
+        // below would see EOF, take it as "no", and return Ok — leaving a
+        // script that believed it had cleaned up with a machine still on disk.
+        // Refuse loudly instead, and name the flag the caller needs.
+        if !std::io::stdin().is_terminal() {
+            return Err(smolvm::Error::agent(
+                "delete",
+                format!(
+                    "machine '{name}' needs confirmation but stdin is not a terminal; \
+                     pass --force to delete it, or --cascade to remove it together with \
+                     any machines branched from it"
+                ),
+            ));
+        }
+        eprint!("Delete machine '{}'? [y/N] ", name);
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            let input = input.trim().to_lowercase();
+            if input != "y" && input != "yes" {
+                println!("Cancelled");
+                return Ok(());
+            }
+        } else {
+            println!("Cancelled");
+            return Ok(());
+        }
+    }
+
     if !dependent_clones.is_empty() && options.cascade {
         // Delete the full lineage deepest-first. Every qcow2 overlay must
         // disappear before the parent image that backs it.
@@ -2865,37 +2935,6 @@ pub fn delete_vm(name: &str, force: bool, options: DeleteVmOptions) -> smolvm::R
                 smolvm::agent::state_probe::recover_unreachable_machine(&record)?;
             }
             _ => {}
-        }
-    }
-
-    // Confirm deletion unless --force (or --cascade, which is already an
-    // explicit "remove this and its clones" and runs unattended).
-    if !force && !options.cascade {
-        // Without a terminal there is nobody to answer the prompt: the read
-        // below would see EOF, take it as "no", and return Ok — leaving a
-        // script that believed it had cleaned up with a machine still on disk.
-        // Refuse loudly instead, and name the flag the caller needs.
-        if !std::io::stdin().is_terminal() {
-            return Err(smolvm::Error::agent(
-                "delete",
-                format!(
-                    "machine '{name}' needs confirmation but stdin is not a terminal; \
-                     pass --force to delete it, or --cascade to remove it together with \
-                     any machines branched from it"
-                ),
-            ));
-        }
-        eprint!("Delete machine '{}'? [y/N] ", name);
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                println!("Cancelled");
-                return Ok(());
-            }
-        } else {
-            println!("Cancelled");
-            return Ok(());
         }
     }
 

@@ -958,7 +958,14 @@ pub fn launch_agent_vm_dynamic(
         let negative_entries = !mount.staged && super::fsnotify_watch::watching_enabled();
         // SAFETY: ctx is valid, tag and host_path are valid C strings
         let mut added = -libc::EINVAL;
-        if let (true, Some(add_virtiofs4)) = (negative_entries, krun.add_virtiofs4) {
+        let mut flags = 0;
+        if negative_entries {
+            flags |= super::krun::KRUN_VIRTIOFS_FLAG_NEGATIVE_ENTRIES;
+        }
+        if cfg!(target_os = "linux") {
+            flags |= super::krun::KRUN_VIRTIOFS_FLAG_OVERRIDE_STAT;
+        }
+        if let (true, Some(add_virtiofs4)) = (flags != 0, krun.add_virtiofs4) {
             added = unsafe {
                 add_virtiofs4(
                     ctx,
@@ -966,7 +973,7 @@ pub fn launch_agent_vm_dynamic(
                     host_path.as_ptr(),
                     dax_window,
                     mount.read_only,
-                    super::krun::KRUN_VIRTIOFS_FLAG_NEGATIVE_ENTRIES,
+                    flags,
                 )
             };
         }

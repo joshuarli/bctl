@@ -1,7 +1,8 @@
-diff -ruN pre/crates/smolvm-pack/src/checkpoint_stream.rs current/crates/smolvm-pack/src/checkpoint_stream.rs
---- pre/crates/smolvm-pack/src/checkpoint_stream.rs	2026-11-09 13:18:07
-+++ current/crates/smolvm-pack/src/checkpoint_stream.rs	2026-11-09 12:57:02
-@@ -23,11 +23,23 @@
+diff --git a/crates/smolvm-pack/src/checkpoint_stream.rs b/crates/smolvm-pack/src/checkpoint_stream.rs
+index efcb7f45..1f39dc58 100644
+--- a/crates/smolvm-pack/src/checkpoint_stream.rs
++++ b/crates/smolvm-pack/src/checkpoint_stream.rs
+@@ -23,11 +23,23 @@ fn invalid() -> io::Error {
      io::Error::new(io::ErrorKind::InvalidData, "invalid checkpoint stream")
  }
  
@@ -25,10 +26,11 @@ diff -ruN pre/crates/smolvm-pack/src/checkpoint_stream.rs current/crates/smolvm-
          let state_len = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
          let layout_len = u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize;
          if &header[..8] != b"SMOLCKS1"
-diff -ruN pre/crates/smolvm-pack/src/checkpoint_stream_tests.rs current/crates/smolvm-pack/src/checkpoint_stream_tests.rs
---- pre/crates/smolvm-pack/src/checkpoint_stream_tests.rs	2026-11-09 13:18:07
-+++ current/crates/smolvm-pack/src/checkpoint_stream_tests.rs	2026-11-09 12:57:02
-@@ -360,3 +360,13 @@
+diff --git a/crates/smolvm-pack/src/checkpoint_stream_tests.rs b/crates/smolvm-pack/src/checkpoint_stream_tests.rs
+index f3960269..ea6e0d18 100644
+--- a/crates/smolvm-pack/src/checkpoint_stream_tests.rs
++++ b/crates/smolvm-pack/src/checkpoint_stream_tests.rs
+@@ -360,3 +360,13 @@ fn fragmented_ram_is_archived_as_whole_aligned_blocks() {
      assert_eq!(restored, expected);
      assert_eq!(std::fs::read(&copy).unwrap(), expected);
  }
@@ -42,10 +44,11 @@ diff -ruN pre/crates/smolvm-pack/src/checkpoint_stream_tests.rs current/crates/s
 +        "ERR EIO checkpoint stream metadata exceeds bounds"
 +    );
 +}
-diff -ruN pre/crates/smolvm-pack/src/format.rs current/crates/smolvm-pack/src/format.rs
---- pre/crates/smolvm-pack/src/format.rs	2026-11-09 13:18:07
-+++ current/crates/smolvm-pack/src/format.rs	2026-11-09 13:09:00
-@@ -730,6 +730,31 @@
+diff --git a/crates/smolvm-pack/src/format.rs b/crates/smolvm-pack/src/format.rs
+index f871d070..ab802df7 100644
+--- a/crates/smolvm-pack/src/format.rs
++++ b/crates/smolvm-pack/src/format.rs
+@@ -730,6 +730,31 @@ pub struct CheckpointSettings {
      /// Seconds after boot before health checks start.
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub health_startup_grace_secs: Option<u64>,
@@ -77,10 +80,11 @@ diff -ruN pre/crates/smolvm-pack/src/format.rs current/crates/smolvm-pack/src/fo
  }
  
  impl CheckpointSettings {
-diff -ruN pre/src/agent/launcher.rs current/src/agent/launcher.rs
---- pre/src/agent/launcher.rs	2026-11-09 13:18:07
-+++ current/src/agent/launcher.rs	2026-11-09 12:57:02
-@@ -955,6 +955,7 @@
+diff --git a/src/agent/launcher.rs b/src/agent/launcher.rs
+index 06304e4d..2bea340b 100644
+--- a/src/agent/launcher.rs
++++ b/src/agent/launcher.rs
+@@ -955,6 +955,7 @@ pub fn launch_agent_vm(config: &LaunchConfig<'_>) -> Result<()> {
          // Requires libkrun built with `gpu` feature and host virglrenderer.
          // On macOS, also requires MoltenVK (Vulkan → Metal translation).
          if resources.gpu {
@@ -88,10 +92,11 @@ diff -ruN pre/src/agent/launcher.rs current/src/agent/launcher.rs
              let virgl_flags = super::gpu_virgl_flags();
              // Size the GPU shared-memory region. Caller may override
              // via `--gpu-vram <MiB>` (CLI) or `gpu_vram = N` (Smolfile);
-diff -ruN pre/src/agent/launcher_dynamic.rs current/src/agent/launcher_dynamic.rs
---- pre/src/agent/launcher_dynamic.rs	2026-11-09 13:18:07
-+++ current/src/agent/launcher_dynamic.rs	2026-11-09 12:57:02
-@@ -222,6 +222,7 @@
+diff --git a/src/agent/launcher_dynamic.rs b/src/agent/launcher_dynamic.rs
+index 28a708fb..22709c23 100644
+--- a/src/agent/launcher_dynamic.rs
++++ b/src/agent/launcher_dynamic.rs
+@@ -222,6 +222,7 @@ pub fn launch_agent_vm_dynamic(
      // Flag logic lives in super::gpu_virgl_flags() — see mod.rs for the full
      // explanation of each flag's purpose on Linux vs macOS.
      if config.resources.gpu {
@@ -99,10 +104,11 @@ diff -ruN pre/src/agent/launcher_dynamic.rs current/src/agent/launcher_dynamic.r
          let virgl_flags = super::gpu_virgl_flags();
          let vram_mib = config.resources.effective_gpu_vram_mib();
          let vram_bytes: u64 = (vram_mib as u64) * crate::data::consts::BYTES_PER_MIB;
-diff -ruN pre/src/agent/mod.rs current/src/agent/mod.rs
---- pre/src/agent/mod.rs	2026-11-09 13:18:07
-+++ current/src/agent/mod.rs	2026-11-09 12:57:02
-@@ -144,6 +144,21 @@
+diff --git a/src/agent/mod.rs b/src/agent/mod.rs
+index 36690c25..e58505f4 100644
+--- a/src/agent/mod.rs
++++ b/src/agent/mod.rs
+@@ -144,6 +144,21 @@ pub fn parse_display_size(raw: Option<&str>) -> Option<(u32, u32)> {
      Some((w, h))
  }
  
@@ -124,10 +130,11 @@ diff -ruN pre/src/agent/mod.rs current/src/agent/mod.rs
  /// Default `KRUN_GPU_BACKEND=2d` on macOS when a display is requested.
  ///
  /// The virglrenderer bundled on macOS is Venus-only: it cannot create the
-diff -ruN pre/src/api/state.rs current/src/api/state.rs
---- pre/src/api/state.rs	2026-11-09 13:18:07
-+++ current/src/api/state.rs	2026-11-09 12:57:02
-@@ -1902,6 +1902,7 @@
+diff --git a/src/api/state.rs b/src/api/state.rs
+index 9760d2c1..77519606 100644
+--- a/src/api/state.rs
++++ b/src/api/state.rs
+@@ -1902,6 +1902,7 @@ pub fn resource_spec_to_vm_resources(spec: &ResourceSpec, network: bool) -> VmRe
          // inherit the default. Add to ResourceSpec if the API ever
          // needs to expose it.
          gpu_vram_mib: None,
@@ -135,10 +142,11 @@ diff -ruN pre/src/api/state.rs current/src/api/state.rs
          cuda: spec.cuda.unwrap_or(false),
          nested_virt: spec.nested_virt.unwrap_or(false),
          rosetta: false,
-diff -ruN pre/src/cli/machine.rs current/src/cli/machine.rs
---- pre/src/cli/machine.rs	2026-11-09 13:18:07
-+++ current/src/cli/machine.rs	2026-11-09 12:57:02
-@@ -1920,6 +1920,7 @@
+diff --git a/src/cli/machine.rs b/src/cli/machine.rs
+index 19ab466d..68db97a2 100644
+--- a/src/cli/machine.rs
++++ b/src/cli/machine.rs
+@@ -1928,6 +1928,7 @@ impl RunCmd {
              gpu: self.gpu || params.gpu,
              nested_virt: self.nested_virt,
              gpu_vram_mib: self.gpu_vram_mib.or(params.gpu_vram_mib),
@@ -146,7 +154,7 @@ diff -ruN pre/src/cli/machine.rs current/src/cli/machine.rs
              cuda: self.cuda || params.cuda,
              rosetta: self.rosetta || params.rosetta,
              storage_gib: params.storage_gb,
-@@ -4689,6 +4690,12 @@
+@@ -4699,6 +4700,12 @@ pub struct CreateCmd {
      #[arg(long)]
      pub gpu: bool,
  
@@ -159,15 +167,15 @@ diff -ruN pre/src/cli/machine.rs current/src/cli/machine.rs
      /// Expose the host's virtualization extensions so the guest can run KVM --
      /// i.e. run smolvm, QEMU or another hypervisor inside the machine. Off by
      /// default: nesting turns work the guest would do natively into vmexits.
-@@ -5051,6 +5058,7 @@
+@@ -5067,6 +5074,7 @@ impl CreateCmd {
              gpu,
              nested_virt,
              gpu_vram_mib,
 +            gpu_mode,
              rosetta,
+             oci_platform,
              expose_socket,
-             mount_socket,
-@@ -5195,6 +5203,9 @@
+@@ -5212,6 +5220,9 @@ impl CreateCmd {
          cli.cuda |= *cuda;
          cli.docker_socket |= *docker_socket;
          cli.gpu |= *gpu;
@@ -175,12 +183,13 @@ diff -ruN pre/src/cli/machine.rs current/src/cli/machine.rs
 +            cli.gpu_mode = *gpu_mode;
 +        }
          cli.rosetta |= *rosetta;
-         // CLI --gpu-vram takes precedence over Smolfile gpu_vram.
-         if gpu_vram_mib.is_some() {
-diff -ruN pre/src/cli/pack.rs current/src/cli/pack.rs
---- pre/src/cli/pack.rs	2026-11-09 13:18:07
-+++ current/src/cli/pack.rs	2026-11-09 13:09:43
-@@ -127,6 +127,21 @@
+         if oci_platform.is_some() {
+             cli.oci_platform = oci_platform.clone();
+diff --git a/src/cli/pack.rs b/src/cli/pack.rs
+index fcf53fc8..3be138ce 100644
+--- a/src/cli/pack.rs
++++ b/src/cli/pack.rs
+@@ -127,6 +127,21 @@ pub struct CheckpointCmd {
      #[arg(long = "host-mounts")]
      pub host_mounts: bool,
  
@@ -202,7 +211,7 @@ diff -ruN pre/src/cli/pack.rs current/src/cli/pack.rs
      /// Path to library directory containing libkrun and libkrunfw.
      #[arg(long, value_name = "DIR", hide = true)]
      pub lib_dir: Option<PathBuf>,
-@@ -164,6 +179,12 @@
+@@ -164,6 +179,12 @@ impl CheckpointCmd {
          let name = self
              .name
              .ok_or_else(|| smolvm::Error::config("checkpoint", "--name is required"))?;
@@ -215,7 +224,7 @@ diff -ruN pre/src/cli/pack.rs current/src/cli/pack.rs
          let result = smolvm::portable_checkpoint::capture_to_path_with_history(
              &name,
              &self.output,
-@@ -863,6 +884,7 @@
+@@ -863,6 +884,7 @@ impl PackCreateCmd {
                  disk_volumes: Vec::new(),
                  block_private: None,
                  gpu_vram_mib: None,
@@ -223,10 +232,11 @@ diff -ruN pre/src/cli/pack.rs current/src/cli/pack.rs
                  rosetta: false,
                  allowed_cidrs: None,
                  egress_rules: Vec::new(),
-diff -ruN pre/src/cli/pack_run.rs current/src/cli/pack_run.rs
---- pre/src/cli/pack_run.rs	2026-11-09 13:18:07
-+++ current/src/cli/pack_run.rs	2026-11-09 12:57:02
-@@ -666,6 +666,7 @@
+diff --git a/src/cli/pack_run.rs b/src/cli/pack_run.rs
+index 8a44e107..a7f42941 100644
+--- a/src/cli/pack_run.rs
++++ b/src/cli/pack_run.rs
+@@ -666,6 +666,7 @@ impl PackRunCmd {
              gpu: manifest.gpu,
              nested_virt: false,
              cuda: cuda_enabled,
@@ -234,7 +244,7 @@ diff -ruN pre/src/cli/pack_run.rs current/src/cli/pack_run.rs
              storage_gib,
              overlay_gib: self.overlay,
              block_io: self.block_io.unwrap_or_default(),
-@@ -1920,6 +1921,7 @@
+@@ -1920,6 +1921,7 @@ fn run_from_cache(
          gpu: manifest.gpu,
          nested_virt: false,
          cuda: manifest.cuda,
@@ -242,7 +252,7 @@ diff -ruN pre/src/cli/pack_run.rs current/src/cli/pack_run.rs
          storage_gib,
          overlay_gib: args.overlay,
          block_io: args.block_io.unwrap_or_default(),
-@@ -2350,6 +2352,7 @@
+@@ -2350,6 +2352,7 @@ fn daemon_start(
          gpu: manifest.gpu,
          nested_virt: false,
          cuda: manifest.cuda,
@@ -250,37 +260,39 @@ diff -ruN pre/src/cli/pack_run.rs current/src/cli/pack_run.rs
          storage_gib,
          overlay_gib: args.overlay,
          block_io: args.block_io.unwrap_or_default(),
-diff -ruN pre/src/cli/smolfile.rs current/src/cli/smolfile.rs
---- pre/src/cli/smolfile.rs	2026-11-09 13:18:07
-+++ current/src/cli/smolfile.rs	2026-11-09 12:57:02
-@@ -458,6 +458,7 @@
+diff --git a/src/cli/smolfile.rs b/src/cli/smolfile.rs
+index c140a270..0ba17b07 100644
+--- a/src/cli/smolfile.rs
++++ b/src/cli/smolfile.rs
+@@ -458,6 +458,7 @@ pub fn build_create_spec(
              published_sockets: Vec::new(),
              gpu: sf_gpu.unwrap_or(false),
              gpu_vram_mib: sf_gpu_vram,
 +            gpu_mode: None,
              rosetta: sf_rosetta.unwrap_or(false),
-             nested_virt: false,
-             cuda,
-@@ -580,6 +581,7 @@
+             // A flag only: `[artifact].oci_platform` is what a pack is built for.
+             oci_platform: None,
+@@ -582,6 +583,7 @@ pub fn build_create_params(
          published_sockets,
          gpu,
          gpu_vram_mib,
 +        gpu_mode,
          rosetta,
+         oci_platform,
          nested_virt,
-         cuda,
-@@ -647,6 +649,7 @@
+@@ -650,6 +652,7 @@ pub fn build_create_params(
          docker_socket,
          gpu,
          gpu_vram_mib,
 +        gpu_mode,
          rosetta,
+         oci_platform,
          dns_filter_hosts: allowed_hosts,
-         credential_policy: credentials,
-diff -ruN pre/src/cli/vm_common.rs current/src/cli/vm_common.rs
---- pre/src/cli/vm_common.rs	2026-11-09 13:18:07
-+++ current/src/cli/vm_common.rs	2026-11-09 12:57:02
-@@ -531,6 +531,8 @@
+diff --git a/src/cli/vm_common.rs b/src/cli/vm_common.rs
+index 0a4f0142..18314776 100644
+--- a/src/cli/vm_common.rs
++++ b/src/cli/vm_common.rs
+@@ -531,6 +531,8 @@ pub struct CreateVmParams {
      pub gpu: bool,
      /// GPU VRAM size in MiB (None = default). Ignored when gpu is false.
      pub gpu_vram_mib: Option<u32>,
@@ -288,27 +300,28 @@ diff -ruN pre/src/cli/vm_common.rs current/src/cli/vm_common.rs
 +    pub gpu_mode: Option<smolvm::data::resources::GpuMode>,
      /// Enable Rosetta 2 for x86_64 binary translation on Apple Silicon.
      pub rosetta: bool,
-     /// Hostnames for DNS filtering (from --allow-host / [network].allow_hosts).
-@@ -762,6 +764,7 @@
+     /// Image platform to pull (`os/arch`). None = Rosetta's when it is on,
+@@ -793,6 +795,7 @@ impl CreateVmParams {
              nested_virt,
              gpu,
              gpu_vram_mib,
 +            gpu_mode,
              rosetta,
+             oci_platform,
              dns_filter_hosts,
-             credential_policy,
-@@ -820,6 +823,7 @@
+@@ -852,6 +855,7 @@ impl CreateVmParams {
              published_sockets,
              gpu,
              gpu_vram_mib,
 +            gpu_mode,
              rosetta,
+             oci_platform,
              nested_virt,
-             cuda,
-diff -ruN pre/src/config.rs current/src/config.rs
---- pre/src/config.rs	2026-11-09 13:18:07
-+++ current/src/config.rs	2026-11-09 12:57:02
-@@ -546,6 +546,10 @@
+diff --git a/src/config.rs b/src/config.rs
+index f0c45261..09f83b78 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -546,6 +546,10 @@ pub struct VmRecord {
      #[serde(default)]
      pub gpu_vram_mib: Option<u32>,
  
@@ -319,23 +332,23 @@ diff -ruN pre/src/config.rs current/src/config.rs
      /// Enable Rosetta 2 for x86_64 binary translation on Apple Silicon.
      #[serde(default)]
      pub rosetta: Option<bool>,
-@@ -984,6 +988,7 @@
+@@ -999,6 +1003,7 @@ impl VmRecord {
              network,
              gpu: None,
              gpu_vram_mib: None,
 +            gpu_mode: None,
              nested_virt: None,
              rosetta: None,
-             restart: RestartConfig::default(),
-@@ -1088,6 +1093,7 @@
+             oci_platform: None,
+@@ -1104,6 +1109,7 @@ impl VmRecord {
              network,
              gpu: None,
              gpu_vram_mib: None,
 +            gpu_mode: None,
              nested_virt: None,
              rosetta: None,
-             restart,
-@@ -1683,6 +1689,7 @@
+             oci_platform: None,
+@@ -1700,6 +1706,7 @@ impl VmRecord {
              network_backend: self.network_backend,
              gpu: self.gpu.unwrap_or(false),
              gpu_vram_mib: self.gpu_vram_mib,
@@ -343,10 +356,11 @@ diff -ruN pre/src/config.rs current/src/config.rs
              cuda: self.cuda,
              nested_virt: self.nested_virt.unwrap_or(false),
              rosetta: self.rosetta.unwrap_or(false),
-diff -ruN pre/src/data/resources.rs current/src/data/resources.rs
---- pre/src/data/resources.rs	2026-11-09 13:18:07
-+++ current/src/data/resources.rs	2026-11-09 12:57:02
-@@ -149,6 +149,35 @@
+diff --git a/src/data/resources.rs b/src/data/resources.rs
+index 7816a82c..2993702f 100644
+--- a/src/data/resources.rs
++++ b/src/data/resources.rs
+@@ -149,6 +149,35 @@ pub enum DiskDurability {
      Deferred,
  }
  
@@ -382,7 +396,7 @@ diff -ruN pre/src/data/resources.rs current/src/data/resources.rs
  /// Resources available to a micro vm.
  #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
  pub struct VmResources {
-@@ -168,6 +197,9 @@
+@@ -168,6 +197,9 @@ pub struct VmResources {
      /// `None` → use `DEFAULT_GPU_VRAM_MIB`.
      #[serde(default)]
      pub gpu_vram_mib: Option<u32>,
@@ -392,7 +406,7 @@ diff -ruN pre/src/data/resources.rs current/src/data/resources.rs
      /// Remote the guest's CUDA Driver-API calls to the host NVIDIA GPU over vsock
      /// (distinct from `gpu`, which is Vulkan/virtio-gpu). When set, the launcher
      /// starts a per-VM CUDA host server and bridges it to the guest's CUDA shims,
-@@ -301,8 +333,19 @@
+@@ -301,8 +333,19 @@ impl VmResources {
                  "overlay disk size must be greater than 0 GiB",
              ));
          }
@@ -412,7 +426,7 @@ diff -ruN pre/src/data/resources.rs current/src/data/resources.rs
  }
  
  impl Default for VmResources {
-@@ -314,6 +357,7 @@
+@@ -314,6 +357,7 @@ impl Default for VmResources {
              network_backend: None,
              gpu: false,
              gpu_vram_mib: None,
@@ -420,10 +434,11 @@ diff -ruN pre/src/data/resources.rs current/src/data/resources.rs
              cuda: false,
              nested_virt: false,
              rosetta: false,
-diff -ruN pre/src/embedded/control.rs current/src/embedded/control.rs
---- pre/src/embedded/control.rs	2026-11-09 13:18:07
-+++ current/src/embedded/control.rs	2026-11-09 12:57:02
-@@ -102,6 +102,7 @@
+diff --git a/src/embedded/control.rs b/src/embedded/control.rs
+index 32b4af0c..b477a4be 100644
+--- a/src/embedded/control.rs
++++ b/src/embedded/control.rs
+@@ -102,6 +102,7 @@ impl MachineSpec {
              network_backend,
              gpu,
              gpu_vram_mib,
@@ -431,7 +446,7 @@ diff -ruN pre/src/embedded/control.rs current/src/embedded/control.rs
              cuda,
              nested_virt,
              rosetta,
-@@ -151,6 +152,7 @@
+@@ -151,6 +152,7 @@ impl MachineSpec {
              credentials,
              gpu,
              gpu_vram_mib,
@@ -439,7 +454,7 @@ diff -ruN pre/src/embedded/control.rs current/src/embedded/control.rs
              rosetta,
              nested_virt,
              cuda,
-@@ -379,6 +381,11 @@
+@@ -380,6 +382,11 @@ fn merge_record_launch_features(record: &VmRecord, mut features: LaunchFeatures)
      if features.dns_filter_hosts.is_none() {
          features.dns_filter_hosts = record.dns_filter_hosts.clone();
      }
@@ -451,12 +466,10 @@ diff -ruN pre/src/embedded/control.rs current/src/embedded/control.rs
      // A detached machine stays detached on every launch — a plain start after
      // a stop, a resume, a fork clone (which copies the golden's record) — not
      // only the one that created it. A caller that decides explicitly still
-@@ -1343,6 +1350,23 @@
-             Some(&header_policy())
-         )
+@@ -1346,6 +1353,23 @@ mod tests {
          .is_err());
-+    }
-+
+     }
+ 
 +    #[test]
 +    fn embedded_launch_rebuilds_the_record_host_bridges() {
 +        let mut record = test_spec("bridged", true).to_record().unwrap();
@@ -472,45 +485,16 @@ diff -ruN pre/src/embedded/control.rs current/src/embedded/control.rs
 +        assert_eq!(features.published_sockets, record.published_sockets);
 +        assert!(features.expose_docker);
 +        assert!(features.cuda);
-     }
- 
++    }
++
      #[test]
-diff -ruN pre/src/machine_spec/tests.rs current/src/machine_spec/tests.rs
---- pre/src/machine_spec/tests.rs	2026-11-09 13:18:07
-+++ current/src/machine_spec/tests.rs	2026-11-09 12:57:02
-@@ -644,6 +644,7 @@
-         published_sockets,
-         gpu,
-         gpu_vram_mib,
-+        gpu_mode,
-         rosetta,
-         nested_virt,
-         cuda,
-@@ -1021,6 +1022,20 @@
-         .embedded(|e, _| {
-             e.spec.resources.gpu = true;
-             e.spec.resources.gpu_vram_mib = Some(2048);
-+        })
-+        .checkpoint(Refused("gpu")),
-+        case!(
-+            gpu_mode,
-+            |s, _| {
-+                s.gpu = true;
-+                s.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
-+            },
-+            |r| r.gpu_mode == Some(crate::data::resources::GpuMode::TwoD)
-+        )
-+        .cli(&["--gpu", "--gpu-mode", "2d"])
-+        .embedded(|e, _| {
-+            e.spec.resources.gpu = true;
-+            e.spec.resources.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
-         })
-         .checkpoint(Refused("gpu")),
-         case!(rosetta, |s, _| s.rosetta = true, |r| r.rosetta == Some(true))
-diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
---- pre/src/machine_spec.rs	2026-11-09 13:18:07
-+++ current/src/machine_spec.rs	2026-11-09 13:09:31
-@@ -164,6 +164,8 @@
+     fn embedded_launch_restores_persisted_hostname_egress_policy() {
+         let mut spec = test_spec("scoped", false);
+diff --git a/src/machine_spec.rs b/src/machine_spec.rs
+index 691f8fb7..0bbccf70 100644
+--- a/src/machine_spec.rs
++++ b/src/machine_spec.rs
+@@ -168,6 +168,8 @@ pub struct CreateSpec {
      pub gpu: bool,
      /// GPU shared-memory size in MiB.
      pub gpu_vram_mib: Option<u32>,
@@ -519,7 +503,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
      /// Rosetta x86_64 translation.
      pub rosetta: bool,
      /// Nested virtualization.
-@@ -276,6 +278,7 @@
+@@ -281,6 +283,7 @@ impl CreateSpec {
              published_sockets,
              gpu,
              gpu_vram_mib,
@@ -527,7 +511,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
              rosetta,
              nested_virt,
              cuda,
-@@ -348,6 +351,7 @@
+@@ -354,6 +357,7 @@ impl CreateSpec {
              published_sockets: list(self.published_sockets, published_sockets),
              gpu: gpu || self.gpu,
              gpu_vram_mib: gpu_vram_mib.or(self.gpu_vram_mib),
@@ -535,7 +519,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
              rosetta: rosetta || self.rosetta,
              nested_virt: nested_virt || self.nested_virt,
              cuda: cuda || self.cuda,
-@@ -531,6 +535,8 @@
+@@ -539,6 +543,8 @@ pub struct ResolvedSpec {
      pub gpu: bool,
      /// GPU VRAM.
      pub gpu_vram_mib: Option<u32>,
@@ -544,7 +528,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
      /// Rosetta.
      pub rosetta: bool,
      /// Nested virtualization.
-@@ -741,6 +747,7 @@
+@@ -772,6 +778,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
          published_sockets,
          gpu,
          gpu_vram_mib,
@@ -552,7 +536,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
          rosetta,
          nested_virt,
          cuda,
-@@ -941,6 +948,7 @@
+@@ -976,6 +983,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                  published_sockets,
                  gpu,
                  gpu_vram_mib,
@@ -560,7 +544,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
                  rosetta,
                  nested_virt,
                  cuda,
-@@ -1021,6 +1029,7 @@
+@@ -1057,6 +1065,7 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                  published_sockets,
                  gpu: gpu || pack.gpu,
                  gpu_vram_mib,
@@ -568,7 +552,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
                  rosetta,
                  nested_virt,
                  cuda: cuda || pack.cuda,
-@@ -1088,13 +1097,51 @@
+@@ -1130,13 +1139,51 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
              if !disk_volumes.is_empty() {
                  return Err(fixed("disk volumes", TOPOLOGY));
              }
@@ -624,7 +608,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
              let rosetta = same_flag("rosetta", rosetta, false)?;
              let nested_virt =
                  same_flag("nested virtualization", nested_virt, checkpoint.nested_virt)?;
-@@ -1299,9 +1346,10 @@
+@@ -1343,9 +1390,10 @@ pub fn resolve(source: SpecSource<'_>, spec: CreateSpec, caller: Caller) -> Resu
                  credentials,
                  // Bindings a checkpoint brings never read this host's environment.
                  credentials_supplied_only: true,
@@ -637,7 +621,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
                  rosetta,
                  nested_virt,
                  cuda,
-@@ -1380,6 +1428,7 @@
+@@ -1424,6 +1472,7 @@ impl ResolvedSpec {
              network_backend: self.network_backend,
              gpu: self.gpu,
              gpu_vram_mib: self.gpu_vram_mib,
@@ -645,7 +629,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
              cuda: self.cuda,
              nested_virt: self.nested_virt,
              rosetta: self.rosetta,
-@@ -1492,6 +1541,7 @@
+@@ -1537,6 +1586,7 @@ impl ResolvedSpec {
              published_sockets,
              gpu,
              gpu_vram_mib,
@@ -653,7 +637,7 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
              rosetta,
              nested_virt,
              cuda,
-@@ -1547,6 +1597,7 @@
+@@ -1592,6 +1642,7 @@ impl ResolvedSpec {
              gpu: gpu.then_some(true),
              nested_virt: nested_virt.then_some(true),
              gpu_vram_mib,
@@ -661,10 +645,44 @@ diff -ruN pre/src/machine_spec.rs current/src/machine_spec.rs
              rosetta: rosetta.then_some(true),
              restart,
              last_exit_code: None,
-diff -ruN pre/src/pack_export.rs current/src/pack_export.rs
---- pre/src/pack_export.rs	2026-11-09 13:18:07
-+++ current/src/pack_export.rs	2026-11-09 12:57:02
-@@ -514,6 +514,7 @@
+diff --git a/src/machine_spec/tests.rs b/src/machine_spec/tests.rs
+index 9b73e4fd..d5600da9 100644
+--- a/src/machine_spec/tests.rs
++++ b/src/machine_spec/tests.rs
+@@ -691,6 +691,7 @@ fn cases() -> Vec<Case> {
+         published_sockets,
+         gpu,
+         gpu_vram_mib,
++        gpu_mode,
+         rosetta,
+         oci_platform,
+         nested_virt,
+@@ -1071,6 +1072,20 @@ fn cases() -> Vec<Case> {
+             e.spec.resources.gpu_vram_mib = Some(2048);
+         })
+         .checkpoint(Refused("gpu")),
++        case!(
++            gpu_mode,
++            |s, _| {
++                s.gpu = true;
++                s.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
++            },
++            |r| r.gpu_mode == Some(crate::data::resources::GpuMode::TwoD)
++        )
++        .cli(&["--gpu", "--gpu-mode", "2d"])
++        .embedded(|e, _| {
++            e.spec.resources.gpu = true;
++            e.spec.resources.gpu_mode = Some(crate::data::resources::GpuMode::TwoD);
++        })
++        .checkpoint(Refused("gpu")),
+         case!(rosetta, |s, _| s.rosetta = true, |r| r.rosetta == Some(true))
+             .cli(&["--rosetta"])
+             .embedded(|e, _| e.spec.resources.rosetta = true)
+diff --git a/src/pack_export.rs b/src/pack_export.rs
+index cce0ad1a..9d5621f8 100644
+--- a/src/pack_export.rs
++++ b/src/pack_export.rs
+@@ -514,6 +514,7 @@ impl ExportVm {
                  gpu: false,
                  cuda: false,
                  gpu_vram_mib: None,
@@ -672,10 +690,11 @@ diff -ruN pre/src/pack_export.rs current/src/pack_export.rs
                  nested_virt: false,
                  rosetta: false,
                  storage_gib: Some(helper_storage_gib),
-diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
---- pre/src/portable_checkpoint.rs	2026-11-09 13:18:07
-+++ current/src/portable_checkpoint.rs	2026-11-09 13:09:16
-@@ -2126,7 +2126,13 @@
+diff --git a/src/portable_checkpoint.rs b/src/portable_checkpoint.rs
+index 63c71b80..11270c52 100644
+--- a/src/portable_checkpoint.rs
++++ b/src/portable_checkpoint.rs
+@@ -2127,7 +2127,13 @@ fn capture_with_completion(
              all(target_os = "macos", target_arch = "aarch64")
          )) && crate::agent::fork::control_socket_cmd(&control, "SAVE_SPARSE_CAPABILITIES")?.trim()
              == "OK sparse-stream-v1 ownership-v1";
@@ -690,7 +709,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      // A frozen guest was synced when it froze, and cannot free pages now.
      if !frozen {
          crate::agent::fork::sync_fork_source(name)?;
-@@ -3685,7 +3691,7 @@
+@@ -3686,7 +3692,7 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()>
      if (!vm.mounts.is_empty() && !host_mounts) || !vm.staged_mounts.is_empty() {
          unsupported.push("host mounts");
      }
@@ -699,7 +718,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
          unsupported.push("published sockets");
      }
      if !vm.remote_volumes.is_empty() {
-@@ -3696,17 +3702,18 @@
+@@ -3697,17 +3703,18 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()>
      }
      // A `.smolmachine` source is recorded in the checkpoint and attached again
      // on restore, and so is a registry image the host fetched for a machine
@@ -729,7 +748,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      }
      if vm.dns.is_some() {
          unsupported.push("custom DNS");
-@@ -3714,7 +3721,9 @@
+@@ -3715,7 +3722,9 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()>
      if vm.network_name.is_some() {
          unsupported.push("named inter-VM networking");
      }
@@ -740,7 +759,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
          unsupported.push("Vulkan GPU state");
      }
      if vm.cuda {
-@@ -3746,6 +3755,75 @@
+@@ -3747,6 +3756,75 @@ pub fn validate_capture_profile(vm: &VmRecord, host_mounts: bool) -> Result<()>
      ))
  }
  
@@ -816,7 +835,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
  /// The host directory mounts a checkpoint restores, as `(host, guest, read_only)`
  /// volume tuples, after checking that every host directory exists here. A
  /// checkpoint captured with host mounts is bound to hosts that have them.
-@@ -3954,6 +4032,26 @@
+@@ -3955,6 +4033,26 @@ fn checkpoint_settings(vm: &VmRecord) -> smolvm_pack::format::CheckpointSettings
          health_timeout_secs: vm.health_timeout_secs,
          health_retries: vm.health_retries,
          health_startup_grace_secs: vm.health_startup_grace_secs,
@@ -843,7 +862,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      }
  }
  
-@@ -5179,7 +5277,11 @@
+@@ -5220,7 +5318,11 @@ fn describe_sparse_asset(path: &Path, relative_path: &str) -> Result<CheckpointA
  
  /// Bound a RAM image by configured guest RAM and the devices' mapped windows.
  /// Capture and restore must use the same bound for packed-layer machines.
@@ -856,7 +875,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      // Bound by the largest window a packed-layer guest has booted with, so
      // checkpoints taken before the window shrank still pass.
      let packed_layers_window = if packed_layers {
-@@ -5187,10 +5289,14 @@
+@@ -5228,10 +5330,14 @@ fn max_checkpoint_memory_image(memory_mib: u32, packed_layers: bool) -> Result<u
      } else {
          0
      };
@@ -871,7 +890,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
          .ok_or_else(|| Error::agent("checkpoint memory", "memory size overflow"))
  }
  
-@@ -5239,6 +5345,22 @@
+@@ -5280,6 +5386,22 @@ pub fn validate_compatibility(checkpoint: &PortableCheckpointManifest) -> Result
          ));
      }
      validate_clock(checkpoint)?;
@@ -894,7 +913,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      if checkpoint.packed_layers.is_some() && checkpoint.host_image.is_some() {
          return Err(Error::agent(
              "restore checkpoint",
-@@ -5328,6 +5450,7 @@
+@@ -5369,6 +5491,7 @@ pub fn validate_compatibility(checkpoint: &PortableCheckpointManifest) -> Result
      let max_memory_image = max_checkpoint_memory_image(
          checkpoint.memory_mib,
          mounts_checkpoint_image_layers(checkpoint),
@@ -902,7 +921,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      )?;
      if checkpoint.state.size == 0
          || checkpoint.state.size > MAX_STATE_BYTES
-@@ -6239,6 +6362,7 @@
+@@ -6280,6 +6403,7 @@ pub(crate) fn prepare_paused_restore(record: &VmRecord) -> Result<()> {
              "source VM has not stopped",
          ));
      }
@@ -910,7 +929,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
      let footer = ensure_checkpoint_layout(artifact)?;
      // Treat this manifest as untrusted until extraction verifies the full
      // sidecar checksum. No machine state changes before that verification.
-@@ -8868,7 +8992,110 @@
+@@ -8909,6 +9033,109 @@ mod tests {
          assert!(error.contains("host-backed image layers"), "{error}");
      }
  
@@ -926,7 +945,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
 +        format!("local:{}", "ab".repeat(32))
 +    }
 +
-     #[test]
++    #[test]
 +    fn a_paused_two_d_gpu_and_exposed_socket_are_admitted() {
 +        use crate::data::resources::GpuMode;
 +
@@ -1017,11 +1036,10 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
 +        assert_eq!(local_archive_digest("alpine:3.20"), None);
 +    }
 +
-+    #[test]
+     #[test]
      fn a_registry_image_the_guest_pulled_keeps_its_reference() {
          let record = no_network_machine("alpine:3.20");
-         assert!(!mounts_image_layers(&record));
-@@ -8892,7 +9119,7 @@
+@@ -8933,7 +9160,7 @@ mod tests {
  
          metadata.device_profile = DEVICE_PROFILE_PACKED_LAYERS.to_string();
          validate_compatibility(&metadata).unwrap();
@@ -1030,7 +1048,7 @@ diff -ruN pre/src/portable_checkpoint.rs current/src/portable_checkpoint.rs
          validate_compatibility(&metadata).unwrap();
          metadata.memory.size = 1;
  
-@@ -8966,7 +9193,7 @@
+@@ -9007,7 +9234,7 @@ mod tests {
  
          metadata.device_profile = DEVICE_PROFILE_PACKED_LAYERS.to_string();
          validate_compatibility(&metadata).unwrap();
