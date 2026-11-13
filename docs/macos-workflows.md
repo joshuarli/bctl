@@ -778,6 +778,50 @@ Round trips speed up with more vCPUs, so a ready renderer thread is waiting
 for a vCPU; interrupt delivery cost would grow with vCPUs instead. Screenshots
 slow down with more vCPUs. Both fit Hydrogen's broadcast TLB shootdown, which
 interrupts every vCPU on each unmap or protection change and holds them in a
-rendezvous. That hypothesis is unmeasured. The next step is to count
-shootdowns and their rendezvous time per step, then make shootdown target only
-the CPUs that loaded the address space (BCTL-21).
+rendezvous. That hypothesis was measured next and rejected.
+
+### Wakeups and address-space switches
+
+A kernel built with `KERNEL_TEST_CFLAGS=-DHYDROGEN_FLUSH_PROFILE` prints
+per-second counters to the serial console. Over the ~4 s warm workload on two
+vCPUs it recorded about 3,500 TLB flush posts with 21 ms of rendezvous and join
+wait in total, so broadcast shootdown is not the cost. It also recorded about
+82,000 user address-space loads, roughly 30,000 per second. Each load flushed
+the whole local TLB, because user mappings were global and no ASIDs were used.
+Page faults cost 34 ms of kernel time and lock wait in total.
+
+The browser's own work is not slower in the guest. Five runs each, median:
+
+| In-page work | Native, `--disable-gpu` | Nanos | Ratio |
+| --- | ---: | ---: | ---: |
+| 200 M-iteration compute loop | 590.8 ms | 584.8 ms | 0.99 |
+| Allocate and touch 40 × 8 MiB | 12.2 ms | 11.8 ms | 0.97 |
+| 20 canvas frames with readback | 20.8 ms | 20.8 ms | 1.00 |
+
+Native software rendering is no slower than native GPU rendering on these
+steps (form screenshot 11.8 and 19.5 ms), so the GPU does not explain the gap.
+
+`sh kernel/dev/test.sh latency` times a cross-process socketpair round trip.
+Linux in Docker's VM on the same hypervisor takes 1.0 µs at p50. Nanos took
+1.8 µs on one vCPU but 12.8 µs on two, with about 1.6 wakeup IPIs per round
+trip: the processes settle on different vCPUs, and each wake sends an IPI into
+a halted vCPU, which HVF delivers slowly.
+
+Hydrogen `9f9b61d2` tags aarch64 address spaces with ASIDs, so a switch no
+longer flushes, and polls for 50 µs before halting, so a waker can hand an
+idle CPU work by writing memory. Results on two vCPUs:
+
+| Measure | Before | After |
+| --- | ---: | ---: |
+| Socketpair round trip p50, p99 | 12.8, 34.1 µs | 6.0, 9.0 µs |
+| `DOM.resolveNode` median | 2.8–3.4 ms | 2.1–2.5 ms |
+| Seven warm iterations, wall | 4.08–4.80 s | 3.81–3.99 s |
+| Seven warm iterations, VM CPU | 2.56–2.77 s | 2.64–2.66 s |
+| Idle session, host CPU | 0.6–0.7% of a core | 0.8% of a core |
+
+Browser-side step totals move by only 1–3%, inside their spread; news
+navigation is consistently 7–9% faster. The remaining gaps are form screenshots
+(45 ms against 12 ms natively with software rendering), clicks (about 2×), and
+news navigation (about 1.5×). These are browser pipeline steps across
+processes, and BCTL-21 tracks tracing them next. Interop passes 113 of 113 on
+the new kernel.

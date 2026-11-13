@@ -42,7 +42,7 @@ Next: 22
 - **Area:** Performance
 - **Where:** `docs/macos-workflows.md`
 - **Problem:** Against native Chromium, Nanos is slower on every measured workflow and uses more memory on Shadowdriver and in four-tab crawls, so neither the acceptance targets (20% faster, 50% less memory) nor the stretch targets (1.5× warm agent-browser steps, 2× crawl throughput per GiB) are met.
-- **Recommendation:** Measure browser-side CDP time per step for the warm agent-browser workflows, then cut the steps where Nanos is slower (screenshots, clicks, opens). For density, measure how much of each VM's memory is shareable file-backed pages.
+- **Recommendation:** Cross-process wakeups and address-space switches are fixed (ASIDs and idle polling; see docs/macos-workflows.md, "Wakeups and address-space switches"). In-page compute, allocation and canvas raster match native, and native software rendering is no slower than native GPU, so the remaining 2-4x gaps on screenshots, clicks and navigation are in the browser pipeline. Next, capture a Chromium trace of one screenshot and one click step on each side with BCTL_TRACE_CHROMIUM=1 and compare where the time goes. For density, measure how much of each VM's memory is shareable file-backed pages.
 - **Fix with:** `make-it-fast`
 - **Effort:** L
 

@@ -146,6 +146,21 @@ review, and the same-revision integration and measurement gates in
 [HR3](rust-adoption.md#hr3-integration-and-promotion). Keep historical waivers
 scoped to their original work; no Rust slice inherits a blanket waiver.
 
+## Profiling
+
+Two build flags compile in serial-console instrumentation and are otherwise
+compiled out. Pass them as `KERNEL_TEST_CFLAGS`, which `kernel/dev/build.sh`
+forwards into its container.
+
+- `-DHYDROGEN_BOOT_PROFILE` prints startup stage timestamps
+  ([macOS startup timing](macos-startup.md)).
+- `-DHYDROGEN_FLUSH_PROFILE` prints `hydrogen-flush` totals every second: TLB
+  flush posts, rendezvous and join wait, address-space loads, page faults with
+  their lock wait and paging time, and wakeup IPIs.
+
+`sh kernel/dev/test.sh latency` reports cross-process round-trip percentiles
+natively and on Nanos at 1, 2, and 4 vCPUs. It measures and always passes.
+
 ## History
 
 - [Chromium syscall contract](chromium-contract.md)
