@@ -8,6 +8,13 @@ upstream before this repository updates the pin.
 
 ## Status
 
+**macOS workflow objective, 2026-11-12:** Shadowdriver interactive automation,
+Grab crawls, and at least two agent-browser workflows must demonstrate lower
+latency and resource cost than stock native Chromium. The
+[workflow targets and measurement contract](macos-workflows.md) supersede
+H1's exclusion of native macOS for this objective. Earlier functional
+qualification and performance waivers retain their historical scope.
+
 Goal: `bctl` (browserctl) runs chromium-build's Helium browser headed inside
 a SmolVM Linux arm64 guest on an Apple Silicon Mac. It shows each browser live
 in a local dashboard and accepts real keyboard and pointer input there. It

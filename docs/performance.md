@@ -1,12 +1,17 @@
 # Performance
 
+The current native macOS comparison and its acceptance targets are recorded in
+[macOS workflow performance](macos-workflows.md). That comparison includes
+Shadowdriver, Grab, and the agent-browser bctl provider. The older SmolVM
+measurements below retain their original workload and comparison scope.
+
 `bctl-bench` (`crates/bench`) runs named suites against real appliance VMs and
 writes one dated JSON result per run to `tests/bench/results/`. This page holds
 the method, the latest results with their spread and conditions, the gates, and
 what is deferred. Gates live in `tests/bench/gates.json`.
 
-Nothing here is a claim about unikernels, other VMMs, or other products. External
-numbers are targets, never measurements of bctl.
+The older SmolVM measurements below make no claim about unikernels, other VMMs,
+or other products. External numbers are targets, never measurements of bctl.
 
 ## Running a suite
 
