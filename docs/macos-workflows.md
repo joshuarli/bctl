@@ -293,6 +293,7 @@ The collector uses libproc's live-process and reaped-child counters.
 Mach timebase conversion produces CPU seconds on Apple Silicon.
 The process set includes the driver, fixture, clients, daemon, supervisor,
 and VMM or native browser. Process discovery is included. Cleanup is excluded.
+CPU passes require host-load checks before and after every retained sample.
 Snapshots are not atomic. A process disappearing during collection rejects
 the attempt. Tests cover live descendants, reaped children, overlapping roots,
 and a child that consumes a known quantity of CPU.

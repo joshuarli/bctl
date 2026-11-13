@@ -469,11 +469,12 @@ def main():
                         attempt['artifacts'] = str(path.relative_to(ROOT))
                         trial = Trial(args, path, side, resource_pass=phase == 'resources')
                         try:
-                            quiet = gate(attempt['gate_checks']) if phase == 'latency' else False
-                            while phase == 'latency' and not quiet and time.monotonic() < deadline:
+                            timed = phase in {'latency', 'cpu'}
+                            quiet = gate(attempt['gate_checks']) if timed else False
+                            while timed and not quiet and time.monotonic() < deadline:
                                 time.sleep(1)
                                 quiet = gate(attempt['gate_checks'])
-                            if phase == 'latency' and not quiet:
+                            if timed and not quiet:
                                 attempt['status'] = 'deferred'
                                 attempt['timing_status'] = 'deferred_host_busy'
                                 continue
@@ -501,7 +502,7 @@ def main():
                                 if phase == 'resources':
                                     time.sleep(1)
                             attempt['status'] = 'pass'
-                            attempt['timing_status'] = ('clean' if quiet and gate(attempt['gate_checks'], True) else 'discarded_host_busy') if phase == 'latency' else f'{phase}_pass'
+                            attempt['timing_status'] = ('clean' if quiet and gate(attempt['gate_checks'], True) else 'discarded_host_busy') if timed else f'{phase}_pass'
                             if workload.startswith('agent-browser'):
                                 attempt['agent_user_agent'] = invoke([AGENT, 'eval', 'navigator.userAgent'], env=trial.env).strip()
                             if phase == 'resources':
@@ -552,7 +553,7 @@ def main():
                 if memory:
                     metrics['sampled_peak_physical_bytes'] = {'n': len(memory), 'median': statistics.median(memory) if len(memory) >= 5 else None,
                                                              'min': min(memory), 'max': max(memory)}
-                cpu = [row['cpu_s'] for row in rows if row['phase'] == 'cpu']
+                cpu = [row['cpu_s'] for row in rows if row['phase'] == 'cpu' and row['timing_status'] == 'clean']
                 if cpu:
                     metrics['cpu_s'] = {'n': len(cpu), 'median': statistics.median(cpu) if len(cpu) >= 5 else None,
                                         'min': min(cpu), 'max': max(cpu)}
