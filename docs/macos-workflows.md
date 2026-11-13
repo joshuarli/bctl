@@ -298,7 +298,7 @@ and VMM or native browser. Process discovery is included. Cleanup is excluded.
 CPU passes require host-load checks before and after every retained sample.
 Snapshots are not atomic. A process disappearing during collection rejects
 the attempt. Tests cover live descendants, reaped children, overlapping roots,
-and a child that consumes a known quantity of CPU.
+orphaned runtimes, and a child that consumes a known quantity of CPU.
 
 `macos_crawl.py --cpu-rounds` measures the complete capture-and-replay pipeline
 in separate passes. Workers retain live-process and reaped-child counters
@@ -330,8 +330,7 @@ Values below are CPU seconds, median with minimum to maximum.
 Nanos uses more CPU in Grab and news. Their observed ranges do not overlap.
 The form-workload ranges overlap, so those comparisons are inconclusive.
 The no-increase CPU target is unmet. The four-page Grab CPU measurement excludes
-offline replay. The sustained crawl below includes replay in its elapsed time
-and footprint, but does not yet measure its full CPU cost.
+offline replay. The sustained crawl below measures the full pipeline separately.
 
 `tests/bench/macos_crawl.py` adds a sustained workload with 16 linked pages
 per crawl and two concurrent independent crawls by default.
@@ -408,6 +407,27 @@ Representative [native replay](../tests/bench/results/2026-11-13-macos-costs/cra
 and [Nanos replay](../tests/bench/results/2026-11-13-macos-costs/crawl-nanos-offline.txt)
 logs retain all 16 page checks from one worker each.
 Every mirror and state database remains at its receipt's artifact path.
+
+The separate [sustained CPU receipt](../tests/bench/results/2026-11-13-macos-costs/crawl-cpu.json)
+completes ten trials with five alternating samples per backend.
+All 320 captures and 320 fresh native offline replays pass.
+All 20 host-load checks pass. Recorded input hashes and Shadowdriver HEAD
+remain unchanged.
+
+| CPU seconds, 32 captured and replayed pages | Native | Nanos |
+| --- | --- | --- |
+| Median (minimum–maximum) | 24.242 (23.867–29.562) | 27.911 (25.802–31.982) |
+
+The observed ranges overlap, so the CPU comparison is inconclusive.
+No CPU improvement is established. The complete workload still includes the
+same fresh native verifier on both sides. Worker interpreter startup and
+browser cleanup remain outside the CPU snapshots.
+
+```sh
+python3.15 tests/bench/macos_crawl.py --pages 16 --jobs 2 --slots 4 \
+  --budget-mib 2048 --rounds 0 --resource-rounds 0 --cpu-rounds 5 \
+  --native-arg=--disable-gpu --out .work/tmp/crawl-cpu-full.json
+```
 
 ### Anonymous page-size experiment
 
@@ -490,7 +510,7 @@ Receipts are `.work/tmp/macos-workflows-{nanos,smolvm}-interop.log` and
 `.work/tmp/macos-workflows-egress.log`. The current SmolVM image hash is
 `9a195deed99cd84c27193b41e72c5e0d89eb2a8d7461348f099f8ea616b8b051`.
 
-Sustained crawl CPU cost and the performance targets above remain open.
+The performance targets above remain unmet.
 The bounded dynamic-asset and concurrent-crawl checks above pass.
 Chromium build versions differ
 between stock macOS and the pinned Linux Helium archive. These are product

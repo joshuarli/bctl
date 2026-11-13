@@ -1,0 +1,3387 @@
+{
+  "completed": true,
+  "configuration": {
+    "pages": 16,
+    "jobs": 2,
+    "slots": 4,
+    "budget_mib": 2048,
+    "rounds": 0,
+    "resource_rounds": 0,
+    "cpu_rounds": 5,
+    "bctl_image": "/Users/josh/d/bctl/.work/images/nanos-helium.img",
+    "native_arg": [
+      "--disable-gpu"
+    ],
+    "out": ".work/tmp/crawl-cpu-full.json"
+  },
+  "attempts": [
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "native",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-0-native",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.72 4.54 5.61 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.52 3.97 5.24 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 135.4674481250113,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "83120": {
+                "start": 16334332756104,
+                "user": 1066916,
+                "system": 617802,
+                "child_user": 132042,
+                "child_system": 714577
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.105472375
+          },
+          "startup_ms": 494.97562495525926,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 51.39824920799583,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:33:45.073Z",
+            "finished_at": "2026-11-13T05:35:05.178Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:32:53.951Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:33:45.542Z"
+            }
+          ],
+          "offline_replay_s": 80.26784087496344,
+          "total_s": 132.1610815830063,
+          "cpu_after": {
+            "processes": {
+              "84511": {
+                "start": 16335400384959,
+                "user": 542675,
+                "system": 404051,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83163": {
+                "start": 16334345825684,
+                "user": 883921,
+                "system": 685678,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83158": {
+                "start": 16334344635723,
+                "user": 5228068,
+                "system": 1343155,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83124": {
+                "start": 16334335690906,
+                "user": 36128063,
+                "system": 20913629,
+                "child_user": 40089413,
+                "child_system": 26909689
+              },
+              "83139": {
+                "start": 16334341425080,
+                "user": 3714330,
+                "system": 1982174,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83142": {
+                "start": 16334341529150,
+                "user": 3597415,
+                "system": 4130002,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83146": {
+                "start": 16334342081421,
+                "user": 655499,
+                "system": 624114,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83120": {
+                "start": 16334332756104,
+                "user": 1391392,
+                "system": 945243,
+                "child_user": 83537716,
+                "child_system": 54875551
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.02424075
+          },
+          "cpu_s": 11.918768375
+        },
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "83121": {
+                "start": 16334332794779,
+                "user": 1055705,
+                "system": 575328,
+                "child_user": 128646,
+                "child_system": 673705
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.101391
+          },
+          "startup_ms": 494.91049989592284,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.55348500004038,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:33:48.232Z",
+            "finished_at": "2026-11-13T05:35:08.311Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:32:53.951Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:33:48.624Z"
+            }
+          ],
+          "offline_replay_s": 80.23937720805407,
+          "total_s": 135.28779158298858,
+          "cpu_after": {
+            "processes": {
+              "83164": {
+                "start": 16334345829317,
+                "user": 884987,
+                "system": 690607,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "84569": {
+                "start": 16335521045544,
+                "user": 542927,
+                "system": 401593,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83157": {
+                "start": 16334344630982,
+                "user": 5214565,
+                "system": 1313531,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83125": {
+                "start": 16334335691017,
+                "user": 36353954,
+                "system": 20773303,
+                "child_user": 40247007,
+                "child_system": 26883731
+              },
+              "83140": {
+                "start": 16334341429042,
+                "user": 3936389,
+                "system": 2072601,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83143": {
+                "start": 16334341530747,
+                "user": 3674924,
+                "system": 4216216,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83148": {
+                "start": 16334342229343,
+                "user": 613580,
+                "system": 614410,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "83121": {
+                "start": 16334332794779,
+                "user": 1358206,
+                "system": 892822,
+                "child_user": 82198941,
+                "child_system": 49543207
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 11.767812541666666
+          },
+          "cpu_s": 11.666421541666667
+        }
+      ],
+      "coordinator_cpu_s": 0.2820630000000002,
+      "cpu_s": 23.86725291666667,
+      "completed_pages": 32,
+      "pages_per_s": 0.23621910977809182,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "bctl",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-0-bctl",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.52 3.97 5.24 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.59 3.85 4.99 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 138.03919833304826,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "85313": {
+                "start": 16337588788173,
+                "user": 949453,
+                "system": 531354,
+                "child_user": 124640,
+                "child_system": 622062
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.092812875
+          },
+          "startup_ms": 838.4603329468518,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 55.115114958025515,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:36:04.845Z",
+            "finished_at": "2026-11-13T05:37:24.811Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:35:09.829Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:36:05.354Z"
+            }
+          ],
+          "offline_replay_s": 80.12563579098787,
+          "total_s": 136.07922329206485,
+          "cpu_after": {
+            "processes": {
+              "85325": {
+                "start": 16337595744614,
+                "user": 772670,
+                "system": 2785643,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "85328": {
+                "start": 16337596184788,
+                "user": 168532765,
+                "system": 24235163,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "85313": {
+                "start": 16337588788173,
+                "user": 1230568,
+                "system": 867578,
+                "child_user": 84112867,
+                "child_system": 55471784
+              },
+              "85321": {
+                "start": 16337592837280,
+                "user": 1353777,
+                "system": 2703372,
+                "child_user": 23731,
+                "child_system": 35445
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 14.255223458333335
+          },
+          "cpu_s": 14.162410583333335
+        },
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "85314": {
+                "start": 16337588825539,
+                "user": 943453,
+                "system": 509768,
+                "child_user": 130565,
+                "child_system": 602928
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09111308333333333
+          },
+          "startup_ms": 858.8639579247683,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 55.09614858403802,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:36:04.855Z",
+            "finished_at": "2026-11-13T05:37:24.811Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:35:09.858Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:36:05.349Z"
+            }
+          ],
+          "offline_replay_s": 80.1130299589131,
+          "total_s": 136.06804958404973,
+          "cpu_after": {
+            "processes": {
+              "85327": {
+                "start": 16337596170074,
+                "user": 762457,
+                "system": 2657414,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "85329": {
+                "start": 16337596590696,
+                "user": 168137950,
+                "system": 24993703,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "85323": {
+                "start": 16337593087964,
+                "user": 1368837,
+                "system": 2648906,
+                "child_user": 21260,
+                "child_system": 32530
+              },
+              "85314": {
+                "start": 16337588825539,
+                "user": 1220537,
+                "system": 816021,
+                "child_user": 83539234,
+                "child_system": 55048452
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 14.218637541666666
+          },
+          "cpu_s": 14.127524458333333
+        }
+      ],
+      "coordinator_cpu_s": 0.12569900000000023,
+      "cpu_s": 28.415634041666667,
+      "completed_pages": 32,
+      "pages_per_s": 0.23181821096058056,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "bctl",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-1-bctl",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.59 3.85 4.99 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.40 3.87 4.82 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 136.78914612496737,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "87147": {
+                "start": 16340906727519,
+                "user": 935833,
+                "system": 583775,
+                "child_user": 126877,
+                "child_system": 691328
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.097408875
+          },
+          "startup_ms": 814.3577500013635,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.792753750109114,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:38:22.726Z",
+            "finished_at": "2026-11-13T05:39:42.885Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:37:28.025Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:38:23.264Z"
+            }
+          ],
+          "offline_replay_s": 80.3326767089311,
+          "total_s": 135.93979833403137,
+          "cpu_after": {
+            "processes": {
+              "87158": {
+                "start": 16340913150912,
+                "user": 638822,
+                "system": 2198589,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "87161": {
+                "start": 16340914047788,
+                "user": 144519789,
+                "system": 21553185,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "87147": {
+                "start": 16340906727519,
+                "user": 1232101,
+                "system": 938142,
+                "child_user": 79384829,
+                "child_system": 56162045
+              },
+              "87153": {
+                "start": 16340910171017,
+                "user": 1054128,
+                "system": 2129403,
+                "child_user": 22636,
+                "child_system": 34502
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.911173791666666
+          },
+          "cpu_s": 12.813764916666667
+        },
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "87148": {
+                "start": 16340906825742,
+                "user": 923501,
+                "system": 551125,
+                "child_user": 122682,
+                "child_system": 655819
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09388029166666667
+          },
+          "startup_ms": 803.0908330110833,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.8084960419219,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:38:22.728Z",
+            "finished_at": "2026-11-13T05:39:42.888Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:37:28.019Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:38:23.253Z"
+            }
+          ],
+          "offline_replay_s": 80.33034637500532,
+          "total_s": 135.9419407499954,
+          "cpu_after": {
+            "processes": {
+              "87159": {
+                "start": 16340913378748,
+                "user": 636094,
+                "system": 2143970,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "87162": {
+                "start": 16340914332920,
+                "user": 141897324,
+                "system": 21387577,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "87148": {
+                "start": 16340906825742,
+                "user": 1209172,
+                "system": 887477,
+                "child_user": 101952280,
+                "child_system": 70259239
+              },
+              "87154": {
+                "start": 16340910280238,
+                "user": 1041287,
+                "system": 2088412,
+                "child_user": 21588,
+                "child_system": 34956
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 14.314974
+          },
+          "cpu_s": 14.221093708333333
+        }
+      ],
+      "coordinator_cpu_s": 0.08277000000000001,
+      "cpu_s": 27.117628625,
+      "completed_pages": 32,
+      "pages_per_s": 0.2339366894707095,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "native",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-1-native",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.40 3.87 4.82 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.23 4.06 4.73 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 135.25341245892923,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "88881": {
+                "start": 16344194825032,
+                "user": 926857,
+                "system": 559818,
+                "child_user": 131561,
+                "child_system": 591369
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.092066875
+          },
+          "startup_ms": 434.3374170130119,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 52.55796487501357,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:40:37.113Z",
+            "finished_at": "2026-11-13T05:41:57.188Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:39:44.716Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:40:37.589Z"
+            }
+          ],
+          "offline_replay_s": 80.23706729093101,
+          "total_s": 133.22939074994065,
+          "cpu_after": {
+            "processes": {
+              "88885": {
+                "start": 16344198106261,
+                "user": 36604817,
+                "system": 21134516,
+                "child_user": 42882919,
+                "child_system": 27787633
+              },
+              "88896": {
+                "start": 16344203502375,
+                "user": 4383851,
+                "system": 2209984,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88897": {
+                "start": 16344203560237,
+                "user": 4047509,
+                "system": 4194269,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88901": {
+                "start": 16344204238583,
+                "user": 619480,
+                "system": 623975,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88904": {
+                "start": 16344206210990,
+                "user": 7079383,
+                "system": 2155352,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88912": {
+                "start": 16344207073406,
+                "user": 975887,
+                "system": 768738,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "89573": {
+                "start": 16345263594876,
+                "user": 1659884,
+                "system": 1039209,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88881": {
+                "start": 16344194825032,
+                "user": 1236820,
+                "system": 874988,
+                "child_user": 84293467,
+                "child_system": 49300360
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.244710041666666
+          },
+          "cpu_s": 12.152643166666666
+        },
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "88882": {
+                "start": 16344194924931,
+                "user": 915029,
+                "system": 531853,
+                "child_user": 125490,
+                "child_system": 668147
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09335495833333333
+          },
+          "startup_ms": 442.1562080970034,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.52617308299523,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:40:39.088Z",
+            "finished_at": "2026-11-13T05:41:59.019Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:39:44.716Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:40:39.462Z"
+            }
+          ],
+          "offline_replay_s": 80.09089875000063,
+          "total_s": 135.0592505420791,
+          "cpu_after": {
+            "processes": {
+              "88895": {
+                "start": 16344203502134,
+                "user": 4434531,
+                "system": 2227448,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "89623": {
+                "start": 16345361081298,
+                "user": 511122,
+                "system": 382714,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88886": {
+                "start": 16344198106600,
+                "user": 37133468,
+                "system": 21232203,
+                "child_user": 42796303,
+                "child_system": 27322472
+              },
+              "88898": {
+                "start": 16344203567367,
+                "user": 4143326,
+                "system": 4191936,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88899": {
+                "start": 16344204084276,
+                "user": 646324,
+                "system": 637474,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88903": {
+                "start": 16344206065635,
+                "user": 5559128,
+                "system": 1448098,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88911": {
+                "start": 16344207057195,
+                "user": 949187,
+                "system": 774189,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "88882": {
+                "start": 16344194924931,
+                "user": 1232775,
+                "system": 857647,
+                "child_user": 84045890,
+                "child_system": 49269463
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.07482075
+          },
+          "cpu_s": 11.981465791666666
+        }
+      ],
+      "coordinator_cpu_s": 0.10809700000000033,
+      "cpu_s": 24.242205958333333,
+      "completed_pages": 32,
+      "pages_per_s": 0.23659292152585837,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "native",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-2-native",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.23 4.06 4.73 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.06 4.19 4.69 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 134.16623691702262,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "90810": {
+                "start": 16347445183982,
+                "user": 1004581,
+                "system": 687033,
+                "child_user": 135009,
+                "child_system": 706439
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.10554425
+          },
+          "startup_ms": 474.09558400977403,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 52.776077291113324,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:42:52.851Z",
+            "finished_at": "2026-11-13T05:44:13.252Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:42:00.264Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:42:53.336Z"
+            }
+          ],
+          "offline_replay_s": 80.61223770794459,
+          "total_s": 133.86242979194503,
+          "cpu_after": {
+            "processes": {
+              "90810": {
+                "start": 16347445183982,
+                "user": 1320254,
+                "system": 1026790,
+                "child_user": 94286556,
+                "child_system": 55847796
+              },
+              "90816": {
+                "start": 16347448520589,
+                "user": 33902334,
+                "system": 21216242,
+                "child_user": 38218008,
+                "child_system": 25880783
+              },
+              "90830": {
+                "start": 16347453901650,
+                "user": 3604300,
+                "system": 2103525,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90832": {
+                "start": 16347454075847,
+                "user": 3121938,
+                "system": 3335900,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90836": {
+                "start": 16347455130887,
+                "user": 655724,
+                "system": 625231,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90839": {
+                "start": 16347457110773,
+                "user": 5198110,
+                "system": 1454534,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90848": {
+                "start": 16347458268093,
+                "user": 841227,
+                "system": 706607,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "91256": {
+                "start": 16348576475396,
+                "user": 1738036,
+                "system": 987158,
+                "child_user": 0,
+                "child_system": 0
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.336293875
+          },
+          "cpu_s": 12.230749625000001
+        },
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "90811": {
+                "start": 16347445271314,
+                "user": 985186,
+                "system": 656415,
+                "child_user": 131212,
+                "child_system": 663447
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.10151083333333333
+          },
+          "startup_ms": 469.43075000308454,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 53.12753850000445,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:42:53.165Z",
+            "finished_at": "2026-11-13T05:44:13.352Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:42:00.264Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:42:53.562Z"
+            }
+          ],
+          "offline_replay_s": 80.36044645903166,
+          "total_s": 133.95743470906746,
+          "cpu_after": {
+            "processes": {
+              "90815": {
+                "start": 16347448520547,
+                "user": 34349786,
+                "system": 21048144,
+                "child_user": 38510971,
+                "child_system": 26051179
+              },
+              "90831": {
+                "start": 16347453907438,
+                "user": 3644308,
+                "system": 2132766,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90833": {
+                "start": 16347454107194,
+                "user": 3118940,
+                "system": 3351694,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90834": {
+                "start": 16347454912771,
+                "user": 681353,
+                "system": 647418,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90838": {
+                "start": 16347457090960,
+                "user": 5269292,
+                "system": 1531190,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90849": {
+                "start": 16347458268425,
+                "user": 864527,
+                "system": 732375,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "91253": {
+                "start": 16348573849814,
+                "user": 545929,
+                "system": 378762,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "90811": {
+                "start": 16347445271314,
+                "user": 1299316,
+                "system": 977244,
+                "child_user": 88764796,
+                "child_system": 53825311
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 11.988554208333333
+          },
+          "cpu_s": 11.887043375
+        }
+      ],
+      "coordinator_cpu_s": 0.07726999999999995,
+      "cpu_s": 24.195062999999998,
+      "completed_pages": 32,
+      "pages_per_s": 0.23851008074252647,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "bctl",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-2-bctl",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.06 4.19 4.69 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.66 3.67 4.41 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 136.60721691697836,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "91834": {
+                "start": 16350669452220,
+                "user": 951379,
+                "system": 595567,
+                "child_user": 124584,
+                "child_system": 655980
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09697958333333333
+          },
+          "startup_ms": 843.7452079961076,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.72147845791187,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:45:09.448Z",
+            "finished_at": "2026-11-13T05:46:29.457Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:44:14.841Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:45:09.958Z"
+            }
+          ],
+          "offline_replay_s": 80.16195337497629,
+          "total_s": 135.7271910830168,
+          "cpu_after": {
+            "processes": {
+              "91847": {
+                "start": 16350675972446,
+                "user": 663298,
+                "system": 2166078,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "91849": {
+                "start": 16350676519046,
+                "user": 146130372,
+                "system": 23120740,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "91834": {
+                "start": 16350669452220,
+                "user": 1231291,
+                "system": 899891,
+                "child_user": 77006603,
+                "child_system": 53963157
+              },
+              "91842": {
+                "start": 16350672830237,
+                "user": 1108665,
+                "system": 2240651,
+                "child_user": 22003,
+                "child_system": 31113
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.857660916666665
+          },
+          "cpu_s": 12.760681333333332
+        },
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "91835": {
+                "start": 16350669498935,
+                "user": 935188,
+                "system": 565506,
+                "child_user": 140770,
+                "child_system": 673966
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09647625
+          },
+          "startup_ms": 844.588959007524,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.70715462497901,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:45:09.441Z",
+            "finished_at": "2026-11-13T05:46:29.445Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:44:14.840Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:45:09.959Z"
+            }
+          ],
+          "offline_replay_s": 80.16346137505025,
+          "total_s": 135.71521420800127,
+          "cpu_after": {
+            "processes": {
+              "91843": {
+                "start": 16350672830407,
+                "user": 1124259,
+                "system": 2321387,
+                "child_user": 23159,
+                "child_system": 37773
+              },
+              "91846": {
+                "start": 16350675813792,
+                "user": 625032,
+                "system": 2275562,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "91848": {
+                "start": 16350676411741,
+                "user": 148772438,
+                "system": 23632539,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "91835": {
+                "start": 16350669498935,
+                "user": 1224293,
+                "system": 896194,
+                "child_user": 78223076,
+                "child_system": 54329770
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 13.061895083333335
+          },
+          "cpu_s": 12.965418833333334
+        }
+      ],
+      "coordinator_cpu_s": 0.07604899999999981,
+      "cpu_s": 25.80214916666667,
+      "completed_pages": 32,
+      "pages_per_s": 0.23424823901835048,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "bctl",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-3-bctl",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.66 3.67 4.41 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.76 3.49 4.23 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 136.5218858330045,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "93943": {
+                "start": 16353952855671,
+                "user": 936538,
+                "system": 516347,
+                "child_user": 134047,
+                "child_system": 721771
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09619595833333333
+          },
+          "startup_ms": 808.8766660075635,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.70413612492848,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:47:26.198Z",
+            "finished_at": "2026-11-13T05:48:46.240Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:46:31.600Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:47:26.693Z"
+            }
+          ],
+          "offline_replay_s": 80.2017261669971,
+          "total_s": 135.71474758395925,
+          "cpu_after": {
+            "processes": {
+              "93943": {
+                "start": 16353952855671,
+                "user": 1221777,
+                "system": 854076,
+                "child_user": 98497110,
+                "child_system": 66877245
+              },
+              "93958": {
+                "start": 16353959650882,
+                "user": 141470626,
+                "system": 22039354,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "93956": {
+                "start": 16353958969813,
+                "user": 607079,
+                "system": 2150597,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "93952": {
+                "start": 16353955905629,
+                "user": 1021404,
+                "system": 2176783,
+                "child_user": 24755,
+                "child_system": 37271
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 14.040753208333333
+          },
+          "cpu_s": 13.94455725
+        },
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "93944": {
+                "start": 16353952897735,
+                "user": 913848,
+                "system": 460849,
+                "child_user": 134993,
+                "child_system": 686435
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09150520833333332
+          },
+          "startup_ms": 811.5213749697432,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.67710212501697,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:47:26.177Z",
+            "finished_at": "2026-11-13T05:48:46.213Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:46:31.605Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:47:26.690Z"
+            }
+          ],
+          "offline_replay_s": 80.20064345910214,
+          "total_s": 135.68927554192487,
+          "cpu_after": {
+            "processes": {
+              "93951": {
+                "start": 16353955868083,
+                "user": 992264,
+                "system": 2078918,
+                "child_user": 26444,
+                "child_system": 39206
+              },
+              "93957": {
+                "start": 16353959549531,
+                "user": 142749095,
+                "system": 21892536,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "93955": {
+                "start": 16353958922786,
+                "user": 568544,
+                "system": 2020819,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "93944": {
+                "start": 16353952897735,
+                "user": 1196637,
+                "system": 799824,
+                "child_user": 96984441,
+                "child_system": 66492134
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 13.99336925
+          },
+          "cpu_s": 13.901864041666668
+        }
+      ],
+      "coordinator_cpu_s": 0.06428000000000011,
+      "cpu_s": 27.91070129166667,
+      "completed_pages": 32,
+      "pages_per_s": 0.23439465258444242,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "native",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-3-native",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.76 3.49 4.23 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.02 3.37 4.08 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 135.10634033300448,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "95194": {
+                "start": 16357234612567,
+                "user": 920828,
+                "system": 577211,
+                "child_user": 127845,
+                "child_system": 577161
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09179354166666667
+          },
+          "startup_ms": 446.22212497051805,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 53.81172575009987,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:49:41.713Z",
+            "finished_at": "2026-11-13T05:51:02.206Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:48:48.062Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:49:42.201Z"
+            }
+          ],
+          "offline_replay_s": 80.64742070797365,
+          "total_s": 134.9053868750343,
+          "cpu_after": {
+            "processes": {
+              "95198": {
+                "start": 16357238219373,
+                "user": 37222970,
+                "system": 21041320,
+                "child_user": 42161912,
+                "child_system": 26921898
+              },
+              "95209": {
+                "start": 16357243482696,
+                "user": 4511651,
+                "system": 2249151,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95211": {
+                "start": 16357243608644,
+                "user": 4085896,
+                "system": 3986373,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95214": {
+                "start": 16357244258092,
+                "user": 650942,
+                "system": 614101,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95221": {
+                "start": 16357246396676,
+                "user": 5815605,
+                "system": 1400913,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95227": {
+                "start": 16357247137176,
+                "user": 917782,
+                "system": 732687,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95968": {
+                "start": 16358392625688,
+                "user": 1836282,
+                "system": 1017234,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95194": {
+                "start": 16357234612567,
+                "user": 1230046,
+                "system": 900738,
+                "child_user": 114085517,
+                "child_system": 59394391
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 13.782392041666666
+          },
+          "cpu_s": 13.6905985
+        },
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "95195": {
+                "start": 16357234713885,
+                "user": 913634,
+                "system": 549614,
+                "child_user": 149374,
+                "child_system": 647793
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09418395833333333
+          },
+          "startup_ms": 405.01029195729643,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.16064145800192,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:49:42.058Z",
+            "finished_at": "2026-11-13T05:51:02.163Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:48:48.062Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:49:42.477Z"
+            }
+          ],
+          "offline_replay_s": 80.29812341695651,
+          "total_s": 134.86379308393225,
+          "cpu_after": {
+            "processes": {
+              "95199": {
+                "start": 16357238220149,
+                "user": 36320830,
+                "system": 21052906,
+                "child_user": 42022462,
+                "child_system": 26913075
+              },
+              "95208": {
+                "start": 16357243478682,
+                "user": 4632009,
+                "system": 2261039,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95210": {
+                "start": 16357243601789,
+                "user": 3858364,
+                "system": 3847393,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95212": {
+                "start": 16357244086985,
+                "user": 660523,
+                "system": 634813,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95218": {
+                "start": 16357246036042,
+                "user": 5781651,
+                "system": 1451339,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95224": {
+                "start": 16357246886041,
+                "user": 916229,
+                "system": 725124,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95985": {
+                "start": 16358412789219,
+                "user": 534954,
+                "system": 388436,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "95195": {
+                "start": 16357234713885,
+                "user": 1235481,
+                "system": 884407,
+                "child_user": 91645487,
+                "child_system": 53043375
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 12.450412375
+          },
+          "cpu_s": 12.356228416666667
+        }
+      ],
+      "coordinator_cpu_s": 0.09211500000000017,
+      "cpu_s": 26.138941916666667,
+      "completed_pages": 32,
+      "pages_per_s": 0.23685046846156688,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "native",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-4-native",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.02 3.37 4.08 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.25 3.38 3.98 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 134.58816929196473,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "96680": {
+                "start": 16360482023321,
+                "user": 906685,
+                "system": 490882,
+                "child_user": 137096,
+                "child_system": 662915
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09156575
+          },
+          "startup_ms": 371.4659580728039,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 53.35316245793365,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:51:56.455Z",
+            "finished_at": "2026-11-13T05:53:16.980Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:51:03.227Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:51:56.986Z"
+            }
+          ],
+          "offline_replay_s": 80.6804067089688,
+          "total_s": 134.4050511670066,
+          "cpu_after": {
+            "processes": {
+              "96699": {
+                "start": 16360489755993,
+                "user": 670144,
+                "system": 616403,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96695": {
+                "start": 16360489049746,
+                "user": 4978663,
+                "system": 4855384,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96693": {
+                "start": 16360488989524,
+                "user": 5516354,
+                "system": 2612968,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96685": {
+                "start": 16360484740367,
+                "user": 42537557,
+                "system": 22987406,
+                "child_user": 46629893,
+                "child_system": 28099564
+              },
+              "96706": {
+                "start": 16360491884186,
+                "user": 8142016,
+                "system": 2390046,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96712": {
+                "start": 16360492818623,
+                "user": 944082,
+                "system": 743724,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "97061": {
+                "start": 16361610804631,
+                "user": 595483,
+                "system": 457285,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96680": {
+                "start": 16360482023321,
+                "user": 1216084,
+                "system": 812725,
+                "child_user": 125575171,
+                "child_system": 73315055
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 15.570666958333334
+          },
+          "cpu_s": 15.479101208333333
+        },
+        {
+          "status": "pass",
+          "side": "native",
+          "cpu_before": {
+            "processes": {
+              "96681": {
+                "start": 16360482066077,
+                "user": 892780,
+                "system": 452281,
+                "child_user": 122505,
+                "child_system": 640279
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.087826875
+          },
+          "startup_ms": 371.70575000345707,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Chrome/155.0.8059.84"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 53.3479803330265,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:51:56.455Z",
+            "finished_at": "2026-11-13T05:53:16.978Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:51:03.227Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:51:57.009Z"
+            }
+          ],
+          "offline_replay_s": 80.68466779193841,
+          "total_s": 134.40436979196966,
+          "cpu_after": {
+            "processes": {
+              "96697": {
+                "start": 16360489596511,
+                "user": 670196,
+                "system": 642518,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96696": {
+                "start": 16360489052002,
+                "user": 4866815,
+                "system": 4748067,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96694": {
+                "start": 16360488992758,
+                "user": 5736583,
+                "system": 2644666,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96684": {
+                "start": 16360484739969,
+                "user": 41929258,
+                "system": 22749581,
+                "child_user": 47207004,
+                "child_system": 28495991
+              },
+              "96705": {
+                "start": 16360491705498,
+                "user": 6346712,
+                "system": 1456190,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96711": {
+                "start": 16360492817836,
+                "user": 972182,
+                "system": 751463,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "97062": {
+                "start": 16361610880529,
+                "user": 580627,
+                "system": 449903,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "96681": {
+                "start": 16360482066077,
+                "user": 1200247,
+                "system": 781938,
+                "child_user": 105724810,
+                "child_system": 59861007
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 14.075656583333334
+          },
+          "cpu_s": 13.987829708333335
+        }
+      ],
+      "coordinator_cpu_s": 0.0946760000000002,
+      "cpu_s": 29.56160691666667,
+      "completed_pages": 32,
+      "pages_per_s": 0.2377623543610418,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "bctl",
+      "artifacts": ".work/tmp/crawl-46we9qn9/cpu-4-bctl",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.25 3.38 3.98 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.86 3.05 3.74 }",
+          "diagnostic": ""
+        }
+      ],
+      "total_s": 137.20062999997754,
+      "workers": [
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "98239": {
+                "start": 16363716628537,
+                "user": 928491,
+                "system": 493847,
+                "child_user": 139526,
+                "child_system": 692904
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09394866666666667
+          },
+          "startup_ms": 830.1039999350905,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.865611167042516,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:54:13.210Z",
+            "finished_at": "2026-11-13T05:55:33.740Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:53:18.446Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:54:13.705Z"
+            }
+          ],
+          "offline_replay_s": 80.69422387506347,
+          "total_s": 136.38994695805013,
+          "cpu_after": {
+            "processes": {
+              "98239": {
+                "start": 16363716628537,
+                "user": 1198466,
+                "system": 802486,
+                "child_user": 105509668,
+                "child_system": 64309247
+              },
+              "98245": {
+                "start": 16363719550730,
+                "user": 1630119,
+                "system": 2931772,
+                "child_user": 32602,
+                "child_system": 46423
+              },
+              "98251": {
+                "start": 16363723207682,
+                "user": 178112099,
+                "system": 25452847,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "98249": {
+                "start": 16363722591938,
+                "user": 948693,
+                "system": 2891514,
+                "child_user": 0,
+                "child_system": 0
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 15.994414
+          },
+          "cpu_s": 15.900465333333335
+        },
+        {
+          "status": "pass",
+          "side": "bctl",
+          "cpu_before": {
+            "processes": {
+              "98240": {
+                "start": 16363716668979,
+                "user": 910666,
+                "system": 472154,
+                "child_user": 143917,
+                "child_system": 651198
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 0.09074729166666667
+          },
+          "startup_ms": 820.673167007044,
+          "capture": {
+            "pages": 16,
+            "browser_products": [
+              "Helium/0.20.3.1"
+            ],
+            "page_outcomes": [
+              [
+                "retry",
+                16
+              ],
+              [
+                "success",
+                16
+              ]
+            ],
+            "expected_markers_sha256": "5c4641b04a24a2419581a62b76785941d7b276df66bc7026247d0cee6b499a21",
+            "exact_assets": [
+              "base.css",
+              "dynamic.css",
+              "image.svg",
+              "lazy.svg"
+            ]
+          },
+          "capture_and_check_s": 54.955514583038166,
+          "verification": {
+            "id": 1,
+            "started_at": "2026-11-13T05:54:13.290Z",
+            "finished_at": "2026-11-13T05:55:33.734Z",
+            "status": "completed",
+            "browser_session_id": 33,
+            "verifier_version": "grab/0.1.0",
+            "pages_checked": 16,
+            "pages_passed": 16,
+            "pages_failed": 0
+          },
+          "browser_sessions": [
+            {
+              "id": 1,
+              "run_id": 1,
+              "verification_run_id": null,
+              "generation": 1,
+              "product": "Helium/0.20.3.1",
+              "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+              "js_version": "15.6.75.27",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "6d1d890efebc2a0a7c59d8721e8ebc26213ceaf866b3ab8210c2cc30b5e83b8b",
+              "capture_build_hash": "4d013a33f2eef06290e5b984c7ec899e15ace5cb53cdd4bf5a102133bb86a7be",
+              "created_at": "2026-11-13T05:53:18.440Z"
+            },
+            {
+              "id": 33,
+              "run_id": null,
+              "verification_run_id": 1,
+              "generation": 1,
+              "product": "Chrome/155.0.8059.84",
+              "revision": "@5869fe313571d75152b77813cf0a4ee26a4e6df0",
+              "protocol_version": "1.3",
+              "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+              "js_version": "15.5.35.25",
+              "headless": 1,
+              "viewport_width": 1920,
+              "viewport_height": 947,
+              "locale": "en-US",
+              "timezone": "America/Los_Angeles",
+              "launch_policy_hash": "cb2c74b7c472108b8aa963229370fce117b09a31c7bdd6521d61a0fd7dde2e48",
+              "capture_build_hash": "4bd1b3cd0f8e8f7b636614797ad85527bb00b5577763414ae607bfa2f785876f",
+              "created_at": "2026-11-13T05:54:13.699Z"
+            }
+          ],
+          "offline_replay_s": 80.60871370800305,
+          "total_s": 136.3849090000149,
+          "cpu_after": {
+            "processes": {
+              "98246": {
+                "start": 16363719574208,
+                "user": 1571047,
+                "system": 2828556,
+                "child_user": 28283,
+                "child_system": 36412
+              },
+              "98252": {
+                "start": 16363723295840,
+                "user": 178561908,
+                "system": 25142216,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "98250": {
+                "start": 16363722761263,
+                "user": 931025,
+                "system": 2826062,
+                "child_user": 0,
+                "child_system": 0
+              },
+              "98240": {
+                "start": 16363716668979,
+                "user": 1192061,
+                "system": 792400,
+                "child_user": 107211348,
+                "child_system": 65143381
+              }
+            },
+            "timebase": {
+              "numer": 125,
+              "denom": 3
+            },
+            "cpu_s": 16.094362458333332
+          },
+          "cpu_s": 16.003615166666666
+        }
+      ],
+      "coordinator_cpu_s": 0.07784199999999997,
+      "cpu_s": 31.9819225,
+      "completed_pages": 32,
+      "pages_per_s": 0.2332350806261257,
+      "status": "pass",
+      "timing_status": "clean"
+    }
+  ],
+  "bctl_commit": "70936df8f1789cf27ac9d1f5e17a8199e34217ed",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "shadowdriver_dirty": false,
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/tests/bench/macos_crawl.py": "172668fd9cae6339481f8c352fff26aa9042c2750d7abb3787c7024f2ead7c07",
+    "/Users/josh/d/bctl/tests/bench/macos_crawl_worker.py": "ced56c02a177970a1a7eb1cdde35abd7490a93454ff0c93eee271493e218396f",
+    "/Users/josh/d/bctl/tests/bench/crawl_site.py": "9e56d6cd715e96688097da4b9dbcda070e9d685044d5fdf210760b25927b22cd",
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "98bee650ee01970f6cba872d21b6fa358785540a8425c255de2d50c198a3504a",
+    "/Users/josh/d/bctl/target/release/bctl": "f7c6a1a185b12d0a7f0359390ccbe13f89775495427d50563d3bb3b131449627",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7",
+    "/Users/josh/d/shadowdriver/py/python/shadowdriver/_native.abi3.so": "8bb456f7bfc8b05caa5cf8c565fb229b172050f3b7782a2a167c94d23f118a1f",
+    "/Users/josh/d/shadowdriver/grab/src/grab/cli.py": "039838b457a9669ff589fe087f9898630a524e295f2f058871a7c15acb4f0b30",
+    "/Users/josh/d/shadowdriver/grab/src/grab/verify.py": "443e17459d27ef311b9590195cb1e0e632fdeda08e54d34ece0814d6f460032d",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium": "a67f1a4e5e8580115fce0615a7426b4342ced9fd836a1f968f7963e1964f225c",
+    "/Users/josh/d/bctl/tests/bench/macos_cpu.py": "2347baac43692a6e639eab383f63fbbe04ae043112004deaf7bc1da8a0b50f1c"
+  },
+  "method": "fresh profiles; two independent concurrent crawls by default; complete capture, asset and state checks, and fresh native offline replay; capture browsers remain alive through replay; latency and resource passes separate; alternating backends; sampled budget, not an OS-enforced cap",
+  "cpu_method": "separate passes; worker live-process and reaped-child snapshots through replay, plus coordinator and fixture process CPU; excludes worker interpreter startup and browser cleanup; snapshots are not atomic",
+  "summary": {
+    "native": {
+      "total_s": {
+        "n": 0,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "pages_per_s": {
+        "n": 0,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "sampled_peak_physical_bytes": {
+        "n": 0,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "cpu_s": {
+        "n": 5,
+        "median": 24.242205958333333,
+        "min": 23.86725291666667,
+        "max": 29.56160691666667
+      }
+    },
+    "bctl": {
+      "total_s": {
+        "n": 0,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "pages_per_s": {
+        "n": 0,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "sampled_peak_physical_bytes": {
+        "n": 0,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "cpu_s": {
+        "n": 5,
+        "median": 27.91070129166667,
+        "min": 25.80214916666667,
+        "max": 31.9819225
+      }
+    }
+  },
+  "changed_inputs": [],
+  "shadowdriver_final_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab"
+}
