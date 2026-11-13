@@ -5,20 +5,27 @@ endpoints to automation, and manages sessions, profiles, and jobs.
 
 | Host | Runtime | Browser interface |
 | --- | --- | --- |
-| Apple Silicon macOS | SmolVM, the default | Headed browser with a live dashboard and keyboard/pointer input |
-| Linux x86_64 with KVM | SmolVM, the default | Headed browser with a live dashboard and keyboard/pointer input |
-| Linux x86_64 with KVM | Nanos, selected with `BCTL_RUNTIME=nanos` | Headless browser with CDP and job controls |
-| Apple Silicon macOS | Experimental Nanos, selected with `BCTL_RUNTIME=nanos` | Headless browser with CDP and job controls |
+| Apple Silicon macOS | Nanos, the default | Headless browser with CDP and job controls |
+| Linux x86_64 with KVM | Nanos, the default | Headless browser with CDP and job controls |
+| Apple Silicon macOS | SmolVM, selected with `BCTL_RUNTIME=smolvm` | Headed browser with a live dashboard and keyboard/pointer input |
+| Linux x86_64 with KVM | SmolVM, selected with `BCTL_RUNTIME=smolvm` | Headed browser with a live dashboard and keyboard/pointer input |
+
+Releases ship only Nanos; SmolVM is built from source for differential testing.
 
 ## Install
 
-Follow [the build and installation instructions](docs/runtime.md#build-and-install)
+Install a release with `~/usr`'s `sh sync tools bctl`, or download the
+archive for your platform from a `release-<commit>` release, then run
+`bctl image pull`. [Distribution](docs/distribution.md) describes the
+artifacts. To build from source, follow
+[the build and installation instructions](docs/runtime.md#build-and-install)
 for your host. The [image contract](docs/image-contract.md) describes the
 Helium archive and sidecars each image builder requires.
 
-State lives under `~/Library/Application Support/bctl` on macOS and
-`${XDG_STATE_HOME:-$HOME/.local/state}/bctl` on Linux. `BCTL_HOME` overrides
-that directory. Run `bctl doctor` after installing the runtime and images.
+State and images live under `~/Library/Application Support/bctl` on macOS.
+On Linux, state lives under `${XDG_STATE_HOME:-$HOME/.local/state}/bctl` and
+runtimes and images under `${XDG_DATA_HOME:-$HOME/.local/share}/bctl`.
+`BCTL_HOME` overrides both. Run `bctl doctor` after installing the runtime and images.
 
 ## Use
 
