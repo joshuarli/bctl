@@ -9,6 +9,7 @@
 #include <drivers/console.h>
 #include <elf64.h>
 #include <serial.h>
+#include <boot_profile.h>
 
 //#define INIT_DEBUG
 #ifdef INIT_DEBUG
@@ -272,6 +273,7 @@ closure_function(4, 2, void, fsstarted,
                  filesystem fs, status s)
 {
     init_debug("%s\n", func_ss);
+    boot_profile("root_filesystem");
     heap h = heap_locked(init_heaps);
     if (!is_ok(s)) {
         buffer b = allocate_buffer(h, 128);
@@ -777,6 +779,7 @@ void kernel_runtime_init(kernel_heaps kh)
 
     init_debug("clock");
     init_clock();
+    boot_profile("clock_ready");
 
     init_debug("init_scheduler");
     init_scheduler(locked);
@@ -797,6 +800,7 @@ void kernel_runtime_init(kernel_heaps kh)
     init_debug("start_secondary_cores");
     init_scheduler_cpus(misc);
     start_secondary_cores(kh);
+    boot_profile("secondary_cores_ready");
 
 #ifdef CONFIG_TRACELOG
     init_debug("init_tracelog");
@@ -817,6 +821,7 @@ void kernel_runtime_init(kernel_heaps kh)
 
     init_debug("pci_discover (for other devices)");
     pci_discover();
+    boot_profile("devices_discovered");
     init_debug("discover done");
     apply(complete, STATUS_OK);
 

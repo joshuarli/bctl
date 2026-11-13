@@ -9,6 +9,7 @@
 #include <symtab.h>
 #include <virtio/virtio.h>
 #include <elf64.h>
+#include <boot_profile.h>
 
 closure_function(3, 1, void, program_start,
                  process, kp, string, path, boolean, exec_started,
@@ -18,6 +19,7 @@ closure_function(3, 1, void, program_start,
         halt("program startup failed %s exec: %v\n", bound(exec_started) ? ss("on") : ss("before"),
              s);
     else if (bound(exec_started)) {
+        boot_profile("init_loaded");
         closure_finish();
         return;
     }
@@ -33,6 +35,7 @@ closure_function(3, 1, void, program_start,
                      &bss_ro_after_init_end - &bss_ro_after_init_start,
                      pageflags_memory());
     bound(exec_started) = true;
+    boot_profile("init_exec_begin");
     exec_elf(bound(kp), bound(path), (status_handler)closure_self());
 }
 
@@ -80,8 +83,10 @@ closure_function(5, 0, void, startup,
 
 thunk create_init(kernel_heaps kh, tuple root, filesystem fs, merge *m)
 {
+    boot_profile("unix_init_begin");
     /* kernel process is used as a handle for unix */
     process kp = init_unix(kh, root, fs);
+    boot_profile("unix_init_ready");
     if (kp == INVALID_ADDRESS)
         halt("%s: out of memory\n", func_ss);
 

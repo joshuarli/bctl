@@ -94,6 +94,10 @@ target binary. Build and smoke receipts remain on threadripper under
 
 ## Verification limits
 
+The later [startup instrumentation](macos-startup.md) separates early kernel
+initialization from appliance and Chromium startup. Those diagnostic timings
+do not close the workflow performance targets.
+
 The pinned Carbon independent reviewer was unavailable. No independent review
 is claimed. Pending-init detach handling was checked by source review; device
 hot-unplug during initialization was not exercised.
