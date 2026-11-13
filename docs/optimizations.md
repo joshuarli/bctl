@@ -9,6 +9,48 @@ Each entry gives the change, what was measured, the decision, the evidence, and
 the condition under which a retry would make sense. Numbers are medians unless
 stated. The detailed write-ups stay where they are; entries link to them.
 
+## Running an experiment
+
+`tests/bench/kernel_experiment.py` runs a kernel or image experiment end to
+end on Apple Silicon. Commit the candidate first, then run, from the repository
+root:
+
+```sh
+.work/interop/venv/bin/python tests/bench/kernel_experiment.py --name NAME --candidate REF
+```
+
+It builds the baseline (`main` unless `--baseline` names another ref) and each
+`--candidate` in a throwaway worktree and caches the result in
+`.work/exp/builds/` by the ref's `kernel`, `guest`, `images`, and `runtime`
+trees. It runs the tier's kernel gates on each build and stops if one fails. A
+gate that does not exist at an older ref is reported as absent, never as
+passed. Measurement interleaves the variants round-robin through the warm
+agent-browser workload. It checks `perf-gate-ready` before and after each run
+and repeats a run that overlapped load, so a busy host delays the experiment but
+never contributes a number. The receipt goes to `.work/exp/receipts/`, with a
+suggested ledger row at the end of the output.
+
+A metric is reported improved or regressed only when five or more run medians
+per variant do not overlap and their medians differ by more than 3%. A
+comparison of a build with itself (A/A) then disagrees on about 0.8% of metrics,
+and the [pilot](../tests/bench/results/2026-11-13-experiments/asid-idle-poll-pilot.json)'s A/A comparison reported no change on all 17 metrics while detecting the ASID change's faster round trips. `--cflags
+-DHYDROGEN_FLUSH_PROFILE` builds every variant with the profile counters and
+adds their deltas to the receipt. Several `--candidate` options share one
+baseline. The bctl binary is `target/release/bctl` unless `--bctl` names
+another, so rebuild it after host-side changes.
+
+| Tier | What runs | Observed cost | When |
+| --- | --- | --- | --- |
+| Edit | `--tier edit` (default): build, `kernel/dev/test.sh latency probe`, 5 interleaved pairs | 72 s for three cached variants; about 45 s more per new build | Every candidate |
+| Change | `--tier change`: adds the 104-run `harness` gate (103 s) | about 2 min more per new build | Before adopting a candidate |
+| Scenario | `BCTL_RUNTIME=nanos sh tests/interop/run.sh`, `tests/bench/macos_workflows.py`, `tests/bench/macos_crawl.py` | unmeasured | Before landing an adopted change, when named |
+| Full | Linux x86_64 qualification, `kernel/dev/test.sh g0 upstream external helium-stress` | tens of minutes | Only on an explicit request |
+
+Costs were measured on an Apple M5 Max with warm build caches and a quiet
+host. The toolchain must be bootstrapped once in the main checkout with
+`sh kernel/dev/bootstrap.sh`. Delete `.work/exp/builds/KEY` to force a rebuild.
+Record each finished experiment below, adopted or not.
+
 Statuses:
 
 - **Adopted:** shipped, with a measured benefit.

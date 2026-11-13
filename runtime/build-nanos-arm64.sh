@@ -16,6 +16,6 @@ mkdir -p "$tree"
 git -C "$root" archive "$kernel_tree" | tar -xf - -C "$tree"
 printf '%s\n' "$kernel_tree" >"$tree/COMMIT"
 mkdir -p "$tree/.work/tmp"
-docker run --rm --platform linux/arm64 -v "$tree:/src" -w /src -e TMPDIR=/src/.work/tmp \
+docker run --rm --platform linux/arm64 -v "$tree:/src" -w /src -e TMPDIR=/src/.work/tmp ${KERNEL_TEST_CFLAGS:+-e KERNEL_TEST_CFLAGS} \
     bctl/nanos-arm64-builder sh dev/build.sh || fail "cannot build the ARM Nanos kernel"
 echo "$tree"
