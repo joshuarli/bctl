@@ -1,0 +1,81 @@
+typedef struct pagecache_volume *pagecache_volume;
+
+typedef struct pagecache_node *pagecache_node;
+
+closure_type(pagecache_node_reserve, status, range r);
+closure_type(pagecache_page_handler, void, range kvirt);
+
+void pagecache_set_node_length(pagecache_node pn, u64 length);
+
+u64 pagecache_get_node_length(pagecache_node pn);
+
+void pagecache_node_finish_pending_writes(pagecache_node pn, status_handler complete);
+
+void pagecache_sync_node(pagecache_node pn, status_handler complete);
+void pagecache_purge_node(pagecache_node pn, status_handler complete);
+
+void pagecache_node_ref(pagecache_node pn);
+void pagecache_node_unref(pagecache_node pn);
+
+void pagecache_nodelocked_pin(pagecache_node pn, range pages);
+void pagecache_nodelocked_unpin(pagecache_node pn, range pages);
+void pagecache_node_unpin(pagecache_node pn, range pages);
+
+void pagecache_sync_volume(pagecache_volume pv, status_handler complete);
+
+void *pagecache_get_zero_page(void);
+
+int pagecache_get_page_order(void);
+
+u64 pagecache_get_occupancy(void);
+
+u64 pagecache_drain(u64 drain_bytes, u32 flags);
+
+pagecache_node pagecache_allocate_node(pagecache_volume pv, sg_io fs_read, sg_io fs_write, pagecache_node_reserve fs_reserve);
+
+void pagecache_deallocate_node(pagecache_node pn);
+
+sg_io pagecache_node_get_reader(pagecache_node pn);
+
+sg_io pagecache_node_get_writer(pagecache_node pn);
+
+void pagecache_node_add_mapping(pagecache_node pn, address_space as, range v /* bytes */,
+                                u64 node_offset, boolean shared);
+
+void pagecache_node_scan(pagecache_node pn, address_space as, range q /* bytes */,
+                         status_handler complete);
+
+boolean pagecache_node_do_page_cow(pagecache_node pn, address_space as, u64 node_offset, u64 vaddr,
+                                   pageflags flags);
+
+void pagecache_node_fetch_pages(pagecache_node pn, range r /* bytes */, sg_list sg,
+                                status_handler complete);
+
+/* The handler gets the kernel virtual range of the memory: up to size bytes when the cache can lay
+   a contiguous block under an aligned window of the node's pages, one page otherwise, and an empty
+   range on failure. */
+void pagecache_get_page(pagecache_node pn, u64 node_offset, u64 size, boolean private,
+                        pagecache_page_handler handler);
+range pagecache_get_page_if_filled(pagecache_node pn, u64 node_offset, boolean private);
+void pagecache_release_page(pagecache_node pn, u64 node_offset);
+boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physical phys);
+
+void pagecache_node_unmap_pages(pagecache_node pn, address_space as, range v /* bytes */,
+                                u64 node_offset, boolean del_mappings);
+void pagecache_node_unmap_range(pagecache_node pn, range q /* bytes */);
+void pagecache_node_move_mapping(pagecache_node pn, address_space as, range from, range to,
+                                 u64 node_offset, boolean shared);
+
+/* Counts the shared mappings that may write to a node, as Linux's i_mmap_writable: positive
+   while any exist, negative once they are denied (a write seal denies them for good). */
+boolean pagecache_node_map_writable(pagecache_node pn);
+void pagecache_node_unmap_writable(pagecache_node pn);
+boolean pagecache_node_deny_writable(pagecache_node pn);
+void pagecache_node_allow_writable(pagecache_node pn);
+
+pagecache_volume pagecache_allocate_volume(u64 length, int block_order);
+
+void pagecache_set_volume_huge(pagecache_volume pv);
+void pagecache_dealloc_volume(pagecache_volume pv);
+
+void init_pagecache(heap general, heap contiguous, u64 pagesize);

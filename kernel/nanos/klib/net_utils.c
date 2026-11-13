@@ -1,0 +1,273 @@
+#include <kernel.h>
+#include <lwip.h>
+#include <tls.h>
+
+#include "net_utils.h"
+
+typedef struct net_http_req_data {
+    heap h;
+    struct net_http_req_params params;
+    closure_struct(connection_handler, ch);
+    buffer_handler out;
+    closure_struct(input_buffer_handler, ibh);
+    buffer_handler parser;
+    closure_struct(value_handler, vh);
+} *net_http_req_data;
+
+static void net_http_dealloc(net_http_req_data data)
+{
+    apply(data->parser, 0);
+    buffer req_body = data->params.body;
+    if (req_body)
+        deallocate_buffer(req_body);
+    value_handler resp_handler = data->params.resp_handler;
+    if (resp_handler)
+        apply(resp_handler, 0);
+    deallocate(data->h, data, sizeof(*data));
+}
+
+static status net_http_req_internal(const ip_addr_t *addr, net_http_req_data data)
+{
+    net_http_req_params params = &data->params;
+    u16 port = params->port;
+    connection_handler ch = (connection_handler)&data->ch;
+    status s;
+    if (!params->tls) {
+        s = direct_connect(data->h, (ip_addr_t *)addr, port, ch);
+    } else {
+        if (tls_connect((ip_addr_t *)addr, port, ch) == 0)
+            s =  STATUS_OK;
+        else
+            s = timm("result", "failed to establish TLS connection with HTTP server");
+    }
+    return s;
+}
+
+static void net_http_dns_cb(sstring hostname, const ip_addr_t *addr, void *callback_arg)
+{
+    net_http_req_data req_data = callback_arg;
+    boolean success;
+    if (addr) {
+        status s = net_http_req_internal(addr, req_data);
+        success = is_ok(s);
+        if (!success)
+            timm_dealloc(s);
+    } else {
+        success = false;
+    }
+    if (!success)
+        net_http_dealloc(req_data);
+}
+
+closure_func_basic(connection_handler, input_buffer_handler, net_http_ch,
+                   buffer_handler out)
+{
+    net_http_req_data req_data = struct_from_closure(net_http_req_data, ch);
+    input_buffer_handler in = INVALID_ADDRESS;
+    if (out) {    /* connection succeeded */
+        req_data->out = out;
+        net_http_req_params params = &req_data->params;
+        tuple req = params->req;
+        /* Use lowercase host header in order to be compatible with AWS SigV4 protocol. */
+        set(req, sym(url), alloca_wrap_sstring(params->query));
+        set(req, sym(host), alloca_wrap_sstring(params->host));
+        set(req, sym(Connection), alloca_wrap_cstring("close"));
+        status s = http_request(req_data->h, out, params->method, req, params->body);
+        if (is_ok(s)) {
+            /* The body of the request, if present, will be deallocated by the output buffer
+             * handler. */
+            params->body = 0;
+
+            in = (input_buffer_handler)&req_data->ibh;
+        } else {
+            timm_dealloc(s);
+        }
+    }
+    if (in == INVALID_ADDRESS)
+        net_http_dealloc(req_data);
+    return in;
+}
+
+closure_func_basic(input_buffer_handler, boolean, net_http_ibh,
+                   buffer data)
+{
+    net_http_req_data req_data = struct_from_closure(net_http_req_data, ibh);
+    if (data) {
+        status s = apply(req_data->parser, data);
+        boolean close_conn = !is_ok(s) || !req_data->params.resp_handler;
+        timm_dealloc(s);
+        if (close_conn) {
+            apply(req_data->out, 0);
+            return true;
+        }
+    } else {
+        net_http_dealloc(req_data);
+    }
+    return false;
+}
+
+closure_func_basic(value_handler, void, net_http_vh,
+                   value resp)
+{
+    net_http_req_data req_data = struct_from_closure(net_http_req_data, vh);
+    value_handler resp_handler = req_data->params.resp_handler;
+    if (resp_handler) {
+        apply(resp_handler, resp);
+
+        /* Signal to the input buffer handler that the response handler has been invoked and the
+         * connection can be closed. */
+        req_data->params.resp_handler = 0;
+    }
+}
+
+void net_resolve(sstring host, void (*cb)(sstring host, const ip_addr_t *addr, void *cb_arg),
+                 void *cb_arg)
+{
+    ip_addr_t addr;
+    err_t err = dns_gethostbyname(host, &addr, cb, cb_arg);
+    switch (err) {
+    case ERR_OK:
+        cb(host, &addr, cb_arg);
+        break;
+    case ERR_INPROGRESS:
+        break;
+    default:
+        cb(host, 0, cb_arg);
+    }
+}
+
+boolean net_uri_encode(buffer dest, char *src, bytes len)
+{
+    const char *hex = "0123456789ABCDEF";
+    for (bytes i = 0; i < len; i++) {
+        char c = src[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '_' || c == '-' || c == '.' || c == '~') {
+            if (!buffer_write_byte(dest, c))
+                return false;
+        } else {
+            if (!buffer_write_byte(dest, '%') ||
+                !buffer_write_byte(dest, hex[(c >> 4) & 0xf]) ||
+                !buffer_write_byte(dest, hex[c & 0xf]))
+                return false;
+        }
+    }
+    return true;
+}
+
+boolean net_url_to_reqparams(sstring url, net_http_req_params params)
+{
+    int host_offset;
+    if ((url.len >= 8) && (runtime_memcmp(url.ptr, "https://", 8) == 0)) {
+        params->tls = true;
+        params->port = 443;
+        host_offset = 8;
+    } else  if ((url.len >= 7) && (runtime_memcmp(url.ptr, "http://", 7) == 0)) {
+        params->tls = false;
+        params->port = 80;
+        host_offset = 7;
+    } else if (runtime_strstr(url, ss("://"))) {
+        /* unsupported protocol */
+        return false;
+    } else {    /* no protocol: default to HTTP */
+        params->tls = false;
+        params->port = 80;
+        host_offset = 0;
+    }
+    char *server_start = url.ptr + host_offset;
+    bytes server_len = url.ptr + url.len - server_start;
+    char *slash = runtime_strchr(isstring(server_start, server_len), '/');
+    sstring host;
+    host.ptr = server_start;
+    sstring query;
+    if (slash) {
+        host.len = slash - server_start;
+        query = isstring(slash, url.ptr + url.len - slash);
+    } else {
+        host.len = server_len;
+        query = ss("/");
+    }
+    params->host = host;
+    params->query = query;
+    return true;
+}
+
+status net_http_req(net_http_req_params params)
+{
+    heap h = heap_locked(get_kernel_heaps());
+    net_http_req_data req_data = allocate(h, sizeof(*req_data));
+    if (req_data == INVALID_ADDRESS)
+        return timm_oom;
+    req_data->parser = allocate_http_parser(h, params->method == HTTP_REQUEST_METHOD_HEAD,
+                                            init_closure_func(&req_data->vh, value_handler,
+                                                                 net_http_vh));
+    if (req_data->parser == INVALID_ADDRESS) {
+        deallocate(h, req_data, sizeof(*req_data));
+        return timm_oom;
+    }
+    req_data->h = h;
+    runtime_memcpy(&req_data->params, params, sizeof(*params));
+    init_closure_func(&req_data->ch, connection_handler, net_http_ch);
+    init_closure_func(&req_data->ibh, input_buffer_handler, net_http_ibh);
+    ip_addr_t addr;
+    sstring host = params->host;
+    err_t err = dns_gethostbyname(host, &addr, net_http_dns_cb, req_data);
+    status s;
+    switch (err) {
+    case ERR_OK:
+        s = net_http_req_internal(&addr, req_data);
+        break;
+    case ERR_INPROGRESS:
+        return STATUS_OK;
+    default:
+        s = timm("result", "failed to resolve hostname '%s' (%d)", host, err);
+    }
+    if (!is_ok(s)) {
+        req_data->params.body = 0;  /* so that it's not deallocated in net_http_dealloc() */
+        req_data->params.resp_handler = 0;  /* so that it's not invoked in net_http_dealloc() */
+        net_http_dealloc(req_data);
+    }
+    return s;
+}
+
+status net_http_get(sstring url, tuple req, value_handler resp_handler)
+{
+    struct net_http_req_params params;
+    if (!net_url_to_reqparams(url, &params))
+        return timm("result", "unsupported URL");
+    params.req = req;
+    params.body = 0;
+    params.resp_handler = resp_handler;
+    params.method = HTTP_REQUEST_METHOD_GET;
+    return net_http_req(&params);
+}
+
+status net_http_post(sstring url, tuple req, buffer body, value_handler resp_handler)
+{
+    struct net_http_req_params params;
+    if (!net_url_to_reqparams(url, &params))
+        return timm("result", "unsupported URL");
+    params.req = req;
+    params.body = body;
+    params.resp_handler = resp_handler;
+    params.method = HTTP_REQUEST_METHOD_POST;
+    return net_http_req(&params);
+}
+
+boolean base64url_encode(buffer dest, void *src, bytes len)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    u8 *p = src;
+    for (bytes i = 0; i < len; i += 3) {
+        u32 val = (p[i] << 16);
+        if (i + 1 < len) val |= (p[i + 1] << 8);
+        if (i + 2 < len) val |= p[i + 2];
+        if (!push_character(dest, table[(val >> 18) & 0x3f])) return false;
+        if (!push_character(dest, table[(val >> 12) & 0x3f])) return false;
+        if (i + 1 < len)
+            if (!push_character(dest, table[(val >> 6) & 0x3f])) return false;
+        if (i + 2 < len)
+            if (!push_character(dest, table[val & 0x3f])) return false;
+    }
+    return true;
+}

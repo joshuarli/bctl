@@ -1,0 +1,38 @@
+html/
+latex/
+
+target-root/
+
+Makefile.local
+/tags
+/TAGS
+/GTAGS
+/GPATH
+/GRTAGS
+
+# test artifacts
+/test/go/go.sum
+/test/go/instance.img
+/test/go/image*
+/test/go/.staging/*
+/test/go/image
+/test/runtime/soop.data
+.ruby
+test/e2e/*/main
+
+# Default build directory
+/output
+
+# release
+/release
+latest.txt
+*.md5
+
+# Vendored libaries
+/vendor
+
+# Editor stuff
+*~
+.vscode
+*.swo
+*.swp
