@@ -51,11 +51,16 @@ def main():
     parser.add_argument('--native-binary', type=Path, default=Path('/Applications/Chromium.app/Contents/MacOS/Chromium'))
     parser.add_argument('--native-arg', action='append', default=[])
     parser.add_argument('--shadowdriver', type=Path, default=workflows.ROOT.parent / 'shadowdriver')
+    parser.add_argument('--cpu', action='store_true')
+    parser.add_argument('--bctl-image', type=Path, default=workflows.NANOS_IMAGE)
     args = parser.parse_args()
     args.runtime = 'nanos'
-    trial = workflows.Trial(args, args.path, args.side, resource_pass=False)
+    trial = workflows.Trial(args, args.path, args.side, resource_pass=False, image_path=args.bctl_image)
     receipt = {'status': 'running', 'side': args.side}
     try:
+        if args.cpu:
+            from macos_cpu import trial_snapshot
+            receipt['cpu_before'] = trial_snapshot(trial)
         started = time.perf_counter()
         receipt['startup_ms'] = trial.start()
         entry = 'import os,sys\nfrom grab.cli import main\nsys.exit(main(["--control-url",os.environ["BCTL_CDP_URL"],*sys.argv[1:]]))'
@@ -81,6 +86,11 @@ def main():
             raise RuntimeError(f'offline replay did not verify every page: {report}')
         receipt['offline_replay_s'] = time.perf_counter() - verified
         receipt['total_s'] = time.perf_counter() - started
+        if args.cpu:
+            receipt['cpu_after'] = trial_snapshot(trial)
+            receipt['cpu_s'] = receipt['cpu_after']['cpu_s'] - receipt['cpu_before']['cpu_s']
+            if receipt['cpu_s'] <= 0:
+                raise RuntimeError('nonpositive crawl CPU cost')
         receipt['status'] = 'pass'
     except BaseException as error:
         receipt['status'] = 'fail'

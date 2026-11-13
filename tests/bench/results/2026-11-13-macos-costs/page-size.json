@@ -1,0 +1,2355 @@
+{
+  "completed": true,
+  "attempts": [
+    {
+      "phase": "latency",
+      "round": 0,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/l0d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.48 3.69 5.56 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.68 3.71 5.55 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 846.588124986738,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1178.3751669572666,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/l0s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.68 3.71 5.55 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.68 3.71 5.55 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 870.7074580015615,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1201.610999996774,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/l1s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.68 3.71 5.55 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.68 3.71 5.55 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 837.4908330151811,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1155.409290920943,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/l1d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.54 3.67 5.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.54 3.67 5.53 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 844.6199999889359,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1150.8561249356717,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/l2d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.54 3.67 5.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.54 3.67 5.53 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 803.6285410635173,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1138.016500044614,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/l2s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.54 3.67 5.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.54 3.67 5.53 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 842.967165983282,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1170.8101669792086,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/l3s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.66 3.67 5.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.66 3.67 5.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 748.0624589370564,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1049.9544159974903,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/l3d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.66 3.67 5.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.66 3.67 5.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 828.3470419701189,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1150.135500007309,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/l4d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.66 3.67 5.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.01 3.73 5.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 819.8790829628706,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1142.3751659458503,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/l4s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.01 3.73 5.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.01 3.73 5.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 819.4637920241803,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1151.6966249328107,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "resources",
+      "round": 0,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/r0d",
+      "gate_checks": [],
+      "startup_ms": 906.6152500454336,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1245.436375029385,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07084049994591624,
+          "physical_bytes": 36980176,
+          "processes": {
+            "30967": 21561968,
+            "30978": 13959672,
+            "31561": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.415208249934949,
+          "physical_bytes": 157617392,
+          "processes": {
+            "31566": 116425784,
+            "30967": 21774960,
+            "30978": 13959672,
+            "31562": 2441600,
+            "31565": 1655144,
+            "31561": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7664070829050615,
+          "physical_bytes": 314084880,
+          "processes": {
+            "31566": 272844120,
+            "30967": 21791344,
+            "30978": 13959672,
+            "31562": 2457984,
+            "31565": 1671528,
+            "31561": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1228753329487517,
+          "physical_bytes": 432468952,
+          "processes": {
+            "31566": 305104312,
+            "31577": 86074800,
+            "30967": 21856880,
+            "30978": 13959672,
+            "31562": 2883992,
+            "31565": 2835056
+          }
+        },
+        {
+          "elapsed_s": 1.4688120419159532,
+          "physical_bytes": 365432432,
+          "processes": {
+            "31566": 324290072,
+            "30967": 21856880,
+            "30978": 13926904,
+            "31562": 2802048,
+            "31565": 2753136
+          }
+        },
+        {
+          "elapsed_s": 1.8321131250122562,
+          "physical_bytes": 365514352,
+          "processes": {
+            "31566": 324306456,
+            "30967": 21922416,
+            "30978": 13926904,
+            "31562": 2802048,
+            "31565": 2753136
+          }
+        },
+        {
+          "elapsed_s": 2.1956008329289034,
+          "physical_bytes": 365661808,
+          "processes": {
+            "31566": 324503064,
+            "30967": 21938800,
+            "30978": 13926904,
+            "31562": 2818432,
+            "31565": 2671216
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 432468952
+    },
+    {
+      "phase": "resources",
+      "round": 0,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/r0s",
+      "gate_checks": [],
+      "startup_ms": 940.1807920075953,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1270.002834033221,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06658283295109868,
+          "physical_bytes": 37340624,
+          "processes": {
+            "30967": 21955184,
+            "30978": 13926904,
+            "31597": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.41593854094389826,
+          "physical_bytes": 133991616,
+          "processes": {
+            "31602": 92586992,
+            "30967": 21955184,
+            "30978": 13926904,
+            "31598": 2507160,
+            "31601": 1655144,
+            "31597": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7719802499050274,
+          "physical_bytes": 311627232,
+          "processes": {
+            "31602": 270173456,
+            "30967": 21971568,
+            "30978": 13926904,
+            "31598": 2523544,
+            "31601": 1671528,
+            "31597": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1249448749003932,
+          "physical_bytes": 447689424,
+          "processes": {
+            "31602": 319063408,
+            "31610": 87139568,
+            "30967": 22053488,
+            "30978": 13926904,
+            "31598": 2883992,
+            "31601": 2867824
+          }
+        },
+        {
+          "elapsed_s": 1.4808912079315633,
+          "physical_bytes": 386813504,
+          "processes": {
+            "31602": 345425360,
+            "30967": 22053488,
+            "30978": 13926904,
+            "31598": 2818456,
+            "31601": 2785904
+          }
+        },
+        {
+          "elapsed_s": 1.8508710829773918,
+          "physical_bytes": 386813504,
+          "processes": {
+            "31602": 345425360,
+            "30967": 22053488,
+            "30978": 13926904,
+            "31598": 2818456,
+            "31601": 2785904
+          }
+        },
+        {
+          "elapsed_s": 2.223070790991187,
+          "physical_bytes": 387157568,
+          "processes": {
+            "31602": 345802192,
+            "30967": 22086256,
+            "30978": 13926904,
+            "31598": 2834840,
+            "31601": 2703984
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 447689424
+    },
+    {
+      "phase": "resources",
+      "round": 1,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/r1s",
+      "gate_checks": [],
+      "startup_ms": 997.7624999592081,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1340.2506250422448,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06782008404843509,
+          "physical_bytes": 37455312,
+          "processes": {
+            "30967": 22086256,
+            "30978": 13926904,
+            "31624": 1524072
+          }
+        },
+        {
+          "elapsed_s": 0.41681162500754,
+          "physical_bytes": 160812296,
+          "processes": {
+            "31629": 119276576,
+            "30967": 22086256,
+            "30978": 13926904,
+            "31625": 2523544,
+            "31628": 1655168,
+            "31624": 1556840
+          }
+        },
+        {
+          "elapsed_s": 0.7651031670393422,
+          "physical_bytes": 301223416,
+          "processes": {
+            "31629": 259671312,
+            "30967": 22086256,
+            "30978": 13926904,
+            "31625": 2523544,
+            "31628": 1671552,
+            "31624": 1556840
+          }
+        },
+        {
+          "elapsed_s": 1.1157782920636237,
+          "physical_bytes": 417146840,
+          "processes": {
+            "31629": 318817648,
+            "31637": 57006584,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31628": 2818672,
+            "31625": 2687384
+          }
+        },
+        {
+          "elapsed_s": 1.4665740840137005,
+          "physical_bytes": 388615744,
+          "processes": {
+            "31629": 347194832,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31625": 2802072,
+            "31628": 2769520
+          }
+        },
+        {
+          "elapsed_s": 1.8418736670864746,
+          "physical_bytes": 388615744,
+          "processes": {
+            "31629": 347194832,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31625": 2802072,
+            "31628": 2769520
+          }
+        },
+        {
+          "elapsed_s": 2.2169790420448408,
+          "physical_bytes": 388746816,
+          "processes": {
+            "31629": 347309520,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31625": 2802072,
+            "31628": 2785904
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 417146840
+    },
+    {
+      "phase": "resources",
+      "round": 1,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/r1d",
+      "gate_checks": [],
+      "startup_ms": 944.1474579507485,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1335.237666964531,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06680874992161989,
+          "physical_bytes": 37504464,
+          "processes": {
+            "30967": 22119024,
+            "30978": 13926904,
+            "31651": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.41417120792903006,
+          "physical_bytes": 142511248,
+          "processes": {
+            "31656": 100975576,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31652": 2474368,
+            "31655": 1655144,
+            "31651": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7614399159792811,
+          "physical_bytes": 299666864,
+          "processes": {
+            "31656": 258098424,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31652": 2490752,
+            "31655": 1671528,
+            "31651": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1160705829970539,
+          "physical_bytes": 415953544,
+          "processes": {
+            "31656": 299484552,
+            "31665": 75162768,
+            "30967": 22119024,
+            "30978": 13926904,
+            "31655": 2835056,
+            "31652": 2671000
+          }
+        },
+        {
+          "elapsed_s": 1.4634792079450563,
+          "physical_bytes": 365530688,
+          "processes": {
+            "31656": 324060624,
+            "30967": 22135408,
+            "30978": 13926904,
+            "31652": 2818456,
+            "31655": 2785904
+          }
+        },
+        {
+          "elapsed_s": 1.83100091596134,
+          "physical_bytes": 365530688,
+          "processes": {
+            "31656": 324060624,
+            "30967": 22135408,
+            "30978": 13926904,
+            "31652": 2818456,
+            "31655": 2785904
+          }
+        },
+        {
+          "elapsed_s": 2.2066355829592794,
+          "physical_bytes": 365497920,
+          "processes": {
+            "31656": 324093392,
+            "30967": 22135408,
+            "30978": 13926904,
+            "31652": 2818456,
+            "31655": 2720368
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 415953544
+    },
+    {
+      "phase": "resources",
+      "round": 2,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/r2d",
+      "gate_checks": [],
+      "startup_ms": 951.8025419674814,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1278.2903749030083,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07359908299986273,
+          "physical_bytes": 39831376,
+          "processes": {
+            "30967": 22250096,
+            "30978": 13926904,
+            "31703": 2244992,
+            "31701": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.4235619999235496,
+          "physical_bytes": 159993072,
+          "processes": {
+            "31707": 118293536,
+            "30967": 22250096,
+            "30978": 13926904,
+            "31703": 2490752,
+            "31706": 1671552,
+            "31701": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7695091250352561,
+          "physical_bytes": 299699680,
+          "processes": {
+            "31707": 257967376,
+            "30967": 22250096,
+            "30978": 13926904,
+            "31703": 2507136,
+            "31706": 1687936,
+            "31701": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1220620420062914,
+          "physical_bytes": 419411120,
+          "processes": {
+            "31707": 299681184,
+            "31715": 78390968,
+            "30967": 22250096,
+            "30978": 13926904,
+            "31703": 2720128,
+            "31706": 2687600
+          }
+        },
+        {
+          "elapsed_s": 1.4799393749563023,
+          "physical_bytes": 365006424,
+          "processes": {
+            "31707": 323732992,
+            "30967": 22250096,
+            "30978": 13713912,
+            "31703": 2818432,
+            "31706": 2687600
+          }
+        },
+        {
+          "elapsed_s": 1.858580374973826,
+          "physical_bytes": 365006424,
+          "processes": {
+            "31707": 323732992,
+            "30967": 22250096,
+            "30978": 13713912,
+            "31703": 2818432,
+            "31706": 2687600
+          }
+        },
+        {
+          "elapsed_s": 2.2376266249921173,
+          "physical_bytes": 365039192,
+          "processes": {
+            "31707": 323814912,
+            "30967": 22250096,
+            "30978": 13713912,
+            "31703": 2818432,
+            "31706": 2638448
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 419411120
+    },
+    {
+      "phase": "resources",
+      "round": 2,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/r2s",
+      "gate_checks": [],
+      "startup_ms": 921.7098749941215,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1260.3432500036433,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06523258297238499,
+          "physical_bytes": 37537256,
+          "processes": {
+            "30967": 22348400,
+            "30978": 13713912,
+            "31743": 1556864
+          }
+        },
+        {
+          "elapsed_s": 0.41066299995873123,
+          "physical_bytes": 176262432,
+          "processes": {
+            "31762": 134366264,
+            "30967": 22659696,
+            "30978": 13713912,
+            "31744": 2490776,
+            "31756": 1655144,
+            "31743": 1589632
+          }
+        },
+        {
+          "elapsed_s": 0.7641661249799654,
+          "physical_bytes": 328879632,
+          "processes": {
+            "31762": 286754088,
+            "30967": 22872688,
+            "30978": 13713912,
+            "31744": 2490776,
+            "31756": 1671528,
+            "31743": 1589632
+          }
+        },
+        {
+          "elapsed_s": 1.109190082992427,
+          "physical_bytes": 445919880,
+          "processes": {
+            "31762": 319358296,
+            "31795": 84468928,
+            "30967": 22889072,
+            "30978": 13713912,
+            "31744": 2900376,
+            "31756": 2835056
+          }
+        },
+        {
+          "elapsed_s": 1.4618781669996679,
+          "physical_bytes": 387796520,
+          "processes": {
+            "31762": 345736632,
+            "30967": 22938224,
+            "30978": 13713912,
+            "31744": 2851224,
+            "31756": 2753136
+          }
+        },
+        {
+          "elapsed_s": 1.8039408329641446,
+          "physical_bytes": 387796520,
+          "processes": {
+            "31762": 345736632,
+            "30967": 22938224,
+            "30978": 13713912,
+            "31744": 2851224,
+            "31756": 2753136
+          }
+        },
+        {
+          "elapsed_s": 2.1533911250298843,
+          "physical_bytes": 388075048,
+          "processes": {
+            "31762": 346097080,
+            "30967": 22938224,
+            "30978": 13713912,
+            "31744": 2851224,
+            "31756": 2671216
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 445919880
+    },
+    {
+      "phase": "resources",
+      "round": 3,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/r3s",
+      "gate_checks": [],
+      "startup_ms": 892.8525829687715,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1221.312667010352,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07943454210180789,
+          "physical_bytes": 38127056,
+          "processes": {
+            "30967": 22954608,
+            "30978": 13713912,
+            "31903": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.42257183406036347,
+          "physical_bytes": 174329096,
+          "processes": {
+            "31941": 132154448,
+            "30967": 23020144,
+            "30978": 13713912,
+            "31910": 2425216,
+            "31937": 1655144,
+            "31903": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7683780840598047,
+          "physical_bytes": 337104376,
+          "processes": {
+            "31941": 294896960,
+            "30967": 23020144,
+            "30978": 13713912,
+            "31910": 2441600,
+            "31937": 1671528,
+            "31903": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1510317920474336,
+          "physical_bytes": 467956672,
+          "processes": {
+            "31941": 340477344,
+            "31990": 85222856,
+            "30967": 23118448,
+            "30978": 13713912,
+            "31910": 2851200,
+            "31937": 2818672
+          }
+        },
+        {
+          "elapsed_s": 1.4984637920279056,
+          "physical_bytes": 387812904,
+          "processes": {
+            "31941": 345654736,
+            "30967": 23118448,
+            "30978": 13713912,
+            "31910": 2785664,
+            "31937": 2736752
+          }
+        },
+        {
+          "elapsed_s": 1.8448434170568362,
+          "physical_bytes": 387829288,
+          "processes": {
+            "31941": 345671120,
+            "30967": 23118448,
+            "30978": 13713912,
+            "31910": 2785664,
+            "31937": 2736752
+          }
+        },
+        {
+          "elapsed_s": 2.1909008340444416,
+          "physical_bytes": 388222504,
+          "processes": {
+            "31941": 346129872,
+            "30967": 23118448,
+            "30978": 13713912,
+            "31910": 2802048,
+            "31937": 2654832
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 467956672
+    },
+    {
+      "phase": "resources",
+      "round": 3,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/r3d",
+      "gate_checks": [],
+      "startup_ms": 1203.1503750476986,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1546.1085831047967,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06448558298870921,
+          "physical_bytes": 38290896,
+          "processes": {
+            "30967": 23118448,
+            "30978": 13713912,
+            "32060": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.40255604102276266,
+          "physical_bytes": 98487488,
+          "processes": {
+            "32066": 56198128,
+            "30967": 23118448,
+            "30978": 13713912,
+            "32061": 2425216,
+            "32065": 1671552,
+            "32060": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7594522499712184,
+          "physical_bytes": 227478888,
+          "processes": {
+            "32066": 185074816,
+            "30967": 23216776,
+            "30978": 13713912,
+            "32061": 2425216,
+            "32065": 1687936,
+            "32060": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.4640371659770608,
+          "physical_bytes": 441070552,
+          "processes": {
+            "32066": 312411600,
+            "32166": 87287408,
+            "30967": 23233160,
+            "30978": 13713912,
+            "32061": 2867608,
+            "32065": 1786240
+          }
+        },
+        {
+          "elapsed_s": 1.8087702080374584,
+          "physical_bytes": 360484248,
+          "processes": {
+            "32066": 319112704,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32061": 2802072,
+            "32065": 1769856
+          }
+        },
+        {
+          "elapsed_s": 2.158864040975459,
+          "physical_bytes": 360484248,
+          "processes": {
+            "32066": 319112704,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32061": 2802072,
+            "32065": 1769856
+          }
+        },
+        {
+          "elapsed_s": 2.50886449997779,
+          "physical_bytes": 360484248,
+          "processes": {
+            "32066": 319112704,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32061": 2802072,
+            "32065": 1769856
+          }
+        }
+      ],
+      "resource_errors": [
+        "process set changed during footprint collection"
+      ],
+      "sampled_peak_physical_bytes": 441070552
+    },
+    {
+      "phase": "resources",
+      "round": 4,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/r4d",
+      "gate_checks": [],
+      "startup_ms": 950.2737079747021,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1271.4287920389324,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06754616694524884,
+          "physical_bytes": 38438376,
+          "processes": {
+            "30967": 23233160,
+            "30978": 13746680,
+            "32242": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.41535416699480265,
+          "physical_bytes": 140987608,
+          "processes": {
+            "32247": 98518024,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32243": 2474368,
+            "32246": 1655144,
+            "32242": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.765854874975048,
+          "physical_bytes": 302894536,
+          "processes": {
+            "32247": 260392184,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32243": 2490752,
+            "32246": 1671528,
+            "32242": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.123109249980189,
+          "physical_bytes": 421114792,
+          "processes": {
+            "32247": 299566472,
+            "32255": 79455640,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32246": 2703984,
+            "32243": 2654616
+          }
+        },
+        {
+          "elapsed_s": 1.4814226670423523,
+          "physical_bytes": 365842032,
+          "processes": {
+            "32247": 323536360,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32243": 2802072,
+            "32246": 2720368
+          }
+        },
+        {
+          "elapsed_s": 1.8582200419623405,
+          "physical_bytes": 365842032,
+          "processes": {
+            "32247": 323536360,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32243": 2802072,
+            "32246": 2720368
+          }
+        },
+        {
+          "elapsed_s": 2.2327037090435624,
+          "physical_bytes": 365874800,
+          "processes": {
+            "32247": 323601896,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32243": 2802072,
+            "32246": 2687600
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 421114792
+    },
+    {
+      "phase": "resources",
+      "round": 4,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/r4s",
+      "gate_checks": [],
+      "startup_ms": 910.9927919926122,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1235.3405420435593,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07428620895370841,
+          "physical_bytes": 40634216,
+          "processes": {
+            "30967": 23233160,
+            "30978": 13746680,
+            "32288": 2244992,
+            "32286": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.42844379192683846,
+          "physical_bytes": 182357304,
+          "processes": {
+            "32295": 139854928,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32288": 2474368,
+            "32291": 1687936,
+            "32286": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7869393340079114,
+          "physical_bytes": 341052968,
+          "processes": {
+            "32295": 298534208,
+            "30967": 23233160,
+            "30978": 13746680,
+            "32288": 2490752,
+            "32291": 1687936,
+            "32286": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1404923750087619,
+          "physical_bytes": 461681408,
+          "processes": {
+            "32295": 334415264,
+            "32310": 84829400,
+            "30967": 23249544,
+            "30978": 13746680,
+            "32291": 2851440,
+            "32288": 2834840
+          }
+        },
+        {
+          "elapsed_s": 1.5050723749445751,
+          "physical_bytes": 388664896,
+          "processes": {
+            "32295": 346342864,
+            "30967": 23249544,
+            "30978": 13746680,
+            "32291": 2769520,
+            "32288": 2752896
+          }
+        },
+        {
+          "elapsed_s": 1.8814004589803517,
+          "physical_bytes": 388664896,
+          "processes": {
+            "32295": 346342864,
+            "30967": 23249544,
+            "30978": 13746680,
+            "32291": 2769520,
+            "32288": 2752896
+          }
+        },
+        {
+          "elapsed_s": 2.232778333942406,
+          "physical_bytes": 388812352,
+          "processes": {
+            "32295": 346572240,
+            "30967": 23249544,
+            "30978": 13746680,
+            "32288": 2752896,
+            "32291": 2687600
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 461681408
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/c0d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.38 3.75 5.47 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.38 3.75 5.47 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 67797570,
+            "system": 21472763,
+            "child_user": 163566168,
+            "child_system": 224022574
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 941232,
+            "system": 502965,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 19.929303
+      },
+      "startup_ms": 841.042083920911,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1184.7926249029115,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 67858684,
+            "system": 21611866,
+            "child_user": 167888821,
+            "child_system": 227996488
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 957749,
+            "system": 509537,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32366": {
+            "start": 16271247909711,
+            "user": 78609,
+            "system": 187664,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32367": {
+            "start": 16271248435513,
+            "user": 17893024,
+            "system": 12447869,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32364": {
+            "start": 16271244897498,
+            "user": 71865,
+            "system": 166672,
+            "child_user": 32628,
+            "child_system": 41559
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 21.572626458333332
+      },
+      "cpu_s": 1.643323458333331,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/c0s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.38 3.75 5.47 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.38 3.75 5.47 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 67947569,
+            "system": 21826257,
+            "child_user": 169344199,
+            "child_system": 233055763
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 958262,
+            "system": 509746,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 20.568408166666668
+      },
+      "startup_ms": 817.8701660363004,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1139.8689170600846,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68008838,
+            "system": 21976242,
+            "child_user": 173536716,
+            "child_system": 237021459
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 975385,
+            "system": 516160,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32437": {
+            "start": 16271293171817,
+            "user": 66757,
+            "system": 158877,
+            "child_user": 31453,
+            "child_system": 43224
+          },
+          "32439": {
+            "start": 16271296179077,
+            "user": 77861,
+            "system": 183617,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32440": {
+            "start": 16271296703975,
+            "user": 17350101,
+            "system": 11842143,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.157868041666667
+      },
+      "cpu_s": 1.5894598749999993,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/c1s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.38 3.75 5.47 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.43 3.75 5.46 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68100627,
+            "system": 22202960,
+            "child_user": 174935372,
+            "child_system": 242046491
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 975938,
+            "system": 516682,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 21.19908625
+      },
+      "startup_ms": 819.1754999570549,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1132.0125419879332,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68161360,
+            "system": 22347308,
+            "child_user": 179301089,
+            "child_system": 246064242
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 993432,
+            "system": 523721,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32483": {
+            "start": 16271344476788,
+            "user": 16925729,
+            "system": 12133290,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32482": {
+            "start": 16271343987180,
+            "user": 77739,
+            "system": 183389,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32480": {
+            "start": 16271340934479,
+            "user": 67515,
+            "system": 163530,
+            "child_user": 32685,
+            "child_system": 42231
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.79238583333333
+      },
+      "cpu_s": 1.59329958333333,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/c1d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.43 3.75 5.46 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.43 3.75 5.46 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68256673,
+            "system": 22563228,
+            "child_user": 180688181,
+            "child_system": 251889487
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 993748,
+            "system": 523901,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 21.87146741666667
+      },
+      "startup_ms": 812.1606669155881,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1141.4142500143498,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68318236,
+            "system": 22707716,
+            "child_user": 184985335,
+            "child_system": 255819545
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1010411,
+            "system": 530493,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32591": {
+            "start": 16271391247881,
+            "user": 37311,
+            "system": 107287,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32592": {
+            "start": 16271391660520,
+            "user": 17372691,
+            "system": 12321231,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32587": {
+            "start": 16271388370023,
+            "user": 70380,
+            "system": 147148,
+            "child_user": 26880,
+            "child_system": 36194
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.47878575
+      },
+      "cpu_s": 1.6073183333333319,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/c2d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.43 3.75 5.46 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.43 3.75 5.46 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68409796,
+            "system": 22924986,
+            "child_user": 186369151,
+            "child_system": 260847256
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1011170,
+            "system": 530871,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.50388458333333
+      },
+      "startup_ms": 858.3817920880392,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1161.6763330530375,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68473297,
+            "system": 23068810,
+            "child_user": 190779432,
+            "child_system": 264925315
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1027725,
+            "system": 537672,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32683": {
+            "start": 16271439790166,
+            "user": 17747667,
+            "system": 13065467,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32682": {
+            "start": 16271439249966,
+            "user": 77461,
+            "system": 172913,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32680": {
+            "start": 16271436213313,
+            "user": 67692,
+            "system": 158339,
+            "child_user": 31705,
+            "child_system": 43833
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.17405533333333
+      },
+      "cpu_s": 1.6701707500000005,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/c2s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.31 3.73 5.44 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.31 3.73 5.44 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68567640,
+            "system": 23277501,
+            "child_user": 192215016,
+            "child_system": 269827938
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1028060,
+            "system": 537812,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.14391529166667
+      },
+      "startup_ms": 849.2710830178112,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1186.6516249720007,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68631563,
+            "system": 23416998,
+            "child_user": 196709174,
+            "child_system": 273858751
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1044899,
+            "system": 544716,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32731": {
+            "start": 16271485267526,
+            "user": 71127,
+            "system": 164630,
+            "child_user": 26009,
+            "child_system": 35192
+          },
+          "32739": {
+            "start": 16271488596280,
+            "user": 18278094,
+            "system": 12684875,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32736": {
+            "start": 16271488156173,
+            "user": 69709,
+            "system": 155863,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.820483333333332
+      },
+      "cpu_s": 1.6765680416666626,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/c3s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.31 3.73 5.44 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.31 3.73 5.44 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68726790,
+            "system": 23625974,
+            "child_user": 198333653,
+            "child_system": 278956023
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1045679,
+            "system": 545294,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.801392208333333
+      },
+      "startup_ms": 802.2789160022512,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1112.937833997421,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68788932,
+            "system": 23776155,
+            "child_user": 202751750,
+            "child_system": 283083893
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1062504,
+            "system": 551551,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32843": {
+            "start": 16271538408829,
+            "user": 17295589,
+            "system": 12387978,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32833": {
+            "start": 16271535327365,
+            "user": 71782,
+            "system": 157226,
+            "child_user": 24693,
+            "child_system": 33781
+          },
+          "32841": {
+            "start": 16271538076147,
+            "user": 73126,
+            "system": 166946,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.426079416666667
+      },
+      "cpu_s": 1.6246872083333344,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/c3d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.31 3.73 5.44 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.37 3.73 5.43 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68884992,
+            "system": 23997151,
+            "child_user": 204176852,
+            "child_system": 288157547
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1062902,
+            "system": 551718,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.451298416666667
+      },
+      "startup_ms": 826.2564589967951,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1151.6239589545876,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 68945576,
+            "system": 24144387,
+            "child_user": 208365807,
+            "child_system": 292145684
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1079330,
+            "system": 558326,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32914": {
+            "start": 16271583306875,
+            "user": 66347,
+            "system": 142329,
+            "child_user": 22072,
+            "child_system": 30126
+          },
+          "32921": {
+            "start": 16271586690057,
+            "user": 17119330,
+            "system": 12352634,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "32920": {
+            "start": 16271586269797,
+            "user": 32242,
+            "system": 102615,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.046116875
+      },
+      "cpu_s": 1.5948184583333322,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "variant": "default",
+      "artifacts": ".work/tmp/pages-de08_v4c/c4d",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.37 3.73 5.43 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.37 3.73 5.43 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 69042974,
+            "system": 24355279,
+            "child_user": 209748622,
+            "child_system": 297095618
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1079664,
+            "system": 558499,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.07836066666667
+      },
+      "startup_ms": 822.190499980934,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1154.000415932387,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 69106322,
+            "system": 24508677,
+            "child_user": 214092858,
+            "child_system": 301192209
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1096242,
+            "system": 565268,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "33014": {
+            "start": 16271633849147,
+            "user": 31537,
+            "system": 100693,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "33017": {
+            "start": 16271634301788,
+            "user": 17183038,
+            "system": 12133108,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "33011": {
+            "start": 16271630906047,
+            "user": 67418,
+            "system": 146725,
+            "child_user": 22219,
+            "child_system": 32741
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.67829395833333
+      },
+      "cpu_s": 1.5999332916666624,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "variant": "small-pages",
+      "artifacts": ".work/tmp/pages-de08_v4c/c4s",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.37 3.73 5.43 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.37 3.73 5.43 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 69209474,
+            "system": 24738781,
+            "child_user": 215471149,
+            "child_system": 306383169
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1096576,
+            "system": 565441,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.72769125
+      },
+      "startup_ms": 827.4076660163701,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1153.6320840241387,
+      "cpu_after": {
+        "processes": {
+          "30967": {
+            "start": 16270062832634,
+            "user": 69269786,
+            "system": 24888467,
+            "child_user": 219694055,
+            "child_system": 310294894
+          },
+          "30978": {
+            "start": 16270139671675,
+            "user": 1113182,
+            "system": 571977,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "33107": {
+            "start": 16271682338070,
+            "user": 17490984,
+            "system": 12014768,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "33106": {
+            "start": 16271681850893,
+            "user": 77447,
+            "system": 191552,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "33104": {
+            "start": 16271678879550,
+            "user": 70152,
+            "system": 161172,
+            "child_user": 33306,
+            "child_system": 44391
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.329838875
+      },
+      "cpu_s": 1.6021476250000006,
+      "status": "pass",
+      "timing_status": "clean"
+    }
+  ],
+  "summary": {
+    "default": {
+      "total_ms": {
+        "n": 5,
+        "median": 1150.135500007309,
+        "min": 1138.016500044614,
+        "max": 1178.3751669572666
+      },
+      "startup_ms": {
+        "n": 5,
+        "median": 828.3470419701189,
+        "min": 803.6285410635173,
+        "max": 846.588124986738
+      },
+      "cpu_s": {
+        "n": 5,
+        "median": 1.6073183333333319,
+        "min": 1.5948184583333322,
+        "max": 1.6701707500000005
+      },
+      "sampled_peak_physical_bytes": {
+        "n": 5,
+        "median": 421114792,
+        "min": 415953544,
+        "max": 441070552
+      }
+    },
+    "small-pages": {
+      "total_ms": {
+        "n": 5,
+        "median": 1155.409290920943,
+        "min": 1049.9544159974903,
+        "max": 1201.610999996774
+      },
+      "startup_ms": {
+        "n": 5,
+        "median": 837.4908330151811,
+        "min": 748.0624589370564,
+        "max": 870.7074580015615
+      },
+      "cpu_s": {
+        "n": 5,
+        "median": 1.6021476250000006,
+        "min": 1.5894598749999993,
+        "max": 1.6765680416666626
+      },
+      "sampled_peak_physical_bytes": {
+        "n": 5,
+        "median": 447689424,
+        "min": 417146840,
+        "max": 467956672
+      }
+    }
+  },
+  "method": "five alternating fresh-profile samples per image and phase; complete Shadowdriver form with accessible textbox, input, click, submission and PNG checks; latency, footprint, and CPU separate; same kernel and rootfs manifest; only candidate tuple sets transparent_hugepage=never; two vCPUs and 4096 MiB",
+  "images": {
+    "default": "/Users/josh/d/bctl/.work/images/nanos-helium.img",
+    "small-pages": "/Users/josh/d/bctl/.work/images/nanos-helium-no-thp.img"
+  },
+  "source_commit": "4637678aa31164314653c6443af787558f6731e1",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/.work/tmp/nanos-page-size.py": "d55b1dac5cd6748e1d0ce105ae84e017aa1f155cdc7f144352be05bc0bbdffc3",
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "98bee650ee01970f6cba872d21b6fa358785540a8425c255de2d50c198a3504a",
+    "/Users/josh/d/bctl/tests/bench/macos_cpu.py": "2347baac43692a6e639eab383f63fbbe04ae043112004deaf7bc1da8a0b50f1c",
+    "/Users/josh/d/bctl/target/release/bctl": "f7c6a1a185b12d0a7f0359390ccbe13f89775495427d50563d3bb3b131449627",
+    "/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs": "8f4ae86b91d5caf9b1dfd298988c98f67dcae1b7da667aafdbebe9b47f5cdcb7",
+    "/Users/josh/d/bctl/.work/toolchain/node-v26.13.0-darwin-arm64/bin/node": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "/Users/josh/d/shadowdriver/ts/dist/src/browser.js": "ff0cef434b3327d3626aefcb1a3c2bc094d379f10a520112a7d1321f1587211e",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/runtime/nanos-arm64/hydrogen/nanos/output/platform/virt/bin/kernel.img": "661a29f4e66153fe3d6d2d18a521debdebae638e687ada7d83cb465d9f14a37a",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img.manifest": "bd585063ee82ae9234d17adf232e4e6d92f26903db8184553c455bd3177e7620",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/images/nanos-helium-no-thp.img": "6076752327895b3d6afa9273bc5612dd37f729cbd5036fd9ad80e6b7d3a03246",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7",
+    "/Users/josh/d/bctl/.work/images/nanos-helium-no-thp.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7"
+  },
+  "node_version": "v26.13.0",
+  "host": {
+    "model": "Mac17,7",
+    "cpus": 18
+  },
+  "changed_inputs": [],
+  "shadowdriver_final_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab"
+}

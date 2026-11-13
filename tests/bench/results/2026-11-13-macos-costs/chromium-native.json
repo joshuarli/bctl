@@ -1,0 +1,126 @@
+{
+  "completed": true,
+  "attempts": [
+    {
+      "round": 0,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 10.82 8.77 7.09 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 10.82 8.77 7.09 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "trace": ".work/tmp/ntrace-tpx9h65o/0/chromium-startup.json",
+      "startup_ms": 448.57733394019306,
+      "clean": true,
+      "browser": "Chrome/155.0.8059.84",
+      "trace_events": 13300,
+      "trace_sha256": "9b125c74df1ca953f9729ebc08642f42cdf083ee8e2a27a6b6983bb5399c29c7",
+      "status": "pass"
+    },
+    {
+      "round": 1,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 9.93 8.64 7.06 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 9.93 8.64 7.06 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "trace": ".work/tmp/ntrace-tpx9h65o/1/chromium-startup.json",
+      "startup_ms": 338.01083301659673,
+      "clean": true,
+      "browser": "Chrome/155.0.8059.84",
+      "trace_events": 13507,
+      "trace_sha256": "765a5f9f2bb553fcd898b062fef00c6805ce4b6089e1f45c691b7eb38e5b1fb7",
+      "status": "pass"
+    },
+    {
+      "round": 2,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 9.70 8.61 7.06 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 9.70 8.61 7.06 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "trace": ".work/tmp/ntrace-tpx9h65o/2/chromium-startup.json",
+      "startup_ms": 363.58662496786565,
+      "clean": true,
+      "browser": "Chrome/155.0.8059.84",
+      "trace_events": 12990,
+      "trace_sha256": "db7fdeb42f3ec6b67b57c83d60041feda705ca511a39c3b40a10ab03b06930c5",
+      "status": "pass"
+    },
+    {
+      "round": 3,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 9.78 8.67 7.10 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 9.78 8.67 7.10 }",
+          "diagnostic": ""
+        }
+      ],
+      "trace": ".work/tmp/ntrace-tpx9h65o/3/chromium-startup.json",
+      "startup_ms": 360.6555419974029,
+      "clean": true,
+      "browser": "Chrome/155.0.8059.84",
+      "trace_events": 12938,
+      "trace_sha256": "0f3b956d0aca4277b1c3c621dfda3ec9a8de628db69b66ca9c803297e11fea48",
+      "status": "pass"
+    },
+    {
+      "round": 4,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 9.56 8.65 7.10 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 9.56 8.65 7.10 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "trace": ".work/tmp/ntrace-tpx9h65o/4/chromium-startup.json",
+      "startup_ms": 312.9927080590278,
+      "clean": true,
+      "browser": "Chrome/155.0.8059.84",
+      "trace_events": 13235,
+      "trace_sha256": "38f081b1affc2e62ecc864f5eac79aead3c63b583e3cb38020d3c3a2c868200d",
+      "status": "pass"
+    }
+  ],
+  "method": "diagnostic only; fresh native profiles; software rendering; startup,toplevel tracing for two seconds; no performance claim"
+}

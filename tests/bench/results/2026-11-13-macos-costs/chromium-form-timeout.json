@@ -1,0 +1,99 @@
+{
+  "started": "20261113T050623Z",
+  "completed": false,
+  "runtime": "nanos",
+  "native_binary": "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "native_version": "Chromium 155.0.8059.84",
+  "bctl_commit": "4637678aa31164314653c6443af787558f6731e1",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "attempts": [
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "native",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.36 8.19 7.50 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.36 8.19 7.50 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-vav1zdbn/l0n0",
+      "startup_ms": 330.6448330404237,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9797,
+        "product": "Chrome/155.0.8059.84"
+      },
+      "task_ms": 520.288584055379,
+      "total_ms": 850.946709048003,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "bctl",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.36 8.19 7.50 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-vav1zdbn/l0b0",
+      "startup_ms": 1150.2805829513818,
+      "browser_version": "Helium/0.20.3.1",
+      "status": "fail",
+      "error": "Command '['node', '/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs']' timed out after 120 seconds"
+    }
+  ],
+  "summary": {},
+  "bctl_dirty": true,
+  "shadowdriver_dirty": false,
+  "node_version": "v26.13.0",
+  "agent_browser_version": "agent-browser 0.42.0",
+  "native_extra_args": [
+    "--disable-gpu"
+  ],
+  "cpu_rounds": 0,
+  "bctl_image": "/Users/josh/d/bctl/.work/tmp/chromium-trace.img",
+  "cpu_method": "separate fresh-profile passes; libproc RUSAGE_INFO_V1 live processes plus reaped-child CPU; Mach timebase conversion; includes driver, fixtures, clients, daemon, supervisor and VMM or native browser tree, plus process discovery; excludes cleanup; snapshots are not atomic",
+  "vm_configuration": "bctl production defaults, actual resources recorded on resource attempts",
+  "artifacts_sha256": {
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "98bee650ee01970f6cba872d21b6fa358785540a8425c255de2d50c198a3504a",
+    "/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs": "8f4ae86b91d5caf9b1dfd298988c98f67dcae1b7da667aafdbebe9b47f5cdcb7",
+    "/Users/josh/d/bctl/target/release/bctl": "f7c6a1a185b12d0a7f0359390ccbe13f89775495427d50563d3bb3b131449627",
+    "/Users/josh/d/bctl/.work/interop/agent-browser/bin/agent-browser": "86c6c86762960b15c0502472c296c8ccb46f96d18d0c486ca689e06fd6dc8125",
+    "/Users/josh/d/bctl/.work/toolchain/node-v26.13.0-darwin-arm64/bin/node": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium": "a67f1a4e5e8580115fce0615a7426b4342ced9fd836a1f968f7963e1964f225c",
+    "/Users/josh/d/shadowdriver/ts/dist/src/browser.js": "ff0cef434b3327d3626aefcb1a3c2bc094d379f10a520112a7d1321f1587211e",
+    "/Users/josh/d/shadowdriver/py/python/shadowdriver/_native.abi3.so": "8bb456f7bfc8b05caa5cf8c565fb229b172050f3b7782a2a167c94d23f118a1f",
+    "/Users/josh/d/bctl/.work/tmp/chromium-trace.img": "14bb36cf506d29abc8af73fee8ed6eefc2c8b642bbfa5fafcc219b0502c135a2",
+    "/Users/josh/d/bctl/.work/tmp/chromium-trace.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de"
+  },
+  "host": {
+    "model": "Mac17,7",
+    "cpus": 18,
+    "memory_bytes": 51539607552,
+    "macos": "27.0.1"
+  },
+  "method": "latency and physical-footprint sampling use separate fresh-profile passes; alternating sides; OS and image caches warm; default VM resources; native unrestricted CPU",
+  "resource_method": "deduplicated Summary Footprint of driver, fixtures, clients, daemon, supervisor, VMM or native browser tree; includes compressed pages; 250 ms best-effort sampling; not an exact peak",
+  "fixture_transport": "identical IPv4 loopback URL for host HTTP, native browser, and guest browser; guest proxy explicitly permits only 127.0.0.1/32"
+}

@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
@@ -25,7 +26,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rounds', type=int, default=5)
     parser.add_argument('--out', type=Path, required=True)
-    parser.add_argument('--image', type=Path, default=workflows.ROOT / '.work/images/nanos-helium.img')
+    parser.add_argument('--image', type=Path, default=workflows.NANOS_IMAGE)
+    parser.add_argument('--chromium-trace', action='store_true', help='require a diagnostic image with BCTL_TRACE_CHROMIUM=1; retain its startup trace')
     args = parser.parse_args()
     if sys.platform != 'darwin' or args.rounds < 1:
         parser.error('requires macOS and positive rounds')
@@ -44,10 +46,7 @@ def main():
     trial_args = argparse.Namespace(native_binary=Path('/Applications/Chromium.app/Contents/MacOS/Chromium'), native_arg=[], runtime='nanos')
     try:
         for index in range(args.rounds):
-            trial = workflows.Trial(trial_args, home / str(index), 'bctl', resource_pass=False)
-            image_link = trial.path / 'bctl/images/nanos-helium.img'
-            image_link.unlink()
-            image_link.symlink_to(args.image.resolve())
+            trial = workflows.Trial(trial_args, home / str(index), 'bctl', resource_pass=False, image_path=args.image)
             trial.env |= {'BCTL_STARTUP_TRACE': '1', 'LIBKRUN_TIMING': '1'}
             attempt = {'round': index, 'gate_checks': [], 'artifacts': str(trial.path.relative_to(workflows.ROOT)), 'console_observations': []}
             receipt['attempts'].append(attempt)
@@ -76,6 +75,22 @@ def main():
                 attempt['end_epoch_us'] = time.time_ns() // 1000
                 attempt['browser'] = trial.version
                 attempt['clean'] = workflows.gate(attempt['gate_checks'], True) and clean
+                if args.chromium_trace:
+                    trace = trial.path / 'bctl/files/bench/chromium-startup.json'
+                    deadline = time.monotonic() + 10
+                    while True:
+                        try:
+                            trace_data = json.loads(trace.read_bytes())
+                            if not trace_data['traceEvents']:
+                                raise ValueError('Chromium recorded no trace events')
+                            attempt['chromium_trace_events'] = len(trace_data['traceEvents'])
+                            attempt['chromium_trace_sha256'] = digest(trace)
+                            attempt['chromium_trace'] = str(trace.relative_to(workflows.ROOT))
+                            break
+                        except (OSError, ValueError):
+                            if time.monotonic() >= deadline:
+                                raise
+                            time.sleep(0.05)
                 attempt['status'] = 'pass'
             except Exception as error:
                 attempt['status'] = 'fail'

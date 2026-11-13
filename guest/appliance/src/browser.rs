@@ -1,10 +1,11 @@
 use std::fs::{self, OpenOptions};
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::layout;
+use crate::{accounts, layout};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Display {
@@ -44,14 +45,32 @@ pub fn exec() -> Result<ExitCode, String> {
     let log_path = layout::log("browser.log");
     let log = OpenOptions::new().append(true).open(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let stderr = log.try_clone().map_err(|e| format!("{}: {e}", log_path.display()))?;
-    crate::startup::mark("chromium_exec_begin");
-    let error = Command::new(&executable)
-        .args(arguments(display, &layout::profile_dir(), &layout::start_url()))
+    let mut command = Command::new(&executable);
+    command.args(arguments(display, &layout::profile_dir(), &layout::start_url()))
         .envs(archive_environment(root))
         .stdout(log)
-        .stderr(stderr)
-        .exec();
+        .stderr(stderr);
+    if let Some(path) = startup_trace()? {
+        let mut output = OsString::from("--trace-startup-file=");
+        output.push(path);
+        command.args(["--trace-startup=startup,toplevel", "--trace-startup-duration=2", "--trace-startup-format=json"])
+            .arg(output);
+    }
+    crate::startup::mark("chromium_exec_begin");
+    let error = command.exec();
     Err(format!("exec {}: {error}", executable.display()))
+}
+
+fn startup_trace() -> Result<Option<PathBuf>, String> {
+    match std::env::var("BCTL_TRACE_CHROMIUM") {
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Ok(value) if value == "1" => {
+            let browser = accounts::user(layout::BROWSER_USER)?;
+            Ok(Some(layout::downloads_dir(&browser.home).join("chromium-startup.json")))
+        }
+        Ok(value) => Err(format!("BCTL_TRACE_CHROMIUM must be 1 or unset, not {value:?}")),
+        Err(std::env::VarError::NotUnicode(value)) => Err(format!("BCTL_TRACE_CHROMIUM must be 1 or unset, not {value:?}")),
+    }
 }
 
 fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {

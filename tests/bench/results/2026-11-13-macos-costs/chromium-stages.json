@@ -1,0 +1,96 @@
+[
+  {
+    "backend": "nanos",
+    "stages": [
+      {
+        "name": "BrowserMainRunnerImpl::Initialize",
+        "n": 5,
+        "elapsed_ms": {
+          "median": 332.15,
+          "min": 315.363,
+          "max": 383.045
+        },
+        "reported_thread_cpu_ms": {
+          "median": 91.896,
+          "min": 87.611,
+          "max": 97.381
+        }
+      },
+      {
+        "name": "ChromeBrowserMainParts::CreateProfile",
+        "n": 5,
+        "elapsed_ms": {
+          "median": 111.744,
+          "min": 99.677,
+          "max": 138.899
+        },
+        "reported_thread_cpu_ms": {
+          "median": 31.322,
+          "min": 28.233,
+          "max": 38.359
+        }
+      },
+      {
+        "name": "StartupBrowserCreator::Start",
+        "n": 5,
+        "elapsed_ms": {
+          "median": 115.362,
+          "min": 107.725,
+          "max": 127.636
+        },
+        "reported_thread_cpu_ms": {
+          "median": 35.036,
+          "min": 33.224,
+          "max": 37.544
+        }
+      }
+    ]
+  },
+  {
+    "backend": "native",
+    "stages": [
+      {
+        "name": "BrowserMainRunnerImpl::Initialize",
+        "n": 5,
+        "elapsed_ms": {
+          "median": 164.103,
+          "min": 160.391,
+          "max": 180.508
+        },
+        "reported_thread_cpu_ms": {
+          "median": 120.69,
+          "min": 118.775,
+          "max": 129.344
+        }
+      },
+      {
+        "name": "ChromeBrowserMainParts::CreateProfile",
+        "n": 5,
+        "elapsed_ms": {
+          "median": 26.872,
+          "min": 21.959,
+          "max": 33.066
+        },
+        "reported_thread_cpu_ms": {
+          "median": 15.966,
+          "min": 13.715,
+          "max": 16.935
+        }
+      },
+      {
+        "name": "StartupBrowserCreator::Start",
+        "n": 5,
+        "elapsed_ms": {
+          "median": 121.361,
+          "min": 115.573,
+          "max": 127.782
+        },
+        "reported_thread_cpu_ms": {
+          "median": 89.5,
+          "min": 87.783,
+          "max": 92.408
+        }
+      }
+    ]
+  }
+]

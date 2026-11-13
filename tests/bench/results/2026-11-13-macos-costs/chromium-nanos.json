@@ -1,0 +1,1818 @@
+{
+  "completed": true,
+  "method": "diagnostic only; startup trace and libkrun timing enabled; console observed every 1 ms; wall timestamps correlate host processes and observations, not guest clocks",
+  "bctl_commit": "4637678aa31164314653c6443af787558f6731e1",
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/tests/bench/macos_startup.py": "9fd4bfed6ec802dca55aa37bf284a48430b31c242ff0d03368d14876c26a0b57",
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "98bee650ee01970f6cba872d21b6fa358785540a8425c255de2d50c198a3504a",
+    "/Users/josh/d/bctl/target/release/bctl": "f7c6a1a185b12d0a7f0359390ccbe13f89775495427d50563d3bb3b131449627",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/tmp/chromium-trace.img": "14bb36cf506d29abc8af73fee8ed6eefc2c8b642bbfa5fafcc219b0502c135a2",
+    "/Users/josh/d/bctl/.work/tmp/chromium-trace.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7"
+  },
+  "attempts": [
+    {
+      "round": 0,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.52 5.62 5.68 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.52 5.62 5.68 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-1_oubap7/0",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794545671387887
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794545671439107
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794545671440899
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794545671451661
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794545672048114
+        }
+      ],
+      "begin_epoch_us": 1794545671223135,
+      "startup_ms": 866.1704160040244,
+      "end_epoch_us": 1794545672089318,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "chromium_trace_events": 7508,
+      "chromium_trace_sha256": "4dac2c90c61c4b595f068957d139b5dca8f512283a93d5549029af65a766cb09",
+      "chromium_trace": ".work/tmp/startup-1_oubap7/0/bctl/files/bench/chromium-startup.json",
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794545671477911,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545671477965,
+          "elapsed_us": 53
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794545671852539,
+          "elapsed_us": 374625
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545671912294,
+          "elapsed_us": 434379
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794545672068313,
+          "elapsed_us": 590397
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794545671352149,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794545671352365,
+          "elapsed_us": 217
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794545671360886,
+          "elapsed_us": 8738
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794545671361138,
+          "elapsed_us": 8989
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794545671361401,
+          "elapsed_us": 9253
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794545671361878,
+          "elapsed_us": 9729
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794545671368754,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794545671369452,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794545671369479,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794545671369486,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794545671369508,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794545671369514,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794545671369525,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794545671369529,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794545671369548,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794545671369554,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794545671369559,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794545671369565,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794545671369578,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794545671369582,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794545671477341,
+          "elapsed_us": 125192
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794545671477454,
+          "elapsed_us": 125304
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 678295743737
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 678295745147
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 678295747299
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 678295747639
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 678295747991
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 678295748823
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 678295752701
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 678295753623
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 678295756794
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 678295757465
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 678295757845
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 678295758170
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 678295758968
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678295759387
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678295759779
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 678295760794
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 678295761285
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678295860194
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678295860793
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678295961324
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678295961786
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678296062215
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678296062844
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678296164217
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678296164690
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678296265143
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 678296343352
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 678296343845
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 678296344565
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.40 5.63 5.68 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.40 5.63 5.68 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-1_oubap7/1",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794545677654794
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794545677706294
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794545677706295
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794545677718580
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794545678355587
+        }
+      ],
+      "begin_epoch_us": 1794545677490922,
+      "startup_ms": 911.0312080010772,
+      "end_epoch_us": 1794545678401979,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "chromium_trace_events": 8067,
+      "chromium_trace_sha256": "5f27f3ff40d7d7d7b96f552a7a818e4970dbf2ac76dfdba763b34226f05910d8",
+      "chromium_trace": ".work/tmp/startup-1_oubap7/1/bctl/files/bench/chromium-startup.json",
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794545677747197,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545677747252,
+          "elapsed_us": 55
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794545678112143,
+          "elapsed_us": 364943
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545678176746,
+          "elapsed_us": 429545
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794545678384773,
+          "elapsed_us": 637571
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794545677621479,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794545677621796,
+          "elapsed_us": 318
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794545677629978,
+          "elapsed_us": 8500
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794545677630314,
+          "elapsed_us": 8836
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794545677630653,
+          "elapsed_us": 9174
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794545677631351,
+          "elapsed_us": 9872
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794545677638433,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794545677639294,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794545677639312,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794545677639320,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794545677639329,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794545677639335,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794545677639342,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794545677639348,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794545677639365,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794545677639377,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794545677639384,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794545677639389,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794545677639396,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794545677639401,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794545677746639,
+          "elapsed_us": 125160
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794545677746770,
+          "elapsed_us": 125291
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 678302010419
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 678302011809
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 678302013635
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 678302013889
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 678302014410
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 678302015263
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 678302018592
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 678302019176
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 678302021421
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 678302022092
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 678302022456
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 678302022784
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 678302023999
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678302024378
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678302024778
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 678302025798
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 678302026320
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678302125238
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678302125696
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678302226161
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678302227013
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678302327822
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678302328503
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678302429038
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678302437889
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678302543588
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 678302650721
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 678302651177
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 678302652156
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.81 5.56 5.65 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.83 5.58 5.66 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-1_oubap7/2",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794545688986565
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794545689040506
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794545689040508
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794545689053592
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794545689658163
+        }
+      ],
+      "begin_epoch_us": 1794545688795174,
+      "startup_ms": 904.7317920485511,
+      "end_epoch_us": 1794545689699920,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "chromium_trace_events": 7483,
+      "chromium_trace_sha256": "523350038d55c5c3c1a1d8268ebca5875aea8a691fdfe730e601b048502e6bd7",
+      "chromium_trace": ".work/tmp/startup-1_oubap7/2/bctl/files/bench/chromium-startup.json",
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794545689083517,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545689083588,
+          "elapsed_us": 71
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794545689479156,
+          "elapsed_us": 395635
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545689536123,
+          "elapsed_us": 452602
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794545689680614,
+          "elapsed_us": 597091
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794545688956698,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794545688956947,
+          "elapsed_us": 250
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794545688965166,
+          "elapsed_us": 8469
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794545688965411,
+          "elapsed_us": 8714
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794545688965749,
+          "elapsed_us": 9052
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794545688966240,
+          "elapsed_us": 9543
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794545688972713,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794545688973233,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794545688973245,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794545688973256,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794545688973264,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794545688973270,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794545688973277,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794545688973281,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794545688973293,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794545688973301,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794545688973307,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794545688973313,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794545688973321,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794545688973329,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794545689082990,
+          "elapsed_us": 126292
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794545689083092,
+          "elapsed_us": 126394
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 678313344691
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 678313346098
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 678313348187
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 678313348259
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 678313349053
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 678313349977
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 678313353639
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 678313354245
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 678313356801
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 678313357538
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 678313358022
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 678313358366
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 678313359154
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678313359591
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678313360003
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 678313361227
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 678313361966
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678313460556
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678313461225
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678313562097
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678313562550
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678313663002
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678313663463
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678313766985
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678313767525
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678313869094
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 678313952476
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 678313953865
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 678313954916
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.60 5.55 5.65 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.55 5.56 5.65 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-1_oubap7/3",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794545698978514
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794545699030123
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794545699030125
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794545699042577
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794545699685333
+        }
+      ],
+      "begin_epoch_us": 1794545698798937,
+      "startup_ms": 939.8742499761283,
+      "end_epoch_us": 1794545699738829,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "chromium_trace_events": 8045,
+      "chromium_trace_sha256": "cf5080f26b57de617aa5ad3834039535a9cb807014964710bd5b04375c2d5991",
+      "chromium_trace": ".work/tmp/startup-1_oubap7/3/bctl/files/bench/chromium-startup.json",
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794545699064220,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545699064279,
+          "elapsed_us": 59
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794545699473990,
+          "elapsed_us": 409766
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545699531778,
+          "elapsed_us": 467554
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794545699717274,
+          "elapsed_us": 653048
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794545698940532,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794545698943468,
+          "elapsed_us": 2937
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794545698956389,
+          "elapsed_us": 15858
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794545698956626,
+          "elapsed_us": 16095
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794545698956943,
+          "elapsed_us": 16411
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794545698957534,
+          "elapsed_us": 17003
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794545698964442,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794545698964980,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794545698964992,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794545698964999,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794545698965006,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794545698965011,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794545698965017,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794545698965022,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794545698965031,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794545698965037,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794545698965043,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794545698965047,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794545698965054,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794545698965058,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794545699063591,
+          "elapsed_us": 123059
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794545699063722,
+          "elapsed_us": 123191
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 678323334241
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 678323335664
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 678323337749
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 678323337795
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 678323338142
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 678323339494
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 678323343554
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 678323344170
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 678323346479
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 678323347179
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 678323347587
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 678323347937
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 678323348710
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678323349053
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678323349416
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 678323350540
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 678323351056
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678323449798
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678323455000
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678323559518
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678323560182
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678323660896
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678323661341
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678323764788
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678323765203
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678323865756
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 678323980016
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 678323980550
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 678323982765
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.55 5.56 5.65 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.67 5.60 5.67 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-1_oubap7/4",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794545704061081
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794545704111407
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794545704111409
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794545704123814
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794545704699865
+        }
+      ],
+      "begin_epoch_us": 1794545703870888,
+      "startup_ms": 869.4353749742731,
+      "end_epoch_us": 1794545704740336,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "chromium_trace_events": 8072,
+      "chromium_trace_sha256": "fc8b4c59bb8a53631e955589614c8095bd78f732f4b95e942820ed85680539f1",
+      "chromium_trace": ".work/tmp/startup-1_oubap7/4/bctl/files/bench/chromium-startup.json",
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794545704151293,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545704151356,
+          "elapsed_us": 63
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794545704522023,
+          "elapsed_us": 370727
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794545704580675,
+          "elapsed_us": 429378
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794545704720521,
+          "elapsed_us": 569223
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794545704023276,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794545704023531,
+          "elapsed_us": 256
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794545704032666,
+          "elapsed_us": 9392
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794545704032915,
+          "elapsed_us": 9640
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794545704033261,
+          "elapsed_us": 9986
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794545704033799,
+          "elapsed_us": 10524
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794545704040631,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794545704041148,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794545704041162,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794545704041169,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794545704041176,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794545704041182,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794545704041192,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794545704041199,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794545704041216,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794545704041225,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794545704041238,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794545704041243,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794545704041252,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794545704041259,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794545704150827,
+          "elapsed_us": 127551
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794545704150915,
+          "elapsed_us": 127639
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 678328415316
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 678328416694
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 678328418561
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 678328418611
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 678328419319
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 678328420159
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 678328423532
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 678328424244
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 678328426624
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 678328427250
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 678328427607
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 678328427920
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 678328428665
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678328429044
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678328429492
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 678328430456
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 678328430975
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678328529956
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678328530400
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678328630852
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678328631339
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678328731843
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678328732327
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678328832757
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 678328833114
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 678328934704
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 678328995073
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 678328995519
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 678328996178
+        }
+      ]
+    }
+  ],
+  "changed_inputs": []
+}

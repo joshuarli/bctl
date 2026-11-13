@@ -109,6 +109,8 @@ python3 -m unittest discover -s tests/bench -p test_macos_workflows.py
 The sibling SDK builds and `.work/interop/agent-browser/bin/agent-browser`
 must already exist. The Nanos image and runtime use the normal `.work` paths.
 `--workloads`, `--rounds`, and `--resource-rounds` select subsets and counts.
+`--bctl-image` selects an image file and its adjacent `.profile.img` template.
+The default remains `.work/images/nanos-helium.img`.
 Fewer than five samples produce no median claim.
 
 ## Optimization order
@@ -298,6 +300,13 @@ Snapshots are not atomic. A process disappearing during collection rejects
 the attempt. Tests cover live descendants, reaped children, overlapping roots,
 and a child that consumes a known quantity of CPU.
 
+`macos_crawl.py --cpu-rounds` measures the complete capture-and-replay pipeline
+in separate passes. Workers retain live-process and reaped-child counters
+through replay. The coordinator adds its own CPU, including the fixture server.
+Worker interpreter startup and browser cleanup are excluded.
+The CPU collector's smoke test passes two concurrent four-page crawls per
+backend, including all 16 captures and 16 offline replays.
+
 ```sh
 python3.15 tests/bench/macos_workflows.py --rounds 0 --resource-rounds 0 \
   --cpu-rounds 5 --native-arg=--disable-gpu --out .work/tmp/macos-cpu.json
@@ -399,6 +408,80 @@ Representative [native replay](../tests/bench/results/2026-11-13-macos-costs/cra
 and [Nanos replay](../tests/bench/results/2026-11-13-macos-costs/crawl-nanos-offline.txt)
 logs retain all 16 page checks from one worker each.
 Every mirror and state database remains at its receipt's artifact path.
+
+### Anonymous page-size experiment
+
+The [page-size experiment](../tests/bench/results/2026-11-13-macos-costs/page-size.json)
+compares the default Nanos image with `transparent_hugepage: "never"`.
+The candidate uses the same kernel, rootfs manifest, and profile template.
+Only its root tuple changes the transparent-hugepage policy.
+The retained [image tuple](../tests/bench/results/2026-11-13-macos-costs/page-size-image-tuple.txt)
+records that setting.
+
+The complete Shadowdriver form passes all 30 workflows.
+Each image has five alternating fresh-profile latency, CPU, and footprint
+samples. All 40 host-load checks pass. Recorded inputs remain unchanged.
+
+| Nanos form task | Default | Small pages |
+| --- | --- | --- |
+| Complete task, ms | 1150 (1138–1178) | 1155 (1050–1202) |
+| CPU seconds | 1.607 (1.595–1.670) | 1.602 (1.589–1.677) |
+| Sampled peak footprint, MiB | 401.6 (396.7–420.6) | 426.9 (397.8–446.3) |
+
+Values are medians with minimum to maximum. The ranges overlap.
+The experiment establishes no latency, CPU, or memory benefit.
+The small-page setting is rejected. The production image retains its policy.
+The [reproducer](../tests/bench/results/2026-11-13-macos-costs/page-size-experiment.py)
+runs from the bctl repository after both named images exist.
+Adjacent `page-size-*-footprint.txt` files retain every resource trial's peak.
+
+### Chromium startup traces
+
+`BCTL_TRACE_CHROMIUM=1` in a diagnostic image enables Chromium's
+[startup tracing switches](https://raw.githubusercontent.com/chromium/chromium/main/components/tracing/common/tracing_switches.cc).
+The browser records the `startup,toplevel` categories for two seconds as JSON
+at `/home/browser/Downloads/chromium-startup.json`.
+The trace therefore appears in the session's host files directory.
+The default image does not enable tracing.
+
+`macos_startup.py --chromium-trace` waits for the exported JSON after recording
+startup and retains its event count, path, and digest.
+Five isolated Nanos boots export valid traces with unchanged recorded inputs.
+Five native software-rendering launches provide a diagnostic control.
+All 20 startup host-load checks pass.
+These are instrumented profiles. They do not establish release timing wins.
+
+The [stage summary](../tests/bench/results/2026-11-13-macos-costs/chromium-stages.json)
+reports five samples per backend. Values are medians, in milliseconds.
+Elapsed and CPU values describe the named trace span.
+
+| Trace span | Native elapsed | Nanos elapsed | Native reported main-thread CPU | Nanos reported main-thread CPU |
+| --- | --- | --- | --- | --- |
+| `BrowserMainRunnerImpl::Initialize` | 164.1 | 332.2 | 120.7 | 91.9 |
+| `ChromeBrowserMainParts::CreateProfile` | 26.9 | 111.7 | 16.0 | 31.3 |
+| `StartupBrowserCreator::Start` | 121.4 | 115.4 | 89.5 | 35.0 |
+
+The summary retains minimum and maximum values.
+These spans nest and must not be added together.
+Reported thread CPU excludes other threads and is not the host process-tree
+CPU measure. Elapsed minus reported CPU does not distinguish I/O, locks,
+delegated work, or scheduling.
+Profile creation is a concrete interval for further investigation.
+
+The [Nanos receipt](../tests/bench/results/2026-11-13-macos-costs/chromium-nanos.json)
+and [native receipt](../tests/bench/results/2026-11-13-macos-costs/chromium-native.json)
+retain every profile path and digest. Adjacent `chromium-*.json.gz` files retain
+all ten traces. The [native reproducer](../tests/bench/results/2026-11-13-macos-costs/native-startup-trace.py)
+runs from the bctl repository.
+
+One [traced form trial](../tests/bench/results/2026-11-13-macos-costs/chromium-form-timeout.json)
+times out while run beside concurrent validation.
+The subsequent debug attempt and all five sequential
+[traced form repeats](../tests/bench/results/2026-11-13-macos-costs/chromium-form-repeat.json)
+pass. No cause or fix is established for that timeout.
+Startup tracing is qualified for isolated diagnostics. Concurrent automation
+while tracing remains unqualified. Traced form timings are excluded from
+performance comparisons.
 
 After both performance runs, the current Nanos and SmolVM images each pass all
 113 interoperability checks in separate runs. Nanos's three egress tests pass,
