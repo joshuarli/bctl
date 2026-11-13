@@ -5,7 +5,9 @@ with the harness and probes that qualify it for Chromium's multiprocess
 sandbox. This document explains how the fork is laid out, which rules kernel
 changes follow, and what counts as proof. Hydrogen was a separate repository
 until it was merged here with its full history, so its commit hashes still
-resolve. Its campaign plan is in that history as `git show 4a862120:plan.md`.
+resolve. Its original campaign plan is in that history as `git show 4a862120:plan.md`.
+The active [Rust adoption campaign](rust-adoption.md) extends kernel scope with
+incremental, ownership-driven migration, beginning with BCTL-15 and BCTL-17.
 
 ## Layout
 
@@ -64,12 +66,24 @@ git merge -X subtree=kernel/nanos upstream/master
 - Private futexes key on (address space, address). Shared futexes key on
   (backing object, offset), so waits and wakes meet across processes. Any other
   kernel table keyed by a user address follows the same rule.
-- Keep the kernel small. Extend Nanos's existing structures (`process`,
-  `thread`, `vmap`, `fdesc`, the ELF loader, the scheduler) instead of adding a
-  process manager or rewriting anything in another language.
+- Keep the kernel small. Preserve the existing process model, scheduler policy,
+  Linux ABI and boot flow. Incremental Rust migration of ownership-sensitive
+  subsystems is in scope under [the Rust campaign](rust-adoption.md); do not add
+  a parallel process manager or undertake a whole-kernel language rewrite.
+- Prefer Rust for the migrated ownership core and new ownership-sensitive logic.
+  C/assembly remain valid hardware and compatibility boundaries. Give each
+  object one authoritative owner and specify allocation, locking, lifetime and
+  callback contracts across the ABI. Wrapping freely mutable C pointers in Rust
+  does not establish safety. Audit unsafe boundary code independently.
+- A migration does not close a defect without its regression and causal evidence.
+  Preserve the existing locked-heap repairs, failure captures and open findings.
+  The native Linux/musl oracle defines behavior; a faulty C implementation is
+  only a regression control, never a requirement to preserve its bug.
 - Put kernel regression tests in `kernel/nanos/test/runtime/` following
   upstream's convention: a `.c` file, a `.manifest`, and entries in that
-  directory's `Makefile` and the top-level `RUNTIME_TESTS`.
+  directory's `Makefile` and the top-level `RUNTIME_TESTS`. The Rust campaign
+  additionally places host-testable ownership-core tests in the planned
+  `kernel/rust/` workspace; those complement, not replace, guest regressions.
 - Externally authored tests: gVisor's syscall tests (Apache-2.0) are ported
   case by case with the upstream notice, pinned commit, file, and test name.
   Linux selftests (GPL-2.0) and Fuchsia Starnix are behavior references only:
@@ -80,13 +94,21 @@ git merge -X subtree=kernel/nanos upstream/master
 
 ## Toolchains
 
-The kernel builds with GCC and binutils plus NASM, at the versions
+The existing C/assembly kernel builds with GCC and binutils plus NASM, at the versions
 `kernel/dev/toolchain.lock` names; `doctor.sh` fails on any other version.
 The pinned LLVM cannot link the x86 UEFI loader, so the kernel does not build
 with it. Guest programs use the pinned `llvm-musl` toolchain and a musl 1.2.6
 sysroot that `bootstrap.sh` builds under `kernel/.work/`. Vendored kernel
 dependencies (acpica, lwip, mbedtls) are checked out at pinned commits, and the
 build fails if a checkout differs.
+
+Rust integration is planned, not implemented by the scope change. It adds a
+freestanding `no_std` static library to this build using the already pinned
+Rust compiler; it does not replace the C toolchain or weaken host/guest unsafe
+lints. HR0 in [the campaign](rust-adoption.md#hr0-mixed-language-foundation)
+requires target-ABI/code-generation checks, audited allocator/lock/panic
+adapters, reproducibility and complete Rust build-cache inputs on both
+architectures before promotion. Do not change toolchain pins implicitly.
 
 On Apple Silicon, `build.sh`, `make`, and `image.sh` run inside the
 `kernel/dev/aarch64.Dockerfile` container, and `run.sh` boots through
@@ -118,7 +140,11 @@ Full qualification runs these `kernel/dev/test.sh` suites:
 - `helium`;
 - `9p` and `vsock`, on Linux x86_64 only.
 
-A launcher's exit status alone never counts as a pass.
+A launcher's exit status alone never counts as a pass. Rust slices also require
+focused ownership/failure/interleaving tests, independent unsafe-boundary
+review, and the same-revision integration and measurement gates in
+[HR3](rust-adoption.md#hr3-integration-and-promotion). Keep historical waivers
+scoped to their original work; no Rust slice inherits a blanket waiver.
 
 ## History
 

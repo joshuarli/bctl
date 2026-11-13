@@ -18,4 +18,11 @@ it holds the rules kernel changes follow and what counts as a pass. Commit
 kernel changes before running `runtime/build-nanos*.sh`, which build only the
 committed `kernel/` tree.
 
+The active kernel scope includes [incremental Rust adoption](docs/kernel/rust-adoption.md),
+a companion to the main campaign. Start with the mixed-language foundation,
+then the Rust ownership repairs for BCTL-15 and BCTL-17. Preserve their IDs and
+open status until their evidence gates pass; a Rust port is not itself a fix.
+Migrate ownership domains behind audited C boundaries, not raw-pointer syntax.
+Keep unrelated kernel qualification and performance work active.
+
 Do not run formatters or change pinned Rust toolchains.
