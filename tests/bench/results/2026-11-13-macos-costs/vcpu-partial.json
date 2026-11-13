@@ -1,0 +1,238 @@
+{
+  "completed": false,
+  "attempts": [
+    {
+      "phase": "latency",
+      "round": 0,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/vc-6d7qktxb/l0b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.27 3.07 3.70 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 3.07 3.70 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 924.7027500532568,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1395.076374989003,
+      "status": "pass",
+      "timing_status": "clean",
+      "resources": {
+        "width": 1280,
+        "height": 800,
+        "cpus": 2,
+        "memory_mib": 4096
+      }
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/vc-6d7qktxb/l0c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.33 3.07 3.70 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 3.07 3.70 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 756.950750015676,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1147.0310000004247,
+      "status": "pass",
+      "timing_status": "clean",
+      "resources": {
+        "width": 1280,
+        "height": 800,
+        "cpus": 4,
+        "memory_mib": 4096
+      }
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/vc-6d7qktxb/l1c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.33 3.07 3.70 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 3.07 3.70 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "startup_ms": 692.9270830005407,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1065.9168340498582,
+      "status": "pass",
+      "timing_status": "clean",
+      "resources": {
+        "width": 1280,
+        "height": 800,
+        "cpus": 4,
+        "memory_mib": 4096
+      }
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/vc-6d7qktxb/l1b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.22 3.03 3.68 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.22 3.03 3.68 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 671.4576670201495,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1066.9077499769628,
+      "status": "pass",
+      "timing_status": "clean",
+      "resources": {
+        "width": 1280,
+        "height": 800,
+        "cpus": 2,
+        "memory_mib": 4096
+      }
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/vc-6d7qktxb/l2b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.22 3.03 3.68 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.22 3.03 3.68 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 720.5877499654889,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1106.6908750217408,
+      "status": "pass",
+      "timing_status": "clean",
+      "resources": {
+        "width": 1280,
+        "height": 800,
+        "cpus": 2,
+        "memory_mib": 4096
+      }
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/vc-6d7qktxb/l2c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.22 3.03 3.68 }",
+          "diagnostic": ""
+        }
+      ],
+      "status": "fail",
+      "error": "Command '['/Users/josh/d/bctl/target/release/bctl', 'up', 'bench', '--image', 'nanos-helium', '--allow-private', '127.0.0.1/32']' timed out after 120 seconds"
+    }
+  ],
+  "summary": {},
+  "phases": [
+    "latency",
+    "resources",
+    "cpu"
+  ],
+  "resource_interval_s": 0.0,
+  "method": "five alternating fresh-daemon and fresh-profile samples per executable and phase; complete Shadowdriver form with accessible textbox, input, click, submission and PNG checks; latency, footprint, and CPU separate; same Nanos image and runtime; baseline two vCPUs, candidate four vCPUs; 4096 MiB on both; warm binary and OS caches; actual resources checked after each measured task",
+  "binaries": {
+    "baseline": "/Users/josh/d/bctl/.work/tmp/bctl-cpu2-baseline",
+    "candidate": "/Users/josh/d/bctl/target/release/bctl"
+  },
+  "source_commit": "bf38f417920f4b362e1e2294a9e20ff2f65e082f",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/.work/tmp/nanos-vcpu.py": "fb01202d2b0b381a7e93d2d3dfb7ad88336dec430790b02fb98a34acb5eece35",
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "933cd6b5382590182a6c7927c9f0e207c46c160d771c5bd521692f4fbc5c42c9",
+    "/Users/josh/d/bctl/tests/bench/macos_cpu.py": "2347baac43692a6e639eab383f63fbbe04ae043112004deaf7bc1da8a0b50f1c",
+    "/Users/josh/d/bctl/target/release/bctl": "a889160c3e72d6ec82325c23711038917c5a5600ab1568e583c731be289a4d60",
+    "/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs": "8f4ae86b91d5caf9b1dfd298988c98f67dcae1b7da667aafdbebe9b47f5cdcb7",
+    "/opt/homebrew/bin/node": "4d9aea129d56f18e6b3b48792aa5ba13f17dfc8c84d3a37841d14f54d59e1d1a",
+    "/Users/josh/d/shadowdriver/ts/dist/src/browser.js": "ff0cef434b3327d3626aefcb1a3c2bc094d379f10a520112a7d1321f1587211e",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "44c309b412ccc5d9f62adf634b1cacd4ca03460b0f591d9fa15478a0e7f44bf4",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/runtime/nanos-arm64/hydrogen/nanos/output/platform/virt/bin/kernel.img": "661a29f4e66153fe3d6d2d18a521debdebae638e687ada7d83cb465d9f14a37a",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img.manifest": "bd585063ee82ae9234d17adf232e4e6d92f26903db8184553c455bd3177e7620",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7",
+    "/Users/josh/d/bctl/.work/tmp/vcpu-default.diff": "69dc0947f2ae835ee68ee8a08ee4d269c986647eef3e999539949ca55c7e1d97",
+    "/Users/josh/d/bctl/.work/tmp/bctl-cpu2-baseline": "516dfb2b1d6fea69bcc397bb19006a3096b505263bd4c573978d9a85f32f29fd"
+  },
+  "node_version": "v26.12.0",
+  "host": {
+    "model": "Mac17,7",
+    "cpus": 18
+  }
+}

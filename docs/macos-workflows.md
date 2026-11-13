@@ -567,6 +567,34 @@ python3.15 tests/bench/macos_crawl.py --pages 4 --jobs 2 --slots 4 \
   --native-arg=--disable-gpu --out .work/tmp/balloon-runtime-comparison.json
 ```
 
+### Four-vCPU experiment
+
+The [vCPU experiment](../tests/bench/results/2026-11-13-macos-costs/vcpu-experiment.py)
+compares the two-vCPU default with a binary changing only that default to four.
+Both sides use the corrected balloon runtime, the same image, and 4096 MiB.
+Every completed form checks the reported session resource configuration.
+
+The four-vCPU candidate stalls before guest readiness on its third boot.
+`bctl up` times out after 120 seconds. Cleanup then reports
+`guest shutdown: Resource temporarily unavailable`.
+The [failure log](../tests/bench/results/2026-11-13-macos-costs/vcpu-failure.txt),
+[console](../tests/bench/results/2026-11-13-macos-costs/vcpu-failure-console.txt),
+and [supervisor log](../tests/bench/results/2026-11-13-macos-costs/vcpu-failure-supervisor.txt)
+are retained. No cause is established.
+
+The cleanup exception prevents this scratch experiment from writing its final
+attempt to JSON. The [partial receipt](../tests/bench/results/2026-11-13-macos-costs/vcpu-partial.json)
+contains the five completed forms, not the failed sixth attempt.
+The failure log supplies that missing attempt's evidence.
+All recorded input hashes match after failure, before restoring the default.
+No latency median, CPU comparison, or footprint comparison is accepted.
+The candidate is rejected and the two-vCPU default is restored.
+Its [source diff](../tests/bench/results/2026-11-13-macos-costs/vcpu-candidate.diff)
+and release binary at `.work/tmp/bctl-cpu4-candidate` remain available for
+failure investigation. The failed fixture remains at `.work/tmp/vc-6d7qktxb`.
+Its profile disk is also preserved at `.work/tmp/vcpu4-stalled-profile.img`.
+The runtime removes the root disk during failed-start cleanup.
+
 ### Chromium startup traces
 
 `BCTL_TRACE_CHROMIUM=1` in a diagnostic image enables Chromium's

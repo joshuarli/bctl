@@ -1,0 +1,53 @@
+latency 0 baseline
+latency 0 candidate
+latency 1 candidate
+latency 1 baseline
+latency 2 baseline
+latency 2 candidate
+Traceback (most recent call last):
+  File "/Users/josh/d/bctl/.work/tmp/nanos-vcpu.py", line 83, in main
+    m.invoke([binaries[variant], 'up', 'bench', '--image', trial.image, '--allow-private', '127.0.0.1/32'], env=trial.env)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/josh/d/bctl/tests/bench/macos_workflows.py", line 41, in invoke
+    stdout, stderr = process.communicate(timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.1/Frameworks/Python.framework/Versions/3.15/lib/python3.15/subprocess.py", line 1395, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.1/Frameworks/Python.framework/Versions/3.15/lib/python3.15/subprocess.py", line 2424, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        skip_check_and_raise=True)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.1/Frameworks/Python.framework/Versions/3.15/lib/python3.15/subprocess.py", line 1434, in _check_timeout
+    raise TimeoutExpired(
+    ...<2 lines>...
+            stderr=b''.join(stderr_seq) if stderr_seq else None)
+subprocess.TimeoutExpired: Command '['/Users/josh/d/bctl/target/release/bctl', 'up', 'bench', '--image', 'nanos-helium', '--allow-private', '127.0.0.1/32']' timed out after 120 seconds
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/josh/d/bctl/tests/bench/macos_workflows.py", line 268, in close
+    invoke([BCTL, 'down', session], env=self.env, timeout=45)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/josh/d/bctl/tests/bench/macos_workflows.py", line 55, in invoke
+    raise RuntimeError(f'{Path(str(argv[0])).name} exited {process.returncode}: {message}')
+RuntimeError: bctl exited 1: bctl: Nanos remove failed: guest shutdown: Resource temporarily unavailable (os error 35) [RUNTIME_ERROR]
+  retry `bctl down bench`
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/josh/d/bctl/.work/tmp/nanos-vcpu.py", line 139, in <module>
+    main()
+    ~~~~^^
+  File "/Users/josh/d/bctl/.work/tmp/nanos-vcpu.py", line 117, in main
+    trial.close()
+    ~~~~~~~~~~~^^
+  File "/Users/josh/d/bctl/tests/bench/macos_workflows.py", line 270, in close
+    raise RuntimeError(f'VM cleanup failed in {self.path}: {error}; earlier cleanup errors: {errors}') from error
+RuntimeError: VM cleanup failed in /Users/josh/d/bctl/.work/tmp/vc-6d7qktxb/l2c: bctl exited 1: bctl: Nanos remove failed: guest shutdown: Resource temporarily unavailable (os error 35) [RUNTIME_ERROR]
+  retry `bctl down bench`
+; earlier cleanup errors: []

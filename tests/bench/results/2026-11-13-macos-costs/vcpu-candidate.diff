@@ -1,0 +1,13 @@
+diff --git a/crates/core/src/state.rs b/crates/core/src/state.rs
+index 054f93b..f589694 100644
+--- a/crates/core/src/state.rs
++++ b/crates/core/src/state.rs
+@@ -180,7 +180,7 @@ pub struct Resources {
+ }
+ 
+ impl Resources {
+-    pub const DEFAULT: Resources = Resources { viewport: [1280, 800], cpus: 2, memory_mib: 4096 };
++    pub const DEFAULT: Resources = Resources { viewport: [1280, 800], cpus: 4, memory_mib: 4096 };
+ }
+ 
+ /// An IPv4 range in CIDR notation that a session's guest may reach although private egress is blocked.
