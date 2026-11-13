@@ -3,7 +3,7 @@ set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 hydrogen=${HYDROGEN:-$root/../hydrogen}
-revision=5fe102e8a055a4c675467baae0cc90c28c8024f9
+revision=4a8621202b4b4a1ec4f0f85551c49cf762c49f03
 work=$root/.work/runtime/nanos-arm64
 tree=$work/hydrogen
 

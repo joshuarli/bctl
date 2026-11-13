@@ -580,7 +580,8 @@ The four-vCPU candidate stalls before guest readiness on its third boot.
 The [failure log](../tests/bench/results/2026-11-13-macos-costs/vcpu-failure.txt),
 [console](../tests/bench/results/2026-11-13-macos-costs/vcpu-failure-console.txt),
 and [supervisor log](../tests/bench/results/2026-11-13-macos-costs/vcpu-failure-supervisor.txt)
-are retained. No cause is established.
+are retained. The [kernel deadlock retest](#kernel-deadlock-fix-and-four-vcpu-retest)
+establishes the cause and its fix.
 
 The cleanup exception prevents this scratch experiment from writing its final
 attempt to JSON. The [partial receipt](../tests/bench/results/2026-11-13-macos-costs/vcpu-partial.json)
@@ -594,6 +595,59 @@ and release binary at `.work/tmp/bctl-cpu4-candidate` remain available for
 failure investigation. The failed fixture remains at `.work/tmp/vc-6d7qktxb`.
 Its profile disk is also preserved at `.work/tmp/vcpu4-stalled-profile.img`.
 The runtime removes the root disk during failed-start cleanup.
+
+### Kernel deadlock fix and four-vCPU retest
+
+The four-vCPU stall is a kernel deadlock between a TLB flush and epoll.
+A copy-on-write fault starts a flush that every CPU must join.
+`epoll_wait` holds an epoll descriptor lock while it joins that flush.
+A unix socket reader's readiness notification spins on the same lock with
+interrupts masked. It never joins, so the flush never completes.
+Hydrogen `4a8621202b4b4a1ec4f0f85551c49cf762c49f03`
+makes the epoll and notification lock waiters perform pending flush work.
+Its `epoll_cow` regression timed out in 5 of 5 four-vCPU runs before the
+change and passed 10 of 10 after. The bctl Hydrogen pin is now `4a86212`.
+
+The [boot-stall reproducer](../tests/bench/results/2026-11-13-macos-costs/boot-stall.py)
+boots one two-vCPU control, then repeated four-vCPU guests, to readiness.
+The [unfixed receipt](../tests/bench/results/2026-11-13-macos-costs/boot-stall-unfixed.json)
+stalls on the seventh four-vCPU boot.
+The [fixed receipt](../tests/bench/results/2026-11-13-macos-costs/boot-stall-fixed.json)
+reaches readiness on all 40 four-vCPU boots.
+
+The rebuilt image differs from the earlier image only in its kernel.
+Two full workflow runs use it: the two-vCPU default, then the
+four-vCPU candidate binary through the
+[binary-selecting wrapper](../tests/bench/results/2026-11-13-macos-workflows/workflows-with-bctl.py).
+Both runs complete 80 of 80 workflows with clean host-load checks and
+unchanged inputs. Every resource attempt reports the expected vCPU count.
+Native Chromium uses its defaults, without the software-rendering control.
+
+Values are medians in milliseconds, or MiB for sampled peak footprint.
+Native values come from the two-vCPU run.
+
+| Workload | Native | Nanos, 2 vCPUs | Nanos, 4 vCPUs | Native footprint | Nanos footprint, 2 vCPUs |
+| --- | --- | --- | --- | --- | --- |
+| Shadowdriver form | 638 | 1011 | 1026 | 674 | 433 |
+| Grab capture and check | 15616 | 16350 | 16155 | 766 | 396 |
+| agent-browser form | 990 | 1166 | 1114 | 767 | 355 |
+| agent-browser news | 933 | 1214 | 1203 | 865 | 380 |
+| Warm agent-browser form | 245 | 266 | 175 | – | – |
+| Warm agent-browser news | 183 | 290 | 280 | – | – |
+
+Nanos remains slower than native on every complete task.
+Its sampled footprint is 36% to 56% lower than native's.
+That meets the 50% memory target for both agent-browser workloads only.
+These footprints are lower than the preliminary results. The balloon routing
+repair is the likely cause, but this comparison does not isolate it.
+
+Native medians move by up to 22% between the two runs on the same host.
+The four-vCPU differences, including the warm form, are therefore inconclusive.
+Four vCPUs now boot reliably, but no latency or memory gain is established.
+The two-vCPU default remains.
+The [two-vCPU receipt](../tests/bench/results/2026-11-13-macos-workflows/kernel-fix-cpu2.json)
+and [four-vCPU receipt](../tests/bench/results/2026-11-13-macos-workflows/kernel-fix-cpu4.json)
+retain every attempt.
 
 ### Chromium startup traces
 
