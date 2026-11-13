@@ -1,0 +1,13 @@
+diff --git a/crates/bctl/src/main.rs b/crates/bctl/src/main.rs
+index d2b1468..c29f948 100644
+--- a/crates/bctl/src/main.rs
++++ b/crates/bctl/src/main.rs
+@@ -551,7 +551,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
+             spawn_daemon(paths).map_err(unreachable)?;
+             spawned = true;
+         }
+-        thread::sleep(Duration::from_millis(100));
++        thread::sleep(Duration::from_millis(10));
+     }
+ }
+ 

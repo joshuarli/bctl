@@ -1,0 +1,2672 @@
+{
+  "completed": true,
+  "attempts": [
+    {
+      "phase": "daemon",
+      "round": 0,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d0b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 116.73987505491823,
+      "total_ms": 116.74166598822922,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 0,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d0c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 21.018875064328313,
+      "total_ms": 21.020416053943336,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 1,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d1c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 22.95583300292492,
+      "total_ms": 22.957707988098264,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 1,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d1b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 114.35087490826845,
+      "total_ms": 114.35262497980148,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 2,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d2b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 118.09095903299749,
+      "total_ms": 118.09266707859933,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 2,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d2c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.12 3.11 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 19.358708057552576,
+      "total_ms": 19.36133299022913,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 3,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d3c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 23.293832899071276,
+      "total_ms": 23.29495793674141,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 3,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d3b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 115.36950001027435,
+      "total_ms": 115.37079198751599,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 4,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d4b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 116.96320900227875,
+      "total_ms": 116.9644589535892,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "daemon",
+      "round": 4,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/d4c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        }
+      ],
+      "result": {
+        "error": null,
+        "sessions": [],
+        "profiles": [],
+        "runs": [],
+        "url": null,
+        "log": null,
+        "tabs": null,
+        "page": null
+      },
+      "daemon_ready_ms": 18.48224992863834,
+      "total_ms": 18.483249936252832,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l0b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 857.0132500026375,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1336.1722910776734,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l0c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.19 3.13 3.72 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 710.4773750761524,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1096.3501250371337,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l1c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.58 3.21 3.74 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.58 3.21 3.74 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 706.9245839957148,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1102.0755829522386,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l1b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.58 3.21 3.74 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.58 3.21 3.74 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 830.784208024852,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1234.192166943103,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l2b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.58 3.21 3.74 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.53 3.21 3.74 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 818.6418329132721,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1207.0817078929394,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l2c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.53 3.21 3.74 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.53 3.21 3.74 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 685.6807499425486,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1058.5517089348286,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l3c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.53 3.21 3.74 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.53 3.21 3.74 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 741.9877090724185,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1142.3595410306007,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l3b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.53 3.21 3.74 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.81 3.27 3.76 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 806.6720000933856,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1199.380417005159,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l4b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.81 3.27 3.76 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.81 3.27 3.76 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 841.165833058767,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1242.1910829143599,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/l4c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.81 3.27 3.76 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.81 3.27 3.76 }",
+          "diagnostic": ""
+        }
+      ],
+      "startup_ms": 714.7243330255151,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1103.8660830818117,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "resources",
+      "round": 0,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r0b",
+      "gate_checks": [],
+      "startup_ms": 974.6720410184935,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1346.7357500921935,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07181554194539785,
+          "physical_bytes": 37078480,
+          "processes": {
+            "194": 21414512,
+            "288": 14205432,
+            "1448": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.4149908749386668,
+          "physical_bytes": 132058304,
+          "processes": {
+            "1453": 90751984,
+            "194": 21611120,
+            "288": 14205432,
+            "1449": 2457984,
+            "1452": 1671552,
+            "1448": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7690130419796333,
+          "physical_bytes": 296160736,
+          "processes": {
+            "1453": 254788880,
+            "194": 21643888,
+            "288": 14205432,
+            "1449": 2474368,
+            "1452": 1687936,
+            "1448": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1146634590113536,
+          "physical_bytes": 368744760,
+          "processes": {
+            "1453": 298943904,
+            "1465": 29658160,
+            "194": 21774960,
+            "288": 14205432,
+            "1449": 2687360,
+            "1452": 1687936
+          }
+        },
+        {
+          "elapsed_s": 1.4620447090128437,
+          "physical_bytes": 359419192,
+          "processes": {
+            "1453": 318981584,
+            "194": 21791344,
+            "288": 14205432,
+            "1449": 2818432,
+            "1452": 1802624
+          }
+        },
+        {
+          "elapsed_s": 1.8372793749440461,
+          "physical_bytes": 359419192,
+          "processes": {
+            "1453": 318981584,
+            "194": 21889648,
+            "288": 14205432,
+            "1449": 2785664,
+            "1452": 1737088
+          }
+        },
+        {
+          "elapsed_s": 2.219058458926156,
+          "physical_bytes": 359484752,
+          "processes": {
+            "1453": 318981584,
+            "194": 21955208,
+            "288": 14205432,
+            "1449": 2785664,
+            "1452": 1737088
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 368744760
+    },
+    {
+      "phase": "resources",
+      "round": 0,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r0c",
+      "gate_checks": [],
+      "startup_ms": 847.4317500367761,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1274.7731249546632,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07480995799414814,
+          "physical_bytes": 40224616,
+          "processes": {
+            "194": 22102664,
+            "288": 14205432,
+            "1485": 2474368,
+            "1483": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.42280216701328754,
+          "physical_bytes": 201772392,
+          "processes": {
+            "1489": 159941760,
+            "194": 22102664,
+            "288": 14205432,
+            "1485": 2490752,
+            "1487": 1671552,
+            "1483": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1309462499339134,
+          "physical_bytes": 435188384,
+          "processes": {
+            "1489": 309675424,
+            "1497": 83764344,
+            "194": 22119048,
+            "288": 14205432,
+            "1485": 2851224,
+            "1487": 2818672
+          }
+        },
+        {
+          "elapsed_s": 1.4955024579539895,
+          "physical_bytes": 366071408,
+          "processes": {
+            "1489": 324404736,
+            "194": 22119048,
+            "288": 14205432,
+            "1485": 2785664,
+            "1487": 2753136
+          }
+        },
+        {
+          "elapsed_s": 1.8709692920092493,
+          "physical_bytes": 366071408,
+          "processes": {
+            "1489": 324404736,
+            "194": 22119048,
+            "288": 14205432,
+            "1485": 2785664,
+            "1487": 2753136
+          }
+        },
+        {
+          "elapsed_s": 2.2484016249654815,
+          "physical_bytes": 366284400,
+          "processes": {
+            "1489": 324699648,
+            "194": 22119048,
+            "288": 14205432,
+            "1485": 2785664,
+            "1487": 2671216
+          }
+        }
+      ],
+      "resource_errors": [
+        "process set changed during footprint collection"
+      ],
+      "sampled_peak_physical_bytes": 435188384
+    },
+    {
+      "phase": "resources",
+      "round": 1,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r1c",
+      "gate_checks": [],
+      "startup_ms": 838.2622919743881,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1242.2774999868125,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07389929099008441,
+          "physical_bytes": 40257408,
+          "processes": {
+            "194": 22119048,
+            "288": 14205432,
+            "1513": 2490776,
+            "1511": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.42079999996349216,
+          "physical_bytes": 211094936,
+          "processes": {
+            "1517": 169247896,
+            "194": 22119048,
+            "288": 14205432,
+            "1513": 2490776,
+            "1516": 1671552,
+            "1511": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1274825829314068,
+          "physical_bytes": 433370000,
+          "processes": {
+            "1517": 306382264,
+            "1525": 86255168,
+            "194": 22135432,
+            "288": 14205432,
+            "1513": 2851224,
+            "1516": 1769856
+          }
+        },
+        {
+          "elapsed_s": 1.4884542078943923,
+          "physical_bytes": 359959936,
+          "processes": {
+            "1517": 319260136,
+            "194": 22135432,
+            "288": 14205432,
+            "1513": 2785688,
+            "1516": 1753472
+          }
+        },
+        {
+          "elapsed_s": 1.8600600409554318,
+          "physical_bytes": 359959936,
+          "processes": {
+            "1517": 319260136,
+            "194": 22135432,
+            "288": 14205432,
+            "1513": 2785688,
+            "1516": 1753472
+          }
+        },
+        {
+          "elapsed_s": 2.2326771249063313,
+          "physical_bytes": 359959936,
+          "processes": {
+            "1517": 319260136,
+            "194": 22135432,
+            "288": 14205432,
+            "1513": 2785688,
+            "1516": 1753472
+          }
+        }
+      ],
+      "resource_errors": [
+        "process set changed during footprint collection"
+      ],
+      "sampled_peak_physical_bytes": 433370000
+    },
+    {
+      "phase": "resources",
+      "round": 1,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r1b",
+      "gate_checks": [],
+      "startup_ms": 971.8560420442373,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1364.0241660177708,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06537891703192145,
+          "physical_bytes": 37799400,
+          "processes": {
+            "194": 22135432,
+            "288": 14205432,
+            "1539": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.41062579199206084,
+          "physical_bytes": 119377112,
+          "processes": {
+            "1544": 77513712,
+            "194": 22135432,
+            "288": 14205432,
+            "1540": 2490752,
+            "1543": 1671552,
+            "1539": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7631125000771135,
+          "physical_bytes": 294981112,
+          "processes": {
+            "1544": 253084944,
+            "194": 22135432,
+            "288": 14205432,
+            "1540": 2507136,
+            "1543": 1687936,
+            "1539": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1172764170914888,
+          "physical_bytes": 367188088,
+          "processes": {
+            "1544": 297993632,
+            "1553": 27675240,
+            "194": 22135432,
+            "288": 14205432,
+            "1540": 2720128,
+            "1543": 2687600
+          }
+        },
+        {
+          "elapsed_s": 1.4649416250176728,
+          "physical_bytes": 364433008,
+          "processes": {
+            "1544": 322848256,
+            "194": 22135432,
+            "288": 14008824,
+            "1540": 2883968,
+            "1543": 2753136
+          }
+        },
+        {
+          "elapsed_s": 1.843000499997288,
+          "physical_bytes": 364334704,
+          "processes": {
+            "1544": 322848256,
+            "194": 22135432,
+            "288": 14008824,
+            "1540": 2851200,
+            "1543": 2687600
+          }
+        },
+        {
+          "elapsed_s": 2.2180377920158207,
+          "physical_bytes": 364318320,
+          "processes": {
+            "1544": 322881024,
+            "194": 22135432,
+            "288": 14008824,
+            "1540": 2851200,
+            "1543": 2638448
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 367188088
+    },
+    {
+      "phase": "resources",
+      "round": 2,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r2b",
+      "gate_checks": [],
+      "startup_ms": 918.9279170241207,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1305.49383291509,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06679937499575317,
+          "physical_bytes": 37602792,
+          "processes": {
+            "194": 22135432,
+            "288": 14008824,
+            "1570": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.4131367920199409,
+          "physical_bytes": 148933896,
+          "processes": {
+            "1575": 107250720,
+            "194": 22135432,
+            "288": 14008824,
+            "1571": 2507160,
+            "1574": 1671528,
+            "1570": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7645741669693962,
+          "physical_bytes": 307088936,
+          "processes": {
+            "1575": 265405760,
+            "194": 22135432,
+            "288": 14008824,
+            "1571": 2507160,
+            "1574": 1671528,
+            "1570": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.109071374987252,
+          "physical_bytes": 396617664,
+          "processes": {
+            "1575": 298796448,
+            "1583": 56416664,
+            "194": 22135432,
+            "288": 14008824,
+            "1574": 2785904,
+            "1571": 2703768
+          }
+        },
+        {
+          "elapsed_s": 1.4591357089811936,
+          "physical_bytes": 365006472,
+          "processes": {
+            "1575": 323520000,
+            "194": 22135432,
+            "288": 14008824,
+            "1571": 2802072,
+            "1574": 2736752
+          }
+        },
+        {
+          "elapsed_s": 1.8362503750249743,
+          "physical_bytes": 365006472,
+          "processes": {
+            "1575": 323520000,
+            "194": 22135432,
+            "288": 14008824,
+            "1571": 2802072,
+            "1574": 2736752
+          }
+        },
+        {
+          "elapsed_s": 2.2147135420236737,
+          "physical_bytes": 365072008,
+          "processes": {
+            "1575": 323667456,
+            "194": 22135432,
+            "288": 14008824,
+            "1571": 2802072,
+            "1574": 2654832
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 396617664
+    },
+    {
+      "phase": "resources",
+      "round": 2,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r2c",
+      "gate_checks": [],
+      "startup_ms": 820.2942089410499,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1197.3914590198547,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06926170899532735,
+          "physical_bytes": 37635560,
+          "processes": {
+            "194": 22135432,
+            "288": 14008824,
+            "1597": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.4171146668959409,
+          "physical_bytes": 209849680,
+          "processes": {
+            "1602": 168199296,
+            "194": 22151816,
+            "288": 14008824,
+            "1598": 2474368,
+            "1601": 1655144,
+            "1597": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.128622791962698,
+          "physical_bytes": 443314992,
+          "processes": {
+            "1602": 317457872,
+            "1610": 83993816,
+            "194": 22299272,
+            "288": 14008824,
+            "1598": 2965912,
+            "1601": 2835056
+          }
+        },
+        {
+          "elapsed_s": 1.4984529169742018,
+          "physical_bytes": 367742576,
+          "processes": {
+            "1602": 325993984,
+            "194": 22299272,
+            "288": 14008824,
+            "1598": 2883968,
+            "1601": 2753136
+          }
+        },
+        {
+          "elapsed_s": 1.8792454999638721,
+          "physical_bytes": 367742576,
+          "processes": {
+            "1602": 325993984,
+            "194": 22299272,
+            "288": 14008824,
+            "1598": 2883968,
+            "1601": 2753136
+          }
+        },
+        {
+          "elapsed_s": 2.256353333941661,
+          "physical_bytes": 367758960,
+          "processes": {
+            "1602": 326125056,
+            "194": 22266504,
+            "288": 14008824,
+            "1598": 2883968,
+            "1601": 2671216
+          }
+        }
+      ],
+      "resource_errors": [
+        "process set changed during footprint collection"
+      ],
+      "sampled_peak_physical_bytes": 443314992
+    },
+    {
+      "phase": "resources",
+      "round": 3,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r3c",
+      "gate_checks": [],
+      "startup_ms": 800.3387089120224,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1187.9795829299837,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.07236683298833668,
+          "physical_bytes": 40159080,
+          "processes": {
+            "194": 22266504,
+            "288": 14008824,
+            "1625": 2441600,
+            "1623": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.4184998329728842,
+          "physical_bytes": 215403880,
+          "processes": {
+            "1629": 173638784,
+            "194": 22266504,
+            "288": 14008824,
+            "1625": 2457984,
+            "1628": 1671552,
+            "1623": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7636293329996988,
+          "physical_bytes": 338545808,
+          "processes": {
+            "1629": 299746720,
+            "194": 22266504,
+            "288": 14008824,
+            "1628": 2671216
+          }
+        },
+        {
+          "elapsed_s": 1.1099089160561562,
+          "physical_bytes": 443593544,
+          "processes": {
+            "1629": 317916624,
+            "1649": 83862768,
+            "194": 22266504,
+            "288": 14008824,
+            "1625": 2982296,
+            "1628": 2802288
+          }
+        },
+        {
+          "elapsed_s": 1.4574137500021607,
+          "physical_bytes": 366464624,
+          "processes": {
+            "1629": 324748800,
+            "194": 22266504,
+            "288": 14008824,
+            "1625": 2900352,
+            "1628": 2736752
+          }
+        },
+        {
+          "elapsed_s": 1.8334009579848498,
+          "physical_bytes": 366530160,
+          "processes": {
+            "1629": 324781568,
+            "194": 22299272,
+            "288": 14008824,
+            "1625": 2900352,
+            "1628": 2736752
+          }
+        },
+        {
+          "elapsed_s": 2.1762600829824805,
+          "physical_bytes": 366612080,
+          "processes": {
+            "1629": 324929024,
+            "194": 22299272,
+            "288": 14008824,
+            "1625": 2900352,
+            "1628": 2671216
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 443593544
+    },
+    {
+      "phase": "resources",
+      "round": 3,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r3b",
+      "gate_checks": [],
+      "startup_ms": 928.2476659864187,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1320.2797499252483,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06914658402092755,
+          "physical_bytes": 37848552,
+          "processes": {
+            "194": 22381192,
+            "288": 14008824,
+            "1710": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.4228282499825582,
+          "physical_bytes": 172838152,
+          "processes": {
+            "1716": 130942008,
+            "194": 22381192,
+            "288": 14008824,
+            "1711": 2490752,
+            "1715": 1655144,
+            "1710": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.7635991669958457,
+          "physical_bytes": 303107528,
+          "processes": {
+            "1716": 261162232,
+            "194": 22397576,
+            "288": 14008824,
+            "1711": 2507136,
+            "1715": 1671528,
+            "1710": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.1061892920406535,
+          "physical_bytes": 388457160,
+          "processes": {
+            "1716": 298419592,
+            "1738": 49452504,
+            "194": 22413960,
+            "288": 14008824,
+            "1711": 2703744,
+            "1715": 1671528
+          }
+        },
+        {
+          "elapsed_s": 1.447928374982439,
+          "physical_bytes": 359681360,
+          "processes": {
+            "1716": 318801360,
+            "194": 22413960,
+            "288": 14008824,
+            "1711": 2867584,
+            "1715": 1769856
+          }
+        },
+        {
+          "elapsed_s": 1.8003387920325622,
+          "physical_bytes": 359615800,
+          "processes": {
+            "1716": 318801360,
+            "194": 22413960,
+            "288": 14008824,
+            "1711": 2851200,
+            "1715": 1720680
+          }
+        },
+        {
+          "elapsed_s": 2.1414276669966057,
+          "physical_bytes": 359615800,
+          "processes": {
+            "1716": 318801360,
+            "194": 22413960,
+            "288": 14008824,
+            "1711": 2851200,
+            "1715": 1720680
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 388457160
+    },
+    {
+      "phase": "resources",
+      "round": 4,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r4b",
+      "gate_checks": [],
+      "startup_ms": 921.792957931757,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1321.5556249488145,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06583374994806945,
+          "physical_bytes": 37881320,
+          "processes": {
+            "194": 22413960,
+            "288": 14008824,
+            "1818": 1540456
+          }
+        },
+        {
+          "elapsed_s": 0.4103692079661414,
+          "physical_bytes": 172510520,
+          "processes": {
+            "1829": 130597968,
+            "194": 22413960,
+            "288": 14008824,
+            "1819": 2457984,
+            "1826": 1671552,
+            "1818": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.755637124995701,
+          "physical_bytes": 303877624,
+          "processes": {
+            "1829": 261932304,
+            "194": 22413960,
+            "288": 14008824,
+            "1819": 2474368,
+            "1826": 1687936,
+            "1818": 1573224
+          }
+        },
+        {
+          "elapsed_s": 1.098369957995601,
+          "physical_bytes": 388932416,
+          "processes": {
+            "1829": 298534304,
+            "1870": 48796976,
+            "194": 22413960,
+            "288": 14008824,
+            "1826": 2785904,
+            "1819": 2621824
+          }
+        },
+        {
+          "elapsed_s": 1.4468457499751821,
+          "physical_bytes": 365366896,
+          "processes": {
+            "1829": 323585536,
+            "194": 22413960,
+            "288": 14008824,
+            "1819": 2785664,
+            "1826": 2769520
+          }
+        },
+        {
+          "elapsed_s": 1.823102041031234,
+          "physical_bytes": 365334128,
+          "processes": {
+            "1829": 323601920,
+            "194": 22413960,
+            "288": 14008824,
+            "1819": 2769280,
+            "1826": 2736752
+          }
+        },
+        {
+          "elapsed_s": 2.2031015830580145,
+          "physical_bytes": 365465200,
+          "processes": {
+            "1829": 323814912,
+            "194": 22413960,
+            "288": 14008824,
+            "1819": 2769280,
+            "1826": 2654832
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 388932416
+    },
+    {
+      "phase": "resources",
+      "round": 4,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/r4c",
+      "gate_checks": [],
+      "startup_ms": 776.0208749677986,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1150.714416988194,
+      "status": "pass",
+      "resource_samples": [
+        {
+          "elapsed_s": 0.06986583303660154,
+          "physical_bytes": 37914088,
+          "processes": {
+            "194": 22413960,
+            "288": 14008824,
+            "1886": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.4155277500394732,
+          "physical_bytes": 221138280,
+          "processes": {
+            "1891": 179225752,
+            "194": 22413960,
+            "288": 14008824,
+            "1887": 2457984,
+            "1889": 1671528,
+            "1886": 1573224
+          }
+        },
+        {
+          "elapsed_s": 0.766427458031103,
+          "physical_bytes": 338807976,
+          "processes": {
+            "1891": 299812280,
+            "194": 22430344,
+            "288": 14008824,
+            "1889": 2703984
+          }
+        },
+        {
+          "elapsed_s": 1.121812833007425,
+          "physical_bytes": 451966128,
+          "processes": {
+            "1891": 324077032,
+            "1899": 85927488,
+            "194": 22430344,
+            "288": 14008824,
+            "1887": 2900376,
+            "1889": 2867824
+          }
+        },
+        {
+          "elapsed_s": 1.493568166042678,
+          "physical_bytes": 366612128,
+          "processes": {
+            "1891": 324765208,
+            "194": 22430344,
+            "288": 14008824,
+            "1887": 2834840,
+            "1889": 2769520
+          }
+        },
+        {
+          "elapsed_s": 1.8679820410907269,
+          "physical_bytes": 366644896,
+          "processes": {
+            "1891": 324797976,
+            "194": 22430344,
+            "288": 14008824,
+            "1887": 2834840,
+            "1889": 2769520
+          }
+        },
+        {
+          "elapsed_s": 2.2159197500441223,
+          "physical_bytes": 366775992,
+          "processes": {
+            "1891": 325010992,
+            "194": 22430344,
+            "288": 14008824,
+            "1887": 2834840,
+            "1889": 2687600
+          }
+        }
+      ],
+      "resource_errors": [],
+      "sampled_peak_physical_bytes": 451966128
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c0b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.28 3.18 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.28 3.18 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 38176046,
+            "system": 16974738,
+            "child_user": 194362009,
+            "child_system": 276503776
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 983197,
+            "system": 522035,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 21.98007504166667
+      },
+      "startup_ms": 814.459125045687,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1206.9151250179857,
+      "cpu_after": {
+        "processes": {
+          "1930": {
+            "start": 16369740732758,
+            "user": 78201,
+            "system": 196909,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1931": {
+            "start": 16369741269814,
+            "user": 17911930,
+            "system": 11632454,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 38235121,
+            "system": 17120450,
+            "child_user": 199686591,
+            "child_system": 280882183
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1000129,
+            "system": 532875,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1928": {
+            "start": 16369737655497,
+            "user": 66796,
+            "system": 155863,
+            "child_user": 32956,
+            "child_system": 46508
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.64912358333333
+      },
+      "cpu_s": 1.6690485416666618,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c0c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.28 3.18 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.42 3.21 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 38326833,
+            "system": 17344463,
+            "child_user": 201029101,
+            "child_system": 285927126
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1000513,
+            "system": 533133,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.673382041666667
+      },
+      "startup_ms": 714.6667920751497,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1112.469332991168,
+      "cpu_after": {
+        "processes": {
+          "1975": {
+            "start": 16369788983935,
+            "user": 17480463,
+            "system": 11927024,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1974": {
+            "start": 16369788544448,
+            "user": 70832,
+            "system": 150657,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1972": {
+            "start": 16369787854964,
+            "user": 64148,
+            "system": 142616,
+            "child_user": 22146,
+            "child_system": 30143
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 38386405,
+            "system": 17496812,
+            "child_user": 206351935,
+            "child_system": 290264050
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1017175,
+            "system": 541100,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.33106275
+      },
+      "cpu_s": 1.6576807083333343,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c1c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.42 3.21 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.42 3.21 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 38474675,
+            "system": 17710947,
+            "child_user": 207670169,
+            "child_system": 295255031
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1017551,
+            "system": 541362,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.36123895833333
+      },
+      "startup_ms": 689.8408330744132,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1071.761833038181,
+      "cpu_after": {
+        "processes": {
+          "2020": {
+            "start": 16369834340690,
+            "user": 17124127,
+            "system": 11715212,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2019": {
+            "start": 16369833874431,
+            "user": 71627,
+            "system": 167120,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 38533512,
+            "system": 17856331,
+            "child_user": 212881370,
+            "child_system": 299751411
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1034725,
+            "system": 550771,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2017": {
+            "start": 16369833273578,
+            "user": 67004,
+            "system": 145971,
+            "child_user": 21120,
+            "child_system": 29482
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.997907625
+      },
+      "cpu_s": 1.6366686666666688,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c1b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 3.42 3.21 3.71 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 3.42 3.21 3.71 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 38628082,
+            "system": 18080449,
+            "child_user": 214240451,
+            "child_system": 304809109
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1035084,
+            "system": 550957,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.0560055
+      },
+      "startup_ms": 794.5038750767708,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1208.4089170675725,
+      "cpu_after": {
+        "processes": {
+          "2077": {
+            "start": 16369884587930,
+            "user": 17584061,
+            "system": 12327802,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2076": {
+            "start": 16369884235484,
+            "user": 71973,
+            "system": 170544,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 38690654,
+            "system": 18231397,
+            "child_user": 219957560,
+            "child_system": 309373815
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1052360,
+            "system": 558355,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2064": {
+            "start": 16369881469036,
+            "user": 71401,
+            "system": 152028,
+            "child_user": 23083,
+            "child_system": 30240
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.76230304166667
+      },
+      "cpu_s": 1.7062975416666681,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c2b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.75 3.49 3.81 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.75 3.49 3.81 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 38783948,
+            "system": 18435811,
+            "child_user": 221325214,
+            "child_system": 314452784
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1052863,
+            "system": 558576,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.775383166666668
+      },
+      "startup_ms": 764.6747500402853,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1193.736582994461,
+      "cpu_after": {
+        "processes": {
+          "2190": {
+            "start": 16369934090896,
+            "user": 17216806,
+            "system": 11011312,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2189": {
+            "start": 16369933628344,
+            "user": 70722,
+            "system": 151654,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2180": {
+            "start": 16369930715171,
+            "user": 68273,
+            "system": 146462,
+            "child_user": 24523,
+            "child_system": 34276
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 38842360,
+            "system": 18584221,
+            "child_user": 226592478,
+            "child_system": 318853284
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1069655,
+            "system": 565690,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.384654833333332
+      },
+      "cpu_s": 1.6092716666666647,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c2c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.75 3.49 3.81 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.75 3.49 3.81 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 38935069,
+            "system": 18803425,
+            "child_user": 227949401,
+            "child_system": 323936859
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1070104,
+            "system": 565838,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.469195666666668
+      },
+      "startup_ms": 704.952166066505,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1144.721916061826,
+      "cpu_after": {
+        "processes": {
+          "2237": {
+            "start": 16369980888313,
+            "user": 17997645,
+            "system": 11672160,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2236": {
+            "start": 16369980450749,
+            "user": 32354,
+            "system": 101100,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 38992976,
+            "system": 18949594,
+            "child_user": 233172828,
+            "child_system": 328359412
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1086711,
+            "system": 573519,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2234": {
+            "start": 16369979862890,
+            "user": 64014,
+            "system": 140653,
+            "child_user": 20653,
+            "child_system": 29385
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.133041833333333
+      },
+      "cpu_s": 1.6638461666666657,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c3c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.75 3.49 3.81 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.61 3.48 3.80 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 39087222,
+            "system": 19169996,
+            "child_user": 234510518,
+            "child_system": 333386760
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1087315,
+            "system": 573674,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.158978541666666
+      },
+      "startup_ms": 717.661791946739,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1124.1597080370411,
+      "cpu_after": {
+        "processes": {
+          "2279": {
+            "start": 16370027271528,
+            "user": 66086,
+            "system": 151745,
+            "child_user": 20560,
+            "child_system": 29816
+          },
+          "2282": {
+            "start": 16370028356757,
+            "user": 18002375,
+            "system": 12050798,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 39146610,
+            "system": 19317888,
+            "child_user": 239931840,
+            "child_system": 337754036
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1103455,
+            "system": 579914,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2281": {
+            "start": 16370027915984,
+            "user": 33525,
+            "system": 100473,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.84538004166667
+      },
+      "cpu_s": 1.6864015000000023,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c3b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.61 3.48 3.80 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.61 3.48 3.80 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 39241762,
+            "system": 19539549,
+            "child_user": 241271701,
+            "child_system": 342800671
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1104012,
+            "system": 580164,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.855744125
+      },
+      "startup_ms": 807.8690000111237,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1206.0690829530358,
+      "cpu_after": {
+        "processes": {
+          "2334": {
+            "start": 16370075228978,
+            "user": 69218,
+            "system": 165352,
+            "child_user": 24718,
+            "child_system": 40354
+          },
+          "2338": {
+            "start": 16370078231616,
+            "user": 71490,
+            "system": 153608,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2339": {
+            "start": 16370078706883,
+            "user": 17748212,
+            "system": 11498734,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 39301932,
+            "system": 19686739,
+            "child_user": 246564325,
+            "child_system": 347223933
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1120776,
+            "system": 587562,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 28.510706375
+      },
+      "cpu_s": 1.6549622500000005,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "variant": "baseline",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c4b",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.61 3.48 3.80 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.61 3.48 3.80 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 39394454,
+            "system": 19883949,
+            "child_user": 247920878,
+            "child_system": 352065480
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1121196,
+            "system": 587718,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.54056979166667
+      },
+      "startup_ms": 810.123834060505,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1203.148250002414,
+      "cpu_after": {
+        "processes": {
+          "2383": {
+            "start": 16370124935446,
+            "user": 67516,
+            "system": 157911,
+            "child_user": 32179,
+            "child_system": 51022
+          },
+          "2386": {
+            "start": 16370128477858,
+            "user": 17390290,
+            "system": 11687319,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 39454493,
+            "system": 20035634,
+            "child_user": 253173703,
+            "child_system": 356500432
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1138603,
+            "system": 600522,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2385": {
+            "start": 16370127895350,
+            "user": 80366,
+            "system": 197649,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 29.190318291666667
+      },
+      "cpu_s": 1.6497484999999976,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "variant": "candidate",
+      "artifacts": ".work/tmp/dp-ofi10nnl/c4c",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.40 3.45 3.79 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 4.40 3.45 3.79 }",
+          "diagnostic": ""
+        }
+      ],
+      "cpu_before": {
+        "processes": {
+          "194": {
+            "start": 16368488451214,
+            "user": 39547433,
+            "system": 20238616,
+            "child_user": 254494622,
+            "child_system": 361294650
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1138969,
+            "system": 600966,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 28.221469
+      },
+      "startup_ms": 676.8416669219732,
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "total_ms": 1099.307750002481,
+      "cpu_after": {
+        "processes": {
+          "2431": {
+            "start": 16370174153301,
+            "user": 71540,
+            "system": 176702,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2432": {
+            "start": 16370174503871,
+            "user": 17621469,
+            "system": 11568900,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "2429": {
+            "start": 16370173731628,
+            "user": 67262,
+            "system": 152897,
+            "child_user": 22653,
+            "child_system": 33207
+          },
+          "194": {
+            "start": 16368488451214,
+            "user": 39607002,
+            "system": 20392269,
+            "child_user": 259772606,
+            "child_system": 365725750
+          },
+          "288": {
+            "start": 16368551913544,
+            "user": 1156230,
+            "system": 608678,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 29.874048541666667
+      },
+      "cpu_s": 1.6525795416666682,
+      "status": "pass",
+      "timing_status": "clean"
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "daemon_ready_ms": {
+        "n": 5,
+        "median": 116.73987505491823,
+        "min": 114.35087490826845,
+        "max": 118.09095903299749
+      },
+      "total_ms": {
+        "n": 5,
+        "median": 1234.192166943103,
+        "min": 1199.380417005159,
+        "max": 1336.1722910776734
+      },
+      "startup_ms": {
+        "n": 5,
+        "median": 830.784208024852,
+        "min": 806.6720000933856,
+        "max": 857.0132500026375
+      },
+      "cpu_s": {
+        "n": 5,
+        "median": 1.6549622500000005,
+        "min": 1.6092716666666647,
+        "max": 1.7062975416666681
+      },
+      "sampled_peak_physical_bytes": {
+        "n": 5,
+        "median": 388457160,
+        "min": 367188088,
+        "max": 396617664
+      }
+    },
+    "candidate": {
+      "daemon_ready_ms": {
+        "n": 5,
+        "median": 21.018875064328313,
+        "min": 18.48224992863834,
+        "max": 23.293832899071276
+      },
+      "total_ms": {
+        "n": 5,
+        "median": 1102.0755829522386,
+        "min": 1058.5517089348286,
+        "max": 1142.3595410306007
+      },
+      "startup_ms": {
+        "n": 5,
+        "median": 710.4773750761524,
+        "min": 685.6807499425486,
+        "max": 741.9877090724185
+      },
+      "cpu_s": {
+        "n": 5,
+        "median": 1.6576807083333343,
+        "min": 1.6366686666666688,
+        "max": 1.6864015000000023
+      },
+      "sampled_peak_physical_bytes": {
+        "n": 5,
+        "median": 443314992,
+        "min": 433370000,
+        "max": 451966128
+      }
+    }
+  },
+  "method": "five alternating fresh-daemon and fresh-profile samples per executable and phase; daemon-only status checks plus complete Shadowdriver form with accessible textbox, input, click, submission and PNG checks; latency, footprint, and CPU separate; same Nanos image and runtime; baseline 100 ms discovery polling, candidate 10 ms; unchanged deadline and retry rules; warm binary and OS caches; two vCPUs and 4096 MiB",
+  "binaries": {
+    "baseline": "/Users/josh/d/bctl/.work/tmp/bctl-daemon-baseline",
+    "candidate": "/Users/josh/d/bctl/target/release/bctl"
+  },
+  "source_commit": "77b392bff3fe6aca8bfdfcd7df537a1c9e5522b6",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/.work/tmp/nanos-daemon-poll.py": "d25d18e4eb2a2a95d92d555318233cf4be3bcee6638ac4140af03a23f0b1db55",
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "98bee650ee01970f6cba872d21b6fa358785540a8425c255de2d50c198a3504a",
+    "/Users/josh/d/bctl/tests/bench/macos_cpu.py": "2347baac43692a6e639eab383f63fbbe04ae043112004deaf7bc1da8a0b50f1c",
+    "/Users/josh/d/bctl/target/release/bctl": "516dfb2b1d6fea69bcc397bb19006a3096b505263bd4c573978d9a85f32f29fd",
+    "/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs": "8f4ae86b91d5caf9b1dfd298988c98f67dcae1b7da667aafdbebe9b47f5cdcb7",
+    "/opt/homebrew/bin/node": "4d9aea129d56f18e6b3b48792aa5ba13f17dfc8c84d3a37841d14f54d59e1d1a",
+    "/Users/josh/d/shadowdriver/ts/dist/src/browser.js": "ff0cef434b3327d3626aefcb1a3c2bc094d379f10a520112a7d1321f1587211e",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/runtime/nanos-arm64/hydrogen/nanos/output/platform/virt/bin/kernel.img": "661a29f4e66153fe3d6d2d18a521debdebae638e687ada7d83cb465d9f14a37a",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img.manifest": "bd585063ee82ae9234d17adf232e4e6d92f26903db8184553c455bd3177e7620",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7",
+    "/Users/josh/d/bctl/.work/tmp/daemon-poll.diff": "df6f985eabfd869dad731af20e2cb362639ca865a00954cf558b24004e119a20",
+    "/Users/josh/d/bctl/.work/tmp/bctl-daemon-baseline": "f7c6a1a185b12d0a7f0359390ccbe13f89775495427d50563d3bb3b131449627"
+  },
+  "node_version": "v26.12.0",
+  "host": {
+    "model": "Mac17,7",
+    "cpus": 18
+  },
+  "changed_inputs": [],
+  "shadowdriver_final_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab"
+}

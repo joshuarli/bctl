@@ -455,6 +455,52 @@ The [reproducer](../tests/bench/results/2026-11-13-macos-costs/page-size-experim
 runs from the bctl repository after both named images exist.
 Adjacent `page-size-*-footprint.txt` files retain every resource trial's peak.
 
+### Daemon discovery interval
+
+The client now checks daemon readiness every 10 ms during startup, instead of
+sleeping 100 ms between attempts. The 15-second deadline, daemon lock ownership,
+and request-delivery retry rules remain unchanged.
+All three daemon restart and request-delivery regressions pass.
+
+The [comparison receipt](../tests/bench/results/2026-11-13-macos-costs/daemon-poll.json)
+uses the saved release binary from `77b392b` and a binary with only the
+[poll interval change](../tests/bench/results/2026-11-13-macos-costs/daemon-poll.diff).
+Five alternating samples per binary measure fresh daemon discovery, complete
+Shadowdriver forms, and CPU cost in separate passes.
+All 30 form workflows and 10 daemon checks pass. All 60 host-load checks pass.
+Recorded inputs remain unchanged. Release binary size remains 5,658,944 bytes.
+
+| Measure | Previous interval | Current interval |
+| --- | --- | --- |
+| Fresh daemon readiness, ms | 116.7 (114.4–118.1) | 21.0 (18.5–23.3) |
+| Complete form task, ms | 1234 (1199–1336) | 1102 (1059–1142) |
+| Startup through CDP discovery, ms | 830.8 (806.7–857.0) | 710.5 (685.7–742.0) |
+| CPU seconds | 1.655 (1.609–1.706) | 1.658 (1.637–1.686) |
+
+Values are medians with minimum to maximum.
+Complete-task latency falls 10.7%, with disjoint ranges.
+The CPU ranges overlap, so no CPU change is established.
+This comparison establishes an improvement over the previous Nanos binary.
+It does not establish the 20% target against native Chromium or a warm-workflow
+speedup. The pinned VM image and kernel remain unchanged.
+
+The initial footprint pass collects only six or seven complete samples per
+trial and catches different portions of Node's short lifetime.
+Its apparent memory regression is not retained as a comparison.
+The [dense footprint repeat](../tests/bench/results/2026-11-13-macos-costs/daemon-poll-dense.json)
+removes the sampler's 250 ms pause between collections.
+It passes ten more forms with 23–25 complete samples each.
+Sampled peak footprint is 432.0 MiB (430.5–434.2) for the previous interval and
+432.0 MiB (427.1–433.7) for the current interval.
+The overlapping ranges establish no memory change.
+Sampling still cannot prove an absolute peak. Earlier short-task footprint
+results also retain this sampling limitation.
+
+The [comparison reproducer](../tests/bench/results/2026-11-13-macos-costs/daemon-poll-experiment.py)
+and [dense-pass reproducer](../tests/bench/results/2026-11-13-macos-costs/daemon-poll-dense-experiment.py)
+run from the bctl repository with the named release binaries available.
+Adjacent `daemon-poll-*-footprint.txt` files preserve every resource trial's peak.
+
 ### Chromium startup traces
 
 `BCTL_TRACE_CHROMIUM=1` in a diagnostic image enables Chromium's

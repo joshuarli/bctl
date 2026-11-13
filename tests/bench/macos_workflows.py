@@ -131,8 +131,9 @@ def physical_footprint_sample(output, expected):
 
 
 class Resources:
-    def __init__(self, trial):
+    def __init__(self, trial, *, interval_s=0.25):
         self.trial = trial
+        self.interval_s = interval_s
         self.done = threading.Event()
         self.samples = []
         self.errors = []
@@ -163,7 +164,7 @@ class Resources:
                     (self.trial.path / 'peak-footprint.txt').write_text(output)
             except Exception as error:
                 self.errors.append(str(error))
-            self.done.wait(0.25)
+            self.done.wait(self.interval_s)
 
     def __enter__(self):
         self.started = time.monotonic()

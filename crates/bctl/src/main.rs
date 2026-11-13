@@ -551,7 +551,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
             spawn_daemon(paths).map_err(unreachable)?;
             spawned = true;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
