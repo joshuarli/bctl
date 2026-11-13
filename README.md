@@ -74,6 +74,13 @@ enabled when bctl's tracked native commands finish. "Resume automation"
 hands control back and resumes a run waiting for interaction. See
 [authority](docs/automation.md#authority) for external-controller behavior.
 
+## Kernel
+
+`kernel/` holds Hydrogen, bctl's fork of [Nanos](https://github.com/nanovms/nanos),
+which runs Chromium's multiprocess sandbox in one microVM. It keeps Nanos's
+Apache-2.0 license in `kernel/nanos/LICENSE`. [Kernel development](docs/kernel/development.md)
+covers its layout, rules, toolchains, and qualification suites.
+
 ## Project status
 
 The [active campaign](docs/CAMPAIGN-ROADMAP.md) records the roadmap and

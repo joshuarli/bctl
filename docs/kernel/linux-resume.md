@@ -8,7 +8,7 @@ commits do not constitute a new full qualification run.
 
 The [campaign report](campaign-report.md) retains the measured results.
 [bctl compatibility](https://github.com/joshuarli/bctl/blob/main/docs/compatibility.md)
-records interop, and [TODO.md](../TODO.md) holds the review findings.
+records interop, and [TODO.md](../../TODO.md) holds the review findings.
 
 ## Done
 

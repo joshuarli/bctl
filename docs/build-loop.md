@@ -2,7 +2,7 @@
 
 `runtime/build-nanos.sh` builds four parts under `.work/runtime/nanos`:
 the Nanos kernel and tools, patched `vhost-device-vsock`, `virtiofsd`, and
-the LLVM toolchain named by Hydrogen's `dev/toolchain.lock`.
+the LLVM toolchain named by `kernel/dev/toolchain.lock`.
 
 Each part has a stamp beside its output. A part is skipped only when the
 stamp records the same input identity and every output still exists with the
@@ -14,13 +14,12 @@ symlink does not invalidate it. `FORCE=1` rebuilds all four.
 
 | Part | Input identity | Outputs checked |
 |---|---|---|
-| kernel and tools | pinned hydrogen commit, `ccache gcc`, `gcc --version`, `ccache --version`, make targets `kernel tools` | `kernel.img`, `boot.img`, `mkfs` |
+| kernel and tools | the `kernel/` tree hash (`git rev-parse HEAD:kernel`), `ccache gcc`, `gcc --version`, `ccache --version`, make targets `kernel tools` | `kernel.img`, `boot.img`, `mkfs` |
 | vhost-device-vsock | crate version, crates.io SHA-256, patch digest, `rustc -V`, `cargo -V` | `bin/vhost-device-vsock` |
 | virtiofsd | crate version, crates.io SHA-256, `rustc -V`, `cargo -V` | `bin/virtiofsd` |
 | LLVM | `LLVM_URL`, `LLVM_SHA256`, `LLVM_DIR`, `LLVM_RELEASE` from `dev/toolchain.lock` | `llvm/bin/clang` |
 
-The LLVM inputs come from `git show <commit>:dev/toolchain.lock` in the
-hydrogen clone, so an LLVM-only rebuild does not need the exported kernel
+The LLVM inputs come from `git show <kernel tree>:dev/toolchain.lock`, so an LLVM-only rebuild does not need the exported kernel
 tree. The script prints one line per part, `kernel: reused` or `kernel:
 built`, with equivalent lines for `vhost-device-vsock`, `virtiofsd`, and
 `llvm`. `tests/build/build-nanos-cache.sh` currently checks the kernel,
@@ -66,9 +65,9 @@ skip this check.
 | Part | Input identity | Reuse condition |
 |---|---|---|
 | installer | archive SHA-256, chromium-build pin, SHA-256 of the three scripts | stamp matches and the scripts are present |
-| rootfs | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, `guest/appliance/rootfs/etc/{passwd,group}` | stamp matches and the rootfs integrity digest matches |
+| rootfs | archive SHA-256, chromium-build pin, kernel tree (`COMMIT`), kernel stamp, `guest/appliance/rootfs/etc/{passwd,group}` | stamp matches and the rootfs integrity digest matches |
 | guest | none: cargo decides | cargo does not say `Compiling bctl-guest` |
-| image | archive SHA-256, chromium-build pin, hydrogen `COMMIT`, kernel stamp, kernel/boot/mkfs SHA-256, rootfs digest, guest SHA-256, this script | stamp matches and `.img`, `.kernel.img`, and `.profile.img` match their recorded SHA-256 |
+| image | archive SHA-256, chromium-build pin, kernel tree (`COMMIT`), kernel stamp, kernel/boot/mkfs SHA-256, rootfs digest, guest SHA-256, this script | stamp matches and `.img`, `.kernel.img`, and `.profile.img` match their recorded SHA-256 |
 
 The three chromium-build scripts are cached under
 `.work/images/dl/chromium-build/<pinned-rev>/` and fetched only when absent.
@@ -88,7 +87,7 @@ The guest builds with `CARGO_TARGET_DIR=.work/images/nanos-helium/target`,
 which survives every run; a source change recompiles incrementally instead of
 starting from an empty target directory. The image and its kernel are one
 unit: the pack step writes `.work/images/nanos-helium.img` and copies the
-exact `kernel.img` from the hydrogen tree whose `tmpfs` and `shmem` klibs it
+exact `kernel.img` from the kernel build whose `tmpfs` and `shmem` klibs it
 packs to `.work/images/nanos-helium.kernel.img`. The image stamp records
 those two outputs and the empty profile-volume template. A missing kernel
 or template forces a repack. The three Nanos outputs
@@ -136,8 +135,8 @@ misses across the warm build. ccache stays.
 `sh tests/build/build-nanos-cache.sh` forces a cold build, then checks an
 unchanged run, a deleted `kernel.img`, a truncated `vhost-device-vsock`, a
 changed patch digest through a scratch copy of the script and patch, a
-changed hydrogen commit through a scratch clone and a repinned scratch copy
-of the script, and a
+changed kernel tree through a shared clone with one committed kernel change,
+and a
 changed compiler through a `gcc` wrapper on `PATH`. It asserts the three
-part lines and leaves the worktree on the pinned commit with the original
+part lines and leaves the worktree on its committed kernel tree with the original
 patch.

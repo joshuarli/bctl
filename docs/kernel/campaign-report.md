@@ -96,7 +96,7 @@ G4.2's required wall-time and per-boot median report remains outstanding.
 
 The seven-round Linux external-client measurement completed with both
 `perf-gate-ready` checks passing. The samples and configuration are recorded
-in [bctl performance](../../bctl/docs/performance.md#linux-x86_64-2026-11-12).
+in [bctl performance](../performance.md#linux-x86_64-2026-11-12).
 Raw evidence: `.work/tmp/resume-external-measure.log` and
 `resume-measure-gate-{before,after}.log`. No improvement is claimed.
 
@@ -199,7 +199,7 @@ so none was committed.
 
 bctl `3b134a4` pins `dd0ba2c7`. Interop passes 113 of 113 in two of five runs.
 The failures are recorded in
-[bctl compatibility](../../bctl/docs/compatibility.md#known-failing-or-unsupported-cases).
+[bctl compatibility](../compatibility.md#known-failing-or-unsupported-cases).
 The parallel up/down loops fail about once per 170 cycles. Faults captured
 there, all still open:
 

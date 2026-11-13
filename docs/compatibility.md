@@ -85,7 +85,7 @@ this suite.
   fail about once per 400 cycles, when the guest kernel crashed on a null task
   in its scheduler queue. Hydrogen `0523dbbc` moved the scheduler's run queue
   to a locked heap, and the next 2,400 cycles had no failure.
-  [Hydrogen's campaign report](../../hydrogen/docs/campaign-report.md) lists
+  The [kernel campaign report](kernel/campaign-report.md) lists
   the kernel faults fixed so far.
 - **Provider launch options.** The provider plugin cannot honour
   `userAgent` or `colorScheme`, and refuses them.

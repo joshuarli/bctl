@@ -1,14 +1,14 @@
 # Runtime
 
-bctl uses Hydrogen's Nanos by default for headless sessions on Apple Silicon
+bctl uses Hydrogen, its Nanos fork in `kernel/`, by default for headless sessions on Apple Silicon
 and Linux x86_64. Set `BCTL_RUNTIME=smolvm` for differential testing or headed
 sessions with SmolVM. Runtime selection and default image names live in
 `crates/bctl/src/runtime.rs`.
 
 SmolVM is vendored under `third_party/smolvm` at the revision recorded in
 `third_party/UPSTREAM.lock`. `runtime/build.sh` builds it into
-`.work/runtime/smolvm`. Nanos uses the Hydrogen revisions selected by
-`runtime/build-nanos.sh` and `runtime/build-nanos-arm64.sh`.
+`.work/runtime/smolvm`. `runtime/build-nanos.sh` and `runtime/build-nanos-arm64.sh` build the kernel
+from the committed `kernel/` tree.
 
 ## Build and install
 
@@ -244,13 +244,13 @@ Venus-only build whose 2D refusal the patch works around.
 ## Nanos runtime layout
 
 On Linux x86_64, the builder requires `/dev/kvm`, QEMU, GCC, ccache, Rust,
-and the kernel build tools named by Hydrogen's `dev/toolchain.lock`.
+and the kernel build tools named by `kernel/dev/toolchain.lock`.
 Image packaging also needs Python 3 and `fd`.
 `virtiofsd` also needs the host libseccomp and libcap-ng runtime libraries.
-Use a Hydrogen checkout containing the commit pinned in the builder:
+Commit any `kernel/` changes first; the builder refuses uncommitted ones.
 
 ```sh
-HYDROGEN="$PWD/../hydrogen" sh runtime/build-nanos.sh
+sh runtime/build-nanos.sh
 BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build.sh
 bctl_state="${BCTL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/bctl}"
 mkdir -p "$bctl_state/runtime/nanos" "$bctl_state/images"
@@ -274,7 +274,7 @@ is described in [build-loop.md](build-loop.md). Installed paths are:
 The image and its kernel are a pair. `images/nanos-helium/build.sh` writes
 `.work/images/nanos-helium.img`, `.work/images/nanos-helium.kernel.img` and
 the empty profile volume template `.work/images/nanos-helium.profile.img`
-together, copying the kernel from the hydrogen tree whose `tmpfs` and `shmem`
+together, copying the kernel from the kernel build whose `tmpfs` and `shmem`
 klibs the image packs. Install all three files: bctl boots
 `<BCTL_HOME>/images/<image>.kernel.img` beside `<image>.img`. A kernel from a
 different build than the image's klibs crashes in `klib_initialize`, so there
@@ -297,9 +297,8 @@ both `.work/images/nanos-helium.img` and `.work/images/nanos-helium.profile.img`
 to `<BCTL_HOME>/images`. The second file is the empty profile volume template.
 The image embeds the kernel and modules built together; it needs no separate kernel file.
 Ready headless sessions report no VNC port and reject viewer input.
-The arm64 builder pins Hydrogen `f6567853`, including the qualified Linux
-repairs and the ARM storage mount deadlock repair. Its kernel checks are
-recorded in [Hydrogen's macOS qualification](../../hydrogen/docs/macos-qualification.md).
+The kernel's ARM checks are recorded in the
+[macOS qualification](kernel/macos-qualification.md).
 
 On both platforms, internal VM sockets use private, short directories under
 `<BCTL_HOME>/ns` so long session names fit the Unix socket path limit.

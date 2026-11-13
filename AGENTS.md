@@ -9,4 +9,13 @@ there, then update this pin and qualify the affected bctl image. Do not vendor
 these crates or keep consumer-only patches. Appliance supervision, image
 assembly, and bctl-specific proofs remain here.
 
+# Kernel
+
+`kernel/` is Hydrogen, bctl's Nanos fork. Kernel mechanisms, platform
+adaptation, and kernel qualification live there. Read
+[docs/kernel/development.md](docs/kernel/development.md) before changing it:
+it holds the rules kernel changes follow and what counts as a pass. Commit
+kernel changes before running `runtime/build-nanos*.sh`, which build only the
+committed `kernel/` tree.
+
 Do not run formatters or change pinned Rust toolchains.

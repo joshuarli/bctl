@@ -7,7 +7,7 @@ tree at hydrogen `5e25afca`, before G1 lands. Types from G1 are the ones
 refcount, `ppid` and zombie state (G1.1/E1), the fd table shared under
 `CLONE_FILES` (G1.2) and `FD_CLOEXEC` moved into the fd-table slot (D2).
 `mini_chromium.c` is `../tests/mini_chromium/mini_chromium.c`; "contract"
-is `../docs/chromium-contract.md`.
+is `docs/kernel/chromium-contract.md` at the repository root.
 
 ## Verdict
 

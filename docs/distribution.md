@@ -27,7 +27,7 @@ A release has two kinds of artifact with different sizes and lifetimes.
 | Artifact | Size today | Changes when |
 | --- | --- | --- |
 | CLI and runtime archive, one per platform | about 6 MB CLI plus 8 MB runtime on macOS | any bctl or runtime commit |
-| `nanos-helium` image | 636 MB on disk, 204 MB compressed | the guest, browser, or Hydrogen pin changes |
+| `nanos-helium` image | 636 MB on disk, 204 MB compressed | the guest, browser, or `kernel/` tree changes |
 
 The archive `bctl-<version>-<platform>.tar.xz` holds `bin/bctl` and
 `runtime/nanos/`. On macOS, `runtime/nanos/` is the `nanos-krun` bundle: the
@@ -40,7 +40,7 @@ Alpine container. QEMU and `/dev/kvm` remain host requirements, which
 `bctl doctor` already checks.
 
 Each release also publishes `SHA256SUMS` and a `manifest.json`. The manifest
-names the platform, the bctl commit, the Hydrogen pin, and the digest of every
+names the platform, the bctl commit and the digest of every
 image file this bctl accepts. The macOS image embeds its kernel. The Linux
 image and its `.kernel.img` are one artifact, because a kernel from a different
 build than the image's klibs crashes in `klib_initialize`.
@@ -125,8 +125,8 @@ replaces an existing asset.
 
 Linux archives and all images build in the existing pinned containers. The
 macOS runner and libkrun build on macOS, because they are signed there with
-the hypervisor entitlement. A rebuild of the ARM kernel from the same Hydrogen
-commit was byte-identical, so release checks can rebuild and compare kernel
+the hypervisor entitlement. A rebuild of the ARM kernel from the same `kernel/`
+tree was byte-identical, so release checks can rebuild and compare kernel
 and image digests.
 
 ## Integration test clients

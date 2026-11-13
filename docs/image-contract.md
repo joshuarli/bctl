@@ -168,9 +168,9 @@ still says `Chrome/<chromium version>`.
 ## The nanos-helium image
 
 `sh runtime/build-nanos.sh` builds the Nanos runtime on a Linux x86_64 host
-with `/dev/kvm` and QEMU: it exports hydrogen at the commit the script pins
-(`git archive`, no write into the hydrogen checkout), builds its kernel and
-`mkfs`, builds `vhost-device-vsock` 0.3.0, and fetches hydrogen's pinned
+with `/dev/kvm` and QEMU: it exports the committed `kernel/` tree
+(`git archive`, no write into the checkout), builds its kernel and
+`mkfs`, builds `vhost-device-vsock` 0.3.0, and fetches the kernel's pinned
 llvm-prebuilt-musl LLVM, all under `.work/runtime/nanos`. It reuses a part
 when that part's stamp and the SHA-256 of its outputs are unchanged,
 rebuilds only the changed part, and prints `kernel:`, `vhost-device-vsock:`,
@@ -187,7 +187,7 @@ missing `$HOME` crash r6 fixes is not reached.
 
 The image and its kernel are one unit. The build writes
 `.work/images/nanos-helium.img` and `.work/images/nanos-helium.kernel.img`
-together; the kernel is copied from the same hydrogen tree whose `tmpfs` and
+together; the kernel is copied from the same kernel build whose `tmpfs` and
 `shmem` klibs the image packs, and the pack is stamped with both files'
 SHA-256s. bctl boots `$BCTL_HOME/images/<image>.kernel.img` beside
 `$BCTL_HOME/images/<image>.img`; a kernel from a different build than the
@@ -195,7 +195,7 @@ image's klibs crashes in `klib_initialize`. `<BCTL_HOME>/runtime/nanos/` keeps
 only `vhost-device-vsock`. A missing paired kernel fails before launch with
 both paths and the build command.
 
-The image is hydrogen's Helium rootfs (Alpine's musl 1.2.6 and the archive
+The image is the kernel harness's Helium rootfs (Alpine's musl 1.2.6 and the archive
 at `/opt/browser`) with the Rust `bctl-guest`, built for
 `x86_64-unknown-linux-musl` by that LLVM with `std` rebuilt, as the Nanos
 program. Nanos runs `bctl-guest run-headless`, which:

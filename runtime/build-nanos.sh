@@ -1,14 +1,12 @@
 #!/bin/sh
 set -eu
 
-hydrogen_commit=44f4b61f8b2e5418133dd444c8cf248ae208faf7
 vhost_vsock_version=0.3.0
 vhost_vsock_sha256=52ce95d81af89ad693d067c650e42df0f217addfbc96cc4820f7c62eb4a28b13
 vhost_vsock_patches="vhost-device-vsock-0001-forward-guest-half-close.patch vhost-device-vsock-0002-keep-vring-worker-before-rings-ready.patch"
 virtiofsd_version=1.14.0
 virtiofsd_sha256=7051accc9cf2816e25945c8216e6d4be2b4e75fc5e77559cd7eed5e400245cc1
 root=$(cd "$(dirname "$0")/.." && pwd)
-hydrogen=${HYDROGEN:-$HOME/d/hydrogen}
 out=$root/.work/runtime/nanos
 tree=$out/hydrogen
 cc="ccache gcc"
@@ -20,7 +18,7 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 digest() { sha256sum | cut -d' ' -f1; }
 
 kernel_identity() {
-    printf 'hydrogen %s\n' "$hydrogen_commit"
+    printf 'kernel %s\n' "$kernel_tree"
     printf 'compiler %s\n' "$cc"
     printf 'gcc %s\n' "$(gcc --version | sed -n '1p')"
     printf 'ccache %s\n' "$(ccache --version | sed -n '1p')"
@@ -94,8 +92,8 @@ command -v gcc >/dev/null || fail "gcc is not installed"
 command -v ccache >/dev/null || fail "ccache is not installed"
 command -v rustc >/dev/null || fail "rustc is not installed"
 command -v cargo >/dev/null || fail "cargo is not installed"
-git -C "$hydrogen" cat-file -e "$hydrogen_commit^{commit}" 2>/dev/null ||
-    fail "hydrogen commit $hydrogen_commit is not in $hydrogen (set HYDROGEN to a hydrogen clone)"
+[ -z "$(git -C "$root" status --porcelain -- kernel)" ] || fail "kernel/ has uncommitted changes; this builds the committed kernel"
+kernel_tree=$(git -C "$root" rev-parse HEAD:kernel) || fail "cannot read the kernel tree"
 
 mkdir -p "$out"
 
@@ -113,7 +111,7 @@ if [ "$force" = 1 ] || [ ! -s "$bin/kernel.img" ] || [ ! -s "$boot/boot.img" ] |
     ! stamp_valid "$kernel_stamp" "$kernel_id" "$kernel_rel" "$boot_rel" "$mkfs_rel"; then
     rm -rf "$tree"
     mkdir -p "$tree"
-    git -C "$hydrogen" archive "$hydrogen_commit" | tar -x -C "$tree"
+    git -C "$root" archive "$kernel_tree" | tar -x -C "$tree"
     make -C "$tree/nanos" -j"$(nproc)" kernel tools CC="$cc" >"$out/nanos-build.log" 2>&1 ||
         { tail -n 30 "$out/nanos-build.log" >&2; fail "kernel build failed; log in $out/nanos-build.log"; }
     [ -s "$bin/kernel.img" ] && [ -s "$boot/boot.img" ] && [ -s "$mkfs" ] && [ -x "$mkfs" ] ||
@@ -123,7 +121,7 @@ if [ "$force" = 1 ] || [ ! -s "$bin/kernel.img" ] || [ ! -s "$boot/boot.img" ] |
 else
     echo "kernel: reused"
 fi
-printf '%s\n' "$hydrogen_commit" >"$tree/COMMIT"
+printf '%s\n' "$kernel_tree" >"$tree/COMMIT"
 
 vsock_bin=$out/bin/vhost-device-vsock
 vsock_stamp=$out/bin/.build-nanos-vsock.stamp
@@ -196,8 +194,8 @@ else
 fi
 
 mkdir -p "$out/dl"
-git -C "$hydrogen" show "$hydrogen_commit:dev/toolchain.lock" >"$out/toolchain.lock" ||
-    fail "hydrogen commit $hydrogen_commit has no dev/toolchain.lock"
+git -C "$root" show "$kernel_tree:dev/toolchain.lock" >"$out/toolchain.lock" ||
+    fail "kernel tree $kernel_tree has no dev/toolchain.lock"
 . "$out/toolchain.lock"
 
 llvm_bin=$out/llvm/bin/clang

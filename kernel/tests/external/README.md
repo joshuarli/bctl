@@ -11,11 +11,9 @@ pinned guest compiler and musl sysroot. Outputs live in
 `.work/build/external/gvisor_<file>`. The harness also needs `jaq`; image tree
 packaging needs `fd` alongside the pinned build tools.
 
-Run the corpus with `dev/test.sh external`. Its outer adapter currently can
-print `PASS 0/0` after a guest crash. Check each attempt's `result.json`, its
-terminal verdict, and expected case coverage until
-[HYD-1](../../TODO.md#hyd-1--p1--external-regression-suite-reports-crashed-and-incomplete-runs-as-passing)
-is fixed. The results and corpus-selection notes below describe the original
+Run the corpus with `dev/test.sh external`. It fails a guest attempt whose
+verdict is not PASS or a case-level FAIL, and a guest run missing any case the
+native run reported. The results and corpus-selection notes below describe the original
 baseline. They are historical measurements and planning notes; they do not
 establish current qualification or current kernel capabilities.
 

@@ -62,7 +62,7 @@ rootfs_digest() {
 rootfs_identity() {
     printf 'archive %s\n' "$sha256"
     printf 'chromium-build %s\n' "$chromium_build_rev"
-    printf 'hydrogen %s\n' "$(cat "$tree/COMMIT")"
+    printf 'kernel-tree %s\n' "$(cat "$tree/COMMIT")"
     printf 'kernel-stamp %s\n' "$(sha "$kernel_stamp")"
     printf 'passwd %s\n' "$(sha "$root/guest/appliance/rootfs/etc/passwd")"
     printf 'group %s\n' "$(sha "$root/guest/appliance/rootfs/etc/group")"
@@ -81,7 +81,7 @@ scripts_present() {
 pack_identity() {
     printf 'archive %s\n' "$sha256"
     printf 'chromium-build %s\n' "$chromium_build_rev"
-    printf 'hydrogen %s\n' "$(cat "$tree/COMMIT")"
+    printf 'kernel-tree %s\n' "$(cat "$tree/COMMIT")"
     printf 'kernel-stamp %s\n' "$(sha "$kernel_stamp")"
     printf 'kernel %s\n' "$(sha "$kernel")"
     printf 'boot %s\n' "$(sha "$boot")"
@@ -101,7 +101,7 @@ verify_nanos_output() {
 [ -s "$tree/COMMIT" ] && [ -x "$runtime/llvm/bin/clang" ] || fail "run runtime/build-nanos.sh first"
 [ -s "$kernel_stamp" ] || fail "no kernel stamp in $tree; run runtime/build-nanos.sh first"
 [ -s "$kernel" ] && [ -s "$boot" ] && [ -x "$mkfs" ] ||
-    fail "the hydrogen tree has no kernel.img, boot.img or mkfs; run runtime/build-nanos.sh"
+    fail "the kernel build has no kernel.img, boot.img or mkfs; run runtime/build-nanos.sh"
 verify_nanos_output hydrogen/nanos/output/platform/pc/bin/kernel.img "$kernel"
 verify_nanos_output hydrogen/nanos/output/platform/pc/boot/boot.img "$boot"
 verify_nanos_output hydrogen/nanos/output/tools/bin/mkfs "$mkfs"
@@ -223,8 +223,8 @@ python3 -I - "$name" "$sha256" "$version" "$(cat "$tree/COMMIT")" "$rootfs/etc/b
 import json, sys
 from pathlib import Path
 
-archive, sha256, version, hydrogen, out = sys.argv[1:6]
-receipt = {"image": "nanos-helium", "browser_version": version, "archive": archive, "archive_sha256": sha256, "hydrogen": hydrogen}
+archive, sha256, version, kernel_tree, out = sys.argv[1:6]
+receipt = {"image": "nanos-helium", "browser_version": version, "archive": archive, "archive_sha256": sha256, "kernel_tree": kernel_tree}
 Path(out).write_text(json.dumps(receipt, indent=2) + "\n")
 PY
 
@@ -262,4 +262,4 @@ else
     echo "image: built"
 fi
 
-echo "$out ($version, hydrogen $(cat "$tree/COMMIT")), kernel $kernel_out, profile template $profile_out"
+echo "$out ($version, kernel tree $(cat "$tree/COMMIT")), kernel $kernel_out, profile template $profile_out"
