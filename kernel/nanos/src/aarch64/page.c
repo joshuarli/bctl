@@ -18,9 +18,9 @@ BSS_RO_AFTER_INIT u64 user_tablebase;
 void invalidate(u64 page)
 {
     /* no final sync here; need "dsb ish" at end of operation */
-    register u64 a = (page >> PAGELOG) & MASK(56 - PAGELOG);    /* no asid */
+    register u64 a = (page >> PAGELOG) & MASK(56 - PAGELOG);
     asm volatile("dsb ishst;"
-                 "tlbi vale1is, %0" :: "r"(a) : "memory");
+                 "tlbi vaale1is, %0" :: "r"(a) : "memory");
 }
 
 void flush_tlb(boolean full_flush)
@@ -75,9 +75,44 @@ void init_mmu(u64 device_base, u64 vtarget)
 }
 
 #ifdef KERNEL
-void arch_load_address_space(u64 root)
+/* Every ARMv8 implementation supports 8-bit ASIDs. ASID 0 is shared by the kernel address space and
+ * by any address space created while all others are in use; loading it flushes the local TLB. */
+#define ASID_COUNT 256
+
+static struct spinlock asid_lock;
+static u64 asid_in_use[ASID_COUNT / 64] = {1};
+
+u16 arch_asid_allocate(void)
 {
-    asm volatile("dsb ishst; msr ttbr0_el1, %0; isb; tlbi vmalle1; dsb ish; isb" :: "r"(root) : "memory");
+    u16 asid = 0;
+    u64 flags = spin_lock_irq(&asid_lock);
+    for (int i = 1; i < ASID_COUNT; i++) {
+        if (!(asid_in_use[i / 64] & U64_FROM_BIT(i % 64))) {
+            asid_in_use[i / 64] |= U64_FROM_BIT(i % 64);
+            asid = i;
+            break;
+        }
+    }
+    spin_unlock_irq(&asid_lock, flags);
+    return asid;
+}
+
+void arch_asid_release(u16 asid)
+{
+    if (!asid)
+        return;
+    asm volatile("dsb ishst; tlbi aside1is, %0; dsb ish" :: "r"((u64)asid << 48) : "memory");
+    u64 flags = spin_lock_irq(&asid_lock);
+    asid_in_use[asid / 64] &= ~U64_FROM_BIT(asid % 64);
+    spin_unlock_irq(&asid_lock, flags);
+}
+
+void arch_load_address_space(u64 root, u16 asid)
+{
+    if (asid)
+        asm volatile("dsb ishst; msr ttbr0_el1, %0; isb" :: "r"(root | ((u64)asid << 48)) : "memory");
+    else
+        asm volatile("dsb ishst; msr ttbr0_el1, %0; isb; tlbi vmalle1; dsb ish; isb" :: "r"(root) : "memory");
 }
 #endif
 

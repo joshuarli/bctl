@@ -70,7 +70,16 @@ void init_mmu(range init_pt, u64 vtarget, void *dtb)
 }
 
 #ifdef KERNEL
-void arch_load_address_space(u64 root)
+u16 arch_asid_allocate(void)
+{
+    return 0;
+}
+
+void arch_asid_release(u16 asid)
+{
+}
+
+void arch_load_address_space(u64 root, u16 asid)
 {
     u64 satp = Sv48 | (root >> 12);
     asm volatile("csrw satp, %0; sfence.vma" :: "r"(satp) : "memory");

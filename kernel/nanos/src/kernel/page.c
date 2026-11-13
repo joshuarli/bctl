@@ -1,6 +1,7 @@
 /* TODO: implement drain */
 
 #include <kernel.h>
+#include <flush_profile.h>
 
 #ifdef KERNEL
 struct spinlock pt_lock;
@@ -924,6 +925,7 @@ closure_func_basic(thunk, void, address_space_free)
 {
     address_space as = struct_from_closure(address_space, free);
     assert(bitmap_range_get_first(as->cpus, 0, total_processors) == INVALID_PHYSICAL);
+    arch_asid_release(as->asid);
     pagetable_lock();
     u64 *root = pointer_from_pteaddr(as->root);
     for (int i = 0; i < PT_ROOT_KERNEL_INDEX; i++) {
@@ -983,6 +985,7 @@ address_space allocate_address_space(heap h)
         return INVALID_ADDRESS;
     }
     as->h = h;
+    as->asid = arch_asid_allocate();
     init_refcount(&as->refcount, 1, init_closure_func(&as->free, thunk, address_space_free));
     return as;
 }
@@ -1000,7 +1003,11 @@ void address_space_switch(address_space as)
             bitmap_set_atomic(as->cpus, ci->id, 1);
         }
         ci->current_as = as;
-        arch_load_address_space(as->root);
+        if (as == kernel_address_space)
+            flush_profile_add(kernel_loads, 1);
+        else
+            flush_profile_add(user_loads, 1);
+        arch_load_address_space(as->root, as->asid);
         if (prev != kernel_address_space) {
             bitmap_set_atomic(prev->cpus, ci->id, 0);
             address_space_release(prev);

@@ -10,6 +10,7 @@
 #include <elf64.h>
 #include <serial.h>
 #include <boot_profile.h>
+#include <flush_profile.h>
 
 //#define INIT_DEBUG
 #ifdef INIT_DEBUG
@@ -826,6 +827,7 @@ void kernel_runtime_init(kernel_heaps kh)
     apply(complete, STATUS_OK);
 
     clock_init();
+    flush_profile_start();
 
     init_debug("starting runloop");
     runloop();

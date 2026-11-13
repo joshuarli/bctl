@@ -1,4 +1,5 @@
 #include <unix_internal.h>
+#include <flush_profile.h>
 #include <seccomp.h>
 #include <ftrace.h>
 #include <gdb.h>
@@ -491,7 +492,10 @@ closure_func_basic(fault_handler, context, unix_fault_handler,
             errmsg = ss("fault on a user address with another process's address space loaded");
             goto bug;
         }
+        flush_profile_add(faults, 1);
+        timestamp fault_lock_start = flush_profile_now();
         vmap_lock(p);
+        flush_profile_add(fault_lock_wait_ns, nsec_from_timestamp(flush_profile_now() - fault_lock_start));
         vmap vm;
         if (vaddr >= MIN(p->vm->mmap_min_addr, PAGESIZE) && vaddr < USER_LIMIT)
             vm = vmap_from_vaddr(p, vaddr);
@@ -545,7 +549,9 @@ closure_func_basic(fault_handler, context, unix_fault_handler,
         }
 
         boolean paging_done;
+        timestamp paging_start = flush_profile_now();
         status s = do_demand_page(p, ctx, vaddr, vm, &paging_done);
+        flush_profile_add(fault_paging_ns, nsec_from_timestamp(flush_profile_now() - paging_start));
         vmap_unlock(p);
         if (!paging_done)
             return 0;

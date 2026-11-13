@@ -250,7 +250,7 @@ static inline pageflags pageflags_readonly(pageflags flags)
 
 static inline pageflags pageflags_user(pageflags flags)
 {
-    return (pageflags){.w = flags.w | PAGE_USER};
+    return (pageflags){.w = flags.w | PAGE_USER | PAGE_ATTR_nG};
 }
 
 static inline pageflags pageflags_noexec(pageflags flags)

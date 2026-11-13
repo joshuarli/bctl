@@ -116,7 +116,16 @@ void init_mmu(void)
 }
 
 #ifdef KERNEL
-void arch_load_address_space(u64 root)
+u16 arch_asid_allocate(void)
+{
+    return 0;
+}
+
+void arch_asid_release(u16 asid)
+{
+}
+
+void arch_load_address_space(u64 root, u16 asid)
 {
     root |= page_encr_mask;
     mov_to_cr("cr3", root);

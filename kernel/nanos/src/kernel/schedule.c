@@ -1,4 +1,5 @@
 #include <kernel.h>
+#include <flush_profile.h>
 
 //#define SCHED_DEBUG
 #ifdef SCHED_DEBUG
@@ -25,6 +26,13 @@ BSS_RO_AFTER_INIT queue runqueue;
 BSS_RO_AFTER_INIT queue async_queue_1;            /* queue of async 1 arg completions */
 BSS_RO_AFTER_INIT bitmap idle_cpu_mask;
 
+/* An idle CPU polls for this long before halting, so that a waker can hand it work by writing
+ * memory instead of sending an IPI, which a hypervisor delivers to a halted vCPU slowly. */
+#define IDLE_POLL_US 50
+#define IDLE_POLL_NONE   0
+#define IDLE_POLL_ACTIVE 1
+#define IDLE_POLL_KICKED 2
+
 BSS_RO_AFTER_INIT timerqueue kernel_timers;
 BSS_RO_AFTER_INIT thunk timer_interrupt_handler;
 
@@ -36,7 +44,22 @@ NOTRACE void __attribute__((noreturn)) kernel_sleep(void)
     sched_debug("sleep\n");
     address_space_switch(kernel_address_space);
     ci->state = cpu_idle;
+    ci->idle_poll = IDLE_POLL_ACTIVE;
     bitmap_set_atomic(idle_cpu_mask, ci->id, 1);
+
+    timestamp poll_end = now(CLOCK_ID_MONOTONIC_RAW) + microseconds(IDLE_POLL_US);
+    enable_interrupts();
+    while (now(CLOCK_ID_MONOTONIC_RAW) < poll_end) {
+        if ((*(volatile u32 *)&ci->idle_poll == IDLE_POLL_KICKED) || !sched_queue_empty(&ci->thread_queue)) {
+            bitmap_set_atomic(idle_cpu_mask, ci->id, 0);
+            runloop();
+        }
+        kern_pause();
+    }
+    if (!compare_and_swap_32(&ci->idle_poll, IDLE_POLL_ACTIVE, IDLE_POLL_NONE)) {
+        bitmap_set_atomic(idle_cpu_mask, ci->id, 0);
+        runloop();
+    }
 
     while (1) {
         wait_for_interrupt();
@@ -65,6 +88,9 @@ static void wakeup_cpu(u64 cpu)
 {
     if (bitmap_test_and_set_atomic(idle_cpu_mask, cpu, 0)) {
         sched_debug("waking up CPU %d\n", cpu);
+        if (compare_and_swap_32(&cpuinfo_from_id(cpu)->idle_poll, IDLE_POLL_ACTIVE, IDLE_POLL_KICKED))
+            return;
+        flush_profile_add(wakeup_ipis, 1);
         send_ipi(cpu, wakeup_vector);
     }
 }
@@ -104,8 +130,10 @@ static sched_task migrate_to_self(sched_task t, u64 self, u64 first_cpu, u64 ncp
         cpuinfo cpui = cpuinfo_from_id(cpu);
         if (t == INVALID_ADDRESS) {
             t = sched_dequeue_for_cpu(&cpui->thread_queue, self);
-            if (t != INVALID_ADDRESS)
+            if (t != INVALID_ADDRESS) {
+                flush_profile_add(steals, 1);
                 sched_debug("migrating thread from idle CPU %d to self\n", cpu);
+            }
         }
         if (!sched_queue_empty(&cpui->thread_queue))
             wakeup_cpu(cpu);
@@ -126,6 +154,7 @@ static void migrate_from_self(cpuinfo ci, u64 first_cpu, u64 ncpus)
             wakeup_cpu(cpu);
         } else if ((task = sched_dequeue_for_cpu(&ci->thread_queue, cpu)) != INVALID_ADDRESS) {
             sched_debug("migrating thread from self to idle CPU %d\n", cpu);
+            flush_profile_add(pushes, 1);
             sched_enqueue(&cpui->thread_queue, task);
             wakeup_cpu(cpu);
         }
@@ -200,6 +229,7 @@ NOTRACE void __attribute__((noreturn)) runloop_internal(void)
                 queue_length(async_queue_1), queue_length(bhqueue),
                 queue_length(runqueue), sched_queue_length(&ci->thread_queue));
     ci->state = cpu_kernel;
+    ci->idle_poll = IDLE_POLL_NONE;
     /* Make sure TLB entries are appropriately flushed before doing any work */
     page_invalidate_flush();
     timestamp timeout = 0;

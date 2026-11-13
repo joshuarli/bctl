@@ -424,6 +424,10 @@ for suite in "$@"; do
 		make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/vsock_cow"
 		"$ROOT/dev/image.sh" -o "$IMAGES/vsock-cow.img" "$FIXTURES/vsock_cow" >/dev/null
 		python3 "$ROOT/dev/test-vsock.py" || failures=$((failures + 1)) ;;
+	latency)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/wakeup_latency"
+		linux "$FIXTURES/wakeup_latency" | sed 's/^/native /'
+		for smp in 1 2 4; do case_verdict wakeup_latency "$smp" 120 PASS '' "$FIXTURES/wakeup_latency"; done ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

@@ -97,6 +97,7 @@ struct cpuinfo {
     int targeted_irqs;
     u64 inval_gen; /* Generation number for invalidates */
     address_space current_as;
+    u32 idle_poll;
 
     cpuinfo mcs_prev;
     cpuinfo mcs_next;

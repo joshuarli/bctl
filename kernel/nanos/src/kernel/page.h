@@ -69,6 +69,7 @@ typedef struct address_space *address_space;
 #ifdef KERNEL
 struct address_space {
     u64 root;
+    u16 asid;
     struct refcount refcount;
     bitmap cpus;
     heap h;
@@ -102,7 +103,9 @@ boolean address_space_traverse_ptes(address_space as, u64 v, u64 length, entry_h
 physical address_space_physical(address_space as, u64 v);
 physical address_space_physical_locked(address_space as, u64 v);
 void address_space_map_locked(address_space as, u64 v, physical p, u64 length, pageflags flags);
-void arch_load_address_space(u64 root);
+void arch_load_address_space(u64 root, u16 asid);
+u16 arch_asid_allocate(void);
+void arch_asid_release(u16 asid);
 
 boolean address_space_protect(address_space as, u64 v, u64 length);
 void address_space_replace_page(address_space as, u64 v, physical p, pageflags flags);

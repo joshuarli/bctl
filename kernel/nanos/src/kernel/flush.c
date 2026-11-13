@@ -1,4 +1,5 @@
 #include <kernel.h>
+#include <flush_profile.h>
 
 #define FLUSH_THRESHOLD 32
 #define MAX_FLUSH_ENTRIES 1024
@@ -54,6 +55,7 @@ static boolean flush_gen_rlocked(word gen, cpuinfo ci, boolean full_flush)
             }
         }
         if (f->wait) {
+            timestamp join_start = flush_profile_now();
             /* To avoid deadlock if another CPU is doing the flush service (for which it needs
              * to acquire the lock as writer), temporarily drop the reader lock while waiting.
              * It is OK to drop the lock while in the middle of list traversal, because:
@@ -64,6 +66,7 @@ static boolean flush_gen_rlocked(word gen, cpuinfo ci, boolean full_flush)
             fetch_and_add_32(&f->joined, 1);
             while (f->wait)
                 kern_pause();
+            flush_profile_add(join_wait_ns, nsec_from_timestamp(flush_profile_now() - join_start));
             spin_rlock(&flush_lock);
         }
         refcount_release(&f->ref);
@@ -79,6 +82,7 @@ static void _flush_handler(void)
 
     if (!gen_diff)
         return;
+    flush_profile_add(handled, 1);
 
     /* Each generation has at least one page, so if the gen difference is
      * greater than FLUSH_THRESHOLD, just do a full tlb flush */
@@ -184,8 +188,14 @@ static void flush_entry_post(flush_entry f, thunk completion, boolean rendezvous
     f->gen = prev_gen + 1;
     spin_wunlock(&flush_lock);
 
+    flush_profile_add(posts, 1);
+    flush_profile_add(pages, f->npages);
+    if (f->flush)
+        flush_profile_add(full, 1);
     send_ipi(TARGET_EXCLUSIVE_BROADCAST, flush_ipi);
     if (rendezvous) {
+        flush_profile_add(rendezvous_posts, 1);
+        timestamp rendezvous_start = flush_profile_now();
         boolean full_flush = false;
         while (((volatile flush_entry)f)->joined < total_processors) {
             /* Another CPU might be waiting for us to join another rendezvous: to avoid
@@ -195,6 +205,7 @@ static void flush_entry_post(flush_entry f, thunk completion, boolean rendezvous
             spin_runlock(&flush_lock);
             kern_pause();
         }
+        flush_profile_add(rendezvous_wait_ns, nsec_from_timestamp(flush_profile_now() - rendezvous_start));
         if (completion)
             apply(completion);
         f->wait = false;
@@ -254,6 +265,34 @@ flush_entry get_page_flush_entry(void)
     runtime_memset((void *)fe, 0, sizeof(*fe));
     return fe;
 }
+
+#ifdef HYDROGEN_FLUSH_PROFILE
+struct flush_profile flush_profile;
+static struct timer flush_profile_timer;
+static closure_struct(timer_handler, flush_profile_func);
+
+closure_func_basic(timer_handler, void, flush_profile_print, u64 expiry, u64 overruns)
+{
+    if (overruns == timer_disabled)
+        return;
+    rprintf("hydrogen-flush monotonic_us=%lu posts=%lu rendezvous=%lu pages=%lu full=%lu handled=%lu "
+            "rendezvous_wait_us=%lu join_wait_us=%lu user_loads=%lu kernel_loads=%lu faults=%lu "
+            "fault_lock_wait_us=%lu fault_paging_us=%lu wakeup_ipis=%lu steals=%lu pushes=%lu\n",
+            usec_from_timestamp(now(CLOCK_ID_MONOTONIC_RAW)), flush_profile.posts,
+            flush_profile.rendezvous_posts, flush_profile.pages, flush_profile.full,
+            flush_profile.handled, flush_profile.rendezvous_wait_ns / 1000,
+            flush_profile.join_wait_ns / 1000, flush_profile.user_loads, flush_profile.kernel_loads,
+            flush_profile.faults, flush_profile.fault_lock_wait_ns / 1000, flush_profile.fault_paging_ns / 1000,
+            flush_profile.wakeup_ipis, flush_profile.steals, flush_profile.pushes);
+}
+
+void flush_profile_start(void)
+{
+    init_timer(&flush_profile_timer);
+    register_timer(kernel_timers, &flush_profile_timer, CLOCK_ID_MONOTONIC, seconds(1), false, seconds(1),
+                   init_closure_func(&flush_profile_func, timer_handler, flush_profile_print));
+}
+#endif
 
 void init_flush(heap h)
 {
