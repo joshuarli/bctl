@@ -1,8 +1,10 @@
 # Distribution design
 
 This document explains how bctl will be packaged for macOS and Linux and
-installed by `~/usr`'s `sh sync`. It is a design. None of it is implemented
-yet. The current manual installation remains in [runtime.md](runtime.md#build-and-install).
+installed by `~/usr`'s `sh sync`. The runtime default, directory split,
+runtime lookup, and archive packaging are implemented. Image fetching, release
+publishing, and the `~/usr` installer are not. The current manual installation
+remains in [runtime.md](runtime.md#build-and-install).
 
 ## Scope
 
@@ -15,8 +17,8 @@ other tools.
 Releases ship only the Nanos runtime. SmolVM stays in the repository for
 differential testing and is never packaged. SmolVM is also the only runtime
 with headed sessions, so released bctl supports headless sessions only.
-A release build therefore has to select Nanos without `BCTL_RUNTIME`. Today
-`RuntimeKind::chosen` in `crates/bctl/src/runtime.rs` falls back to SmolVM.
+bctl selects Nanos when `BCTL_RUNTIME` is unset. `BCTL_RUNTIME=smolvm`
+selects SmolVM.
 
 ## Artifacts
 
@@ -60,20 +62,23 @@ across image versions.
 
 ## Data and state directories
 
-Today one `BCTL_HOME` holds everything: on macOS
-`~/Library/Application Support/bctl`, on Linux `$XDG_STATE_HOME/bctl`. Release
-artifacts are immutable and versioned, while profiles, sessions, the daemon
-socket, and its lock change at run time. They need different lifetimes and
-backup treatment, so the design splits them before anything ships.
+Release artifacts are immutable and versioned, while profiles, sessions, the
+daemon socket, and its lock change at run time. They need different lifetimes
+and backup treatment, so `Paths` in `crates/bctl/src/paths.rs` resolves two
+roots.
 
 | Contents | macOS | Linux |
 | --- | --- | --- |
 | Runtimes and images | `~/Library/Application Support/bctl` | `$XDG_DATA_HOME/bctl` |
 | Profiles, sessions, daemon socket and lock | `~/Library/Application Support/bctl` | `$XDG_STATE_HOME/bctl` |
 
-`BCTL_HOME` keeps its meaning as a single root for tests and isolated
-installations. Making the split before the first release avoids migrating
-installed state later.
+A non-empty `BCTL_HOME` is both roots, for tests and isolated installations.
+An empty XDG variable counts as unset. Nothing migrates images or runtimes from
+the earlier Linux location under `$XDG_STATE_HOME/bctl`; move them by hand.
+
+A released bctl uses the `runtime/nanos` directory next to its `bin`
+directory when that directory exists, and `<data root>/runtime/nanos`
+otherwise. `bctl doctor` prints the directory it resolved.
 
 ## Installing with `~/usr`
 

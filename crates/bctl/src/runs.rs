@@ -1094,7 +1094,7 @@ mod tests {
         let home = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../.work/tmp/gc-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(home.join("runs")).unwrap();
-        Paths { home }
+        Paths { data: home.clone(), home }
     }
 
     fn stored_run(store: &mut Store, session: &str, ended_ms: i64, end: AttemptEnd) -> i64 {

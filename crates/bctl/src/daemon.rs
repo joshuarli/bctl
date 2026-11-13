@@ -1400,7 +1400,7 @@ exit 0
             let serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let home = std::env::temp_dir().join(format!("bctl-fail-{tag}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&home);
-            let paths = Paths { home };
+            let paths = Paths { data: home.clone(), home };
             let binary = paths.runtime();
             let ctl = binary.parent().unwrap().join("ctl");
             fs::create_dir_all(&ctl).unwrap();

@@ -9,8 +9,8 @@ use bctl_runtime_smolvm::{LaunchSource, Removal, SmolVm};
 
 use crate::paths::Paths;
 
-/// Which VMM a host runs sessions on. One host runs one runtime: SmolVM by default, on Apple Silicon macOS and
-/// Linux x86_64 with KVM, or hydrogen's Nanos when `BCTL_RUNTIME=nanos` asks for it.
+/// Which VMM a host runs sessions on. Nanos is the default; SmolVM remains available for
+/// differential testing and is the only runtime with headed sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeKind {
     SmolVm,
@@ -25,7 +25,7 @@ impl RuntimeKind {
         }
     }
 
-    /// `BCTL_RUNTIME` picks one explicitly; otherwise SmolVM, the only runtime with headed sessions.
+    /// `BCTL_RUNTIME` selects a runtime explicitly; otherwise Nanos is used. SmolVM alone supports headed sessions.
     pub(crate) fn for_host() -> Result<RuntimeKind, String> {
         RuntimeKind::chosen(std::env::var("BCTL_RUNTIME").ok().as_deref())
     }
@@ -35,7 +35,7 @@ impl RuntimeKind {
             Some("smolvm") => Ok(RuntimeKind::SmolVm),
             Some("nanos") => Ok(RuntimeKind::Nanos),
             Some(other) => Err(format!("BCTL_RUNTIME {other:?} is neither smolvm nor nanos")),
-            None => Ok(RuntimeKind::SmolVm),
+            None => Ok(RuntimeKind::Nanos),
         }
     }
 
@@ -359,8 +359,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unnamed_runtime_is_smolvm_on_every_host_and_a_named_one_is_honoured() {
-        assert_eq!(RuntimeKind::chosen(None), Ok(RuntimeKind::SmolVm));
+    fn an_unnamed_runtime_is_nanos_and_a_named_one_is_honoured() {
+        assert_eq!(RuntimeKind::chosen(None), Ok(RuntimeKind::Nanos));
         assert_eq!(RuntimeKind::chosen(Some("nanos")), Ok(RuntimeKind::Nanos));
         assert_eq!(RuntimeKind::chosen(Some("smolvm")), Ok(RuntimeKind::SmolVm));
         assert!(RuntimeKind::chosen(Some("qemu")).is_err());
@@ -378,7 +378,7 @@ mod tests {
         for file in files {
             std::fs::write(images.join(file), b"").unwrap();
         }
-        let paths = Paths { home: home.clone() };
+        let paths = Paths { data: home.clone(), home: home.clone() };
         let runtime = Runtime::new(RuntimeKind::Nanos, &paths).unwrap();
         assert_eq!(runtime.images(&paths), (vec!["complete".to_string()], vec!["bare (no bare.profile.img)".to_string()]));
         let smolvm = Runtime::new(RuntimeKind::SmolVm, &paths).unwrap();

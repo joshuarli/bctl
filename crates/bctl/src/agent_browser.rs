@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn requests_outside_the_protocol_fail_without_reaching_the_daemon() {
-        let paths = Paths { home: PathBuf::from("/nonexistent/bctl-plugin-test") };
+        let paths = Paths { home: PathBuf::from("/nonexistent/bctl-plugin-test"), data: PathBuf::from("/nonexistent/bctl-plugin-test") };
         let lease = Lease::Owned { image: None, allow_private: Vec::new() };
         let ask = |text: &str| handle(&paths, &lease, text);
         assert!(ask(r#"{"protocol":"agent-browser.plugin.v2","type":"plugin.manifest"}"#).unwrap_err().contains("protocol"));
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn a_close_handle_must_name_its_lease_consistently() {
-        let paths = Paths { home: PathBuf::from("/nonexistent/bctl-plugin-test") };
+        let paths = Paths { home: PathBuf::from("/nonexistent/bctl-plugin-test"), data: PathBuf::from("/nonexistent/bctl-plugin-test") };
         let handle = |lease: &str, generation| Cleanup { lease: lease.into(), session: "ab-x".into(), url: "http://t.localhost:1".into(), generation };
         assert!(close_browser(&paths, &handle("owned", None)).unwrap_err().contains("malformed"));
         assert!(close_browser(&paths, &handle("borrowed", Some(1))).unwrap_err().contains("malformed"));

@@ -1,8 +1,8 @@
 # Runtime
 
-bctl builds SmolVM, the default runtime, for headed sessions on Apple Silicon
-and Linux x86_64, and Hydrogen's Nanos for headless sessions selected with
-`BCTL_RUNTIME=nanos`. Runtime selection and default image names live in
+bctl uses Hydrogen's Nanos by default for headless sessions on Apple Silicon
+and Linux x86_64. Set `BCTL_RUNTIME=smolvm` for differential testing or headed
+sessions with SmolVM. Runtime selection and default image names live in
 `crates/bctl/src/runtime.rs`.
 
 SmolVM is vendored under `third_party/smolvm` at the revision recorded in
@@ -38,7 +38,7 @@ bctl_state="${BCTL_HOME:-$HOME/Library/Application Support/bctl}"
 mkdir -p "$bctl_state/runtime" "$bctl_state/images"
 ln -sfn "$PWD/.work/runtime/smolvm" "$bctl_state/runtime/smolvm"
 ln -sf "$PWD/.work/images/helium.tar" "$bctl_state/images/helium.tar"
-target/debug/bctl doctor
+BCTL_RUNTIME=smolvm target/debug/bctl doctor
 ```
 
 `DIR` contains one accepted arm64 Helium archive and its sidecars, as defined
@@ -56,11 +56,11 @@ libclang from the pinned llvm-prebuilt-musl release.
 ```sh
 runtime/build.sh
 BCTL_BROWSER_ARCHIVE=DIR images/build.sh helium
-bctl_state="${BCTL_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/bctl}"
+bctl_state="${BCTL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/bctl}"
 mkdir -p "$bctl_state/runtime" "$bctl_state/images"
 ln -sfn "$PWD/.work/runtime/smolvm" "$bctl_state/runtime/smolvm"
 ln -sf "$PWD/.work/images/helium.tar" "$bctl_state/images/helium.tar"
-target/debug/bctl doctor
+BCTL_RUNTIME=smolvm target/debug/bctl doctor
 ```
 
 `DIR` contains one accepted x86_64 Helium archive, r5 or later, and its
@@ -72,8 +72,7 @@ profile directory needs a filesystem with user xattrs.
 ### Nanos
 
 Follow [Nanos runtime layout](#nanos-runtime-layout) for Linux builds and
-installation, or its Apple Silicon instructions for the libkrun backend. Set
-`BCTL_RUNTIME=nanos` on either host to use it.
+installation, or its Apple Silicon instructions for the libkrun backend.
 
 ## Shared graphics source
 
@@ -253,7 +252,7 @@ Use a Hydrogen checkout containing the commit pinned in the builder:
 ```sh
 HYDROGEN="$PWD/../hydrogen" sh runtime/build-nanos.sh
 BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build.sh
-bctl_state="${BCTL_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/bctl}"
+bctl_state="${BCTL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/bctl}"
 mkdir -p "$bctl_state/runtime/nanos" "$bctl_state/images"
 ln -sf "$PWD/.work/runtime/nanos/bin/vhost-device-vsock" "$bctl_state/runtime/nanos/vhost-device-vsock"
 ln -sf "$PWD/.work/runtime/nanos/bin/virtiofsd" "$bctl_state/runtime/nanos/virtiofsd"
@@ -296,8 +295,7 @@ EFI firmware and its license. Run `runtime/build-nanos-arm64.sh`, then
 `BCTL_BROWSER_ARCHIVE=DIR sh images/nanos-helium/build-macos.sh`, and copy
 both `.work/images/nanos-helium.img` and `.work/images/nanos-helium.profile.img`
 to `<BCTL_HOME>/images`. The second file is the empty profile volume template.
-The image embeds the kernel and modules built together; it needs no separate kernel file. Set
-`BCTL_RUNTIME=nanos` to select this backend; SmolVM remains the macOS default.
+The image embeds the kernel and modules built together; it needs no separate kernel file.
 Ready headless sessions report no VNC port and reject viewer input.
 The arm64 builder pins Hydrogen `f6567853`, including the qualified Linux
 repairs and the ARM storage mount deadlock repair. Its kernel checks are
