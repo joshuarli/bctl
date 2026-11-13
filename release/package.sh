@@ -2,7 +2,7 @@
 set -eu
 
 fail() { printf 'release/package.sh: %s\n' "$*" >&2; exit 1; }
-target='' version='' commit='' bctl='' runtime='' images='' image='' out=''
+target='' version='' commit='' bctl='' runtime='' images_manifest='' out=''
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || fail "missing value for $1"
     case $1 in
@@ -11,17 +11,15 @@ while [ "$#" -gt 0 ]; do
         --commit) [ -z "$commit" ] || fail 'duplicate --commit'; commit=$2 ;;
         --bctl) [ -z "$bctl" ] || fail 'duplicate --bctl'; bctl=$2 ;;
         --runtime) [ -z "$runtime" ] || fail 'duplicate --runtime'; runtime=$2 ;;
-        --images) [ -z "$images" ] || fail 'duplicate --images'; images=$2 ;;
-        --image) [ -z "$image" ] || fail 'duplicate --image'; image=$2 ;;
+        --images-manifest) [ -z "$images_manifest" ] || fail 'duplicate --images-manifest'; images_manifest=$2 ;;
         --out) [ -z "$out" ] || fail 'duplicate --out'; out=$2 ;;
         *) fail "unknown option $1" ;;
     esac
     shift 2
 done
-[ -n "$target" ] && [ -n "$version" ] && [ -n "$commit" ] && [ -n "$bctl" ] && [ -n "$runtime" ] && [ -n "$images" ] && [ -n "$image" ] && [ -n "$out" ] || fail 'all options are required'
+[ -n "$target" ] && [ -n "$version" ] && [ -n "$commit" ] && [ -n "$bctl" ] && [ -n "$runtime" ] && [ -n "$images_manifest" ] && [ -n "$out" ] || fail 'all options are required'
 case $target in aarch64-apple-darwin|x86_64-unknown-linux-musl) ;; *) fail 'unknown target' ;; esac
 case $version in *[!0-9A-Za-z._-]*|'') fail 'invalid version' ;; esac
-case $image in *[!0-9A-Za-z._-]*|''|.|..) fail 'invalid image name' ;; esac
 case $commit in *[!0-9a-fA-F]*|'') fail 'invalid commit' ;; esac
 [ "${#commit}" -eq 40 ] || fail 'invalid commit'
 [ -f "$bctl" ] && [ ! -L "$bctl" ] && [ -x "$bctl" ] || fail 'bctl must be an executable regular file'
@@ -30,7 +28,8 @@ case $target in
     *) file "$bctl" | LC_ALL=C grep -E 'ELF 64-bit.*(x86-64|x86_64)' >/dev/null || fail 'bctl is not an ELF x86-64 executable' ;;
 esac
 [ -d "$runtime" ] && [ ! -L "$runtime" ] || fail 'invalid runtime directory'
-[ -d "$images" ] || fail 'invalid images directory'
+[ -f "$images_manifest" ] || fail 'invalid images manifest'
+jaq -e --arg target "$target" ".schema == 1 and .target == \$target and (.images | type == \"object\")" "$images_manifest" >/dev/null || fail 'invalid images manifest'
 if [ -e "$out" ] || [ -L "$out" ]; then
     [ -d "$out" ] && [ ! -L "$out" ] || fail 'out must be an empty directory'
     [ -z "$(ls -A "$out")" ] || fail 'out must be empty'
@@ -43,12 +42,10 @@ case $target in
     aarch64-apple-darwin)
         printf '%s\n' ./ ./firmware-license.txt ./firmware.fd ./lib/ ./lib/libkrun.dylib ./nanos-krun | LC_ALL=C sort > "$scratch/expected"
         runtime_files='firmware-license.txt firmware.fd lib/libkrun.dylib nanos-krun'
-        image_files="$image.img $image.profile.img"
         ;;
     *)
         printf '%s\n' ./ ./vhost-device-vsock ./virtiofsd | LC_ALL=C sort > "$scratch/expected"
         runtime_files='vhost-device-vsock virtiofsd'
-        image_files="$image.img $image.kernel.img $image.profile.img"
         ;;
 esac
 tar -cf "$scratch/runtime.tar" -C "$runtime" . || fail 'cannot inspect runtime'
@@ -65,7 +62,6 @@ if [ "$target" = aarch64-apple-darwin ]; then
 else
     [ -x "$runtime/vhost-device-vsock" ] && [ -x "$runtime/virtiofsd" ] || fail 'runtime executables must be executable'
 fi
-for name in $image_files; do [ -f "$images/$name" ] || fail "missing image file: $name"; done
 base=bctl-$version-$target
 mkdir -p "$scratch/stage/$base/bin" "$scratch/stage/$base/runtime/nanos"
 cp "$bctl" "$scratch/stage/$base/bin/bctl"
@@ -95,11 +91,6 @@ esac
 xz -9e -T1 -c "$scratch/archive.tar" > "$out/$base.tar.xz"
 hash() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d ' ' -f 1; }
 archive_hash=$(hash "$out/$base.tar.xz")
-image_json='{}'
-for name in $image_files; do
-    digest=$(hash "$images/$name")
-    image_json=$(jaq -nc --argjson images "$image_json" --arg name "$name" --arg digest "$digest" "\$images + {(\$name): \$digest}")
-done
-jaq -nc --arg version "$version" --arg target "$target" --arg commit "$commit" --arg archive "$base.tar.xz" --arg digest "$archive_hash" --arg image "$image" --argjson files "$image_json" "{schema: 1, version: \$version, target: \$target, commit: \$commit, archive: {name: \$archive, sha256: \$digest}, images: {(\$image): \$files}}" > "$out/manifest.json"
+jaq -nc --arg version "$version" --arg target "$target" --arg commit "$commit" --arg archive "$base.tar.xz" --arg digest "$archive_hash" --argjson images "$(jaq -c '.images' "$images_manifest")" "{schema: 1, version: \$version, target: \$target, commit: \$commit, release: (\"release-\" + \$commit), archive: {name: \$archive, sha256: \$digest}, images: \$images}" > "$out/manifest.json"
 jaq . "$out/manifest.json" >/dev/null || fail 'invalid manifest'
 (cd "$out" && { printf '%s  %s\n' "$archive_hash" "$base.tar.xz"; printf '%s  %s\n' "$(hash manifest.json)" manifest.json; } | LC_ALL=C sort -k 2) > "$out/SHA256SUMS"
