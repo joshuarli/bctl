@@ -1,0 +1,1374 @@
+{
+  "started": "20261113T011206Z",
+  "completed": true,
+  "runtime": "nanos",
+  "native_binary": "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "native_version": "Chromium 155.0.8059.84",
+  "bctl_commit": "671790c25bf0e1718379c219f98ca8b495e64ccb",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "attempts": [
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.74 2.66 3.55 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.74 2.66 3.55 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l0n0",
+      "result": {
+        "cold_open_ms": 1045.0947500066832,
+        "warm_workflow_ms": 206.39758394099772,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 1262.780416989699,
+      "total_ms": 1262.7813749713823,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.74 2.66 3.55 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.74 2.66 3.55 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l0n1",
+      "result": {
+        "cold_open_ms": 740.1431669713929,
+        "warm_workflow_ms": 158.6511250352487,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 913.0259999074042,
+      "total_ms": 913.0268750013784,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.74 2.66 3.55 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.74 2.66 3.55 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l0b0",
+      "result": {
+        "cold_open_ms": 1042.1215000096709,
+        "warm_workflow_ms": 157.4646249646321,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1210.877958103083,
+      "total_ms": 1210.8785840682685,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.60 2.61 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.60 2.61 3.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l0b1",
+      "result": {
+        "cold_open_ms": 1010.5702920118347,
+        "warm_workflow_ms": 293.4474169742316,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1323.1357079930604,
+      "total_ms": 1323.1363339582458,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.60 2.61 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.60 2.61 3.52 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l1b0",
+      "result": {
+        "cold_open_ms": 968.7854580115527,
+        "warm_workflow_ms": 182.48141696676612,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1276.9322079839185,
+      "total_ms": 1276.9326249836013,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.60 2.61 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l1b1",
+      "result": {
+        "cold_open_ms": 1018.4487500227988,
+        "warm_workflow_ms": 243.1057080393657,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1368.598832981661,
+      "total_ms": 1368.599290959537,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l1n0",
+      "result": {
+        "cold_open_ms": 694.4012501044199,
+        "warm_workflow_ms": 214.73383391276002,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 921.1749579990283,
+      "total_ms": 921.1755000287667,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 1,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l1n1",
+      "result": {
+        "cold_open_ms": 1016.033084015362,
+        "warm_workflow_ms": 196.86058291699737,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1227.934416034259,
+      "total_ms": 1227.9347500298172,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.63 2.60 3.52 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l2n0",
+      "result": {
+        "cold_open_ms": 681.4151660073549,
+        "warm_workflow_ms": 196.33370800875127,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 887.41820899304,
+      "total_ms": 887.418832979165,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.82 2.63 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.82 2.63 3.52 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l2n1",
+      "result": {
+        "cold_open_ms": 960.2926659863442,
+        "warm_workflow_ms": 208.34604103583843,
+        "screenshot_bytes": 85842,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1195.2519579790533,
+      "total_ms": 1195.2525420347229,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.82 2.63 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.82 2.63 3.52 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l2b0",
+      "result": {
+        "cold_open_ms": 1002.3980840342119,
+        "warm_workflow_ms": 264.91137500852346,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1326.4240840217099,
+      "total_ms": 1326.424584025517,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 2,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.82 2.63 3.52 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.82 2.63 3.52 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l2b1",
+      "result": {
+        "cold_open_ms": 991.6945419972762,
+        "warm_workflow_ms": 238.4005420608446,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1294.3162909941748,
+      "total_ms": 1294.3165419856086,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.76 2.60 3.50 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.76 2.60 3.50 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l3b0",
+      "result": {
+        "cold_open_ms": 992.7332079969347,
+        "warm_workflow_ms": 260.4832910001278,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1269.66741704382,
+      "total_ms": 1269.667875021696,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.76 2.60 3.50 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.76 2.60 3.50 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l3b1",
+      "result": {
+        "cold_open_ms": 984.3761249212548,
+        "warm_workflow_ms": 261.352458037436,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1303.558292100206,
+      "total_ms": 1303.55879093986,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.76 2.60 3.50 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l3n0",
+      "result": {
+        "cold_open_ms": 708.7905830703676,
+        "warm_workflow_ms": 212.59604208171368,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 934.9815420573577,
+      "total_ms": 934.9819159833714,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 3,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l3n1",
+      "result": {
+        "cold_open_ms": 1037.6405420247465,
+        "warm_workflow_ms": 178.1766660278663,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1232.9617500072345,
+      "total_ms": 1232.962290989235,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l4n0",
+      "result": {
+        "cold_open_ms": 676.3025419786572,
+        "warm_workflow_ms": 252.0456250058487,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 940.7090829918161,
+      "total_ms": 940.709708025679,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l4n1",
+      "result": {
+        "cold_open_ms": 750.4451669519767,
+        "warm_workflow_ms": 192.076624953188,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 956.2225829577073,
+      "total_ms": 956.2231249874458,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.70 2.57 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.04 2.63 3.50 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l4b0",
+      "result": {
+        "cold_open_ms": 1006.1596250161529,
+        "warm_workflow_ms": 263.69574991986156,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1286.4247909747064,
+      "total_ms": 1286.4252079743892,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 4,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.04 2.63 3.50 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.04 2.63 3.50 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l4b1",
+      "result": {
+        "cold_open_ms": 1054.2060419684276,
+        "warm_workflow_ms": 295.7829169463366,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1372.8771249298006,
+      "total_ms": 1372.8777080541477,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 5,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.04 2.63 3.50 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.28 2.67 3.51 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l5b0",
+      "result": {
+        "cold_open_ms": 1035.6129999272525,
+        "warm_workflow_ms": 277.6216249912977,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1370.8674580557272,
+      "total_ms": 1370.8680419949815,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 5,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.28 2.67 3.51 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.28 2.67 3.51 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l5b1",
+      "result": {
+        "cold_open_ms": 1064.2325420631096,
+        "warm_workflow_ms": 279.32487498037517,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1417.4209160264581,
+      "total_ms": 1417.4212079960853,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 5,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.28 2.67 3.51 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.28 2.67 3.51 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l5n0",
+      "result": {
+        "cold_open_ms": 704.8207500483841,
+        "warm_workflow_ms": 221.25674993731081,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 946.165458066389,
+      "total_ms": 946.1658749496564,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 5,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.28 2.67 3.51 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l5n1",
+      "result": {
+        "cold_open_ms": 920.5608750926331,
+        "warm_workflow_ms": 182.20895796548575,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1120.3806250123307,
+      "total_ms": 1120.3811659943312,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 6,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l6n0",
+      "result": {
+        "cold_open_ms": 703.8151250453666,
+        "warm_workflow_ms": 242.62641707900912,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 968.7808329472318,
+      "total_ms": 968.7811670592055,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 6,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l6n1",
+      "result": {
+        "cold_open_ms": 753.5698340507224,
+        "warm_workflow_ms": 196.29937503486872,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 974.8243329813704,
+      "total_ms": 974.8248750111088,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 6,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l6b0",
+      "result": {
+        "cold_open_ms": 999.279374955222,
+        "warm_workflow_ms": 278.7287080427632,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1336.8530829902738,
+      "total_ms": 1336.8534999899566,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 6,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.65 2.74 3.53 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.44 2.69 3.51 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l6b1",
+      "result": {
+        "cold_open_ms": 1071.1649999720976,
+        "warm_workflow_ms": 265.07062499877065,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1403.1262500211596,
+      "total_ms": 1403.1267079990357,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 7,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.44 2.69 3.51 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.44 2.69 3.51 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l7b0",
+      "result": {
+        "cold_open_ms": 1004.5370000880212,
+        "warm_workflow_ms": 166.0797919612378,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1186.820917064324,
+      "total_ms": 1186.8212920380756,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 7,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.44 2.69 3.51 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l7b1",
+      "result": {
+        "cold_open_ms": 1014.7555000148714,
+        "warm_workflow_ms": 266.07045892160386,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1334.58454196807,
+      "total_ms": 1334.5850419718772,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 7,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l7n0",
+      "result": {
+        "cold_open_ms": 710.6682499870658,
+        "warm_workflow_ms": 249.23441698774695,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 982.6288340846077,
+      "total_ms": 982.6294999802485,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 7,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l7n1",
+      "result": {
+        "cold_open_ms": 711.528499959968,
+        "warm_workflow_ms": 161.08854103367776,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 888.8358329422772,
+      "total_ms": 888.8362919678912,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 8,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l8n0",
+      "result": {
+        "cold_open_ms": 729.1824159910902,
+        "warm_workflow_ms": 226.9010420423001,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 976.6560420393944,
+      "total_ms": 976.6566250473261,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 8,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.33 2.67 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.30 2.65 3.49 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l8n1",
+      "result": {
+        "cold_open_ms": 749.3123339954764,
+        "warm_workflow_ms": 192.19412503298372,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 964.5248749293387,
+      "total_ms": 964.525582967326,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 8,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.30 2.65 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.30 2.65 3.49 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l8b0",
+      "result": {
+        "cold_open_ms": 1058.3443329669535,
+        "warm_workflow_ms": 182.23104206845164,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1254.301792010665,
+      "total_ms": 1254.3023750185966,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 8,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.30 2.65 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.30 2.65 3.49 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l8b1",
+      "result": {
+        "cold_open_ms": 1046.6577080078423,
+        "warm_workflow_ms": 283.25320803560317,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1348.500833963044,
+      "total_ms": 1348.5012500314042,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 9,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.30 2.65 3.49 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.28 2.64 3.48 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l9b0",
+      "result": {
+        "cold_open_ms": 1033.4434169344604,
+        "warm_workflow_ms": 276.71870798803866,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1369.093875051476,
+      "total_ms": 1369.0942499088123,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 9,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.28 2.64 3.48 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.28 2.64 3.48 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l9b1",
+      "result": {
+        "cold_open_ms": 1044.6634159889072,
+        "warm_workflow_ms": 250.92908297665417,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1395.8620419725776,
+      "total_ms": 1395.8624169463292,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": 0
+    },
+    {
+      "phase": "latency",
+      "round": 9,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.28 2.64 3.48 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.28 2.64 3.48 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l9n0",
+      "result": {
+        "cold_open_ms": 687.932415981777,
+        "warm_workflow_ms": 252.45883304160088,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 957.2885830421001,
+      "total_ms": 957.2891249554232,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    },
+    {
+      "phase": "latency",
+      "round": 9,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 2.25 2.63 3.47 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 2.25 2.63 3.47 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-wjf70y4n/l9n1",
+      "result": {
+        "cold_open_ms": 903.0724579934031,
+        "warm_workflow_ms": 180.8773329248652,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1113.0607499508187,
+      "total_ms": 1113.0612919805571,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\"",
+      "experimental_vm_latency_tier": null
+    }
+  ],
+  "summary": {},
+  "bctl_dirty": false,
+  "shadowdriver_dirty": false,
+  "node_version": "v26.13.0",
+  "agent_browser_version": "agent-browser 0.42.0",
+  "native_extra_args": [
+    "--disable-gpu"
+  ],
+  "vm_configuration": "bctl production defaults, actual resources recorded on resource attempts",
+  "artifacts_sha256": {
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "bb465ee78423af543d27b87f77108cbd4702ca7cca428faa2be9529d3ad4cd2a",
+    "/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs": "8f4ae86b91d5caf9b1dfd298988c98f67dcae1b7da667aafdbebe9b47f5cdcb7",
+    "/Users/josh/d/bctl/target/release/bctl": "2a1b01fc92cd15c65453087c59d35457a1537ae5add38b33d381c8c3b8f2c85b",
+    "/Users/josh/d/bctl/.work/interop/agent-browser/bin/agent-browser": "86c6c86762960b15c0502472c296c8ccb46f96d18d0c486ca689e06fd6dc8125",
+    "/Users/josh/d/bctl/.work/toolchain/node-v26.13.0-darwin-arm64/bin/node": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium": "a67f1a4e5e8580115fce0615a7426b4342ced9fd836a1f968f7963e1964f225c",
+    "/Users/josh/d/shadowdriver/ts/dist/src/browser.js": "ff0cef434b3327d3626aefcb1a3c2bc094d379f10a520112a7d1321f1587211e",
+    "/Users/josh/d/shadowdriver/py/python/shadowdriver/_native.abi3.so": "8bb456f7bfc8b05caa5cf8c565fb229b172050f3b7782a2a167c94d23f118a1f",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "3ff4f0646c6f91dc13da9e4591a4cb0628f8230fe76f2db8b7be89f2811fc9d9",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5"
+  },
+  "host": {
+    "model": "Mac17,7",
+    "cpus": 18,
+    "memory_bytes": 51539607552,
+    "macos": "27.0.1"
+  },
+  "method": "latency and physical-footprint sampling use separate fresh-profile passes; alternating sides; OS and image caches warm; default VM resources; native unrestricted CPU",
+  "resource_method": "deduplicated Summary Footprint of driver, fixtures, clients, daemon, supervisor, VMM or native browser tree; includes compressed pages; 250 ms best-effort sampling; not an exact peak",
+  "fixture_transport": "identical IPv4 loopback URL for host HTTP, native browser, and guest browser; guest proxy explicitly permits only 127.0.0.1/32",
+  "speedometer_commit": "1386415be8fef2f6b6bbdbe1828872471c5d802a",
+  "speedometer_dirty": false,
+  "shadowdriver_final_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "changed_artifacts": [],
+  "experiment": {
+    "name": "owned VMM latency tier 0",
+    "script": "qos-experiment.py",
+    "script_sha256": "baef529d66e4056a519aac9e79953a70122f2209a7aa3ab75bd46f10800cbb60",
+    "ordering": "ABBA across fresh trials; unchanged in rounds 0,3,4,7,8; tier 0 in rounds 1,2,5,6,9",
+    "metric": "warm_workflow_ms only; policy setup is outside warm timing",
+    "native": "stock Chromium with --disable-gpu; native process policy unchanged"
+  }
+}

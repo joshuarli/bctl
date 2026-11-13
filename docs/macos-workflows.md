@@ -137,6 +137,23 @@ The coarse stages cannot separate disk preparation, HVF creation, firmware,
 kernel initialization, and Chromium initialization before the first probe.
 That portion needs instrumentation before choosing a kernel optimization.
 
+A [latency-tier experiment](../tests/bench/results/2026-11-13-macos-workflows/qos-experiment.json)
+tests macOS timer-coalescing as a source of warm interaction latency.
+Only the owned Nanos VMM receives `taskpolicy -l 0`, after viewport setup.
+Fresh trials use ABBA ordering, with five samples per candidate condition and
+workload. Native Chromium retains `--disable-gpu` and its unchanged process policy.
+All 40 workflows pass the output and load checks.
+
+| Nanos warm workflow | Unchanged policy, ms | Latency tier 0, ms |
+| --- | --- | --- |
+| agent-browser form | 182 (157–264) | 277 (182–279) |
+| agent-browser news | 283 (261–296) | 251 (238–279) |
+
+These are medians with minimum to maximum. The experiment establishes no
+reliable improvement across both workflows. Runtime policy remains unchanged.
+CPU cost of this setting is unmeasured. The saved hook reproduces the policy
+placement. Cold task totals include its setup and are excluded from this claim.
+
 ## Preliminary results, 2026-11-12
 
 The refreshed run uses Shadowdriver
