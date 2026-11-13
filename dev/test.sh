@@ -119,6 +119,7 @@ suite_harness() {
 		case_verdict write_from_mapped_file "$smp" 30 PASS '' --klib tmpfs --dir /tmp "$FIXTURES/write_from_mapped_file"
 		case_virtiofs_files "$smp"
 	done
+	case_verdict epoll_cow 4 60 PASS '' "$FIXTURES/epoll_cow"
 	fixture_native userns unshare -Ur
 	fixture_native pidns env
 	fixture_native session_signal env

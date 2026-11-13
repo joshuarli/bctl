@@ -10,6 +10,7 @@ STATIC_FIXTURES+=	p9_mutation
 STATIC_FIXTURES+=	fsfile_lifetime
 STATIC_FIXTURES+=	proc_fstat_exited
 STATIC_FIXTURES+=	futex_requeue_race
+STATIC_FIXTURES+=	epoll_cow
 
 all: $(OUT)/mini_chromium $(OUT)/mini_chromium_raw $(addprefix $(OUT)/fixtures/,$(STATIC_FIXTURES) $(DYNAMIC_FIXTURES)) $(OUT)/fixtures/vm_isolation_dyn $(OUT)/fixtures/cow_stress_dyn
 

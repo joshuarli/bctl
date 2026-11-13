@@ -38,7 +38,7 @@ notify_entry notify_add_with_flags(notify_set s, u64 eventmask, u64 flags, event
     n->eventmask = eventmask;
     n->flags = flags;
     n->eh = eh;
-    spin_lock(&s->lock);
+    spin_lock_flush(&s->lock);
     list_insert_before(&s->entries, &n->l);
     spin_unlock(&s->lock);
     return n;
@@ -46,7 +46,7 @@ notify_entry notify_add_with_flags(notify_set s, u64 eventmask, u64 flags, event
 
 void notify_remove(notify_set s, notify_entry e, boolean release)
 {
-    spin_lock(&s->lock);
+    spin_lock_flush(&s->lock);
     list_delete(&e->l);
     if (release)
         apply(e->eh, NOTIFY_EVENTS_RELEASE, 0);
@@ -68,7 +68,7 @@ void notify_entry_update_eventmask(notify_entry n, u64 eventmask)
 u64 notify_get_eventmask_union(notify_set s)
 {
     u64 u = 0;
-    spin_lock(&s->lock);
+    spin_lock_flush(&s->lock);
     list_foreach(&s->entries, l) {
         notify_entry n = struct_from_list(l, notify_entry, l);
         u |= n->eventmask;
@@ -80,7 +80,7 @@ u64 notify_get_eventmask_union(notify_set s)
 boolean notify_dispatch_with_arg(notify_set s, u64 events, void *arg)
 {
     boolean consumed = false;
-    spin_lock(&s->lock);
+    spin_lock_flush(&s->lock);
     list_foreach(&s->entries, l) {
         notify_entry n = struct_from_list(l, notify_entry, l);
         /* no guarantee that a transition is represented here; event
@@ -107,7 +107,7 @@ void notify_dispatch(notify_set s, u64 events)
 
 void notify_release(notify_set s)
 {
-    spin_lock(&s->lock);
+    spin_lock_flush(&s->lock);
     list_foreach(&s->entries, l) {
         notify_entry n = struct_from_list(l, notify_entry, l);
         list_delete(l);
