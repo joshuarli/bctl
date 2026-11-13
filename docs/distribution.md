@@ -3,7 +3,7 @@
 This document explains how bctl will be packaged for macOS and Linux and
 installed by `~/usr`'s `sh sync`. The runtime default, directory split,
 runtime lookup, archive and image packaging, and image fetching are
-implemented. Release publishing and the `~/usr` installer are not. The current manual installation
+implemented, and so is release publishing. The `~/usr` installer is not. The current manual installation
 remains in [runtime.md](runtime.md#build-and-install).
 
 ## Scope
@@ -110,6 +110,15 @@ otherwise. `bctl doctor` prints the directory it resolved.
 6. Prune releases other than `current`.
 
 ## Building releases
+
+`release/build-release.sh --target TARGET --runtime DIR --images DIR --out DIR`
+builds one platform's release from a clean checkout. It packages the image,
+builds bctl with that image manifest embedded, and packages the CLI archive.
+It then writes `SHA256SUMS-<target>` over the archive,
+`bctl-<target>.manifest.json`, and the image zip. With `--publish OWNER/REPO`
+it uploads them to `release-<commit>`, creating the release if needed, so a
+macOS build and a Linux build of one commit share a release. Upload never
+replaces an existing asset.
 
 Linux archives and all images build in the existing pinned containers. The
 macOS runner and libkrun build on macOS, because they are signed there with
