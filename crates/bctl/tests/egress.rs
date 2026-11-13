@@ -101,6 +101,32 @@ fn count_requests(listener: TcpListener) -> std::sync::Arc<std::sync::atomic::At
 }
 
 #[test]
+#[ignore = "boots macOS Nanos VMs to check browser loopback proxy routing"]
+fn the_nanos_browser_obeys_explicit_host_loopback_permissions() {
+    if !common::nanos() || !cfg!(target_os = "macos") { return; }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = count_requests(listener);
+    let home = Home::new("h2-loopback");
+    let denied = format!("{}-denied", home.prefix());
+    assert_ok(&home.up(&denied, "denied"));
+    assert_ok(&home.bctl(&["tab", "new", &denied, "about:blank"]));
+    assert!(goto(&home, &denied, &format!("http://127.0.0.1:{port}/")).is_err());
+    assert_ok(&home.bctl(&["down", &denied]));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let allowed = format!("{}-allowed", home.prefix());
+    assert_ok(&home.bctl(&["up", &allowed, "--profile", "allowed", "--image", &common::image(), "--allow-private", "127.0.0.1/32"]));
+    assert_ok(&home.bctl(&["tab", "new", &allowed, "about:blank"]));
+    let ipv4 = goto(&home, &allowed, &format!("http://127.0.0.1:{port}/"));
+    let mapped = goto(&home, &allowed, &format!("http://[::ffff:127.0.0.1]:{port}/"));
+    assert_ok(&home.bctl(&["down", &allowed]));
+    assert!(ipv4.is_ok(), "explicit IPv4 permission was not routed through egress: {ipv4:?}");
+    assert!(mapped.is_ok(), "mapped IPv4 permission was not routed through egress: {mapped:?}");
+    assert!(hits.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+}
+
+#[test]
 #[ignore = "boots real VMs: needs the runtime and the BCTL_TEST_IMAGE image (default for the runtime) in .work/images"]
 fn the_browser_reaches_the_public_internet_but_not_the_host_or_private_addresses() {
     let home = Home::new("h2b");

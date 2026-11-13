@@ -277,3 +277,8 @@ the host's loopback, which the guest reaches at `100.96.0.1`.
 Reach a host service there rather than at the host's LAN address: SmolVM
 dials a LAN address as an ordinary host connection, which a macOS content
 filter can stall mid-response, while it dials `100.96.0.1` as `127.0.0.1`.
+
+The Nanos browser also sends loopback requests through its egress proxy.
+They are denied by default. With `--allow-private 127.0.0.1/32`, browser
+requests to `127.0.0.1` or its IPv4-mapped IPv6 form reach host loopback.
+The browser cannot use implicit proxy bypasses to reach guest loopback services.

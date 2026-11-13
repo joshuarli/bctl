@@ -60,6 +60,7 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
     let mut arguments: Vec<String> = surface.iter().map(|a| a.to_string()).collect();
     if display == Display::Headless {
         arguments.push(format!("--proxy-server=socks5://127.0.0.1:{}", layout::EGRESS_PROXY_PORT));
+        arguments.push("--proxy-bypass-list=<-loopback>".into());
     }
     arguments.extend([
         format!("--remote-debugging-port={}", layout::BROWSER_CDP_PORT),
@@ -109,6 +110,7 @@ mod tests {
         assert!(args.contains(&"--user-data-dir=/profile".to_string()));
         assert!(!args.iter().any(|a| a == "--no-sandbox" || a == "--single-process" || a == "--no-zygote"));
         assert!(args.contains(&format!("--proxy-server=socks5://127.0.0.1:{}", layout::EGRESS_PROXY_PORT)));
+        assert!(args.contains(&"--proxy-bypass-list=<-loopback>".to_string()));
     }
 
     #[test]
