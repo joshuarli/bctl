@@ -353,6 +353,53 @@ exit status. The four-page dynamic fixture passes capture and offline replay
 on both backends. A second smoke run passes two concurrent crawls per backend.
 Smoke timings are excluded from performance claims.
 
+### Sustained crawl results
+
+The [full crawl receipt](../tests/bench/results/2026-11-13-macos-costs/crawl.json)
+completes all 20 trials. Each trial runs two concurrent independent 16-page
+crawls with four browser slots each, followed by fresh native offline replay.
+All 640 page captures and all 640 offline replays pass.
+The five latency samples per backend pass all 20 host-load checks.
+Recorded input hashes remain unchanged. Shadowdriver remains clean at `3a5aeb5`.
+
+Each crawl records 16 expected HTTPS-upgrade retries with
+`ERR_SSL_PROTOCOL_ERROR`, then 16 successful HTTP captures.
+The [capture outcome summary](../tests/bench/results/2026-11-13-macos-costs/crawl-outcomes.json)
+retains every worker's counts. Retries remain in the measured task.
+
+Values are medians with minimum to maximum. Each cell has five samples.
+The footprint includes capture browsers, fresh replay browsers, workers,
+coordinator, fixture, and the owned daemon and VMM trees.
+
+| Measure, 32 captured and replayed pages | Native | Nanos |
+| --- | --- | --- |
+| Complete task, seconds | 134.45 (133.74–137.54) | 136.68 (134.76–141.35) |
+| Completed pages per second | 0.2380 (0.2327–0.2393) | 0.2341 (0.2264–0.2375) |
+| Sampled peak footprint, MiB | 1538.2 (1532.9–1546.5) | 1651.4 (1637.9–1657.3) |
+
+The latency and throughput ranges overlap. No measurable speed advantage is
+established. Nanos uses 7.4% more sampled physical memory for this full pipeline.
+The 20% latency and 50% memory targets remain unmet.
+
+Every resource trial stays below the 2048 MiB sampled budget.
+The corresponding rates per budget GiB are 0.1190 pages/s native and
+0.1171 pages/s Nanos. These measure the chosen two-job workload.
+They do not measure maximum concurrency or establish the 2× density target.
+
+Each resource trial has at least 155 complete samples.
+The collector rejects 224 samples whose process set changes during collection.
+Those errors remain in the receipt. Adjacent `crawl-*-footprint.txt` files
+retain every trial's peak tool output. These are sampled peaks.
+
+Fresh native offline replay takes about 80 seconds per worker on both sides.
+The native verifier therefore limits how much startup-only changes can improve
+this complete task. Capture settling, scrolling, preload, and readiness waits
+also remain in the task.
+Representative [native replay](../tests/bench/results/2026-11-13-macos-costs/crawl-native-offline.txt)
+and [Nanos replay](../tests/bench/results/2026-11-13-macos-costs/crawl-nanos-offline.txt)
+logs retain all 16 page checks from one worker each.
+Every mirror and state database remains at its receipt's artifact path.
+
 After both performance runs, the current Nanos and SmolVM images each pass all
 113 interoperability checks in separate runs. Nanos's three egress tests pass,
 including default loopback denial and explicit IPv4 and mapped-IPv6 allowance.
@@ -360,8 +407,9 @@ Receipts are `.work/tmp/macos-workflows-{nanos,smolvm}-interop.log` and
 `.work/tmp/macos-workflows-egress.log`. The current SmolVM image hash is
 `9a195deed99cd84c27193b41e72c5e0d89eb2a8d7461348f099f8ea616b8b051`.
 
-Sustained crawl CPU cost, throughput, dynamic-asset coverage, and the targets
-above remain open until their receipts pass. Chromium build versions differ
+Sustained crawl CPU cost and the performance targets above remain open.
+The bounded dynamic-asset and concurrent-crawl checks above pass.
+Chromium build versions differ
 between stock macOS and the pinned Linux Helium archive. These are product
 comparisons. They do not isolate kernel performance.
 Representative screenshots were visually checked on both backends. Native

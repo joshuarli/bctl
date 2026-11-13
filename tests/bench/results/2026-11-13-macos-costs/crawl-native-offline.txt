@@ -1,0 +1,145 @@
+page-0.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-1.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-10.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-11.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-12.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-13.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-14.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-15.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-2.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-3.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-4.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-5.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-6.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-7.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-8.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+page-9.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             53 -> 53
+images loaded        2 -> 2
+stylesheets          2 -> 2
+document height      1380 -> 1372
+
+Verification: 16 checked, 16 passed, 0 failed

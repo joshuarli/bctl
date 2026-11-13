@@ -1,0 +1,802 @@
+[
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "0",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "0",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "0",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "0",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "1",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "1",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "1",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "1",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "2",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "2",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "2",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "2",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "3",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "3",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "3",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "3",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "4",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "native",
+    "round": "4",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "4",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "latency",
+    "side": "bctl",
+    "round": "4",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "0",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "0",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "0",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "0",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "1",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "1",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "1",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "1",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "2",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "2",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "2",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "2",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "3",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "3",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "3",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "3",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "4",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "native",
+    "round": "4",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "4",
+    "job": "0",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  },
+  {
+    "phase": "resources",
+    "side": "bctl",
+    "round": "4",
+    "job": "1",
+    "outcomes": [
+      {
+        "outcome": "retry",
+        "failure_kind": "page-render",
+        "reason": "ERR_SSL_PROTOCOL_ERROR",
+        "n": 16
+      },
+      {
+        "outcome": "success",
+        "failure_kind": "",
+        "reason": "",
+        "n": 16
+      }
+    ]
+  }
+]
