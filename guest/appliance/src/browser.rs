@@ -36,6 +36,7 @@ impl Display {
 }
 
 pub fn exec() -> Result<ExitCode, String> {
+    crate::startup::mark("browser_entry");
     let display = Display::from_env()?;
     disable_bundled_ublock_origin(&layout::profile_dir())?;
     let executable = fs::canonicalize(layout::BROWSER_LINK).map_err(|e| format!("{}: {e}", layout::BROWSER_LINK))?;
@@ -43,6 +44,7 @@ pub fn exec() -> Result<ExitCode, String> {
     let log_path = layout::log("browser.log");
     let log = OpenOptions::new().append(true).open(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let stderr = log.try_clone().map_err(|e| format!("{}: {e}", log_path.display()))?;
+    crate::startup::mark("chromium_exec_begin");
     let error = Command::new(&executable)
         .args(arguments(display, &layout::profile_dir(), &layout::start_url()))
         .envs(archive_environment(root))

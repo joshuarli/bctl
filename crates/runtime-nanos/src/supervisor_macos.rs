@@ -167,11 +167,16 @@ fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
 }
 
 fn serve(config: &Config) -> Result<(), String> {
+    let startup = crate::startup::Startup::new("supervisor");
+    startup.mark("begin");
     let _lock = supervisor_lock::hold(&config.dir)?;
     let policy = Policy::new(&config.allow_private)?;
+    startup.mark("profile_begin");
     let profile = prepare_profile(&config.profile_dir, &config.image.with_extension("profile.img"), copy_template)?;
+    startup.mark("profile_ready");
     let disk = config.dir.join("disk.img");
     fs::copy(&config.image, &disk).map_err(|error| format!("copy {} to {}: {error}", config.image.display(), disk.display()))?;
+    startup.mark("root_disk_ready");
     let mut cleanup = SocketCleanup(Vec::new());
     let control_path = config.socket_dir.join(CONTROL_SOCKET);
     let control = bind(&control_path)?;
@@ -189,16 +194,19 @@ fn serve(config: &Config) -> Result<(), String> {
             Err(error) => return Err(format!("{}: {error}", path.display())),
         }
     }
+    startup.mark("runner_spawn_begin");
     let mut child = Vm(Command::new(&config.runner).arg(&disk).arg(&config.firmware)
         .arg(socket(&config.socket_dir, GUEST_CDP_PORT)).arg(socket(&config.socket_dir, GUEST_CHECK_PORT))
         .arg(socket(&config.socket_dir, GUEST_EGRESS_PORT)).arg(config.cpus.to_string()).arg(config.memory_mib.to_string())
         .arg(&profile).arg(socket(&config.socket_dir, GUEST_STOP_PORT)).arg(&config.files_dir)
         .stdin(Stdio::null()).stdout(log_file(&config.dir, CONSOLE_LOG)?).stderr(log_file(&config.dir, SUPERVISOR_LOG)?)
         .spawn().map_err(|error| format!("{}: {error}", config.runner.display()))?);
+    startup.mark("runner_spawned");
     cleanup.0.push(socket(&config.socket_dir, GUEST_CDP_PORT));
     cleanup.0.push(socket(&config.socket_dir, GUEST_CHECK_PORT));
     cleanup.0.push(socket(&config.socket_dir, GUEST_STOP_PORT));
     wait_for_runner(&mut child.0, config)?;
+    startup.mark("runner_sockets_observed");
     let (stop, stop_requests) = mpsc::channel::<mpsc::Sender<(Result<(), String>, mpsc::Sender<()>)>>();
     thread::spawn(move || {
         for client in control.incoming() {
@@ -251,6 +259,7 @@ fn serve(config: &Config) -> Result<(), String> {
             thread::spawn(move || relay(client, &vsock));
         }
     });
+    startup.mark("ready");
     writeln!(io::stdout().lock(), "ready").map_err(|error| format!("stdout: {error}"))?;
     loop {
         if let Some(status) = child.0.try_wait().map_err(|error| format!("libkrun: {error}"))? {

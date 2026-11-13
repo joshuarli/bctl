@@ -5,9 +5,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/file.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "libkrun.h"
+
+static void startup(const char *stage)
+{
+    if (!getenv("BCTL_STARTUP_TRACE"))
+        return;
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now)) {
+        perror("nanos-krun: startup clock");
+        return;
+    }
+    fprintf(stderr, "bctl-startup runner %s epoch_us=%llu\n", stage,
+            (unsigned long long)now.tv_sec * 1000000 + (unsigned long long)now.tv_nsec / 1000);
+}
 
 static int number(const char *text, unsigned long max, unsigned long *value)
 {
@@ -22,14 +36,17 @@ static int number(const char *text, unsigned long max, unsigned long *value)
 
 static int configured(const char *operation, int32_t result)
 {
-    if (result >= 0)
+    if (result >= 0) {
+        startup(operation);
         return 1;
+    }
     fprintf(stderr, "nanos-krun: %s: error %d\n", operation, result);
     return 0;
 }
 
 int main(int argc, char **argv)
 {
+    startup("begin");
     unsigned long cpus, memory;
     if ((argc != 8 && argc != 10 && argc != 11) || number(argv[6], UINT8_MAX, &cpus) || number(argv[7], UINT32_MAX, &memory)) {
         fprintf(stderr, "usage: nanos-krun DISK FIRMWARE CDP_SOCKET CHECK_SOCKET EGRESS_SOCKET CPUS MEMORY_MIB [PROFILE_DISK STOP_SOCKET [FILES_DIR]]\n");
@@ -64,6 +81,7 @@ int main(int argc, char **argv)
         krun_free_ctx((uint32_t)ctx);
         return 1;
     }
+    startup("enter_vm");
     int32_t result = krun_start_enter((uint32_t)ctx);
     configured("start VM", result);
     krun_free_ctx((uint32_t)ctx);

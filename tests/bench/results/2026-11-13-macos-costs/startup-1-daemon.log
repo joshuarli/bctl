@@ -1,0 +1,6 @@
+bctl daemon: listening on /Users/josh/d/bctl/.work/tmp/startup-y28jribi/1/bctl/bctl.sock
+bctl-startup readiness begin epoch_us=1794540994275344 elapsed_us=0
+bctl-startup readiness probe_begin epoch_us=1794540994275414 elapsed_us=69
+bctl-startup readiness guest epoch_us=1794540994650991 elapsed_us=375580
+bctl-startup readiness probe_begin epoch_us=1794540994707912 elapsed_us=432490
+bctl-startup readiness ready epoch_us=1794540994848939 elapsed_us=573494

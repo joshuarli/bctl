@@ -1,0 +1,37 @@
+bctl-startup supervisor begin epoch_us=1794540997107820 elapsed_us=1
+bctl-startup supervisor profile_begin epoch_us=1794540997108013 elapsed_us=194
+bctl-startup supervisor profile_ready epoch_us=1794540997116335 elapsed_us=8515
+bctl-startup supervisor root_disk_ready epoch_us=1794540997116672 elapsed_us=8851
+bctl-startup supervisor runner_spawn_begin epoch_us=1794540997117230 elapsed_us=9409
+bctl-startup supervisor runner_spawned epoch_us=1794540997117850 elapsed_us=10029
+bctl-startup runner begin epoch_us=1794540997124470
+bctl-startup runner create context epoch_us=1794540997124962
+bctl-startup runner configure VM epoch_us=1794540997124973
+bctl-startup runner configure console epoch_us=1794540997124980
+bctl-startup runner attach disk epoch_us=1794540997124988
+bctl-startup runner attach profile epoch_us=1794540997124995
+bctl-startup runner load firmware epoch_us=1794540997125001
+bctl-startup runner add vsock epoch_us=1794540997125006
+bctl-startup runner map CDP epoch_us=1794540997125019
+bctl-startup runner map readiness epoch_us=1794540997125025
+bctl-startup runner map stop epoch_us=1794540997125030
+bctl-startup runner map egress epoch_us=1794540997125035
+bctl-startup runner share files epoch_us=1794540997125041
+bctl-startup runner enter_vm epoch_us=1794540997125045
+[libkrun] krun_start_enter             0ms
+[libkrun] krunfw loaded                0ms
+[libkrun] before build_microvm         1ms
+[vmm] payload selected             0ms
+[vmm] memory created               0ms
+[vmm] vm created (HVF+mmap)        0ms
+[vmm] vcpus + irq created          2ms
+[vmm] before device attach         3ms
+[vmm] devices attached             9ms
+[vmm] system configured (FDT)      9ms
+[vcpu] threads spawned (hv_vcpu_create) 0ms
+[vcpu] vcpus started                0ms
+[vmm] vcpus running                9ms
+[vmm] build_microvm complete       9ms
+[libkrun] build_microvm done           11ms
+bctl-startup supervisor runner_sockets_observed epoch_us=1794540997237124 elapsed_us=129286
+bctl-startup supervisor ready epoch_us=1794540997237205 elapsed_us=129366

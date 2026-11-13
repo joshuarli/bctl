@@ -31,6 +31,7 @@ fn own(path: &Path, account: &Account) -> Result<(), String> {
 }
 
 pub fn run(persistent: bool) -> Result<ExitCode, String> {
+    crate::startup::mark("begin");
     let signals = Signals::block()?;
     if persistent {
         let mounts = fs::read_to_string("/proc/mounts").map_err(io_error("/proc/mounts"))?;
@@ -39,6 +40,7 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
         }
     }
     let browser = accounts::user(layout::BROWSER_USER)?;
+    crate::startup::mark("profile_checked");
     let profile = layout::profile_dir();
     for directory in [Path::new(layout::STATE_DIR), &profile, &browser.home] {
         fs::create_dir_all(directory).map_err(io_error(directory))?;
@@ -49,6 +51,7 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
     let browser_log = layout::log("browser.log");
     File::create(&browser_log).map_err(io_error(&browser_log))?;
     own(&browser_log, &browser)?;
+    crate::startup::mark("directories_ready");
 
     let mut command = Command::new(layout::SELF);
     command.arg("browser")
@@ -59,8 +62,10 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
         .env("USER", layout::BROWSER_USER)
         .stdin(Stdio::null());
     signals.unblock_in(&mut command);
+    crate::startup::mark("browser_spawn_begin");
     let mut child = command.spawn()
         .map_err(io_error(layout::SELF))?;
+    crate::startup::mark("browser_spawned");
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     let stopping = Arc::new(AtomicBool::new(false));
@@ -109,7 +114,11 @@ fn echo_log_tail(path: &Path) {
 
 fn bring_up(signals: &Signals, child: &mut Child, shutdown: Option<(mpsc::Sender<VsockStream>, Arc<AtomicBool>)>) -> Result<(), String> {
     let deadline = Instant::now() + BROWSER_TIMEOUT;
-    while !cdp_answers() {
+    loop {
+        crate::startup::mark("cdp_probe_begin");
+        let ready = cdp_answers();
+        crate::startup::mark(if ready { "cdp_probe_ready" } else { "cdp_probe_missing" });
+        if ready { break; }
         if let Some(status) = child.try_wait().map_err(io_error("browser"))? {
             return Err(format!("the browser exited before CDP answered: {status}"));
         }
@@ -120,6 +129,7 @@ fn bring_up(signals: &Signals, child: &mut Child, shutdown: Option<(mpsc::Sender
             return Err(format!("timed out after {BROWSER_TIMEOUT:?} waiting for CDP"));
         }
     }
+    crate::startup::mark("cdp_answered");
     let relay_log = Log::open(&layout::log("relay.log"))?;
     relay::start_vsock(layout::VSOCK_CDP_PORT, &relay_log)?;
     relay::start_egress(&relay_log)?;
@@ -132,6 +142,7 @@ fn bring_up(signals: &Signals, child: &mut Child, shutdown: Option<(mpsc::Sender
             }
         });
     }
+    crate::startup::mark("relays_ready");
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "bctl-guest: ready").and_then(|()| stdout.flush()).map_err(io_error("stdout"))
 }

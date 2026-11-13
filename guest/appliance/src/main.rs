@@ -4,6 +4,7 @@ mod cdp;
 mod check;
 mod devices;
 mod headless;
+mod startup;
 mod layout;
 mod maps;
 mod procfs;

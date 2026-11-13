@@ -1,0 +1,1780 @@
+{
+  "completed": true,
+  "method": "diagnostic only; startup trace and libkrun timing enabled; console observed every 1 ms; wall timestamps correlate host processes and observations, not guest clocks",
+  "bctl_commit": "08f2b6bf532002a49cd01e96b0dc2f20e6718eb1",
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/target/release/bctl": "8035d103bb4add5cd0305c5bbac11be505b9c5f621eb80bc93692ea66e7d351f",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/tmp/startup-profile.img": "cb5d3b767438c309bea05a849d1daab89df7b02f9085bd0ec196286c69d45a19"
+  },
+  "attempts": [
+    {
+      "round": 0,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.41 5.81 4.14 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.41 5.81 4.14 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-y28jribi/0",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794540992498213
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794540992548133
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794540992548135
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794540992559120
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794540993061708
+        }
+      ],
+      "begin_epoch_us": 1794540992339847,
+      "startup_ms": 848.4999160282314,
+      "end_epoch_us": 1794540993188520,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794540992594004,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540992594054,
+          "elapsed_us": 49
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794540992934814,
+          "elapsed_us": 340743
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540992993051,
+          "elapsed_us": 398970
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794540993078583,
+          "elapsed_us": 484486
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794540992467165,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794540992467359,
+          "elapsed_us": 195
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794540992476478,
+          "elapsed_us": 9313
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794540992476762,
+          "elapsed_us": 9596
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794540992477107,
+          "elapsed_us": 9941
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794540992477691,
+          "elapsed_us": 10525
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794540992484307,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794540992484831,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794540992484844,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794540992484851,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794540992484859,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794540992484865,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794540992484872,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794540992484879,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794540992484892,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794540992484899,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794540992484904,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794540992484910,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794540992484918,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794540992484924,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794540992593490,
+          "elapsed_us": 126300
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794540992593604,
+          "elapsed_us": 126414
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 673616892211
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 673616893632
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 673616895568
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 673616895663
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 673616896268
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 673616897135
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 673616900510
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 673616901105
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 673616903141
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 673616903722
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 673616904131
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 673616904523
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 673616905283
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673616905655
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673616906117
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 673616906946
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 673616907312
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673617006609
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673617007076
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673617107600
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673617108083
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673617208605
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673617209022
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673617309459
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 673617398247
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 673617398840
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 673617399796
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.41 5.81 4.14 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.41 5.81 4.14 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-y28jribi/1",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794540994197178
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794540994251587
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794540994253593
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794540994267292
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794540994831876
+        }
+      ],
+      "begin_epoch_us": 1794540994029813,
+      "startup_ms": 830.0070420373231,
+      "end_epoch_us": 1794540994859975,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794540994275344,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540994275414,
+          "elapsed_us": 69
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794540994650991,
+          "elapsed_us": 375580
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540994707912,
+          "elapsed_us": 432490
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794540994848939,
+          "elapsed_us": 573494
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794540994157908,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794540994158352,
+          "elapsed_us": 445
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794540994167820,
+          "elapsed_us": 9911
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794540994168184,
+          "elapsed_us": 10275
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794540994168665,
+          "elapsed_us": 10756
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794540994169544,
+          "elapsed_us": 11635
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794540994177497,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794540994178195,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794540994178209,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794540994178215,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794540994178222,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794540994178227,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794540994178233,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794540994178238,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794540994178250,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794540994178257,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794540994178263,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794540994178273,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794540994178279,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794540994178282,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794540994274735,
+          "elapsed_us": 116807
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794540994274881,
+          "elapsed_us": 116954
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 673618598229
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 673618599739
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 673618602073
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 673618602532
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 673618603202
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 673618604087
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 673618607816
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 673618608475
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 673618611320
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 673618612134
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 673618612797
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 673618613612
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 673618614633
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673618615345
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673618616325
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 673618617271
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 673618618167
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673618716895
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673618717337
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673618818079
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673618818689
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673618919394
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673618919907
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673619020303
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673619020715
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673619121221
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 673619166848
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 673619167481
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 673619168398
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.41 5.81 4.14 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.41 5.81 4.14 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-y28jribi/2",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794540995634785
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794540995691424
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794540995693257
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794540995705666
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794540996246446
+        }
+      ],
+      "begin_epoch_us": 1794540995472512,
+      "startup_ms": 802.3916670354083,
+      "end_epoch_us": 1794540996275038,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794540995729636,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540995729861,
+          "elapsed_us": 224
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794540996075949,
+          "elapsed_us": 346259
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540996136103,
+          "elapsed_us": 406403
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794540996262116,
+          "elapsed_us": 532397
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794540995600941,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794540995601159,
+          "elapsed_us": 218
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794540995609112,
+          "elapsed_us": 8170
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794540995609310,
+          "elapsed_us": 8368
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794540995612313,
+          "elapsed_us": 11371
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794540995612844,
+          "elapsed_us": 11901
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794540995618671,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794540995619136,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794540995619146,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794540995619151,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794540995619158,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794540995619165,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794540995619171,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794540995619177,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794540995619187,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794540995619194,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794540995619201,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794540995619205,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794540995619211,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794540995619215,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794540995729082,
+          "elapsed_us": 128120
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794540995729199,
+          "elapsed_us": 128237
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 673620037969
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 673620039352
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 673620041217
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 673620041290
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 673620041842
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 673620042578
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 673620046987
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 673620047458
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 673620049641
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 673620050153
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 673620050476
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 673620050789
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 673620051502
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673620051817
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673620052227
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 673620053132
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 673620053501
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673620152658
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673620153074
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673620253475
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673620254035
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673620354698
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673620355360
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673620456194
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 673620581999
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 673620582514
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 673620583123
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.97 5.73 4.12 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.97 5.73 4.12 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-y28jribi/3",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794540997137178
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794540997187470
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794540997187472
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794540997198391
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794540997817028
+        }
+      ],
+      "begin_epoch_us": 1794540996981422,
+      "startup_ms": 870.6711250124499,
+      "end_epoch_us": 1794540997852227,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794540997237639,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540997237715,
+          "elapsed_us": 76
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794540997702964,
+          "elapsed_us": 465257
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540997759910,
+          "elapsed_us": 522195
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794540997838166,
+          "elapsed_us": 600439
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794540997107820,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794540997108013,
+          "elapsed_us": 194
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794540997116335,
+          "elapsed_us": 8515
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794540997116672,
+          "elapsed_us": 8851
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794540997117230,
+          "elapsed_us": 9409
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794540997117850,
+          "elapsed_us": 10029
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794540997124470,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794540997124962,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794540997124973,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794540997124980,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794540997124988,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794540997124995,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794540997125001,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794540997125006,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794540997125019,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794540997125025,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794540997125030,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794540997125035,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794540997125041,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794540997125045,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794540997237124,
+          "elapsed_us": 129286
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794540997237205,
+          "elapsed_us": 129366
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 673621530613
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 673621532078
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 673621533941
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 673621534013
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 673621534592
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 673621535347
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 673621538443
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 673621538955
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 673621540914
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 673621541466
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 673621541872
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 673621542338
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 673621543194
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673621543537
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673621544020
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 673621544929
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 673621545294
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673621644417
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673621646429
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673621750208
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673621750607
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673621850951
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673621855614
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673621957544
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673621962011
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673622063033
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 673622151958
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 673622152590
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 673622153170
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.97 5.73 4.12 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.97 5.73 4.12 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/startup-y28jribi/4",
+      "console_observations": [
+        {
+          "marker": "UEFI firmware",
+          "epoch_us": 1794540998791442
+        },
+        {
+          "marker": "BdsDxe: loading",
+          "epoch_us": 1794540998840860
+        },
+        {
+          "marker": "BdsDxe: starting",
+          "epoch_us": 1794540998842631
+        },
+        {
+          "marker": "NET:",
+          "epoch_us": 1794540998853279
+        },
+        {
+          "marker": "bctl-guest: ready",
+          "epoch_us": 1794540999564662
+        }
+      ],
+      "begin_epoch_us": 1794540998629512,
+      "startup_ms": 1040.7671249704435,
+      "end_epoch_us": 1794540999670422,
+      "browser": "Helium/0.20.3.1",
+      "clean": true,
+      "status": "pass",
+      "events": [
+        {
+          "component": "readiness",
+          "stage": "begin",
+          "epoch_us": 1794540998887381,
+          "elapsed_us": 0
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540998887431,
+          "elapsed_us": 50
+        },
+        {
+          "component": "readiness",
+          "stage": "guest",
+          "epoch_us": 1794540999243428,
+          "elapsed_us": 356001
+        },
+        {
+          "component": "readiness",
+          "stage": "probe_begin",
+          "epoch_us": 1794540999305262,
+          "elapsed_us": 417826
+        },
+        {
+          "component": "readiness",
+          "stage": "ready",
+          "epoch_us": 1794540999582162,
+          "elapsed_us": 694690
+        },
+        {
+          "component": "supervisor",
+          "stage": "begin",
+          "epoch_us": 1794540998758345,
+          "elapsed_us": 1
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_begin",
+          "epoch_us": 1794540998758626,
+          "elapsed_us": 282
+        },
+        {
+          "component": "supervisor",
+          "stage": "profile_ready",
+          "epoch_us": 1794540998766903,
+          "elapsed_us": 8558
+        },
+        {
+          "component": "supervisor",
+          "stage": "root_disk_ready",
+          "epoch_us": 1794540998767206,
+          "elapsed_us": 8860
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawn_begin",
+          "epoch_us": 1794540998767485,
+          "elapsed_us": 9139
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_spawned",
+          "epoch_us": 1794540998768131,
+          "elapsed_us": 9786
+        },
+        {
+          "component": "runner",
+          "stage": "begin",
+          "epoch_us": 1794540998774648,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "create context",
+          "epoch_us": 1794540998775170,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure VM",
+          "epoch_us": 1794540998775183,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "configure console",
+          "epoch_us": 1794540998775189,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach disk",
+          "epoch_us": 1794540998775195,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "attach profile",
+          "epoch_us": 1794540998775202,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "load firmware",
+          "epoch_us": 1794540998775207,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "add vsock",
+          "epoch_us": 1794540998775212,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map CDP",
+          "epoch_us": 1794540998775223,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map readiness",
+          "epoch_us": 1794540998775229,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map stop",
+          "epoch_us": 1794540998775235,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "map egress",
+          "epoch_us": 1794540998775240,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "share files",
+          "epoch_us": 1794540998775245,
+          "elapsed_us": null
+        },
+        {
+          "component": "runner",
+          "stage": "enter_vm",
+          "epoch_us": 1794540998775249,
+          "elapsed_us": null
+        },
+        {
+          "component": "supervisor",
+          "stage": "runner_sockets_observed",
+          "epoch_us": 1794540998886867,
+          "elapsed_us": 128506
+        },
+        {
+          "component": "supervisor",
+          "stage": "ready",
+          "epoch_us": 1794540998886967,
+          "elapsed_us": 128605
+        }
+      ],
+      "guest_events": [
+        {
+          "component": "kernel",
+          "stage": "clock_ready",
+          "monotonic_us": 673623185018
+        },
+        {
+          "component": "kernel",
+          "stage": "secondary_cores_ready",
+          "monotonic_us": 673623186412
+        },
+        {
+          "component": "kernel",
+          "stage": "devices_discovered",
+          "monotonic_us": 673623188285
+        },
+        {
+          "component": "kernel",
+          "stage": "root_filesystem",
+          "monotonic_us": 673623188368
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_begin",
+          "monotonic_us": 673623189102
+        },
+        {
+          "component": "kernel",
+          "stage": "unix_init_ready",
+          "monotonic_us": 673623190005
+        },
+        {
+          "component": "kernel",
+          "stage": "init_exec_begin",
+          "monotonic_us": 673623193300
+        },
+        {
+          "component": "kernel",
+          "stage": "init_loaded",
+          "monotonic_us": 673623193902
+        },
+        {
+          "component": "guest",
+          "stage": "begin",
+          "monotonic_us": 673623195983
+        },
+        {
+          "component": "guest",
+          "stage": "profile_checked",
+          "monotonic_us": 673623196589
+        },
+        {
+          "component": "guest",
+          "stage": "directories_ready",
+          "monotonic_us": 673623197011
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawn_begin",
+          "monotonic_us": 673623197387
+        },
+        {
+          "component": "guest",
+          "stage": "browser_spawned",
+          "monotonic_us": 673623198148
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673623198564
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673623199165
+        },
+        {
+          "component": "guest",
+          "stage": "browser_entry",
+          "monotonic_us": 673623200313
+        },
+        {
+          "component": "guest",
+          "stage": "chromium_exec_begin",
+          "monotonic_us": 673623200698
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673623299662
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673623300208
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673623400714
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673623407458
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673623518337
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673623522439
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673623630147
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_missing",
+          "monotonic_us": 673623636189
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_begin",
+          "monotonic_us": 673623740288
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_probe_ready",
+          "monotonic_us": 673623895830
+        },
+        {
+          "component": "guest",
+          "stage": "cdp_answered",
+          "monotonic_us": 673623896302
+        },
+        {
+          "component": "guest",
+          "stage": "relays_ready",
+          "monotonic_us": 673623897603
+        }
+      ]
+    }
+  ],
+  "changed_inputs": []
+}

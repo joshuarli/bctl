@@ -1,0 +1,32 @@
+UEFI firmware (version edk2-13e8adac8a built at 07:57:32 on Mar 26 2025)
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0080000A00000000)
+BdsDxe: starting Boot0001 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0080000A00000000)
+hydrogen-startup clock_ready monotonic_us=673620037969
+hydrogen-startup secondary_cores_ready monotonic_us=673620039352
+hydrogen-startup devices_discovered monotonic_us=673620041217
+hydrogen-startup root_filesystem monotonic_us=673620041290
+hydrogen-startup unix_init_begin monotonic_us=673620041842
+hydrogen-startup unix_init_ready monotonic_us=673620042578
+[673620.042938] NET: no network interface found
+hydrogen-startup init_exec_begin monotonic_us=673620046987
+hydrogen-startup init_loaded monotonic_us=673620047458
+bctl-startup guest begin monotonic_us=673620049641
+bctl-startup guest profile_checked monotonic_us=673620050153
+bctl-startup guest directories_ready monotonic_us=673620050476
+bctl-startup guest browser_spawn_begin monotonic_us=673620050789
+bctl-startup guest browser_spawned monotonic_us=673620051502
+bctl-startup guest cdp_probe_begin monotonic_us=673620051817
+bctl-startup guest cdp_probe_missing monotonic_us=673620052227
+bctl-startup guest browser_entry monotonic_us=673620053132
+bctl-startup guest chromium_exec_begin monotonic_us=673620053501
+bctl-startup guest cdp_probe_begin monotonic_us=673620152658
+bctl-startup guest cdp_probe_missing monotonic_us=673620153074
+bctl-startup guest cdp_probe_begin monotonic_us=673620253475
+bctl-startup guest cdp_probe_missing monotonic_us=673620254035
+bctl-startup guest cdp_probe_begin monotonic_us=673620354698
+bctl-startup guest cdp_probe_missing monotonic_us=673620355360
+bctl-startup guest cdp_probe_begin monotonic_us=673620456194
+bctl-startup guest cdp_probe_ready monotonic_us=673620581999
+bctl-startup guest cdp_answered monotonic_us=673620582514
+bctl-startup guest relays_ready monotonic_us=673620583123
+bctl-guest: ready

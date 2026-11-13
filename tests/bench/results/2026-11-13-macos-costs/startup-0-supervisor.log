@@ -1,0 +1,37 @@
+bctl-startup supervisor begin epoch_us=1794540992467165 elapsed_us=1
+bctl-startup supervisor profile_begin epoch_us=1794540992467359 elapsed_us=195
+bctl-startup supervisor profile_ready epoch_us=1794540992476478 elapsed_us=9313
+bctl-startup supervisor root_disk_ready epoch_us=1794540992476762 elapsed_us=9596
+bctl-startup supervisor runner_spawn_begin epoch_us=1794540992477107 elapsed_us=9941
+bctl-startup supervisor runner_spawned epoch_us=1794540992477691 elapsed_us=10525
+bctl-startup runner begin epoch_us=1794540992484307
+bctl-startup runner create context epoch_us=1794540992484831
+bctl-startup runner configure VM epoch_us=1794540992484844
+bctl-startup runner configure console epoch_us=1794540992484851
+bctl-startup runner attach disk epoch_us=1794540992484859
+bctl-startup runner attach profile epoch_us=1794540992484865
+bctl-startup runner load firmware epoch_us=1794540992484872
+bctl-startup runner add vsock epoch_us=1794540992484879
+bctl-startup runner map CDP epoch_us=1794540992484892
+bctl-startup runner map readiness epoch_us=1794540992484899
+bctl-startup runner map stop epoch_us=1794540992484904
+bctl-startup runner map egress epoch_us=1794540992484910
+bctl-startup runner share files epoch_us=1794540992484918
+bctl-startup runner enter_vm epoch_us=1794540992484924
+[libkrun] krun_start_enter             0ms
+[libkrun] krunfw loaded                0ms
+[libkrun] before build_microvm         2ms
+[vmm] payload selected             0ms
+[vmm] memory created               0ms
+[vmm] vm created (HVF+mmap)        0ms
+[vmm] vcpus + irq created          3ms
+[vmm] before device attach         3ms
+[vmm] devices attached             10ms
+[vmm] system configured (FDT)      10ms
+[vcpu] threads spawned (hv_vcpu_create) 0ms
+[vcpu] vcpus started                0ms
+[vmm] vcpus running                10ms
+[vmm] build_microvm complete       10ms
+[libkrun] build_microvm done           13ms
+bctl-startup supervisor runner_sockets_observed epoch_us=1794540992593490 elapsed_us=126300
+bctl-startup supervisor ready epoch_us=1794540992593604 elapsed_us=126414

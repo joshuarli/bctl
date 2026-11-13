@@ -1,0 +1,34 @@
+UEFI firmware (version edk2-13e8adac8a built at 07:57:32 on Mar 26 2025)
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0080000A00000000)
+BdsDxe: starting Boot0001 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0080000A00000000)
+hydrogen-startup clock_ready monotonic_us=673623185018
+hydrogen-startup secondary_cores_ready monotonic_us=673623186412
+hydrogen-startup devices_discovered monotonic_us=673623188285
+hydrogen-startup root_filesystem monotonic_us=673623188368
+hydrogen-startup unix_init_begin monotonic_us=673623189102
+hydrogen-startup unix_init_ready monotonic_us=673623190005
+[673623.190358] NET: no network interface found
+hydrogen-startup init_exec_begin monotonic_us=673623193300
+hydrogen-startup init_loaded monotonic_us=673623193902
+bctl-startup guest begin monotonic_us=673623195983
+bctl-startup guest profile_checked monotonic_us=673623196589
+bctl-startup guest directories_ready monotonic_us=673623197011
+bctl-startup guest browser_spawn_begin monotonic_us=673623197387
+bctl-startup guest browser_spawned monotonic_us=673623198148
+bctl-startup guest cdp_probe_begin monotonic_us=673623198564
+bctl-startup guest cdp_probe_missing monotonic_us=673623199165
+bctl-startup guest browser_entry monotonic_us=673623200313
+bctl-startup guest chromium_exec_begin monotonic_us=673623200698
+bctl-startup guest cdp_probe_begin monotonic_us=673623299662
+bctl-startup guest cdp_probe_missing monotonic_us=673623300208
+bctl-startup guest cdp_probe_begin monotonic_us=673623400714
+bctl-startup guest cdp_probe_missing monotonic_us=673623407458
+bctl-startup guest cdp_probe_begin monotonic_us=673623518337
+bctl-startup guest cdp_probe_missing monotonic_us=673623522439
+bctl-startup guest cdp_probe_begin monotonic_us=673623630147
+bctl-startup guest cdp_probe_missing monotonic_us=673623636189
+bctl-startup guest cdp_probe_begin monotonic_us=673623740288
+bctl-startup guest cdp_probe_ready monotonic_us=673623895830
+bctl-startup guest cdp_answered monotonic_us=673623896302
+bctl-startup guest relays_ready monotonic_us=673623897603
+bctl-guest: ready

@@ -19,6 +19,7 @@ pub mod supervisor;
 pub mod supervisor;
 mod process_group;
 mod supervisor_lock;
+mod startup;
 
 /// The guest vsock port `bctl-guest run-headless` relays to the browser's CDP endpoint.
 pub const GUEST_CDP_PORT: u32 = 9222;
@@ -346,12 +347,15 @@ impl Nanos {
     /// Waits until the machine runs, the guest answers its check port with the browser and its sandbox up, and
     /// `/json/version` answers through the host CDP socket.
     pub fn wait_ready(&self, machine: &str, cdp_socket: &Path, timeout: Duration, mut on_stage: impl FnMut(Stage)) -> Result<Ready, RuntimeError> {
+        let startup = startup::Startup::new("readiness");
+        startup.mark("begin");
         let deadline = Instant::now() + timeout;
         loop {
+            startup.mark("probe_begin");
             match self.probe(machine, cdp_socket) {
-                Ok(ready) => return Ok(ready),
+                Ok(ready) => { startup.mark("ready"); return Ok(ready); }
                 Err(error @ RuntimeError::NotReady { .. }) if Instant::now() >= deadline => return Err(error),
-                Err(RuntimeError::NotReady { stage, .. }) => on_stage(stage),
+                Err(RuntimeError::NotReady { stage, .. }) => { startup.mark(stage.as_str()); on_stage(stage); }
                 Err(error) => return Err(error),
             }
             thread::sleep(Duration::from_millis(50));

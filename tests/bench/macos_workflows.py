@@ -33,23 +33,55 @@ AGENT = ROOT / '.work/interop/agent-browser/bin/agent-browser'
 
 
 def invoke(argv, *, env=None, timeout=120):
-    done = subprocess.run([str(arg) for arg in argv], env=env, capture_output=True, text=True, timeout=timeout)
-    if done.returncode:
-        message = done.stderr[-1500:] or done.stdout[-1500:]
+    process = subprocess.Popen([str(arg) for arg in argv], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
+        stop(process)
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout=5)
+        raise
+    if process.returncode:
+        message = stderr[-1500:] or stdout[-1500:]
         if env and env.get('BCTL_CDP_URL'):
             message = message.replace(env['BCTL_CDP_URL'], '<capability>')
-        raise RuntimeError(f'{Path(str(argv[0])).name} exited {done.returncode}: {message}')
-    return done.stdout
+        raise RuntimeError(f'{Path(str(argv[0])).name} exited {process.returncode}: {message}')
+    return stdout
+
+
+@contextlib.contextmanager
+def interruptions():
+    class Interrupted(BaseException):
+        def __init__(self, signum):
+            self.signum = signum
+    def interrupt(signum, _):
+        raise Interrupted(signum)
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+    previous = {signum: signal.signal(signum, interrupt) for signum in signals}
+    try:
+        yield
+    except Interrupted as error:
+        signal.signal(error.signum, signal.SIG_DFL)
+        os.kill(os.getpid(), error.signum)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def stop(process):
-    if process.poll() is None:
+    with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5)
+        process.wait(timeout=5)
 
 
 def tree(roots, rows):
@@ -115,7 +147,7 @@ class Resources:
                     if Path(command.split()[0]).name not in {'ps', 'footprint', 'lsof'}:
                         rows.append((int(pid), int(ppid), command))
                 roots = {os.getpid(), *self.trial.roots}
-                roots.update(pid for pid, _, command in rows if str(self.trial.path / 'bctl') in command)
+                roots.update(pid for pid, _, command in rows if str(self.trial.path) in command)
                 for pidfile in self.trial.socket_dir.rglob('*.pid'):
                     with contextlib.suppress(OSError, ValueError):
                         roots.add(int(pidfile.read_text().strip()))
@@ -364,12 +396,13 @@ def main():
     parser.add_argument('--native-arg', action='append', default=[], help='extra native launch argument, including agent-browser; use --native-arg=--flag')
     parser.add_argument('--rounds', type=int, default=5)
     parser.add_argument('--resource-rounds', type=int, default=5)
+    parser.add_argument('--cpu-rounds', type=int, default=0)
     parser.add_argument('--workloads', nargs='+', choices=['shadowdriver', 'grab', 'agent-browser', 'agent-browser-news'],
                         default=['shadowdriver', 'grab', 'agent-browser', 'agent-browser-news'])
     parser.add_argument('--quiet-wait', type=float, default=120)
     parser.add_argument('--out', type=Path)
     args = parser.parse_args()
-    if sys.platform != 'darwin' or min(args.rounds, args.resource_rounds) < 0 or args.rounds + args.resource_rounds == 0:
+    if sys.platform != 'darwin' or min(args.rounds, args.resource_rounds, args.cpu_rounds) < 0 or args.rounds + args.resource_rounds + args.cpu_rounds == 0:
         parser.error('requires macOS, nonnegative round counts, and at least one pass')
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -391,7 +424,8 @@ def main():
         'bctl_dirty': bool(invoke(['git', '-C', ROOT, 'status', '--porcelain']).strip()),
         'shadowdriver_dirty': bool(invoke(['git', '-C', args.shadowdriver, 'status', '--porcelain']).strip()),
         'node_version': node_version, 'agent_browser_version': invoke([AGENT, '--version']).strip(),
-        'native_extra_args': args.native_arg,
+        'native_extra_args': args.native_arg, 'cpu_rounds': args.cpu_rounds,
+        'cpu_method': 'separate fresh-profile passes; libproc RUSAGE_INFO_V1 live processes plus reaped-child CPU; Mach timebase conversion; includes driver, fixtures, clients, daemon, supervisor and VMM or native browser tree, plus process discovery; excludes cleanup; snapshots are not atomic',
         'vm_configuration': 'bctl production defaults, actual resources recorded on resource attempts',
         'artifacts_sha256': {str(path): digest(path) for path in [Path(__file__), ROOT / 'tests/bench/shadowdriver_workflow.mjs',
             BCTL, AGENT, node, args.native_binary, args.shadowdriver / 'ts/dist/src/browser.js', args.shadowdriver / 'py/python/shadowdriver/_native.abi3.so', *runtime_files]},
@@ -401,6 +435,8 @@ def main():
         'resource_method': 'deduplicated Summary Footprint of driver, fixtures, clients, daemon, supervisor, VMM or native browser tree; includes compressed pages; 250 ms best-effort sampling; not an exact peak',
         'fixture_transport': 'identical IPv4 loopback URL for host HTTP, native browser, and guest browser; guest proxy explicitly permits only 127.0.0.1/32'}
     out = args.out or home / 'results.json'
+    if args.cpu_rounds:
+        results['artifacts_sha256'][str(ROOT / 'tests/bench/macos_cpu.py')] = digest(ROOT / 'tests/bench/macos_cpu.py')
     fixture_log = (home / 'fixture.log').open('wb')
     fixture = subprocess.Popen([sys.executable, ROOT / 'tests/interop/fixture.py'], stdout=subprocess.PIPE, stderr=fixture_log, start_new_session=True)
     form_port = int(fixture.stdout.readline())
@@ -423,7 +459,7 @@ def main():
         news_thread.start()
     deadline = time.monotonic() + args.quiet_wait
     try:
-        for phase, rounds in [('latency', args.rounds), ('resources', args.resource_rounds)]:
+        for phase, rounds in [('latency', args.rounds), ('resources', args.resource_rounds), ('cpu', args.cpu_rounds)]:
             for round in range(rounds):
                 for side in (['native', 'bctl'] if round % 2 == 0 else ['bctl', 'native']):
                     for workload_id, workload in enumerate(args.workloads):
@@ -444,6 +480,9 @@ def main():
                             print(f'{phase} {round} {side} {workload}', flush=True)
                             sampler = Resources(trial) if phase == 'resources' else contextlib.nullcontext()
                             with sampler:
+                                if phase == 'cpu':
+                                    from macos_cpu import trial_snapshot
+                                    attempt['cpu_before'] = trial_snapshot(trial)
                                 started = time.perf_counter()
                                 if not workload.startswith('agent-browser'):
                                     attempt['startup_ms'] = trial.start()
@@ -454,10 +493,15 @@ def main():
                                     'agent-browser-news': lambda: agent_browser(trial, news_server.server_port, news=True)}[workload]()
                                 attempt['task_ms'] = (time.perf_counter() - task_start) * 1000
                                 attempt['total_ms'] = (time.perf_counter() - started) * 1000
+                                if phase == 'cpu':
+                                    attempt['cpu_after'] = trial_snapshot(trial)
+                                    attempt['cpu_s'] = attempt['cpu_after']['cpu_s'] - attempt['cpu_before']['cpu_s']
+                                    if attempt['cpu_s'] <= 0:
+                                        raise RuntimeError('nonpositive CPU cost')
                                 if phase == 'resources':
                                     time.sleep(1)
                             attempt['status'] = 'pass'
-                            attempt['timing_status'] = ('clean' if quiet and gate(attempt['gate_checks'], True) else 'discarded_host_busy') if phase == 'latency' else 'resource_pass'
+                            attempt['timing_status'] = ('clean' if quiet and gate(attempt['gate_checks'], True) else 'discarded_host_busy') if phase == 'latency' else f'{phase}_pass'
                             if workload.startswith('agent-browser'):
                                 attempt['agent_user_agent'] = invoke([AGENT, 'eval', 'navigator.userAgent'], env=trial.env).strip()
                             if phase == 'resources':
@@ -508,6 +552,10 @@ def main():
                 if memory:
                     metrics['sampled_peak_physical_bytes'] = {'n': len(memory), 'median': statistics.median(memory) if len(memory) >= 5 else None,
                                                              'min': min(memory), 'max': max(memory)}
+                cpu = [row['cpu_s'] for row in rows if row['phase'] == 'cpu']
+                if cpu:
+                    metrics['cpu_s'] = {'n': len(cpu), 'median': statistics.median(cpu) if len(cpu) >= 5 else None,
+                                        'min': min(cpu), 'max': max(cpu)}
                 results['summary'][workload][side]['metrics'] = metrics
         news_hashes = {row['result']['content_sha256'] for row in results['attempts']
                        if row['workload'] == 'agent-browser-news' and row['status'] == 'pass'}
@@ -530,4 +578,5 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    with interruptions():
+        sys.exit(main())

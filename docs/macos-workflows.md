@@ -257,6 +257,82 @@ serialization fails. The final functional receipt is
 
 ## Open qualification work
 
+### Startup and cost instrumentation
+
+`BCTL_STARTUP_TRACE=1` enables host supervisor, runner configuration, and
+readiness-probe timestamps. Host records include wall-clock microseconds.
+Supervisor and readiness records also include process-local elapsed time.
+`LIBKRUN_TIMING=1` enables the pinned runtime's existing VMM timings.
+The production image remains unchanged.
+
+The guest supervisor also recognizes `BCTL_STARTUP_TRACE=1` in its image
+environment. Its records use `CLOCK_MONOTONIC_RAW` microseconds.
+Hydrogen's `HYDROGEN_BOOT_PROFILE` build flag adds kernel boundaries.
+Host and guest clock origins differ. Only intervals within one clock domain
+are comparable.
+
+`tests/bench/macos_startup.py` records these diagnostics separately from
+acceptance timings. `--image` selects a diagnostic image with a matching
+`.profile.img` template. Console observations poll every millisecond.
+The receipt retains the image and executable hashes, raw stage records,
+console observation times, browser identity, and host-load decisions.
+
+Five isolated instrumented boots place kernel clock registration through
+guest supervisor entry at a median 10.965 ms (10.301–13.091).
+Chromium execution through the successful CDP probe takes a median
+548.681 ms (490.935–695.132). These intervals include instrumentation overhead.
+The latter includes readiness polling and HTTP request handling.
+It does not isolate Chromium work from kernel services or scheduling.
+The diagnostic startup total is 848.5 ms (802.4–1040.8).
+These observations do not establish a release speedup.
+The [startup receipt](../tests/bench/results/2026-11-13-macos-costs/startup.json)
+and adjacent serial and supervisor logs retain all five samples.
+
+`--cpu-rounds` on `macos_workflows.py` adds separate fresh-profile CPU passes.
+The collector uses libproc's live-process and reaped-child counters.
+Mach timebase conversion produces CPU seconds on Apple Silicon.
+The process set includes the driver, fixture, clients, daemon, supervisor,
+and VMM or native browser. Process discovery is included. Cleanup is excluded.
+Snapshots are not atomic. A process disappearing during collection rejects
+the attempt. Tests cover live descendants, reaped children, overlapping roots,
+and a child that consumes a known quantity of CPU.
+
+```sh
+python3.15 tests/bench/macos_workflows.py --rounds 0 --resource-rounds 0 \
+  --cpu-rounds 5 --native-arg=--disable-gpu --out .work/tmp/macos-cpu.json
+python3.15 tests/bench/macos_startup.py --rounds 5 \
+  --image .work/tmp/startup-profile.img --out .work/tmp/macos-startup.json
+```
+
+`tests/bench/macos_crawl.py` adds a sustained workload with 16 linked pages
+per crawl and two concurrent independent crawls by default.
+Each page fetches dynamic content, injects CSS, and loads a lazy image.
+Every worker checks all page markers, paragraph sections, and exact asset bytes.
+The worker then runs `grab check` and fresh native `grab verify` on every page.
+Replay browser provenance remains in the receipt.
+Capture browsers stay alive through replay on both backends.
+The coordinator's elapsed time includes worker setup and cleanup.
+
+Latency and footprint use separate passes. Resource passes aggregate the
+coordinator, fixture, workers, and their owned process trees.
+The footprint budget is sampled and checked after each trial.
+It is not an operating-system memory cap or a measurement of maximum supported
+concurrency. Exceeding the budget rejects the resource trial.
+The default budget is 2048 MiB.
+
+```sh
+python3.15 tests/bench/macos_crawl.py --native-arg=--disable-gpu \
+  --out .work/tmp/macos-crawl.json
+python3.15 -m unittest discover -s tests/bench -p 'test_macos*.py'
+```
+
+Benchmark cancellation stops command process groups and lets crawl workers
+close their browsers and VMs before forced termination.
+Timeout and termination regressions cover child delivery, cleanup, and signal
+exit status. The four-page dynamic fixture passes capture and offline replay
+on both backends. A second smoke run passes two concurrent crawls per backend.
+Smoke timings are excluded from performance claims.
+
 After both performance runs, the current Nanos and SmolVM images each pass all
 113 interoperability checks in separate runs. Nanos's three egress tests pass,
 including default loopback denial and explicit IPv4 and mapped-IPv6 allowance.
