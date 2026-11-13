@@ -45,7 +45,7 @@ Statuses:
 | Change | Result | Status | Evidence | Retry when |
 | --- | --- | --- | --- | --- |
 | Daemon readiness poll every 10 ms instead of 100 ms | Fresh daemon readiness 116.7 → 21.0 ms, complete form task 10.7% faster, same CPU. | Adopted | [daemon discovery interval](macos-workflows.md#daemon-discovery-interval) | — |
-| Bundled uBlock Origin pre-disabled on new profiles (`5dd8a92`) | Idle CPU 7.6% → 0.32% of a core on Linux. Its first-run filter compile also held every request until done. | Adopted | [performance findings](performance.md#findings) | Helium ships an ad blocker with precompiled lists |
+| Bundled uBlock Origin pre-disabled on new profiles (`8f2166b4`) | Idle CPU 7.6% → 0.32% of a core on Linux. Its first-run filter compile also held every request until done. | Adopted | [performance findings](performance.md#findings) | Helium ships an ad blocker with precompiled lists |
 
 ## Browser
 
