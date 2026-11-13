@@ -25,4 +25,10 @@ open status until their evidence gates pass; a Rust port is not itself a fix.
 Migrate ownership domains behind audited C boundaries, not raw-pointer syntax.
 Keep unrelated kernel qualification and performance work active.
 
+# Performance experiments
+
+Before trying a performance change, check [docs/optimizations.md](docs/optimizations.md)
+for earlier attempts. Record every attempt there when it finishes, including
+ones that are rejected, inconclusive, or rule out a suspected cause.
+
 Do not run formatters or change pinned Rust toolchains.
