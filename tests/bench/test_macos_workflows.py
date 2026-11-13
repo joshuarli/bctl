@@ -1,3 +1,4 @@
+import argparse
 import os
 import subprocess
 import sys
@@ -5,7 +6,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from macos_workflows import SCRATCH, physical_footprint_sample, process_table, save_results
+from macos_workflows import SCRATCH, Trial, physical_footprint_sample, process_table, save_results
+
+FAKE_BROWSER = '''import http.server, json, sys, threading, time
+profile = next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--user-data-dir='))
+port_file = profile + '/DevToolsActivePort'
+open(port_file, 'w').close()
+time.sleep(0.3)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({'Browser': 'Fake/1'}).encode()
+        self.send_response(200); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *_):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+with open(port_file, 'w') as stream:
+    stream.write(f'{server.server_port}\\n/devtools/browser/fake\\n')
+server.serve_forever()
+'''
 
 
 class ReceiptTests(unittest.TestCase):
@@ -62,3 +80,20 @@ Summary Footprint: 9519848 B
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NativeStartTests(unittest.TestCase):
+    def test_an_empty_devtools_port_file_is_not_ready_yet(self):
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=SCRATCH, prefix='native-start-') as directory:
+            root = Path(directory)
+            browser = root / 'fake-chromium'
+            browser.write_text(f'#!{sys.executable}\n' + FAKE_BROWSER)
+            browser.chmod(0o755)
+            args = argparse.Namespace(runtime='nanos', native_arg=[], native_binary=browser)
+            trial = Trial(args, root / 'trial', 'native', resource_pass=False)
+            try:
+                trial.start()
+                self.assertEqual(trial.version, 'Fake/1')
+            finally:
+                trial.close()

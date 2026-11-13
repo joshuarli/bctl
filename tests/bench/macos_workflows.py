@@ -230,7 +230,11 @@ class Trial:
                 if self.browser.poll() is not None:
                     raise RuntimeError('native Chromium exited before readiness')
                 try:
-                    port = int((profile / 'DevToolsActivePort').read_text().splitlines()[0])
+                    lines = (profile / 'DevToolsActivePort').read_text().splitlines()
+                    if not lines:
+                        time.sleep(0.02)
+                        continue
+                    port = int(lines[0])
                     self.endpoint = f'http://127.0.0.1:{port}'
                     self.version = json.load(urllib.request.urlopen(self.endpoint + '/json/version', timeout=1))['Browser']
                     break
