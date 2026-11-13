@@ -305,6 +305,25 @@ python3.15 tests/bench/macos_startup.py --rounds 5 \
   --image .work/tmp/startup-profile.img --out .work/tmp/macos-startup.json
 ```
 
+The [CPU receipt](../tests/bench/results/2026-11-13-macos-costs/cpu.json)
+completes 40 workflows with five alternating samples per side and workload.
+All 80 host-load checks pass. No recorded artifact or Shadowdriver HEAD changes.
+The native side uses the software-rendering control.
+Values below are CPU seconds, median with minimum to maximum.
+
+| Complete task | Native CPU seconds | Nanos CPU seconds |
+| --- | --- | --- |
+| Shadowdriver form | 1.621 (1.378–2.008) | 1.950 (1.740–2.092) |
+| Grab, four pages and `grab check` | 2.830 (2.548–3.041) | 3.315 (3.208–3.637) |
+| agent-browser form | 1.542 (1.456–1.666) | 1.747 (1.495–2.119) |
+| agent-browser news | 1.739 (1.655–1.911) | 2.133 (1.941–2.374) |
+
+Nanos uses more CPU in Grab and news. Their observed ranges do not overlap.
+The form-workload ranges overlap, so those comparisons are inconclusive.
+The no-increase CPU target is unmet. The four-page Grab CPU measurement excludes
+offline replay. The sustained crawl below includes replay in its elapsed time
+and footprint, but does not yet measure its full CPU cost.
+
 `tests/bench/macos_crawl.py` adds a sustained workload with 16 linked pages
 per crawl and two concurrent independent crawls by default.
 Each page fetches dynamic content, injects CSS, and loads a lazy image.
@@ -341,7 +360,7 @@ Receipts are `.work/tmp/macos-workflows-{nanos,smolvm}-interop.log` and
 `.work/tmp/macos-workflows-egress.log`. The current SmolVM image hash is
 `9a195deed99cd84c27193b41e72c5e0d89eb2a8d7461348f099f8ea616b8b051`.
 
-CPU cost, sustained crawl throughput, dynamic-asset coverage, and the targets
+Sustained crawl CPU cost, throughput, dynamic-asset coverage, and the targets
 above remain open until their receipts pass. Chromium build versions differ
 between stock macOS and the pinned Linux Helium archive. These are product
 comparisons. They do not isolate kernel performance.

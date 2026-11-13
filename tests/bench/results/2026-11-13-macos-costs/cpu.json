@@ -1,0 +1,5550 @@
+{
+  "started": "20261113T035052Z",
+  "completed": true,
+  "runtime": "nanos",
+  "native_binary": "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "native_version": "Chromium 155.0.8059.84",
+  "bctl_commit": "7167e7a2d16bdc0899be61f50d869d4573c7baef",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "attempts": [
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "native",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 9.56 5.85 4.84 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 9.56 5.85 4.84 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0n0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 21608254,
+            "system": 5338470,
+            "child_user": 3463616,
+            "child_system": 6945249
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1114707,
+            "system": 784111,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 1.6356002916666668
+      },
+      "startup_ms": 483.33974997512996,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9797,
+        "product": "Chrome/155.0.8059.84"
+      },
+      "task_ms": 622.8400840191171,
+      "total_ms": 1106.1960420338437,
+      "cpu_after": {
+        "processes": {
+          "91828": {
+            "start": 16187511096253,
+            "user": 576176,
+            "system": 565376,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 21867994,
+            "system": 5563890,
+            "child_user": 11200480,
+            "child_system": 10219723
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1142135,
+            "system": 804792,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91791": {
+            "start": 16187505300931,
+            "user": 8909061,
+            "system": 10806433,
+            "child_user": 2451755,
+            "child_system": 1828617
+          },
+          "91824": {
+            "start": 16187510369744,
+            "user": 1182865,
+            "system": 779389,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91826": {
+            "start": 16187510436510,
+            "user": 924101,
+            "system": 900451,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91846": {
+            "start": 16187513917545,
+            "user": 3701511,
+            "system": 1208773,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91856": {
+            "start": 16187515018991,
+            "user": 823296,
+            "system": 662294,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91920": {
+            "start": 16187526405646,
+            "user": 734824,
+            "system": 586658,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 3.6433580833333337
+      },
+      "cpu_s": 2.007757791666667,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "native",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 9.04 5.81 4.83 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 8.57 5.86 4.86 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0n1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 21957786,
+            "system": 5802663,
+            "child_user": 24511025,
+            "child_system": 27019374
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1143096,
+            "system": 805663,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 3.384983625
+      },
+      "startup_ms": 438.6392500018701,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Chrome/155.0.8059.84"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15578.818375011906,
+      "total_ms": 16017.471291939728,
+      "cpu_after": {
+        "processes": {
+          "92981": {
+            "start": 16187814528502,
+            "user": 686507,
+            "system": 536259,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "92119": {
+            "start": 16187576845382,
+            "user": 565981,
+            "system": 546218,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "92118": {
+            "start": 16187576228583,
+            "user": 1210070,
+            "system": 1123933,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "92117": {
+            "start": 16187576187280,
+            "user": 2150947,
+            "system": 1144996,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 22331420,
+            "system": 6211908,
+            "child_user": 34926903,
+            "child_system": 31322659
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1153514,
+            "system": 812390,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "92097": {
+            "start": 16187570874972,
+            "user": 14486881,
+            "system": 12024544,
+            "child_user": 9710025,
+            "child_system": 6513759
+          },
+          "92135": {
+            "start": 16187579003608,
+            "user": 4106821,
+            "system": 1151845,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "92141": {
+            "start": 16187579984445,
+            "user": 845831,
+            "system": 651532,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 6.425622625
+      },
+      "cpu_s": 3.040639,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 8.57 5.86 4.86 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 8.57 5.86 4.86 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0n2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 22414037,
+            "system": 6407074,
+            "child_user": 60969182,
+            "child_system": 53635404
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1153912,
+            "system": 812648,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 6.058010708333333
+      },
+      "result": {
+        "cold_open_ms": 851.715375087224,
+        "warm_workflow_ms": 250.69854198955,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 1135.7304999837652,
+      "total_ms": 1135.732291964814,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 22534433,
+            "system": 6707513,
+            "child_user": 61644817,
+            "child_system": 55187318
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1182807,
+            "system": 827709,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93522": {
+            "start": 16187974355150,
+            "user": 311519,
+            "system": 484044,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93527": {
+            "start": 16187977046646,
+            "user": 7854778,
+            "system": 9465413,
+            "child_user": 1078941,
+            "child_system": 896835
+          },
+          "93545": {
+            "start": 16187981240592,
+            "user": 1575457,
+            "system": 1038390,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93546": {
+            "start": 16187981296662,
+            "user": 873763,
+            "system": 878201,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93549": {
+            "start": 16187981860574,
+            "user": 541681,
+            "system": 539271,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93557": {
+            "start": 16187983716515,
+            "user": 4606446,
+            "system": 1158928,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93563": {
+            "start": 16187984747447,
+            "user": 1324893,
+            "system": 796381,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93564": {
+            "start": 16187984780450,
+            "user": 1748767,
+            "system": 893320,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93570": {
+            "start": 16187986871959,
+            "user": 675405,
+            "system": 556532,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 7.724315083333333
+      },
+      "cpu_s": 1.6663043750000002,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 8.57 5.86 4.86 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 8.04 5.80 4.85 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0n3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 22638071,
+            "system": 6965111,
+            "child_user": 63727641,
+            "child_system": 58870003
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1183472,
+            "system": 828087,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 6.425516041666667
+      },
+      "result": {
+        "cold_open_ms": 1506.5944580128416,
+        "warm_workflow_ms": 303.3191659487784,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1845.263250055723,
+      "total_ms": 1845.2653749845922,
+      "cpu_after": {
+        "processes": {
+          "93718": {
+            "start": 16188027988236,
+            "user": 432740,
+            "system": 379323,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93726": {
+            "start": 16188035539203,
+            "user": 8921126,
+            "system": 9501577,
+            "child_user": 1057461,
+            "child_system": 847681
+          },
+          "93740": {
+            "start": 16188045053208,
+            "user": 1885143,
+            "system": 977829,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93741": {
+            "start": 16188045110980,
+            "user": 1034678,
+            "system": 1174675,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93743": {
+            "start": 16188045720151,
+            "user": 553749,
+            "system": 531230,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93756": {
+            "start": 16188047577693,
+            "user": 4555439,
+            "system": 1163807,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93768": {
+            "start": 16188048582570,
+            "user": 5049536,
+            "system": 1285387,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93769": {
+            "start": 16188048610738,
+            "user": 1693196,
+            "system": 885024,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93774": {
+            "start": 16188050353327,
+            "user": 681435,
+            "system": 558931,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 22871078,
+            "system": 7427578,
+            "child_user": 64385368,
+            "child_system": 60205172
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1184880,
+            "system": 829233,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 8.3363865
+      },
+      "cpu_s": 1.9108704583333331,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "bctl",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 8.04 5.80 4.85 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 8.04 5.80 4.85 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0b0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 22968255,
+            "system": 7660944,
+            "child_user": 66295313,
+            "child_system": 63626451
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1185129,
+            "system": 829497,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 6.7735662083333334
+      },
+      "startup_ms": 1103.0369580257684,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "task_ms": 402.64674997888505,
+      "total_ms": 1505.6899579940364,
+      "cpu_after": {
+        "processes": {
+          "93993": {
+            "start": 16188097016641,
+            "user": 39292,
+            "system": 121162,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93996": {
+            "start": 16188097517495,
+            "user": 20661623,
+            "system": 15890735,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 23051708,
+            "system": 7844302,
+            "child_user": 71389200,
+            "child_system": 68596934
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1205044,
+            "system": 837536,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "93985": {
+            "start": 16188094135194,
+            "user": 86528,
+            "system": 218906,
+            "child_user": 26430,
+            "child_system": 45919
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 8.750638291666666
+      },
+      "cpu_s": 1.9770720833333328,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "bctl",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.80 5.79 4.85 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.34 5.78 4.86 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0b1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 23173739,
+            "system": 8151263,
+            "child_user": 73515750,
+            "child_system": 75446874
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1206270,
+            "system": 838482,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 7.597182416666667
+      },
+      "startup_ms": 1122.886292054318,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Helium/0.20.3.1"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15804.711041040719,
+      "total_ms": 16927.606250043027,
+      "cpu_after": {
+        "processes": {
+          "94271": {
+            "start": 16188168652921,
+            "user": 245901,
+            "system": 505212,
+            "child_user": 25215,
+            "child_system": 38466
+          },
+          "94295": {
+            "start": 16188172429710,
+            "user": 47944090,
+            "system": 18883078,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 23416230,
+            "system": 8533620,
+            "child_user": 83061580,
+            "child_system": 82315616
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1217541,
+            "system": 846678,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "94291": {
+            "start": 16188171836046,
+            "user": 157633,
+            "system": 494984,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 11.153576833333334
+      },
+      "cpu_s": 3.5563944166666674,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.34 5.78 4.86 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.15 5.77 4.86 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0b2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 23534002,
+            "system": 8820222,
+            "child_user": 85087860,
+            "child_system": 88408232
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1218532,
+            "system": 847213,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 8.663169208333334
+      },
+      "result": {
+        "cold_open_ms": 1561.1343340715393,
+        "warm_workflow_ms": 333.54137500282377,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1967.7550840424374,
+      "total_ms": 1967.756750062108,
+      "cpu_after": {
+        "processes": {
+          "95834": {
+            "start": 16188617300901,
+            "user": 160564,
+            "system": 223363,
+            "child_user": 28758,
+            "child_system": 58609
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 23671292,
+            "system": 9175869,
+            "child_user": 85939001,
+            "child_system": 93266441
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1246964,
+            "system": 858825,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "95886": {
+            "start": 16188630593256,
+            "user": 20022340,
+            "system": 15082357,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "95848": {
+            "start": 16188623432121,
+            "user": 90357,
+            "system": 246922,
+            "child_user": 24033,
+            "child_system": 37315
+          },
+          "95877": {
+            "start": 16188629404603,
+            "user": 85267,
+            "system": 207564,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 10.434410041666666
+      },
+      "cpu_s": 1.7712408333333318,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 0,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.15 5.77 4.86 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.90 5.74 4.86 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c0b3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 23799938,
+            "system": 9505754,
+            "child_user": 88052127,
+            "child_system": 99670284
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1248050,
+            "system": 859423,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 9.297315666666666
+      },
+      "result": {
+        "cold_open_ms": 1269.3272500764579,
+        "warm_workflow_ms": 559.6842910163105,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1982.1907919831574,
+      "total_ms": 1982.1922089904547,
+      "cpu_after": {
+        "processes": {
+          "96181": {
+            "start": 16188708380213,
+            "user": 100228,
+            "system": 291272,
+            "child_user": 27707,
+            "child_system": 37489
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 24001279,
+            "system": 9944154,
+            "child_user": 88844124,
+            "child_system": 104042432
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1249842,
+            "system": 860360,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "96170": {
+            "start": 16188705287937,
+            "user": 299822,
+            "system": 289819,
+            "child_user": 27968,
+            "child_system": 59218
+          },
+          "96198": {
+            "start": 16188713950703,
+            "user": 27786520,
+            "system": 16054588,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "96193": {
+            "start": 16188711870482,
+            "user": 92288,
+            "system": 322637,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 11.430489458333334
+      },
+      "cpu_s": 2.1331737916666675,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "bctl",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.90 5.74 4.86 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.90 5.74 4.86 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1b0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 24124731,
+            "system": 10245600,
+            "child_user": 90986753,
+            "child_system": 110752381
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1250290,
+            "system": 860684,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 9.925851625
+      },
+      "startup_ms": 1213.3078330662102,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "task_ms": 414.2262090463191,
+      "total_ms": 1627.5435839779675,
+      "cpu_after": {
+        "processes": {
+          "96477": {
+            "start": 16188791001901,
+            "user": 84507,
+            "system": 192450,
+            "child_user": 26459,
+            "child_system": 46214
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 24204586,
+            "system": 10426216,
+            "child_user": 96866882,
+            "child_system": 115711072
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1270087,
+            "system": 868621,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "96493": {
+            "start": 16188796172359,
+            "user": 21922389,
+            "system": 16515545,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "96488": {
+            "start": 16188794950947,
+            "user": 82027,
+            "system": 215907,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 12.018040083333334
+      },
+      "cpu_s": 2.092188458333334,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "bctl",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.90 5.74 4.86 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.77 6.00 4.97 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1b1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 24322294,
+            "system": 10721076,
+            "child_user": 98924239,
+            "child_system": 121816401
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1271413,
+            "system": 869597,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 10.746875833333334
+      },
+      "startup_ms": 1018.7434999970719,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Helium/0.20.3.1"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15598.392082960345,
+      "total_ms": 16617.142000002787,
+      "cpu_after": {
+        "processes": {
+          "96775": {
+            "start": 16188879202617,
+            "user": 248382,
+            "system": 549125,
+            "child_user": 26568,
+            "child_system": 42551
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 24565572,
+            "system": 11130134,
+            "child_user": 109036252,
+            "child_system": 131037397
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1282779,
+            "system": 877340,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "96799": {
+            "start": 16188883375175,
+            "user": 48311982,
+            "system": 17420143,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "96793": {
+            "start": 16188882190132,
+            "user": 159083,
+            "system": 521219,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 14.383688625
+      },
+      "cpu_s": 3.6368127916666655,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.77 6.00 4.97 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 8.03 6.08 5.00 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1b2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 24688561,
+            "system": 11433860,
+            "child_user": 111244792,
+            "child_system": 137619928
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1284317,
+            "system": 878426,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 11.9645785
+      },
+      "result": {
+        "cold_open_ms": 1319.4958330132067,
+        "warm_workflow_ms": 405.8053750777617,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1741.3037919905037,
+      "total_ms": 1741.30629200954,
+      "cpu_after": {
+        "processes": {
+          "99167": {
+            "start": 16189339915382,
+            "user": 23376942,
+            "system": 19479351,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "99162": {
+            "start": 16189339501616,
+            "user": 90202,
+            "system": 220648,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 24819227,
+            "system": 11795844,
+            "child_user": 112088701,
+            "child_system": 143017080
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1308186,
+            "system": 889858,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "99119": {
+            "start": 16189336770216,
+            "user": 97203,
+            "system": 251749,
+            "child_user": 24318,
+            "child_system": 40853
+          },
+          "99076": {
+            "start": 16189334065497,
+            "user": 168232,
+            "system": 252972,
+            "child_user": 29943,
+            "child_system": 61817
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 14.08388025
+      },
+      "cpu_s": 2.11930175,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 8.03 6.08 5.00 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 8.03 6.08 5.00 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1b3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 24961964,
+            "system": 12153142,
+            "child_user": 114371533,
+            "child_system": 151757043
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1308826,
+            "system": 890298,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 12.726783583333335
+      },
+      "result": {
+        "cold_open_ms": 1292.4653750378639,
+        "warm_workflow_ms": 369.45487500634044,
+        "screenshot_bytes": 80023,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1725.8147919783369,
+      "total_ms": 1725.8185000391677,
+      "cpu_after": {
+        "processes": {
+          "99998": {
+            "start": 16189406858321,
+            "user": 127002,
+            "system": 356356,
+            "child_user": 26823,
+            "child_system": 46315
+          },
+          "99959": {
+            "start": 16189404150401,
+            "user": 331680,
+            "system": 356433,
+            "child_user": 29330,
+            "child_system": 56386
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 25200943,
+            "system": 12648549,
+            "child_user": 115211460,
+            "child_system": 156806579
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1310173,
+            "system": 891179,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "145": {
+            "start": 16189410085574,
+            "user": 30630363,
+            "system": 17922293,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "138": {
+            "start": 16189409610903,
+            "user": 107337,
+            "system": 351375,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 15.100440666666666
+      },
+      "cpu_s": 2.373657083333331,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "native",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 8.03 6.08 5.00 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.94 6.10 5.02 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1n0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 25337266,
+            "system": 12971053,
+            "child_user": 117387008,
+            "child_system": 164005848
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1311192,
+            "system": 891894,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 13.412677541666666
+      },
+      "startup_ms": 452.75254105217755,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9797,
+        "product": "Chrome/155.0.8059.84"
+      },
+      "task_ms": 320.5763330915943,
+      "total_ms": 773.3414160320535,
+      "cpu_after": {
+        "processes": {
+          "541": {
+            "start": 16189495247885,
+            "user": 622686,
+            "system": 483517,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "534": {
+            "start": 16189489094926,
+            "user": 669308,
+            "system": 582217,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 25417433,
+            "system": 13113428,
+            "child_user": 122656361,
+            "child_system": 166135908
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1332157,
+            "system": 902606,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "486": {
+            "start": 16189479658251,
+            "user": 7523216,
+            "system": 10051345,
+            "child_user": 2039023,
+            "child_system": 1551879
+          },
+          "524": {
+            "start": 16189485601926,
+            "user": 963792,
+            "system": 679442,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "525": {
+            "start": 16189485668460,
+            "user": 735539,
+            "system": 784253,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "526": {
+            "start": 16189486443055,
+            "user": 501700,
+            "system": 508146,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "529": {
+            "start": 16189488171277,
+            "user": 3186547,
+            "system": 1064982,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 15.062728541666665
+      },
+      "cpu_s": 1.6500509999999995,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "native",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.94 6.10 5.02 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.15 6.01 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1n1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 25516778,
+            "system": 13321376,
+            "child_user": 135880449,
+            "child_system": 182645025
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1332157,
+            "system": 902606,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 14.983266291666666
+      },
+      "startup_ms": 303.7531670415774,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Chrome/155.0.8059.84"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15910.556207993068,
+      "total_ms": 16214.318624930456,
+      "cpu_after": {
+        "processes": {
+          "984": {
+            "start": 16189745823936,
+            "user": 612564,
+            "system": 468628,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "629": {
+            "start": 16189512391834,
+            "user": 992383,
+            "system": 791937,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 25720687,
+            "system": 13637355,
+            "child_user": 144529606,
+            "child_system": 186382384
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1343387,
+            "system": 910149,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "609": {
+            "start": 16189506023015,
+            "user": 12952282,
+            "system": 11658723,
+            "child_user": 9130347,
+            "child_system": 6248817
+          },
+          "617": {
+            "start": 16189509080664,
+            "user": 1966952,
+            "system": 1125183,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "618": {
+            "start": 16189509124983,
+            "user": 1123196,
+            "system": 1115872,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "619": {
+            "start": 16189509623088,
+            "user": 508965,
+            "system": 551846,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "626": {
+            "start": 16189511536768,
+            "user": 3820440,
+            "system": 1107409,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 17.77912966666667
+      },
+      "cpu_s": 2.7958633750000033,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.15 6.01 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 7.15 6.01 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1n2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 25815598,
+            "system": 13833456,
+            "child_user": 168498536,
+            "child_system": 207500035
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1343387,
+            "system": 910149,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 17.412548375
+      },
+      "result": {
+        "cold_open_ms": 830.8016660157591,
+        "warm_workflow_ms": 221.07341699302197,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 1065.0706249289215,
+      "total_ms": 1065.0724999140948,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 25930238,
+            "system": 14136316,
+            "child_user": 169115217,
+            "child_system": 208757880
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1369692,
+            "system": 923209,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1156": {
+            "start": 16189903135633,
+            "user": 294263,
+            "system": 360370,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1160": {
+            "start": 16189905685810,
+            "user": 7620638,
+            "system": 8647121,
+            "child_user": 1001028,
+            "child_system": 798303
+          },
+          "1165": {
+            "start": 16189908874638,
+            "user": 1466269,
+            "system": 891407,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1166": {
+            "start": 16189908908535,
+            "user": 758323,
+            "system": 817301,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1167": {
+            "start": 16189909450323,
+            "user": 524207,
+            "system": 502219,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1171": {
+            "start": 16189911299801,
+            "user": 4419028,
+            "system": 1098444,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1173": {
+            "start": 16189912255348,
+            "user": 1240588,
+            "system": 799512,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1174": {
+            "start": 16189912284643,
+            "user": 1471928,
+            "system": 826489,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1176": {
+            "start": 16189913746597,
+            "user": 627265,
+            "system": 507849,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 18.954379333333332
+      },
+      "cpu_s": 1.5418309583333318,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 1,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 7.15 6.01 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.98 5.99 5.00 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c1n3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 26044514,
+            "system": 14379311,
+            "child_user": 170917162,
+            "child_system": 211804744
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1370041,
+            "system": 923420,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 17.726633
+      },
+      "result": {
+        "cold_open_ms": 990.7853750046343,
+        "warm_workflow_ms": 174.13300008047372,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1177.6459170505404,
+      "total_ms": 1177.6474170619622,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 26238910,
+            "system": 14783410,
+            "child_user": 171499159,
+            "child_system": 212971889
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1370733,
+            "system": 923733,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1232": {
+            "start": 16189939440344,
+            "user": 378529,
+            "system": 339819,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1234": {
+            "start": 16189941962754,
+            "user": 8002035,
+            "system": 8589468,
+            "child_user": 990978,
+            "child_system": 773166
+          },
+          "1240": {
+            "start": 16189945158094,
+            "user": 1626327,
+            "system": 911750,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1241": {
+            "start": 16189945193577,
+            "user": 865590,
+            "system": 1060621,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1242": {
+            "start": 16189945699927,
+            "user": 485126,
+            "system": 480466,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1249": {
+            "start": 16189947460336,
+            "user": 4433191,
+            "system": 1047421,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1251": {
+            "start": 16189948212245,
+            "user": 4334092,
+            "system": 1113423,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1252": {
+            "start": 16189948238423,
+            "user": 1482520,
+            "system": 825510,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1253": {
+            "start": 16189949982881,
+            "user": 633166,
+            "system": 520902,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 19.445080583333333
+      },
+      "cpu_s": 1.718447583333333,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "native",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.98 5.99 5.00 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.98 5.99 5.00 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2n0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 26337433,
+            "system": 15001081,
+            "child_user": 172929164,
+            "child_system": 215718523
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1371080,
+            "system": 923881,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 18.011715083333332
+      },
+      "startup_ms": 243.35937504656613,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9797,
+        "product": "Chrome/155.0.8059.84"
+      },
+      "task_ms": 991.6557091055438,
+      "total_ms": 1235.0245419656858,
+      "cpu_after": {
+        "processes": {
+          "1311": {
+            "start": 16189980168210,
+            "user": 941974,
+            "system": 549612,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1306": {
+            "start": 16189977406733,
+            "user": 6050786,
+            "system": 7512464,
+            "child_user": 1831913,
+            "child_system": 1206844
+          },
+          "1312": {
+            "start": 16189980206780,
+            "user": 717357,
+            "system": 714930,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1313": {
+            "start": 16189980644170,
+            "user": 402317,
+            "system": 366755,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1315": {
+            "start": 16189981939333,
+            "user": 3233997,
+            "system": 859784,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1318": {
+            "start": 16189982572496,
+            "user": 625479,
+            "system": 480763,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1324": {
+            "start": 16189996008117,
+            "user": 515015,
+            "system": 373103,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 26397131,
+            "system": 15126093,
+            "child_user": 177684056,
+            "child_system": 217432899
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1389454,
+            "system": 933418,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 19.38942266666667
+      },
+      "cpu_s": 1.3777075833333363,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "native",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.98 5.99 5.00 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.53 5.94 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2n1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 26487118,
+            "system": 15305121,
+            "child_user": 187285565,
+            "child_system": 229124446
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1389796,
+            "system": 933609,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 19.18856895833333
+      },
+      "startup_ms": 307.8718329779804,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Chrome/155.0.8059.84"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15384.415792068467,
+      "total_ms": 15692.299374961294,
+      "cpu_after": {
+        "processes": {
+          "1370": {
+            "start": 16190026656453,
+            "user": 547686,
+            "system": 524906,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1369": {
+            "start": 16190026052756,
+            "user": 1169226,
+            "system": 1186309,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1368": {
+            "start": 16190026010000,
+            "user": 2006902,
+            "system": 1167148,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1525": {
+            "start": 16190257703815,
+            "user": 602944,
+            "system": 487698,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 26721166,
+            "system": 15638156,
+            "child_user": 196116038,
+            "child_system": 232943590
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1401114,
+            "system": 941263,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1363": {
+            "start": 16190022900706,
+            "user": 13946209,
+            "system": 11482252,
+            "child_user": 9954138,
+            "child_system": 7041455
+          },
+          "1376": {
+            "start": 16190028567283,
+            "user": 3849648,
+            "system": 1094460,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1379": {
+            "start": 16190029391512,
+            "user": 771077,
+            "system": 636178,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.09289845833333
+      },
+      "cpu_s": 2.9043294999999993,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.53 5.94 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.49 5.94 5.01 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2n2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 26831166,
+            "system": 15859473,
+            "child_user": 223899386,
+            "child_system": 256405267
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1401438,
+            "system": 941497,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 21.889092791666666
+      },
+      "result": {
+        "cold_open_ms": 1010.2493340382352,
+        "warm_workflow_ms": 231.93245800212026,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 1258.950291085057,
+      "total_ms": 1258.9518750319257,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 26945344,
+            "system": 16171961,
+            "child_user": 224534894,
+            "child_system": 257736950
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1431070,
+            "system": 957714,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1644": {
+            "start": 16190407858018,
+            "user": 288323,
+            "system": 356996,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1647": {
+            "start": 16190410429599,
+            "user": 7762088,
+            "system": 9028533,
+            "child_user": 1019474,
+            "child_system": 819917
+          },
+          "1653": {
+            "start": 16190413739340,
+            "user": 1457017,
+            "system": 913679,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1654": {
+            "start": 16190413774799,
+            "user": 757286,
+            "system": 835935,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1655": {
+            "start": 16190414323688,
+            "user": 504783,
+            "system": 470846,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1660": {
+            "start": 16190415986906,
+            "user": 4588349,
+            "system": 1118058,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1664": {
+            "start": 16190416887946,
+            "user": 1236800,
+            "system": 793710,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1665": {
+            "start": 16190416921591,
+            "user": 1519018,
+            "system": 850386,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1667": {
+            "start": 16190418792295,
+            "user": 658280,
+            "system": 544177,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.4708995
+      },
+      "cpu_s": 1.5818067083333354,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.49 5.94 5.01 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.49 5.94 5.01 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2n3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 27051932,
+            "system": 16390977,
+            "child_user": 226146412,
+            "child_system": 260628096
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1431394,
+            "system": 957924,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.19194729166667
+      },
+      "result": {
+        "cold_open_ms": 815.1112500345334,
+        "warm_workflow_ms": 179.8756249481812,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1007.4676249641925,
+      "total_ms": 1007.4693330097944,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 27245281,
+            "system": 16810079,
+            "child_user": 226704190,
+            "child_system": 261759022
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1432155,
+            "system": 958470,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1720": {
+            "start": 16190447827583,
+            "user": 374127,
+            "system": 329284,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1722": {
+            "start": 16190450361437,
+            "user": 7824937,
+            "system": 8781481,
+            "child_user": 909013,
+            "child_system": 727362
+          },
+          "1729": {
+            "start": 16190454206823,
+            "user": 1556938,
+            "system": 874329,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1730": {
+            "start": 16190454243016,
+            "user": 883904,
+            "system": 1127124,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1731": {
+            "start": 16190454712905,
+            "user": 456027,
+            "system": 461477,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1738": {
+            "start": 16190456321005,
+            "user": 5206138,
+            "system": 1113860,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1741": {
+            "start": 16190457032064,
+            "user": 4387292,
+            "system": 1098008,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1742": {
+            "start": 16190457063094,
+            "user": 1442726,
+            "system": 781703,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1745": {
+            "start": 16190458938598,
+            "user": 606778,
+            "system": 488055,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.930823333333333
+      },
+      "cpu_s": 1.7388760416666642,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "bctl",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.49 5.94 5.01 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.49 5.94 5.01 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2b0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 27352260,
+            "system": 17033944,
+            "child_user": 228108961,
+            "child_system": 264500712
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1432155,
+            "system": 958470,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 22.474437583333334
+      },
+      "startup_ms": 822.8122500004247,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "task_ms": 437.96408304478973,
+      "total_ms": 1260.7820419361815,
+      "cpu_after": {
+        "processes": {
+          "1807": {
+            "start": 16190484824464,
+            "user": 18326069,
+            "system": 13126290,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1806": {
+            "start": 16190484488039,
+            "user": 77445,
+            "system": 183848,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1804": {
+            "start": 16190481815610,
+            "user": 81878,
+            "system": 176578,
+            "child_user": 24868,
+            "child_system": 33810
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 27422860,
+            "system": 17205376,
+            "child_user": 233006082,
+            "child_system": 269055611
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1452812,
+            "system": 966191,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.21415491666667
+      },
+      "cpu_s": 1.739717333333335,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "bctl",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.49 5.94 5.01 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.61 6.00 5.05 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2b1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 27547431,
+            "system": 17461456,
+            "child_user": 234533156,
+            "child_system": 275207303
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1453196,
+            "system": 966378,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 23.21537166666667
+      },
+      "startup_ms": 852.6857499964535,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Helium/0.20.3.1"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15450.861750054173,
+      "total_ms": 16303.554584039375,
+      "cpu_after": {
+        "processes": {
+          "1967": {
+            "start": 16190534152425,
+            "user": 220928,
+            "system": 479302,
+            "child_user": 25628,
+            "child_system": 39707
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 27768294,
+            "system": 17807106,
+            "child_user": 242585470,
+            "child_system": 282599641
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1464310,
+            "system": 973570,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1970": {
+            "start": 16190537207007,
+            "user": 43068778,
+            "system": 17245183,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "1969": {
+            "start": 16190536839306,
+            "user": 143801,
+            "system": 438386,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.452504333333334
+      },
+      "cpu_s": 3.237132666666664,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.61 6.00 5.05 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.61 6.00 5.05 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2b2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 27905744,
+            "system": 18087674,
+            "child_user": 244252673,
+            "child_system": 289355111
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1464941,
+            "system": 973942,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.251670208333334
+      },
+      "result": {
+        "cold_open_ms": 1084.2105000047013,
+        "warm_workflow_ms": 265.949415974319,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1363.7991660507396,
+      "total_ms": 1363.8017909834161,
+      "cpu_after": {
+        "processes": {
+          "3354": {
+            "start": 16190954713572,
+            "user": 83775,
+            "system": 218225,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3364": {
+            "start": 16190955108489,
+            "user": 18856645,
+            "system": 15769159,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 28021747,
+            "system": 18422394,
+            "child_user": 245020870,
+            "child_system": 294263397
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1492890,
+            "system": 986870,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3305": {
+            "start": 16190949215941,
+            "user": 152658,
+            "system": 227278,
+            "child_user": 24814,
+            "child_system": 43131
+          },
+          "3330": {
+            "start": 16190952020373,
+            "user": 85647,
+            "system": 214556,
+            "child_user": 27364,
+            "child_system": 46980
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.99826666666667
+      },
+      "cpu_s": 1.746596458333336,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 2,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.61 6.00 5.05 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.40 5.96 5.04 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c2b3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 28171209,
+            "system": 18735027,
+            "child_user": 246791647,
+            "child_system": 300923613
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1493604,
+            "system": 987303,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 24.87926679166667
+      },
+      "result": {
+        "cold_open_ms": 1189.0365830622613,
+        "warm_workflow_ms": 286.216540960595,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1547.159375040792,
+      "total_ms": 1547.1617499133572,
+      "cpu_after": {
+        "processes": {
+          "3487": {
+            "start": 16191011136289,
+            "user": 28534498,
+            "system": 17816533,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3486": {
+            "start": 16191010778361,
+            "user": 97929,
+            "system": 341612,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3484": {
+            "start": 16191008072020,
+            "user": 106706,
+            "system": 300625,
+            "child_user": 26594,
+            "child_system": 40475
+          },
+          "3482": {
+            "start": 16191005486737,
+            "user": 317576,
+            "system": 315460,
+            "child_user": 28108,
+            "child_system": 47769
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 28396693,
+            "system": 19216459,
+            "child_user": 247570552,
+            "child_system": 305888249
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1494550,
+            "system": 987814,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.14700841666667
+      },
+      "cpu_s": 2.2677416249999993,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "bctl",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.40 5.96 5.04 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.40 5.96 5.04 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3b0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 28539122,
+            "system": 19516214,
+            "child_user": 249237310,
+            "child_system": 312650538
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1495204,
+            "system": 988352,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 25.517780833333333
+      },
+      "startup_ms": 871.4282501023263,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "task_ms": 404.111250070855,
+      "total_ms": 1275.5463329376653,
+      "cpu_after": {
+        "processes": {
+          "3614": {
+            "start": 16191066940218,
+            "user": 19252050,
+            "system": 15707641,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3613": {
+            "start": 16191066609084,
+            "user": 83909,
+            "system": 209893,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 28612841,
+            "system": 19694836,
+            "child_user": 254668458,
+            "child_system": 318139747
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1515121,
+            "system": 996989,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3611": {
+            "start": 16191063925717,
+            "user": 83926,
+            "system": 196585,
+            "child_user": 24447,
+            "child_system": 36886
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.467638708333332
+      },
+      "cpu_s": 1.9498578749999993,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "bctl",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 6.40 5.96 5.04 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 6.09 5.92 5.04 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3b1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 28752113,
+            "system": 19969547,
+            "child_user": 256266029,
+            "child_system": 324733982
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1515530,
+            "system": 997261,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 26.343102583333334
+      },
+      "startup_ms": 841.5977919939905,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Helium/0.20.3.1"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15468.010958051309,
+      "total_ms": 16309.615166974254,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 28989210,
+            "system": 20341207,
+            "child_user": 264459276,
+            "child_system": 332154460
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1526457,
+            "system": 1003668,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3745": {
+            "start": 16191118885925,
+            "user": 44261352,
+            "system": 17601919,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "3740": {
+            "start": 16191115845583,
+            "user": 229350,
+            "system": 498722,
+            "child_user": 27419,
+            "child_system": 49447
+          },
+          "3744": {
+            "start": 16191118526417,
+            "user": 157641,
+            "system": 500463,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 29.658357958333333
+      },
+      "cpu_s": 3.3152553749999996,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.76 5.85 5.02 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.76 5.85 5.02 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3b2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 29118391,
+            "system": 20602486,
+            "child_user": 266184687,
+            "child_system": 337751358
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1527522,
+            "system": 1004242,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.34119525
+      },
+      "result": {
+        "cold_open_ms": 1075.5853749578819,
+        "warm_workflow_ms": 536.5061670308933,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1786.8610830046237,
+      "total_ms": 1786.8627909338102,
+      "cpu_after": {
+        "processes": {
+          "4472": {
+            "start": 16191543602879,
+            "user": 18388292,
+            "system": 15828285,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4471": {
+            "start": 16191543237138,
+            "user": 82575,
+            "system": 227746,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 29239061,
+            "system": 20934923,
+            "child_user": 266911021,
+            "child_system": 341733092
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1550999,
+            "system": 1014467,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4468": {
+            "start": 16191540515737,
+            "user": 78998,
+            "system": 203094,
+            "child_user": 25729,
+            "child_system": 42549
+          },
+          "4464": {
+            "start": 16191537843637,
+            "user": 148459,
+            "system": 243915,
+            "child_user": 26752,
+            "child_system": 47828
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 29.030324375
+      },
+      "cpu_s": 1.689129125000001,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.76 5.85 5.02 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.86 5.87 5.03 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3b3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 29387143,
+            "system": 21245239,
+            "child_user": 268727099,
+            "child_system": 348524674
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1551524,
+            "system": 1014836,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 27.935438125
+      },
+      "result": {
+        "cold_open_ms": 1027.1405830280855,
+        "warm_workflow_ms": 401.6328339930624,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1460.0895419716835,
+      "total_ms": 1460.0913330214098,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 29605681,
+            "system": 21714599,
+            "child_user": 269485357,
+            "child_system": 353266159
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1552288,
+            "system": 1015246,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4618": {
+            "start": 16191608405552,
+            "user": 26300233,
+            "system": 14429916,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4617": {
+            "start": 16191608052744,
+            "user": 52432,
+            "system": 257403,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4613": {
+            "start": 16191605347234,
+            "user": 108192,
+            "system": 316094,
+            "child_user": 25535,
+            "child_system": 41226
+          },
+          "4610": {
+            "start": 16191602663721,
+            "user": 293407,
+            "system": 298274,
+            "child_user": 27031,
+            "child_system": 52226
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 29.951720791666666
+      },
+      "cpu_s": 2.0162826666666653,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "native",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.86 5.87 5.03 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.86 5.87 5.03 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3n0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 29757354,
+            "system": 22032418,
+            "child_user": 271311477,
+            "child_system": 359755997
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1552940,
+            "system": 1015613,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 28.559408291666667
+      },
+      "startup_ms": 395.45449998695403,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9797,
+        "product": "Chrome/155.0.8059.84"
+      },
+      "task_ms": 320.96195803023875,
+      "total_ms": 716.4342500036582,
+      "cpu_after": {
+        "processes": {
+          "4758": {
+            "start": 16191680654804,
+            "user": 661842,
+            "system": 596508,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 29826173,
+            "system": 22168589,
+            "child_user": 276693979,
+            "child_system": 361901762
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1574065,
+            "system": 1025776,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4738": {
+            "start": 16191672561898,
+            "user": 7206039,
+            "system": 9693553,
+            "child_user": 1998070,
+            "child_system": 1582566
+          },
+          "4747": {
+            "start": 16191677383067,
+            "user": 943255,
+            "system": 710750,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4748": {
+            "start": 16191677427328,
+            "user": 759363,
+            "system": 789979,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4749": {
+            "start": 16191677978958,
+            "user": 512829,
+            "system": 531330,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4754": {
+            "start": 16191679840605,
+            "user": 3107392,
+            "system": 1005753,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4769": {
+            "start": 16191686822520,
+            "user": 586182,
+            "system": 453210,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 30.18037354166667
+      },
+      "cpu_s": 1.6209652500000011,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "native",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.86 5.87 5.03 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.29 5.74 5.00 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3n1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 29937634,
+            "system": 22366522,
+            "child_user": 287522250,
+            "child_system": 376369269
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1574065,
+            "system": 1025776,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 29.94981316666667
+      },
+      "startup_ms": 308.07879206258804,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Chrome/155.0.8059.84"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15607.424625079148,
+      "total_ms": 15915.514084044844,
+      "cpu_after": {
+        "processes": {
+          "4830": {
+            "start": 16191696844078,
+            "user": 11903710,
+            "system": 11569071,
+            "child_user": 8561768,
+            "child_system": 5901737
+          },
+          "4835": {
+            "start": 16191699726717,
+            "user": 1689153,
+            "system": 973679,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4836": {
+            "start": 16191699765724,
+            "user": 1016649,
+            "system": 1049800,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4838": {
+            "start": 16191700281373,
+            "user": 495997,
+            "system": 503417,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4843": {
+            "start": 16191701952793,
+            "user": 3669817,
+            "system": 1110624,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "4847": {
+            "start": 16191702841543,
+            "user": 752128,
+            "system": 624982,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5493": {
+            "start": 16191932514681,
+            "user": 520713,
+            "system": 413967,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 30122792,
+            "system": 22668187,
+            "child_user": 294367903,
+            "child_system": 379404846
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1584561,
+            "system": 1032053,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 32.49739808333333
+      },
+      "cpu_s": 2.5475849166666613,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.29 5.74 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.29 5.74 5.00 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3n2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 30220940,
+            "system": 22837701,
+            "child_user": 316250564,
+            "child_system": 399500232
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1584891,
+            "system": 1032217,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 32.14277270833333
+      },
+      "result": {
+        "cold_open_ms": 753.8348339730874,
+        "warm_workflow_ms": 214.32870905846357,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 982.9940410563722,
+      "total_ms": 982.9954170854762,
+      "cpu_after": {
+        "processes": {
+          "5535": {
+            "start": 16192086585771,
+            "user": 238810,
+            "system": 281680,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5536": {
+            "start": 16192089082779,
+            "user": 6487673,
+            "system": 8073911,
+            "child_user": 903140,
+            "child_system": 744714
+          },
+          "5540": {
+            "start": 16192091946218,
+            "user": 1338879,
+            "system": 854107,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5541": {
+            "start": 16192091985147,
+            "user": 715203,
+            "system": 774444,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5542": {
+            "start": 16192092442479,
+            "user": 465410,
+            "system": 479727,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5546": {
+            "start": 16192094240377,
+            "user": 5374467,
+            "system": 1072226,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5548": {
+            "start": 16192094964837,
+            "user": 1085253,
+            "system": 684547,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5549": {
+            "start": 16192094984890,
+            "user": 1395898,
+            "system": 779516,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5550": {
+            "start": 16192096622810,
+            "user": 568741,
+            "system": 477762,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 30316326,
+            "system": 23139626,
+            "child_user": 316805087,
+            "child_system": 400668046
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1611433,
+            "system": 1044777,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 33.599225125
+      },
+      "cpu_s": 1.4564524166666644,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 3,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.29 5.74 5.00 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.10 5.70 4.99 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c3n3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 30439160,
+            "system": 23365216,
+            "child_user": 318223396,
+            "child_system": 403525924
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1611757,
+            "system": 1044980,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 32.425434708333334
+      },
+      "result": {
+        "cold_open_ms": 764.8256659740582,
+        "warm_workflow_ms": 173.4712499892339,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 957.9666660865769,
+      "total_ms": 957.9681670293212,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 30632325,
+            "system": 23797566,
+            "child_user": 318793278,
+            "child_system": 404688317
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1612430,
+            "system": 1045360,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5596": {
+            "start": 16192119990183,
+            "user": 360969,
+            "system": 313809,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5597": {
+            "start": 16192122455424,
+            "user": 7209865,
+            "system": 8140591,
+            "child_user": 867456,
+            "child_system": 698646
+          },
+          "5601": {
+            "start": 16192125365138,
+            "user": 1503949,
+            "system": 872120,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5602": {
+            "start": 16192125399851,
+            "user": 793737,
+            "system": 1039331,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5603": {
+            "start": 16192125881806,
+            "user": 442716,
+            "system": 424115,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5606": {
+            "start": 16192127263012,
+            "user": 4947088,
+            "system": 1085195,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5609": {
+            "start": 16192127972281,
+            "user": 4299703,
+            "system": 1167881,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5610": {
+            "start": 16192127995837,
+            "user": 1376167,
+            "system": 750843,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5611": {
+            "start": 16192129634076,
+            "user": 579790,
+            "system": 498361,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 34.08090033333333
+      },
+      "cpu_s": 1.655465624999998,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "native",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.10 5.70 4.99 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.10 5.70 4.99 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4n0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 30748506,
+            "system": 24012375,
+            "child_user": 320269257,
+            "child_system": 407517346
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1612430,
+            "system": 1045360,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 32.71688641666667
+      },
+      "startup_ms": 281.477041891776,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9797,
+        "product": "Chrome/155.0.8059.84"
+      },
+      "task_ms": 268.8236660324037,
+      "total_ms": 550.3122080117464,
+      "cpu_after": {
+        "processes": {
+          "5663": {
+            "start": 16192156782001,
+            "user": 860887,
+            "system": 612257,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5659": {
+            "start": 16192153901449,
+            "user": 6227287,
+            "system": 7911754,
+            "child_user": 1799478,
+            "child_system": 1351773
+          },
+          "5664": {
+            "start": 16192156813815,
+            "user": 672933,
+            "system": 723142,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5665": {
+            "start": 16192157336984,
+            "user": 430945,
+            "system": 424883,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5669": {
+            "start": 16192158802203,
+            "user": 2954803,
+            "system": 943149,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5672": {
+            "start": 16192159523885,
+            "user": 598920,
+            "system": 513999,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5677": {
+            "start": 16192164652819,
+            "user": 547179,
+            "system": 426433,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 30807066,
+            "system": 24152000,
+            "child_user": 324812766,
+            "child_system": 409271503
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1633283,
+            "system": 1054431,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 34.11378629166667
+      },
+      "cpu_s": 1.3968998750000026,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "native",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.10 5.70 4.99 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.31 5.71 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4n1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 30918596,
+            "system": 24336589,
+            "child_user": 335344923,
+            "child_system": 422218177
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1633283,
+            "system": 1054431,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 33.979416625
+      },
+      "startup_ms": 292.03508398495615,
+      "browser_version": "Chrome/155.0.8059.84",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Chrome/155.0.8059.84"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15753.905707970262,
+      "total_ms": 16045.95879104454,
+      "cpu_after": {
+        "processes": {
+          "5722": {
+            "start": 16192174015214,
+            "user": 12998877,
+            "system": 11361053,
+            "child_user": 9848105,
+            "child_system": 7302957
+          },
+          "5732": {
+            "start": 16192176740233,
+            "user": 1780029,
+            "system": 1108656,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5733": {
+            "start": 16192176777450,
+            "user": 1130250,
+            "system": 1107747,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5734": {
+            "start": 16192177293491,
+            "user": 515523,
+            "system": 523986,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5737": {
+            "start": 16192178963200,
+            "user": 4354898,
+            "system": 1429927,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5741": {
+            "start": 16192179810854,
+            "user": 695862,
+            "system": 587903,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "5804": {
+            "start": 16192406747347,
+            "user": 597825,
+            "system": 493612,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 31130752,
+            "system": 24676445,
+            "child_user": 343365998,
+            "child_system": 425710664
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1644281,
+            "system": 1061241,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 36.809441291666666
+      },
+      "cpu_s": 2.8300246666666666,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "native",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.31 5.71 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.31 5.71 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4n2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 31262259,
+            "system": 24880384,
+            "child_user": 368122534,
+            "child_system": 447579160
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1644624,
+            "system": 1061438,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 36.43959995833334
+      },
+      "result": {
+        "cold_open_ms": 1006.1846669996157,
+        "warm_workflow_ms": 208.98554101586342,
+        "screenshot_bytes": 10029
+      },
+      "task_ms": 1226.7745409626514,
+      "total_ms": 1226.7762079136446,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 31372305,
+            "system": 25206379,
+            "child_user": 368754321,
+            "child_system": 448866317
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1672763,
+            "system": 1075760,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6170": {
+            "start": 16192567146414,
+            "user": 268004,
+            "system": 340574,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6171": {
+            "start": 16192569714919,
+            "user": 7452552,
+            "system": 8727399,
+            "child_user": 969715,
+            "child_system": 804891
+          },
+          "6175": {
+            "start": 16192572786284,
+            "user": 1428690,
+            "system": 885265,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6176": {
+            "start": 16192572817933,
+            "user": 761521,
+            "system": 807502,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6177": {
+            "start": 16192573361584,
+            "user": 510600,
+            "system": 504146,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6181": {
+            "start": 16192575143361,
+            "user": 4391454,
+            "system": 1128338,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6183": {
+            "start": 16192576009494,
+            "user": 1227651,
+            "system": 807044,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6184": {
+            "start": 16192576042485,
+            "user": 1471575,
+            "system": 863904,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6185": {
+            "start": 16192577961696,
+            "user": 631826,
+            "system": 533294,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 37.977657916666665
+      },
+      "cpu_s": 1.5380579583333258,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "native",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.36 5.72 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.36 5.72 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4n3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 31526005,
+            "system": 25478639,
+            "child_user": 370794608,
+            "child_system": 452424056
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1673113,
+            "system": 1075918,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 36.790514125
+      },
+      "result": {
+        "cold_open_ms": 833.4893749561161,
+        "warm_workflow_ms": 182.07954207900912,
+        "screenshot_bytes": 86232,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1030.150540987961,
+      "total_ms": 1030.152416904457,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 31750128,
+            "system": 25956153,
+            "child_user": 371432603,
+            "child_system": 453723138
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1673870,
+            "system": 1076386,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6244": {
+            "start": 16192608062337,
+            "user": 412113,
+            "system": 411268,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6253": {
+            "start": 16192610616678,
+            "user": 8765104,
+            "system": 9258953,
+            "child_user": 1032783,
+            "child_system": 848401
+          },
+          "6264": {
+            "start": 16192613719366,
+            "user": 1763553,
+            "system": 1007370,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6265": {
+            "start": 16192613758323,
+            "user": 961422,
+            "system": 1126696,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6266": {
+            "start": 16192614291934,
+            "user": 522644,
+            "system": 516081,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6273": {
+            "start": 16192616250549,
+            "user": 4419321,
+            "system": 1169319,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6276": {
+            "start": 16192617035810,
+            "user": 4650535,
+            "system": 1302931,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6277": {
+            "start": 16192617065244,
+            "user": 1496462,
+            "system": 859154,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6280": {
+            "start": 16192619073991,
+            "user": 645144,
+            "system": 559314,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 38.639201916666664
+      },
+      "cpu_s": 1.8486877916666629,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "bctl",
+      "workload": "shadowdriver",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.36 5.72 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.36 5.72 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4b0",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 31896932,
+            "system": 26215142,
+            "child_user": 373478057,
+            "child_system": 457017288
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1674181,
+            "system": 1076544,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 37.13992266666666
+      },
+      "startup_ms": 852.7100830106065,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "submitted": "Ada Lovelace",
+        "ax_textbox": true,
+        "screenshot_bytes": 9281,
+        "product": "Helium/0.20.3.1"
+      },
+      "task_ms": 354.2139589553699,
+      "total_ms": 1206.929708016105,
+      "cpu_after": {
+        "processes": {
+          "6341": {
+            "start": 16192646211690,
+            "user": 19756324,
+            "system": 14686179,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 31974693,
+            "system": 26408787,
+            "child_user": 378640667,
+            "child_system": 461693663
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1693986,
+            "system": 1084998,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6340": {
+            "start": 16192645839982,
+            "user": 82502,
+            "system": 203227,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6338": {
+            "start": 16192642907420,
+            "user": 91007,
+            "system": 239156,
+            "child_user": 27964,
+            "child_system": 47811
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 39.02629016666666
+      },
+      "cpu_s": 1.8863674999999986,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "bctl",
+      "workload": "grab",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.36 5.72 5.01 }",
+          "diagnostic": "perf-gate-ready: hot process tree (>= 100% CPU)"
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.22 5.67 5.01 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4b1",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 32143484,
+            "system": 26711802,
+            "child_user": 380723246,
+            "child_system": 468605375
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1694664,
+            "system": 1085314,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 37.95682854166667
+      },
+      "startup_ms": 893.2870830176398,
+      "browser_version": "Helium/0.20.3.1",
+      "result": {
+        "pages": 4,
+        "mirror_checked": true,
+        "content_checked": true,
+        "browser_products": [
+          "Helium/0.20.3.1"
+        ],
+        "files": 16,
+        "capture_outcomes": [
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "asset",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "retry",
+            "failure_kind": "page-render",
+            "failure_reason": "HTTPS upgrade render failed: chromium protocol error: Page.navigate failed: net::ERR_SSL_PROTOCOL_ERROR"
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          },
+          {
+            "kind": "page",
+            "outcome": "success",
+            "failure_kind": "",
+            "failure_reason": ""
+          }
+        ]
+      },
+      "task_ms": 15515.910457936116,
+      "total_ms": 16409.203166957013,
+      "cpu_after": {
+        "processes": {
+          "6429": {
+            "start": 16192695052352,
+            "user": 213013,
+            "system": 444504,
+            "child_user": 25806,
+            "child_system": 40088
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 32346677,
+            "system": 27042094,
+            "child_user": 388219725,
+            "child_system": 474707191
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1706443,
+            "system": 1091091,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6434": {
+            "start": 16192698028882,
+            "user": 44385766,
+            "system": 17138091,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "6433": {
+            "start": 16192697662407,
+            "user": 143794,
+            "system": 448881,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 41.16471516666667
+      },
+      "cpu_s": 3.2078866250000004,
+      "status": "pass",
+      "timing_status": "clean"
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "bctl",
+      "workload": "agent-browser",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.22 5.67 5.01 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.22 5.67 5.01 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4b2",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 32489815,
+            "system": 27292445,
+            "child_user": 389686936,
+            "child_system": 480003826
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1706781,
+            "system": 1091324,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 38.84463029166666
+      },
+      "result": {
+        "cold_open_ms": 993.4656659606844,
+        "warm_workflow_ms": 258.44616699032485,
+        "screenshot_bytes": 9368
+      },
+      "task_ms": 1263.3467090781778,
+      "total_ms": 1263.3484170073643,
+      "cpu_after": {
+        "processes": {
+          "8537": {
+            "start": 16193113808729,
+            "user": 17150547,
+            "system": 12693460,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "8534": {
+            "start": 16193113349881,
+            "user": 72304,
+            "system": 161497,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "91508": {
+            "start": 16187449438949,
+            "user": 32599145,
+            "system": 27595536,
+            "child_user": 390386947,
+            "child_system": 483973324
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1729269,
+            "system": 1099905,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "8492": {
+            "start": 16193107819998,
+            "user": 130357,
+            "system": 185586,
+            "child_user": 24378,
+            "child_system": 38585
+          },
+          "8514": {
+            "start": 16193110489923,
+            "user": 72200,
+            "system": 174289,
+            "child_user": 24962,
+            "child_system": 36098
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 40.339516208333336
+      },
+      "cpu_s": 1.494885916666675,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    },
+    {
+      "phase": "cpu",
+      "round": 4,
+      "side": "bctl",
+      "workload": "agent-browser-news",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 5.22 5.67 5.01 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 5.22 5.67 5.01 }",
+          "diagnostic": ""
+        }
+      ],
+      "artifacts": ".work/tmp/mw-r0uzcxao/c4b3",
+      "cpu_before": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 32752104,
+            "system": 27874845,
+            "child_user": 391984268,
+            "child_system": 489413091
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1729935,
+            "system": 1100465,
+            "child_user": 0,
+            "child_system": 0
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 39.36894616666667
+      },
+      "result": {
+        "cold_open_ms": 1022.0442499266937,
+        "warm_workflow_ms": 295.574750052765,
+        "screenshot_bytes": 79698,
+        "articles": 30,
+        "content_sha256": "8b70759cf94f71484e7c2468da009d3cfd6e07dd1ffb1ba2541fd81a935b3f2e"
+      },
+      "task_ms": 1343.9365000231192,
+      "total_ms": 1343.938000034541,
+      "cpu_after": {
+        "processes": {
+          "91508": {
+            "start": 16187449438949,
+            "user": 32959336,
+            "system": 28321023,
+            "child_user": 392710312,
+            "child_system": 493431132
+          },
+          "91682": {
+            "start": 16187489714188,
+            "user": 1730980,
+            "system": 1101263,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "8947": {
+            "start": 16193162414585,
+            "user": 100145,
+            "system": 272434,
+            "child_user": 22896,
+            "child_system": 29043
+          },
+          "8970": {
+            "start": 16193165443290,
+            "user": 25483778,
+            "system": 14301068,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "8967": {
+            "start": 16193165088580,
+            "user": 93375,
+            "system": 293746,
+            "child_user": 0,
+            "child_system": 0
+          },
+          "8929": {
+            "start": 16193159760209,
+            "user": 276695,
+            "system": 254350,
+            "child_user": 23890,
+            "child_system": 37687
+          }
+        },
+        "timebase": {
+          "numer": 125,
+          "denom": 3
+        },
+        "cpu_s": 41.310131375
+      },
+      "cpu_s": 1.94118520833333,
+      "status": "pass",
+      "timing_status": "clean",
+      "agent_user_agent": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36\""
+    }
+  ],
+  "summary": {
+    "shadowdriver": {
+      "native": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 1.6209652500000011,
+            "min": 1.3777075833333363,
+            "max": 2.007757791666667
+          }
+        }
+      },
+      "bctl": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 1.9498578749999993,
+            "min": 1.739717333333335,
+            "max": 2.092188458333334
+          }
+        }
+      }
+    },
+    "grab": {
+      "native": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 2.8300246666666666,
+            "min": 2.5475849166666613,
+            "max": 3.040639
+          }
+        }
+      },
+      "bctl": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 3.3152553749999996,
+            "min": 3.2078866250000004,
+            "max": 3.6368127916666655
+          }
+        }
+      }
+    },
+    "agent-browser": {
+      "native": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 1.5418309583333318,
+            "min": 1.4564524166666644,
+            "max": 1.6663043750000002
+          }
+        }
+      },
+      "bctl": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 1.746596458333336,
+            "min": 1.494885916666675,
+            "max": 2.11930175
+          }
+        }
+      }
+    },
+    "agent-browser-news": {
+      "native": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 1.7388760416666642,
+            "min": 1.655465624999998,
+            "max": 1.9108704583333331
+          }
+        }
+      },
+      "bctl": {
+        "clean_latency_samples": 0,
+        "median_total_ms": null,
+        "range_total_ms": null,
+        "failures": 0,
+        "metrics": {
+          "cpu_s": {
+            "n": 5,
+            "median": 2.1331737916666675,
+            "min": 1.94118520833333,
+            "max": 2.373657083333331
+          }
+        }
+      }
+    }
+  },
+  "bctl_dirty": false,
+  "shadowdriver_dirty": false,
+  "node_version": "v26.13.0",
+  "agent_browser_version": "agent-browser 0.42.0",
+  "native_extra_args": [
+    "--disable-gpu"
+  ],
+  "cpu_rounds": 5,
+  "cpu_method": "separate fresh-profile passes; libproc RUSAGE_INFO_V1 live processes plus reaped-child CPU; Mach timebase conversion; includes driver, fixtures, clients, daemon, supervisor and VMM or native browser tree, plus process discovery; excludes cleanup; snapshots are not atomic",
+  "vm_configuration": "bctl production defaults, actual resources recorded on resource attempts",
+  "artifacts_sha256": {
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "a41c623618498d3653e6c08ace687141ec2f9b2897ccf9e3837b6627411126d7",
+    "/Users/josh/d/bctl/tests/bench/shadowdriver_workflow.mjs": "8f4ae86b91d5caf9b1dfd298988c98f67dcae1b7da667aafdbebe9b47f5cdcb7",
+    "/Users/josh/d/bctl/target/release/bctl": "f7c6a1a185b12d0a7f0359390ccbe13f89775495427d50563d3bb3b131449627",
+    "/Users/josh/d/bctl/.work/interop/agent-browser/bin/agent-browser": "86c6c86762960b15c0502472c296c8ccb46f96d18d0c486ca689e06fd6dc8125",
+    "/Users/josh/d/bctl/.work/toolchain/node-v26.13.0-darwin-arm64/bin/node": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium": "a67f1a4e5e8580115fce0615a7426b4342ced9fd836a1f968f7963e1964f225c",
+    "/Users/josh/d/shadowdriver/ts/dist/src/browser.js": "ff0cef434b3327d3626aefcb1a3c2bc094d379f10a520112a7d1321f1587211e",
+    "/Users/josh/d/shadowdriver/py/python/shadowdriver/_native.abi3.so": "8bb456f7bfc8b05caa5cf8c565fb229b172050f3b7782a2a167c94d23f118a1f",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/runtime/nanos-krun/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/tests/bench/macos_cpu.py": "2347baac43692a6e639eab383f63fbbe04ae043112004deaf7bc1da8a0b50f1c"
+  },
+  "host": {
+    "model": "Mac17,7",
+    "cpus": 18,
+    "memory_bytes": 51539607552,
+    "macos": "27.0.1"
+  },
+  "method": "latency and physical-footprint sampling use separate fresh-profile passes; alternating sides; OS and image caches warm; default VM resources; native unrestricted CPU",
+  "resource_method": "deduplicated Summary Footprint of driver, fixtures, clients, daemon, supervisor, VMM or native browser tree; includes compressed pages; 250 ms best-effort sampling; not an exact peak",
+  "fixture_transport": "identical IPv4 loopback URL for host HTTP, native browser, and guest browser; guest proxy explicitly permits only 127.0.0.1/32",
+  "speedometer_commit": "1386415be8fef2f6b6bbdbe1828872471c5d802a",
+  "speedometer_dirty": false,
+  "shadowdriver_final_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "changed_artifacts": []
+}
