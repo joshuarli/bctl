@@ -42,7 +42,7 @@ lasts until a client changes it.
 it cannot read. It leaves download behavior alone, so set it with
 `cdp('Browser.setDownloadBehavior', behavior='allow', downloadPath='/home/browser/Downloads')`.
 
-**agent-browser 0.42.0** passes paths through to the browser, so upload by
+**agent-browser 0.43.0** passes paths through to the browser, so upload by
 guest path:
 
 ```sh

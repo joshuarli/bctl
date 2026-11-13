@@ -4,7 +4,8 @@ set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$root/.work/interop
 browser_use_rev=070be98109c03f04a95f704533e8f6e9868d0525
-agent_browser_rev=e7519957b9067c541825afa21a792fbe1f483047
+agent_browser_version=0.43.0
+agent_browser_rev=1cc19526f3641c8543d55aa6700e7c55b37ac356
 export TMPDIR=$root/.work/tmp PYTHONDONTWRITEBYTECODE=1
 
 fail() { echo "tests/interop/run.sh: $*" >&2; exit 1; }
@@ -24,12 +25,25 @@ if ! "$venv/bin/python" -c 'import browser_use, sys; sys.exit(browser_use.__vers
     VIRTUAL_ENV=$venv uv pip install -q "browser-use @ git+https://github.com/browser-use/browser-use@$browser_use_rev" ||
         fail "cannot install browser-use $browser_use_rev"
 fi
+# SHA-256 digests GitHub reports for the release assets of agent-browser v0.43.0.
+case $(uname -s)/$(uname -m) in
+Darwin/arm64) agent_browser_asset=agent-browser-darwin-arm64 agent_browser_sha256=05338a8eeddf0b3f9ebf0c87a6c21aedc10685608c68618e1a8483c43eae9c3f ;;
+Linux/x86_64) agent_browser_asset=agent-browser-linux-musl-x64 agent_browser_sha256=10b3b1d5fa8f53f7bc44273bcefaa64299ab77071bc83e75d96de5ed66025c89 ;;
+Linux/aarch64) agent_browser_asset=agent-browser-linux-musl-arm64 agent_browser_sha256=f1d146ad95c1df627b3055475fcb971dfd02f757a1eef756a8f2bd9e19ffff4a ;;
+*) fail "no pinned agent-browser $agent_browser_version binary for $(uname -s)/$(uname -m)" ;;
+esac
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 agent_browser=$work/agent-browser/bin/agent-browser
-if [ "$("$agent_browser" --version 2>/dev/null)" != "agent-browser 0.42.0" ]; then
-    CARGO_TARGET_DIR=$work/agent-browser-target cargo install -q --locked --force \
-        --git https://github.com/vercel-labs/agent-browser --rev "$agent_browser_rev" agent-browser --root "$work/agent-browser" ||
-        fail "cannot build agent-browser $agent_browser_rev"
+if [ ! -x "$agent_browser" ] || [ "$(sha256 "$agent_browser")" != "$agent_browser_sha256" ]; then
+    mkdir -p "$work/agent-browser/bin"
+    curl -fsSL -o "$agent_browser.new" \
+        "https://github.com/vercel-labs/agent-browser/releases/download/v$agent_browser_version/$agent_browser_asset" ||
+        fail "cannot download $agent_browser_asset $agent_browser_version"
+    [ "$(sha256 "$agent_browser.new")" = "$agent_browser_sha256" ] || { rm -f "$agent_browser.new"; fail "$agent_browser_asset does not match its pinned SHA-256"; }
+    chmod 755 "$agent_browser.new"
+    mv "$agent_browser.new" "$agent_browser"
 fi
+[ "$("$agent_browser" --version)" = "agent-browser $agent_browser_version" ] || fail "agent-browser does not report version $agent_browser_version"
 
 cargo build -q -p bctl --manifest-path "$root/Cargo.toml" || fail "cannot build bctl"
 bctl=$root/target/debug/bctl

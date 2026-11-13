@@ -1,7 +1,7 @@
 # agent-browser provider
 
 `bctl agent-browser-plugin` is a `browser.provider` plugin for agent-browser
-0.42.0. With it, `agent-browser --provider bctl open URL` gets its browser
+0.43.0. With it, `agent-browser --provider bctl open URL` gets its browser
 from a bctl session instead of launching Chrome. Plain `--cdp` attachment
 with a URL from `bctl cdp-url` works without it.
 

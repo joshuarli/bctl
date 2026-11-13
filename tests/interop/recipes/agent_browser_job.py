@@ -1,4 +1,4 @@
-"""agent-browser 0.42.0 in a bctl exec job: a client session of the run's own, attached to the session's browser.
+"""agent-browser 0.43.0 in a bctl exec job: a client session of the run's own, attached to the session's browser.
 
     from agent_browser_job import AgentBrowser
 

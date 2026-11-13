@@ -145,7 +145,7 @@ other CDP URLs and dashboard takeovers are refused until it closes. Its own
 #### browser-use and agent-browser
 
 `tests/interop/recipes/` holds an exec program for each of the two external
-clients bctl is tested with: browser-use 1.0.0 and agent-browser 0.42.0. Both
+clients bctl is tested with: browser-use 1.0.0 and agent-browser 0.43.0. Both
 run on the host with the user's authority, and attach only through
 `BCTL_CDP_URL`. Each writes `result.json` to `BCTL_OUTPUT_DIR` with `run`,
 `success`, `result` and `errors`, and exits 0 only on success. Both remove the

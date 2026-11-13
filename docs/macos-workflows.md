@@ -106,7 +106,8 @@ python3 -m unittest discover -s tests/bench -p test_macos_workflows.py
 ```
 
 `node`, `perf-gate-ready`, `footprint`, and `lsof` must be available on PATH.
-The sibling SDK builds and `.work/interop/agent-browser/bin/agent-browser`
+The sibling SDK builds and the pinned agent-browser that `tests/interop/run.sh`
+installs at `.work/interop/agent-browser/bin/agent-browser`
 must already exist. The Nanos image and runtime use the normal `.work` paths.
 `--workloads`, `--rounds`, and `--resource-rounds` select subsets and counts.
 `--bctl-image` selects an image file and its adjacent `.profile.img` template.

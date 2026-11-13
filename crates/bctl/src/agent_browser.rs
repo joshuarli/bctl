@@ -1,4 +1,4 @@
-//! `bctl agent-browser-plugin`: a `browser.provider` plugin for agent-browser v0.42.0, speaking
+//! `bctl agent-browser-plugin`: a `browser.provider` plugin for agent-browser v0.43.0, speaking
 //! `agent-browser.plugin.v1` (one JSON request on stdin, one JSON response on stdout). See docs/agent-browser.md.
 
 use std::fs;
