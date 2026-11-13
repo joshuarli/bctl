@@ -33,8 +33,11 @@ The archive `bctl-<version>-<platform>.tar.xz` holds `bin/bctl` and
 `runtime/nanos/`. On macOS, `runtime/nanos/` is the `nanos-krun` bundle: the
 runner, `libkrun.dylib`, and the EFI firmware with its license. On Linux it
 holds `vhost-device-vsock` and `virtiofsd`. `virtiofsd` is linked statically
-against musl, so the archive needs no host libseccomp or libcap-ng. QEMU and
-`/dev/kvm` remain host requirements, which `bctl doctor` already checks.
+against musl, so the archive needs no host libseccomp or libcap-ng.
+`release/build-linux-runtime.sh --out DIR` builds both binaries from their
+pinned crates.io sources, with the vsock patches applied, in a digest-pinned
+Alpine container. QEMU and `/dev/kvm` remain host requirements, which
+`bctl doctor` already checks.
 
 Each release also publishes `SHA256SUMS` and a `manifest.json`. The manifest
 names the platform, the bctl commit, the Hydrogen pin, and the digest of every
