@@ -731,4 +731,53 @@ Shadowdriver tracks a loaded-Linux replay failure as
 Its macOS behavior under contention remains unqualified.
 
 The independent Carbon review remains unavailable. Hydrogen's pending-init
-hot-unplug case and HYD-3 and HYD-4 remain open in its qualification report.
+hot-unplug case and HYD-3 and HYD-4 (now BCTL-15 and BCTL-16) remain open in
+its qualification report.
+
+### Browser-side time of the warm agent-browser steps
+
+The warm agent-browser target is measured browser-side: the time the browser
+spends answering CDP commands, which excludes agent-browser's process spawn,
+daemon IPC, and its fixed 100 ms `wait` poll, all shared by both sides.
+`tests/bench/macos_warm_cdp.py` attaches agent-browser through
+`tests/bench/cdp_relay.py`, which records each command's interval, and sums
+the union of those intervals within each step. Run it from the repository root
+with `.work/interop/venv/bin/python tests/bench/macos_warm_cdp.py --out FILE`.
+All runs below passed `perf-gate-ready` before and after.
+
+| Browser-side median ms, 7 iterations | Native | Nanos, 2 vCPUs | Nanos ÷ native |
+| --- | ---: | ---: | ---: |
+| Form steps | 37.8 | 103.6 | 2.7 |
+| News steps | 99.3 | 156.9 | 1.6 |
+
+[Receipt](../tests/bench/results/2026-11-13-macos-workflows/warm-cdp-native-vs-nanos.json).
+The 1.5× target needs Nanos at about 25 ms and 66 ms, so it is not met.
+
+Per method, the largest gap is in small renderer round trips, not in
+screenshots. `DOM.resolveNode` (364 calls) takes a median 0.9 ms natively and
+3.1 ms on Nanos, and `Runtime.callFunctionOn` (385 calls) 0.8 and 3.2 ms.
+`Runtime.evaluate` is close (0.3 and 0.5 ms), so the CDP transport is not the
+cost. `Page.captureScreenshot` is 27 and 53 ms.
+
+The vCPU count moves the round trips but not the totals. Fresh binaries built
+from one commit, interleaved, two runs each:
+
+| Nanos median ms | 1 vCPU | 2 vCPUs | 4 vCPUs |
+| --- | ---: | ---: | ---: |
+| `DOM.resolveNode` | 5.4–5.6 | 3.4 | 1.6–1.7 |
+| `Runtime.callFunctionOn` | 6.6 | 3.8 | 1.6–1.8 |
+| `Page.captureScreenshot` | 42–46 | 41–44 | 58–59 |
+| Form steps, browser-side | | 85–92 | 95–97 |
+
+The 1-vCPU column used an older two-vCPU baseline and is indicative only.
+[2-vCPU](../tests/bench/results/2026-11-13-macos-workflows/warm-cdp-cpu2.json)
+and [4-vCPU](../tests/bench/results/2026-11-13-macos-workflows/warm-cdp-cpu4.json)
+receipts hold the last run of each.
+
+Round trips speed up with more vCPUs, so a ready renderer thread is waiting
+for a vCPU; interrupt delivery cost would grow with vCPUs instead. Screenshots
+slow down with more vCPUs. Both fit Hydrogen's broadcast TLB shootdown, which
+interrupts every vCPU on each unmap or protection change and holds them in a
+rendezvous. That hypothesis is unmeasured. The next step is to count
+shootdowns and their rendezvous time per step, then make shootdown target only
+the CPUs that loaded the address space (BCTL-21).
