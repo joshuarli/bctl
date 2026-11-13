@@ -1,0 +1,37 @@
+alpha.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             12 -> 13
+images loaded        0 -> 0
+stylesheets          0 -> 0
+document height      947 -> 947
+
+beta.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             12 -> 13
+images loaded        0 -> 0
+stylesheets          0 -> 0
+document height      947 -> 947
+
+gamma.html/index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             12 -> 13
+images loaded        0 -> 0
+stylesheets          0 -> 0
+document height      947 -> 947
+
+index.html
+PASS
+text                 exact
+text similarity      1.000
+elements             14 -> 15
+images loaded        0 -> 0
+stylesheets          1 -> 1
+document height      947 -> 947
+
+Verification: 4 checked, 4 passed, 0 failed

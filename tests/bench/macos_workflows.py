@@ -62,6 +62,24 @@ def tree(roots, rows):
     return owned
 
 
+def process_table():
+    output = subprocess.check_output(['ps', '-Ao', 'pid=,ppid=,command='], timeout=10)
+    return os.fsdecode(output)
+
+
+def save_results(path, results):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, scratch = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(results, stream, indent=2)
+            stream.write('\n')
+        os.replace(scratch, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(scratch)
+
+
 def physical_footprint_sample(output, expected):
     values = {int(pid): int(value.replace(',', '')) for pid, value in re.findall(
         r'^.*\[(\d+)\]:[^\n]*Footprint:\s+([\d,]+) B', output, re.MULTILINE)}
@@ -90,7 +108,7 @@ class Resources:
     def run(self):
         while not self.done.is_set():
             try:
-                table = invoke(['ps', '-Ao', 'pid=,ppid=,command='])
+                table = process_table()
                 rows = []
                 for line in table.splitlines():
                     pid, ppid, command = line.strip().split(None, 2)
@@ -462,8 +480,7 @@ def main():
                             except Exception as error:
                                 attempt['status'] = 'fail'
                                 attempt['cleanup_error'] = str(error)
-                            out.parent.mkdir(parents=True, exist_ok=True)
-                            out.write_text(json.dumps(results, indent=2) + '\n')
+                            save_results(out, results)
                         if attempt['status'] == 'fail':
                             raise RuntimeError(f'{phase}/{side}/{workload} failed; see {out}')
         results['shadowdriver_final_commit'] = invoke(['git', '-C', args.shadowdriver, 'rev-parse', 'HEAD']).strip()
@@ -507,7 +524,7 @@ def main():
             news_thread.join(timeout=5)
         stop(fixture)
         fixture_log.close()
-        out.write_text(json.dumps(results, indent=2) + '\n')
+        save_results(out, results)
     print(out, flush=True)
     return int(any(row['status'] == 'fail' for row in results['attempts']))
 

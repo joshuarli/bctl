@@ -20,7 +20,7 @@ The native comparison includes a software-rendering control.
 | --- | --- | --- | --- |
 | Complete Shadowdriver interactive task, including fresh browser startup | Native parity | At least 20% lower median latency | 1.5× faster |
 | Warm agent-browser form and news extraction | Native parity on both | At least 20% lower median latency on both | 1.5× faster on both |
-| Complete Grab crawl, including startup, assets, persistence, and verification | Native parity | At least 20% lower median latency | 2× completed pages per second |
+| Complete Grab crawl, including startup, assets, persistence, and offline verification | Native parity | At least 20% lower median latency | 2× completed pages per second |
 | Host physical footprint for the complete process tree | Below tuned native | At least 50% less | At least 2× concurrent crawl throughput per GiB |
 | Fresh browser startup to usable CDP | Native parity | At most 300 ms and no slower than native | At most 150 ms |
 | CPU seconds per completed task | Establish measurement | No increase over native | At least 25% less |
@@ -229,6 +229,14 @@ during collection. The default run also encounters non-UTF-8 arguments in an
 unrelated process. Valid complete samples still cover every trial.
 The default run has at least four complete samples per short workflow and
 36 per Grab crawl. These remain sampled peaks, rather than exact peak claims.
+The recorded harness is preserved at bctl `8f4662f`. The later collector repair
+preserves arbitrary OS argument bytes when reading `ps`. It prevents unrelated
+non-UTF-8 arguments from rejecting a whole process-table sample.
+The repair passes a real-process regression and four native and Nanos workflow
+resource trials with a foreign process holding a non-UTF-8 argument throughout.
+Receipts also update atomically, preserving the previous complete snapshot if
+serialization fails. The final functional receipt is
+`.work/tmp/macos-workflows-sampler-final.json`.
 
 ## Open qualification work
 
@@ -247,7 +255,15 @@ Representative screenshots were visually checked on both backends. Native
 fonts and scrollbar layouts differ. News article data must match exactly.
 
 The preliminary crawl runs `grab check` and exact artifact checks.
-Offline browser replay with `grab verify` remains separate qualification.
+After measurement, copies of the native and Nanos mirrors each pass all four
+pages through offline replay with stock native Chromium 155.0.8059.84.
+The [native mirror replay](../tests/bench/results/2026-11-13-macos-workflows/verify-native.txt)
+and [Nanos mirror replay](../tests/bench/results/2026-11-13-macos-workflows/verify-nanos.txt)
+receipts record those checks. Replay cost is outside the preliminary timings.
+The verifier currently creates a fresh native browser with `control_url=None`.
+The full crawl target must include that browser's latency and footprint, or
+provide fresh isolated replay through bctl. Reusing a capture profile would
+change the verifier's clean-profile contract.
 Shadowdriver tracks a loaded-Linux replay failure as
 [SHD-30](https://github.com/joshuarli/shadowdriver/blob/3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab/TODO.md).
 Its macOS behavior under contention remains unqualified.
