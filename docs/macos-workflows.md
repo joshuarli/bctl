@@ -636,10 +636,13 @@ Native values come from the two-vCPU run.
 | Warm agent-browser news | 183 | 290 | 280 | – | – |
 
 Nanos remains slower than native on every complete task.
-Its sampled footprint is 36% to 56% lower than native's.
-That meets the 50% memory target for both agent-browser workloads only.
-These footprints are lower than the preliminary results. The balloon routing
-repair is the likely cause, but this comparison does not isolate it.
+Its sampled footprint is 36% to 56% lower than default native Chromium's,
+but default native runs a GPU process. The memory target compares against the
+tuned native configuration, the [software-rendering control](#native-software-rendering-control).
+Against that control's footprints, Nanos is 22% higher for the Shadowdriver
+form and 8%, 20%, and 29% lower for Grab and the two agent-browser workloads.
+The 50% memory target remains unmet. Nanos footprints match the preliminary
+results within 4%, so this kernel does not change memory use.
 
 Native medians move by up to 22% between the two runs on the same host.
 The four-vCPU differences, including the warm form, are therefore inconclusive.
