@@ -42,7 +42,11 @@ ensure_builder() {
 
 linux() {
 	if [ "$(uname -s)" = Darwin ]; then
-		set -- -v "$ROOT:$ROOT" -w "$PWD" "$BUILDER" "$@"
+		set -- -w "$PWD" ${KERNEL_TEST_CFLAGS:+-e KERNEL_TEST_CFLAGS} "$BUILDER" "$@"
+		top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) || top=$ROOT
+		set -- -v "$top:$top" "$@"
+		common=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+		case $common in '' | "$top"/*) ;; *) set -- -v "$common:$common" "$@" ;; esac
 		[ ! -f "$SYSROOT/lib/libc.so" ] || set -- -v "$SYSROOT/lib/libc.so:/lib/$MUSL_LOADER:ro" "$@"
 		docker run --rm --platform linux/arm64 --security-opt seccomp=unconfined --cap-add SYS_PTRACE "$@"
 	else
