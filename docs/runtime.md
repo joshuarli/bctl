@@ -147,6 +147,12 @@ already applied. Preserve these contracts when refreshing the patches:
   the guest NIC. Otherwise the kernel's link-local address leaves its
   tentative state about a second after boot, and the address event makes
   Chromium fail in-flight requests with `ERR_NETWORK_CHANGED`.
+- **Balloon queues:** optional queues follow the negotiated features, as in
+  Linux's virtio-MMIO transport. Without free-page hinting, Hydrogen's
+  reporting queue follows its stats queue at index 3. The device must route
+  that queue to reporting, including after snapshot resume, rather than
+  acknowledging it as an inactive hinting round. Existing snapshots retain
+  their negotiated features and physical queue indices.
 - **Cryptography:** graviola is the sole provider. TLS users select providerless
   features, rcgen signs through a graviola `RemoteKeyPair`, and certificates
   explicitly supply serial numbers and subject key identifiers. The s3fs

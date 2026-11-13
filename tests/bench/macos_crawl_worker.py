@@ -53,9 +53,11 @@ def main():
     parser.add_argument('--shadowdriver', type=Path, default=workflows.ROOT.parent / 'shadowdriver')
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--bctl-image', type=Path, default=workflows.NANOS_IMAGE)
+    parser.add_argument('--bctl-runtime-dir', type=Path, default=workflows.NANOS_RUNTIME)
     args = parser.parse_args()
     args.runtime = 'nanos'
-    trial = workflows.Trial(args, args.path, args.side, resource_pass=False, image_path=args.bctl_image)
+    trial = workflows.Trial(args, args.path, args.side, resource_pass=False, image_path=args.bctl_image,
+                            runtime_path=args.bctl_runtime_dir)
     receipt = {'status': 'running', 'side': args.side}
     try:
         if args.cpu:

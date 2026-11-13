@@ -1,0 +1,294 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling libc v0.2.183
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling cfg-if v1.0.4
+   Compiling autocfg v1.5.0
+   Compiling cfg_aliases v0.2.1
+   Compiling thiserror v2.0.18
+   Compiling crossbeam-utils v0.8.21
+   Compiling bitflags v2.11.0
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.47
+   Compiling bitflags v1.3.2
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-sink v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling log v0.4.29
+   Compiling serde_core v1.0.228
+   Compiling semver v1.0.27
+   Compiling virtue v0.0.18
+   Compiling once_cell v1.21.4
+   Compiling zmij v1.0.21
+   Compiling slab v0.4.12
+   Compiling nix v0.30.1
+   Compiling futures-task v0.3.34
+   Compiling futures-channel v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling memoffset v0.9.1
+   Compiling rustc_version v0.4.1
+   Compiling bincode_derive v2.0.1
+   Compiling futures-util v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling krun-hvf v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/hvf)
+   Compiling unty v0.0.4
+   Compiling krun-arch-gen v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/arch_gen)
+   Compiling equivalent v1.0.2
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling serde_json v1.0.149
+   Compiling serde v1.0.228
+   Compiling adler2 v2.0.1
+   Compiling imago v0.2.4 (/Users/josh/d/bctl/third_party/smolvm/libkrun/vendor/imago)
+   Compiling crossbeam-channel v0.5.15
+   Compiling vmm-sys-util v0.15.0
+   Compiling page_size v0.6.0
+   Compiling hashbrown v0.16.1
+   Compiling miniz_oxide v0.8.9
+   Compiling bincode v2.0.1
+   Compiling futures v0.3.34
+   Compiling libloading v0.8.9
+   Compiling tokio v1.50.0
+   Compiling memchr v2.8.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling syn v2.0.117
+   Compiling rand_core v0.9.5
+   Compiling itoa v1.0.18
+   Compiling lru v0.16.3
+   Compiling socket2 v0.5.10
+   Compiling virtio-bindings v0.2.7
+   Compiling vm-fdt v0.3.0
+   Compiling krun-utils v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/utils)
+   Compiling rand_chacha v0.9.0
+   Compiling thiserror-impl v2.0.18
+   Compiling tracing-attributes v0.1.31
+   Compiling async-trait v0.1.89
+   Compiling serde_derive v1.0.228
+   Compiling maybe-async v0.2.11
+   Compiling rand v0.9.2
+   Compiling tracing v0.1.44
+   Compiling krun-polly v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/polly)
+   Compiling vm-memory v0.17.1 (/Users/josh/d/bctl/third_party/smolvm/libkrun/vendor/vm-memory)
+   Compiling krun-smbios v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/smbios)
+   Compiling krun-arch v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/arch)
+   Compiling krun-devices v0.1.0-2.0.0-dev (/Users/josh/d/bctl/third_party/smolvm/libkrun/src/devices)
+warning: field `owned_data` is never read
+   --> src/devices/src/virtio/block/worker.rs:191:5
+    |
+186 | struct AsyncCompletion {
+    |        --------------- field in this struct
+...
+191 |     owned_data: Option<Vec<u8>>,
+    |     ^^^^^^^^^^
+    |
+    = note: `AsyncCompletion` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `krun-devices` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.47s
+     Running unittests src/lib.rs (.work/tmp/balloon-unit-target/debug/deps/krun_devices-52c717eb49ea8fab)
+
+running 194 tests
+test virtio::balloon::device::hint_tests::hint_ids_skip_the_command_values ... ok
+test bus::tests::test_display_error ... ok
+test legacy::aarch64::fwcfg::tests::file_dir_lists_files_big_endian ... ok
+test virtio::balloon::device::hint_tests::hinting_needs_the_negotiated_feature ... ok
+test legacy::rtc_pl031::tests::test_rtc_read_write_and_event ... ok
+test bus::tests::bus_insert ... ok
+test bus::tests::bus_read_write_values ... ok
+test bus::tests::busrange_cmp_and_clone ... ok
+test virtio::balloon::device::checkpoint_quiescence_tests::inactive_balloon_can_be_quiesced_and_rearmed ... ok
+test legacy::aarch64::fwcfg::tests::selecting_rewinds_and_reads_advance ... ok
+test legacy::aarch64::fwcfg::tests::data_reads_preserve_stream_order ... ok
+test bus::tests::bus_read_write ... ok
+test virtio::balloon::device::region_bounds_tests::a_range_past_guest_memory_stops_at_its_end ... ok
+test virtio::balloon::device::region_bounds_tests::a_range_across_regions_is_split_at_the_boundary ... ok
+test virtio::balloon::device::region_bounds_tests::releasing_across_regions_zeroes_exactly_the_range ... ok
+test virtio::balloon::device::region_bounds_tests::partial_host_pages_are_left_alone ... ok
+test virtio::balloon::device::stats_tests::a_buffer_too_short_for_one_entry_yields_no_sample ... ok
+test virtio::balloon::device::stats_tests::a_guest_sample_decodes_to_the_values_it_carried ... ok
+test virtio::balloon::device::stats_tests::a_trailing_partial_entry_is_ignored ... ok
+test virtio::balloon::device::stats_tests::an_unknown_tag_does_not_discard_the_rest_of_the_sample ... ok
+test virtio::balloon::device::stats_tests::entries_are_read_on_a_ten_byte_stride ... ok
+test virtio::balloon::device::hint_tests::a_restored_device_continues_after_the_saved_hint_round ... ok
+test virtio::block::device::overlay_tests::rejected_disk_growth_keeps_the_previous_capacity ... ok
+test virtio::balloon::owned_ram::tests::only_owned_unshared_files_are_released ... ok
+test virtio::block::device::overlay_tests::create_overlay_over_raw_base ... ok
+test virtio::block::device::overlay_tests::raw_tail_discard_keeps_capacity_for_branching ... ok
+test virtio::block::device::overlay_tests::raw_tail_zeroing_keeps_capacity_for_branching ... ok
+test virtio::console::port_queue_mapping::test::test_port_id_to_queue_idx ... ok
+test virtio::console::port_queue_mapping::test::test_queue_idx_to_port_id_ok ... ok
+test virtio::console::port_queue_mapping::test::test_queue_idx_to_port_id_panic_rx_control - should panic ... ok
+test virtio::console::port::tests::inactive_directions_retain_their_queues_for_snapshot_rearm ... ok
+test virtio::console::port_queue_mapping::test::test_queue_idx_to_port_id_panic_tx_control - should panic ... ok
+test virtio::descriptor_utils::tests::read_full ... ok
+test virtio::descriptor_utils::tests::reader_test_incompatible_chain ... ok
+test virtio::descriptor_utils::tests::reader_test_simple_chain ... ok
+test virtio::descriptor_utils::tests::reader_unexpected_eof ... ok
+test virtio::descriptor_utils::tests::reader_writer_shared_chain ... ok
+test virtio::descriptor_utils::tests::reader_writer_shattered_object ... ok
+test virtio::descriptor_utils::tests::split_beginning ... ok
+test virtio::descriptor_utils::tests::split_border ... ok
+test virtio::descriptor_utils::tests::split_end ... ok
+test virtio::descriptor_utils::tests::split_middle ... ok
+test virtio::descriptor_utils::tests::split_outofbounds ... ok
+test virtio::descriptor_utils::tests::write_full ... ok
+test virtio::descriptor_utils::tests::writer_test_incompatible_chain ... ok
+test virtio::descriptor_utils::tests::writer_test_simple_chain ... ok
+test virtio::fs::device::tests::advertises_two_request_queues ... ok
+test virtio::fs::inode_alloc::tests::a_sequential_allocator_starts_after_the_root ... ok
+test virtio::fs::device::tests::checkpoint_drains_all_failed_workers_and_remembers_failure ... ok
+test virtio::fs::inode_alloc::tests::each_session_numbers_from_its_own_random_base ... ok
+test virtio::fs::inode_alloc::tests::restore_continues_from_the_snapshotted_counter ... ok
+test virtio::block::device::overlay_tests::growing_overlay_does_not_expose_backing_data_or_change_siblings ... ok
+test virtio::balloon::device::checkpoint_quiescence_tests::a_pending_free_page_callback_cannot_advance_a_quiesced_snapshot ... ok
+test virtio::block::device::overlay_tests::exit_writes_out_cluster_mappings_that_drop_never_would ... ok
+test virtio::balloon::device::checkpoint_quiescence_tests::paused_stats_and_target_requests_do_not_change_the_boundary ... ok
+test virtio::balloon::device::checkpoint_quiescence_tests::restored_pending_reports_receive_a_fresh_notification ... ok
+test virtio::block::device::overlay_tests::checkpoint_rejects_storage_flush_and_sync_failures ... ok
+test virtio::fs::live_fs::tests::a_read_only_device_refuses_writes_in_its_shares ... ok
+test virtio::fs::macos::passthrough::tests::a_guest_chmod_sets_the_host_permission_bits ... ok
+test virtio::console::device::checkpoint_boundary_tests::pending_control_reply_keeps_the_checkpoint_boundary ... ok
+test virtio::block::device::overlay_tests::disk_growth_preserves_data_and_publishes_zeroed_capacity ... ok
+test virtio::fs::macos::passthrough::tests::a_missing_name_is_an_error_unless_the_share_keeps_negative_entries ... ok
+test virtio::fs::live_fs::tests::a_share_serves_its_tree_until_it_is_detached ... ok
+test virtio::fs::macos::passthrough::tests::non_terminal_ioctls_are_not_misclassified ... ok
+test virtio::fs::macos::passthrough::tests::other_ioctls_get_no_rosetta_reply ... ok
+test virtio::console::device::checkpoint_boundary_tests::restored_port_open_does_not_start_an_active_port_twice ... ok
+test virtio::fs::live_fs::tests::nothing_escapes_a_share_or_lands_in_the_device_root ... ok
+test virtio::fs::live_fs::tests::a_restored_device_serves_the_same_shares_and_inodes ... ok
+test virtio::fs::macos::passthrough::tests::rosetta_start_up_ioctls_get_their_reply ... ok
+test virtio::fs::macos::passthrough::tests::terminal_ioctls_are_recognized ... ok
+test virtio::console::device::checkpoint_boundary_tests::paused_notifications_replay_to_their_original_events ... ok
+test virtio::fs::multikey::test::get ... ok
+test virtio::fs::multikey::test::remove ... ok
+test virtio::fs::multikey::test::update_alt_key ... ok
+test virtio::fs::multikey::test::update_both_keys_main ... ok
+test virtio::fs::multikey::test::update_both_keys_alt ... ok
+test virtio::fs::live_fs::tests::attach_refuses_names_and_paths_it_cannot_serve_safely ... ok
+test virtio::fs::multikey::test::update_main_key ... ok
+test virtio::fs::multikey::test::update_value ... ok
+test virtio::fs::read_only::tests::read_only_open_flags_allow_append ... ok
+test virtio::fs::read_only::tests::read_only_open_flags_reject_truncate ... ok
+test virtio::fs::read_only::tests::read_only_open_flags_reject_write_access ... ok
+test virtio::console::device::checkpoint_boundary_tests::repeated_paused_events_are_drained_and_replayed_once ... ok
+test virtio::fs::server::tests::filenames_that_escape_the_parent_directory_are_rejected ... ok
+test virtio::fs::macos::passthrough::tests::init_offers_readdirplus_when_the_kernel_can_take_it ... ok
+test virtio::fs::server::tests::ordinary_filenames_are_accepted ... ok
+test virtio::memory::tests::invalid_memory_requests_do_not_mutate_plugged_or_requested_state ... ok
+test virtio::memory::tests::memory_growth_tracks_guest_plugs_without_preallocating_the_aperture ... ok
+test virtio::memory::tests::restored_memory_requires_backing_for_unplugged_usable_blocks_too ... ok
+test virtio::fs::macos::passthrough::tests::an_unprivileged_write_drops_setgid_as_a_local_filesystem_does ... ok
+test virtio::console::device::checkpoint_boundary_tests::checkpoint_rejects_a_lost_console_worker_queue ... ok
+test virtio::fs::macos::passthrough::tests::directories_list_without_an_opendir_when_the_kernel_offers_to_skip_it ... ok
+test virtio::memory::device::tests::invalid_memory_checkpoint_does_not_change_destination ... ok
+test virtio::mmio::tests::test_ack_features_by_page ... ok
+test virtio::fs::worker::tests::a_request_outside_guest_memory_is_completed_not_fatal ... ok
+test virtio::fs::macos::passthrough::tests::regular_opens_skip_redundant_close_flushes ... ok
+test virtio::fs::macos::passthrough::tests::files_read_and_write_without_an_open_when_the_kernel_offers_to_skip_it ... ok
+test virtio::mmio::tests::test_get_acked_features ... ok
+test virtio::fs::macos::passthrough::tests::readdirplus_looks_up_each_entry_by_its_full_name ... ok
+test virtio::mmio::tests::test_get_avail_features ... ok
+test virtio::mmio::tests::test_set_acked_features ... ok
+test virtio::fs::macos::passthrough::tests::setattr_keeps_its_handle_open_across_a_concurrent_release ... ok
+test virtio::net::device::checkpoint_failure_probe::failed_worker_rejects_checkpoint_and_repeated_attempts ... ok
+test virtio::persist::tests::device_state_without_interrupt_status_still_decodes ... ok
+test virtio::fs::macos::passthrough::tests::nodeids_differ_per_session_and_survive_restore ... ok
+test virtio::persist::tests::vsock_snapshot_without_event_queue_still_loads ... ok
+test virtio::persist::tests::test_device_state_serialization_roundtrip ... ok
+test virtio::mmio::tests::acknowledge_lowers_the_level_only_after_all_causes_clear ... ok
+test virtio::queue::tests::popping_from_rings_outside_guest_memory_fails_cleanly ... ok
+test virtio::queue::tests::test_add_used ... ok
+test virtio::fs::macos::passthrough::tests::restore_identities_stay_beneath_the_export_root ... ok
+test virtio::queue::tests::test_indirect_descriptor_chain ... ok
+test virtio::queue::tests::test_checked_new_descriptor_chain ... ok
+test virtio::queue::tests::test_queue_processing ... ok
+test virtio::queue::tests::test_queue_state_save_restore_roundtrip ... ok
+test virtio::queue::tests::test_queue_validation ... ok
+test virtio::mmio::tests::a_ring_outside_guest_memory_refuses_activation ... ok
+test virtio::mmio::tests::restored_interrupt_is_raised_again_once ... ok
+test virtio::mmio::tests::interrupt_raised_during_restore_is_raised_again ... ok
+test virtio::mmio::tests::test_bus_device_read ... ok
+test virtio::vsock::dns_filter::tests::allowed_cidrs_still_allow_with_dns_filter_enabled ... ok
+test virtio::vsock::dns_filter::tests::blocked_query_returns_nxdomain_without_learning ... ok
+test virtio::vsock::dns_filter::tests::builds_nxdomain_with_original_question ... ok
+test virtio::vsock::dns_filter::tests::builds_servfail_for_malformed_query ... ok
+test virtio::vsock::dns_filter::tests::default_floor_blocks_ipv6_and_mapped_loopback ... ok
+test virtio::mmio::tests::test_bus_device_activate ... ok
+test virtio::vsock::dns_filter::tests::default_floor_blocks_link_local_and_host_loopback ... ok
+test virtio::vsock::dns_filter::tests::dns_active_requires_hosts_and_resolvers ... ok
+test virtio::rng::device::checkpoint_tests::inactive_entropy_device_can_be_quiesced_rearmed_and_reset ... ok
+test virtio::vsock::dns_filter::tests::dns_policy_denies_before_learn_and_allows_after_learn ... ok
+test virtio::vsock::dns_filter::tests::empty_allow_list_blocks_all_hostnames ... ok
+test virtio::vsock::dns_filter::tests::explicit_allow_recognizes_static_cidr_not_learned_ip ... ok
+test virtio::vsock::dns_filter::tests::floor_override_parsing ... ok
+test virtio::vsock::dns_filter::tests::hostname_matching_allows_exact_and_subdomain_only ... ok
+test virtio::vsock::dns_filter::tests::ipv4_mapped_metadata_cannot_smuggle_past_floor ... ok
+test virtio::vsock::dns_filter::tests::metadata_only_mode_allows_host_loopback ... ok
+test virtio::vsock::dns_filter::tests::learn_ips_prunes_expired_ips ... ok
+test virtio::vsock::dns_filter::tests::off_floor_allows_everything ... ok
+test virtio::vsock::dns_filter::tests::parses_compressed_a_answer ... ok
+test virtio::vsock::dns_filter::tests::parses_dns_query_name ... ok
+test virtio::mmio::tests::test_bus_device_reset ... ok
+test virtio::vsock::dns_filter::tests::resolver_is_pinned_and_independent_of_guest ... ok
+test virtio::vsock::dns_filter::tests::sockaddr_port_extracts_port ... ok
+test virtio::mmio::tests::test_new ... ok
+test virtio::vsock::dns_filter::tests::strict_floor_blocks_metadata_internal_and_loopback ... ok
+test virtio::vsock::device::tests::save_state_uses_listener_metadata_captured_before_quiesce ... ok
+test virtio::vsock::muxer::tests::test_empty_cidrs_denies_all ... ok
+test virtio::vsock::dns_filter::tests::without_a_policy_every_query_goes_to_the_forwarder ... ok
+test virtio::vsock::muxer::tests::test_exact_ipv4_match ... ok
+test virtio::vsock::dns_filter::tests::the_allow_list_still_decides_before_the_forwarder ... ok
+test virtio::vsock::muxer::tests::test_ipv4_cidr_0_matches_all ... ok
+test virtio::vsock::muxer::tests::an_immediate_removal_from_any_path_does_not_deadlock ... ok
+test virtio::vsock::muxer::tests::test_ipv4_cidr_16 ... ok
+test virtio::vsock::muxer::tests::test_ipv4_cidr_8 ... ok
+test virtio::vsock::muxer::tests::test_ipv6_cidr_0_matches_all ... ok
+test virtio::vsock::muxer::tests::test_ipv6_cidr_64 ... ok
+test virtio::vsock::muxer::tests::test_ipv6_exact_match ... ok
+test virtio::vsock::muxer::tests::test_multiple_cidrs ... ok
+test virtio::vsock::muxer::tests::test_non_canonical_cidr ... ok
+test virtio::vsock::muxer::tests::test_v4_addr_v6_cidr_no_match ... ok
+test virtio::vsock::muxer::tests::test_v6_addr_v4_cidr_no_match ... ok
+test virtio::vsock::muxer_rxq::tests::credit_packets_do_not_reuse_guest_buffer_header_fields ... ok
+test virtio::vsock::proxy::tests::connected_stream_can_pause_reads_without_dropping_writes ... ok
+test virtio::vsock::proxy::tests::connected_stream_readiness_is_level_triggered ... ok
+test virtio::vsock::reaper::tests::proxies_released_in_the_same_instant_still_expire ... ok
+test virtio::vsock::sys::tests::peer_hung_up_holds_with_unread_bytes_queued ... ok
+test virtio::vsock::sys::tests::peer_hung_up_reports_only_a_closed_host_end ... ok
+test virtio::rng::device::checkpoint_tests::restored_entropy_request_does_not_need_a_new_guest_kick ... ok
+test virtio::vsock::unix::tests::complementary_write_shutdowns_release_the_host_socket_in_either_order ... ok
+test virtio::vsock::unix::tests::guest_close_drains_buffered_data_before_host_eof ... ok
+test virtio::vsock::unix::tests::guest_write_shutdown_keeps_host_reply_open ... ok
+test virtio::vsock::snapshot_gate::tests::repeated_pauses_drain_concurrent_writers ... ok
+test virtio::rng::device::checkpoint_tests::pending_entropy_request_keeps_the_checkpoint_boundary ... ok
+test virtio::vsock::vsock_addr::tests::an_inet_address_cannot_switch_a_proxy_to_another_family ... ok
+test virtio::vsock::unix::tests::only_the_header_length_reaches_the_host_socket ... ok
+test virtio::vsock::vsock_addr::tests::ipv4_port_and_addr_byte_order ... ok
+test virtio::vsock::vsock_addr::tests::ipv4_round_trip ... ok
+test virtio::vsock::vsock_addr::tests::ipv6_round_trip ... ok
+test virtio::rng::device::guest_range_tests::an_out_of_range_request_completes_once ... ok
+test virtio::vsock::vsock_addr::tests::rejects_short_and_unknown ... ok
+test virtio::net::worker::tests::a_tx_chain_without_a_frame_is_dropped ... ok
+test virtio::console::device::checkpoint_boundary_tests::restored_reply_waits_for_the_guest_to_supply_a_buffer ... ok
+test virtio::memory::device::tests::memory_queue_validates_response_and_respects_snapshot_boundary ... ok
+test virtio::balloon::device::checkpoint_quiescence_tests::every_supported_queue_defers_pending_work_until_resume ... ok
+test virtio::balloon::device::checkpoint_quiescence_tests::reports_complete_when_optional_queues_are_not_negotiated ... ok
+test virtio::vsock::muxer::tests::a_host_ipc_connect_without_a_free_fd_is_reset ... ok
+test virtio::vsock::muxer::tests::a_connect_without_a_free_fd_reports_emfile ... ok
+test virtio::vsock::snapshot_gate::tests::pause_blocks_new_writers_until_resume ... ok
+test virtio::vsock::snapshot_gate::tests::pause_waits_for_an_active_writer ... ok
+test virtio::balloon::device::hint_tests::a_state_without_the_hint_round_does_not_start_over ... ok
+test virtio::vsock::unix::tests::unflushed_tx_data_stays_within_the_advertised_window ... ok
+test virtio::vsock::snapshot_gate::tests::transport_reset_hold_blocks_writers_until_released ... ok
+test virtio::mmio::tests::test_bus_device_write ... ok
+test virtio::vsock::dns_filter::tests::a_silent_forwarder_leaves_the_guest_to_retry ... ok
+
+test result: ok. 194 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s
+
+   Doc-tests krun_devices
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

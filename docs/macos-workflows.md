@@ -110,7 +110,9 @@ The sibling SDK builds and `.work/interop/agent-browser/bin/agent-browser`
 must already exist. The Nanos image and runtime use the normal `.work` paths.
 `--workloads`, `--rounds`, and `--resource-rounds` select subsets and counts.
 `--bctl-image` selects an image file and its adjacent `.profile.img` template.
-The default remains `.work/images/nanos-helium.img`.
+`--bctl-runtime-dir` selects the Nanos runner, library, and firmware bundle.
+The default image is `.work/images/nanos-helium.img`.
+The default runtime bundle is `.work/runtime/nanos-krun`.
 Fewer than five samples produce no median claim.
 
 ## Optimization order
@@ -306,6 +308,10 @@ through replay. The coordinator adds its own CPU, including the fixture server.
 Worker interpreter startup and browser cleanup are excluded.
 The CPU collector's smoke test passes two concurrent four-page crawls per
 backend, including all 16 captures and 16 offline replays.
+`macos_crawl.py --baseline-runtime-dir DIR --bctl-runtime-dir DIR` compares
+two Nanos runtime bundles using the same complete crawl and replay checks.
+Its receipts identify the baseline separately and hash both bundles.
+Receipts also record the inherited `SMOLVM_BALLOON_RECLAIM` setting.
 
 ```sh
 python3.15 tests/bench/macos_workflows.py --rounds 0 --resource-rounds 0 \
@@ -500,6 +506,66 @@ The [comparison reproducer](../tests/bench/results/2026-11-13-macos-costs/daemon
 and [dense-pass reproducer](../tests/bench/results/2026-11-13-macos-costs/daemon-poll-dense-experiment.py)
 run from the bctl repository with the named release binaries available.
 Adjacent `daemon-poll-*-footprint.txt` files preserve every resource trial's peak.
+
+### Balloon queue routing
+
+The VMM now derives optional balloon queue indices from the negotiated
+features. This follows [Linux's virtio-MMIO queue allocation](https://raw.githubusercontent.com/torvalds/linux/master/drivers/virtio/virtio_mmio.c).
+Hydrogen negotiates stats and reporting without hinting, placing reporting at
+index 3. The previous VMM treats that index as hinting and acknowledges the
+reports without releasing their backing. Queue event dispatch and snapshot
+resume now use the same negotiated mapping.
+
+The [regression fails before the fix](../tests/bench/results/2026-11-13-macos-costs/balloon-unit-before.txt).
+It checks reporting with all four combinations of stats and hinting, including
+deferred notifications across snapshot resume.
+All [194 device tests pass afterward](../tests/bench/results/2026-11-13-macos-costs/balloon-unit-after.txt).
+The patch and source identity are recorded in `third_party/UPSTREAM.lock`.
+There is no checkpoint schema change.
+
+The [runtime comparison](../tests/bench/results/2026-11-13-macos-costs/balloon-runtime.json)
+uses the saved production runtime and a candidate differing only by that patch.
+Each trial runs two concurrent four-page crawls, exact asset checks, and fresh
+native offline verification. Five alternating samples per runtime measure
+latency, footprint, and CPU in separate passes.
+All 240 captures and 240 replays pass. All 40 host-load checks pass.
+Recorded inputs remain unchanged.
+
+| Measure, eight captured and replayed pages | Previous runtime | Corrected runtime |
+| --- | --- | --- |
+| Complete task, seconds | 38.171 (37.962–38.567) | 37.994 (37.750–38.060) |
+| CPU seconds | 11.979 (10.592–13.891) | 12.030 (10.583–12.303) |
+| Sampled peak footprint, MiB | 1593.1 (1586.6–1606.4) | 1594.0 (1590.8–1603.7) |
+
+Values are medians with minimum to maximum. All observed ranges overlap.
+No latency, CPU, or memory improvement is established.
+The correctness fix is retained. It does not close the performance targets.
+The corrected library is 6,358,448 bytes, versus 6,361,376 bytes before.
+No dependency is added.
+
+This comparison leaves `SMOLVM_BALLOON_RECLAIM` unset.
+The host's stronger unmap-and-remap reclamation policy remains opt-in.
+A separate [smoke check with that setting enabled](../tests/bench/results/2026-11-13-macos-costs/balloon-reclaim-smoke.json)
+passes 16 captures and 16 offline replays across native and Nanos.
+That single check establishes no reclamation savings or general qualification.
+An independent Carbon review of this change remains unavailable.
+
+The first runtime-comparison attempt fails before browser startup because its
+artifact directory exceeds the Unix socket path limit.
+The [failure receipt](../tests/bench/results/2026-11-13-macos-costs/balloon-runtime-path-failure.json)
+and [worker error](../tests/bench/results/2026-11-13-macos-costs/balloon-runtime-path-failure.txt)
+are retained. The harness now uses shorter artifact directory names.
+The failed attempt is excluded from the complete comparison above.
+Adjacent `balloon-*-footprint.txt` files retain every resource trial's peak.
+The baseline runtime remains at `.work/tmp/balloon-runtime-baseline`.
+
+```sh
+python3.15 tests/bench/macos_crawl.py --pages 4 --jobs 2 --slots 4 \
+  --rounds 5 --resource-rounds 5 --cpu-rounds 5 \
+  --baseline-runtime-dir .work/tmp/balloon-runtime-baseline \
+  --bctl-runtime-dir .work/tmp/balloon-runtime-candidate \
+  --native-arg=--disable-gpu --out .work/tmp/balloon-runtime-comparison.json
+```
 
 ### Chromium startup traces
 

@@ -1,0 +1,64 @@
+{
+  "completed": false,
+  "configuration": {
+    "pages": 4,
+    "jobs": 2,
+    "slots": 4,
+    "budget_mib": 2048,
+    "rounds": 5,
+    "resource_rounds": 5,
+    "cpu_rounds": 5,
+    "bctl_image": "/Users/josh/d/bctl/.work/images/nanos-helium.img",
+    "bctl_runtime_dir": "/Users/josh/d/bctl/.work/tmp/balloon-runtime-candidate",
+    "baseline_runtime_dir": "/Users/josh/d/bctl/.work/tmp/balloon-runtime-baseline",
+    "native_arg": [
+      "--disable-gpu"
+    ],
+    "out": ".work/tmp/balloon-runtime-comparison.json"
+  },
+  "balloon_reclaim": null,
+  "attempts": [
+    {
+      "phase": "latency",
+      "round": 0,
+      "side": "baseline",
+      "artifacts": ".work/tmp/crawl-ycbl9o8g/latency-0-baseline",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 4.51 4.85 5.10 }",
+          "diagnostic": ""
+        }
+      ],
+      "status": "fail",
+      "error": "crawl worker failed; see /Users/josh/d/bctl/.work/tmp/crawl-ycbl9o8g/latency-0-baseline"
+    }
+  ],
+  "bctl_commit": "7ceb49d6cc0f11d0b81137add4870c0c759c7a71",
+  "shadowdriver_commit": "3a5aeb5c58e72080a5b3dd898627c8fc5c5728ab",
+  "shadowdriver_dirty": false,
+  "inputs_sha256": {
+    "/Users/josh/d/bctl/tests/bench/macos_crawl.py": "c8f16f9a41848b6f166cedf6958f21c8a1acb68ebb31b602c451348457fdb72e",
+    "/Users/josh/d/bctl/tests/bench/macos_crawl_worker.py": "e21e412dd63ce0a186c623f64715d425a807f22e530bfd001477d1635a5daf4d",
+    "/Users/josh/d/bctl/tests/bench/crawl_site.py": "9e56d6cd715e96688097da4b9dbcda070e9d685044d5fdf210760b25927b22cd",
+    "/Users/josh/d/bctl/tests/bench/macos_workflows.py": "933cd6b5382590182a6c7927c9f0e207c46c160d771c5bd521692f4fbc5c42c9",
+    "/Users/josh/d/bctl/target/release/bctl": "516dfb2b1d6fea69bcc397bb19006a3096b505263bd4c573978d9a85f32f29fd",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.img": "cb9bac6eae6abbe671a26c339a193bcdc32100eb73d82631bc45c12396901246",
+    "/Users/josh/d/bctl/.work/tmp/balloon-runtime-candidate/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/tmp/balloon-runtime-candidate/lib/libkrun.dylib": "44c309b412ccc5d9f62adf634b1cacd4ca03460b0f591d9fa15478a0e7f44bf4",
+    "/Users/josh/d/bctl/.work/tmp/balloon-runtime-candidate/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de",
+    "/Users/josh/d/bctl/.work/images/nanos-helium.profile.img": "4df635a0bcb0baaeb4f0cb4037fb31b82cc37b86e41ab3ce0a851b783995a5f7",
+    "/Users/josh/d/shadowdriver/py/python/shadowdriver/_native.abi3.so": "8bb456f7bfc8b05caa5cf8c565fb229b172050f3b7782a2a167c94d23f118a1f",
+    "/Users/josh/d/shadowdriver/grab/src/grab/cli.py": "039838b457a9669ff589fe087f9898630a524e295f2f058871a7c15acb4f0b30",
+    "/Users/josh/d/shadowdriver/grab/src/grab/verify.py": "443e17459d27ef311b9590195cb1e0e632fdeda08e54d34ece0814d6f460032d",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium": "a67f1a4e5e8580115fce0615a7426b4342ced9fd836a1f968f7963e1964f225c",
+    "/Users/josh/d/bctl/tests/bench/macos_cpu.py": "2347baac43692a6e639eab383f63fbbe04ae043112004deaf7bc1da8a0b50f1c",
+    "/Users/josh/d/bctl/.work/tmp/balloon-runtime-baseline/nanos-krun": "8d08241008af1a4c49436b404314e651622af4b8bb2c2dd68ec3a96697830826",
+    "/Users/josh/d/bctl/.work/tmp/balloon-runtime-baseline/lib/libkrun.dylib": "282c564d74ed9e1f51f41e59f08decc7a8cea9658104d2b363ce63c01052d5e5",
+    "/Users/josh/d/bctl/.work/tmp/balloon-runtime-baseline/firmware.fd": "9ba725c245f634c86d9cc0850ddcb60b7efe05c6abb53f7ebabf9cd0b070d3de"
+  },
+  "method": "fresh profiles; two independent concurrent crawls by default; complete capture, asset and state checks, and fresh native offline replay; capture browsers remain alive through replay; latency and resource passes separate; alternating backends; sampled budget, not an OS-enforced cap",
+  "cpu_method": "separate passes; worker live-process and reaped-child snapshots through replay, plus coordinator and fixture process CPU; excludes worker interpreter startup and browser cleanup; snapshots are not atomic",
+  "summary": {}
+}

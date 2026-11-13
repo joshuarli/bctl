@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/Users/josh/d/bctl/tests/bench/macos_crawl_worker.py", line 115, in <module>
+    main()
+    ~~~~^^
+  File "/Users/josh/d/bctl/tests/bench/macos_crawl_worker.py", line 67, in main
+    receipt['startup_ms'] = trial.start()
+                            ~~~~~~~~~~~^^
+  File "/Users/josh/d/bctl/tests/bench/macos_workflows.py", line 243, in start
+    invoke([BCTL, 'up', 'bench', '--image', self.image, '--allow-private', '127.0.0.1/32'], env=self.env)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/josh/d/bctl/tests/bench/macos_workflows.py", line 55, in invoke
+    raise RuntimeError(f'{Path(str(argv[0])).name} exited {process.returncode}: {message}')
+RuntimeError: bctl exited 1: bctl: Nanos launch failed: bctl-nanos-vm: the supervisor did not start libkrun (Ok("")): bctl-nanos-vm: /Users/josh/d/bctl/.work/tmp/crawl-ycbl9o8g/latency-0-baseline/0/bctl/ns/7e89fa0bb8dba107/vsock.sock_1080: path must be shorter than SUN_LEN [START_FAILED]
+  see `bctl inspect bench`
+

@@ -31,6 +31,7 @@ SCRATCH = ROOT / '.work/tmp'
 BCTL = ROOT / 'target/release/bctl'
 AGENT = ROOT / '.work/interop/agent-browser/bin/agent-browser'
 NANOS_IMAGE = ROOT / '.work/images/nanos-helium.img'
+NANOS_RUNTIME = ROOT / '.work/runtime/nanos-krun'
 
 
 def invoke(argv, *, env=None, timeout=120):
@@ -179,7 +180,7 @@ class Resources:
 
 
 class Trial:
-    def __init__(self, args, path, side, *, resource_pass, image_path=NANOS_IMAGE):
+    def __init__(self, args, path, side, *, resource_pass, image_path=NANOS_IMAGE, runtime_path=NANOS_RUNTIME):
         self.args, self.path, self.side = args, path, side
         self.resource_pass = resource_pass
         self.roots = set()
@@ -200,7 +201,7 @@ class Trial:
         home = path / 'bctl'
         (home / 'runtime').mkdir(parents=True)
         (home / 'images').mkdir()
-        (home / 'runtime/nanos').symlink_to(ROOT / '.work/runtime/nanos-krun')
+        (home / 'runtime/nanos').symlink_to(runtime_path.resolve())
         for name, target in [('nanos-helium.img', image_path), ('nanos-helium.profile.img', image_path.with_suffix('.profile.img'))]:
             (home / 'images' / name).symlink_to(target.resolve())
         self.image = 'nanos-helium'
@@ -396,6 +397,7 @@ def main():
     parser.add_argument('--shadowdriver', type=Path, default=ROOT.parent / 'shadowdriver')
     parser.add_argument('--runtime', choices=['nanos'], default='nanos')
     parser.add_argument('--bctl-image', type=Path, default=NANOS_IMAGE, help='image file with a matching .profile.img template')
+    parser.add_argument('--bctl-runtime-dir', type=Path, default=NANOS_RUNTIME)
     parser.add_argument('--native-arg', action='append', default=[], help='extra native launch argument, including agent-browser; use --native-arg=--flag')
     parser.add_argument('--rounds', type=int, default=5)
     parser.add_argument('--resource-rounds', type=int, default=5)
@@ -420,8 +422,8 @@ def main():
     if minimum is None or tuple(int(part) for part in node_version.lstrip('v').split('.')) < tuple(map(int, minimum.groups())):
         parser.error(f'Shadowdriver requires Node.js {requirement} on PATH')
     runtime_files = [args.bctl_image.resolve(), args.bctl_image.resolve().with_suffix('.profile.img'),
-                     ROOT / '.work/runtime/nanos-krun/nanos-krun', ROOT / '.work/runtime/nanos-krun/lib/libkrun.dylib',
-                     ROOT / '.work/runtime/nanos-krun/firmware.fd']
+                     args.bctl_runtime_dir.resolve() / 'nanos-krun', args.bctl_runtime_dir.resolve() / 'lib/libkrun.dylib',
+                     args.bctl_runtime_dir.resolve() / 'firmware.fd']
     results = {'started': stamp, 'completed': False, 'runtime': args.runtime, 'native_binary': str(args.native_binary),
         'native_version': invoke([args.native_binary, '--version']).strip(), 'bctl_commit': invoke(['git', '-C', ROOT, 'rev-parse', 'HEAD']).strip(),
         'shadowdriver_commit': invoke(['git', '-C', args.shadowdriver, 'rev-parse', 'HEAD']).strip(), 'attempts': [], 'summary': {},
@@ -429,6 +431,8 @@ def main():
         'shadowdriver_dirty': bool(invoke(['git', '-C', args.shadowdriver, 'status', '--porcelain']).strip()),
         'node_version': node_version, 'agent_browser_version': invoke([AGENT, '--version']).strip(),
         'native_extra_args': args.native_arg, 'cpu_rounds': args.cpu_rounds, 'bctl_image': str(args.bctl_image.resolve()),
+        'bctl_runtime_dir': str(args.bctl_runtime_dir.resolve()),
+        'balloon_reclaim': os.environ.get('SMOLVM_BALLOON_RECLAIM'),
         'cpu_method': 'separate fresh-profile passes; libproc RUSAGE_INFO_V1 live processes plus reaped-child CPU; Mach timebase conversion; includes driver, fixtures, clients, daemon, supervisor and VMM or native browser tree, plus process discovery; excludes cleanup; snapshots are not atomic',
         'vm_configuration': 'bctl production defaults, actual resources recorded on resource attempts',
         'artifacts_sha256': {str(path): digest(path) for path in [Path(__file__), ROOT / 'tests/bench/shadowdriver_workflow.mjs',
@@ -471,7 +475,8 @@ def main():
                         results['attempts'].append(attempt)
                         path = home / f'{phase[0]}{round}{side[0]}{workload_id}'
                         attempt['artifacts'] = str(path.relative_to(ROOT))
-                        trial = Trial(args, path, side, resource_pass=phase == 'resources', image_path=args.bctl_image)
+                        trial = Trial(args, path, side, resource_pass=phase == 'resources', image_path=args.bctl_image,
+                                      runtime_path=args.bctl_runtime_dir)
                         try:
                             timed = phase in {'latency', 'cpu'}
                             quiet = gate(attempt['gate_checks']) if timed else False

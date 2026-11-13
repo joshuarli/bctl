@@ -6,7 +6,7 @@ use utils::windows::AsRawFd;
 use polly::event_manager::{EventManager, Subscriber};
 use utils::epoll::{EpollEvent, EventSet};
 
-use super::device::{Balloon, DFQ_INDEX, FRQ_INDEX, IFQ_INDEX, PHQ_INDEX, STQ_INDEX};
+use super::device::{Balloon, DFQ_INDEX, IFQ_INDEX};
 use crate::virtio::device::VirtioDevice;
 
 impl Balloon {
@@ -64,6 +64,9 @@ impl Balloon {
 
     pub(crate) fn handle_stq_event(&mut self, event: &EpollEvent) {
         debug!("balloon: stats queue event");
+        let Some(index) = self.stats_queue_index() else {
+            return;
+        };
 
         let event_set = event.event_set();
         if event_set != EventSet::IN {
@@ -71,11 +74,11 @@ impl Balloon {
             return;
         }
 
-        if let Err(e) = self.queue_event(STQ_INDEX).read() {
+        if let Err(e) = self.queue_event(index).read() {
             error!("Failed to read balloon stats queue event: {e:?}");
             return;
         }
-        if self.defer_queue_event(STQ_INDEX) {
+        if self.defer_queue_event(index) {
             return;
         }
         // The sample is parked, not acked: `take_stats` acks it to ask the guest
@@ -85,6 +88,9 @@ impl Balloon {
 
     pub(crate) fn handle_phq_event(&mut self, event: &EpollEvent) {
         debug!("balloon: free page hinting queue event");
+        let Some(index) = self.hint_queue_index() else {
+            return;
+        };
 
         let event_set = event.event_set();
         if event_set != EventSet::IN {
@@ -92,11 +98,11 @@ impl Balloon {
             return;
         }
 
-        if let Err(e) = self.queue_event(PHQ_INDEX).read() {
+        if let Err(e) = self.queue_event(index).read() {
             error!("Failed to read balloon page-hinting queue event: {e:?}");
             return;
         }
-        if self.defer_queue_event(PHQ_INDEX) {
+        if self.defer_queue_event(index) {
             return;
         }
         if self.process_phq() {
@@ -106,6 +112,9 @@ impl Balloon {
 
     pub(crate) fn handle_frq_event(&mut self, event: &EpollEvent) {
         debug!("balloon: free-page reporting queue event");
+        let Some(index) = self.reporting_queue_index() else {
+            return;
+        };
 
         let event_set = event.event_set();
         if event_set != EventSet::IN {
@@ -113,11 +122,11 @@ impl Balloon {
             return;
         }
 
-        if let Err(e) = self.queue_event(FRQ_INDEX).read() {
+        if let Err(e) = self.queue_event(index).read() {
             error!("Failed to read balloon free-page reporting queue event: {e:?}");
             return;
         }
-        if self.defer_queue_event(FRQ_INDEX) {
+        if self.defer_queue_event(index) {
             return;
         }
         // The guest is moving memory, so any cached stats figure is going stale
@@ -140,55 +149,11 @@ impl Balloon {
             .subscriber(self.activate_evt.as_raw_fd())
             .unwrap();
 
-        event_manager
-            .register(
-                self.queue_event(IFQ_INDEX).as_raw_fd(),
-                EpollEvent::new(EventSet::IN, self.queue_event(IFQ_INDEX).as_raw_fd() as u64),
-                self_subscriber.clone(),
-            )
-            .unwrap_or_else(|e| {
-                error!("Failed to register balloon ifq with event manager: {e:?}");
-            });
-
-        event_manager
-            .register(
-                self.queue_event(DFQ_INDEX).as_raw_fd(),
-                EpollEvent::new(EventSet::IN, self.queue_event(DFQ_INDEX).as_raw_fd() as u64),
-                self_subscriber.clone(),
-            )
-            .unwrap_or_else(|e| {
-                error!("Failed to register balloon dfq with event manager: {e:?}");
-            });
-
-        event_manager
-            .register(
-                self.queue_event(STQ_INDEX).as_raw_fd(),
-                EpollEvent::new(EventSet::IN, self.queue_event(STQ_INDEX).as_raw_fd() as u64),
-                self_subscriber.clone(),
-            )
-            .unwrap_or_else(|e| {
-                error!("Failed to register balloon stq with event manager: {e:?}");
-            });
-
-        event_manager
-            .register(
-                self.queue_event(PHQ_INDEX).as_raw_fd(),
-                EpollEvent::new(EventSet::IN, self.queue_event(PHQ_INDEX).as_raw_fd() as u64),
-                self_subscriber.clone(),
-            )
-            .unwrap_or_else(|e| {
-                error!("Failed to register balloon dfq with event manager: {e:?}");
-            });
-
-        event_manager
-            .register(
-                self.queue_event(FRQ_INDEX).as_raw_fd(),
-                EpollEvent::new(EventSet::IN, self.queue_event(FRQ_INDEX).as_raw_fd() as u64),
-                self_subscriber.clone(),
-            )
-            .unwrap_or_else(|e| {
-                error!("Failed to register balloon frq with event manager: {e:?}");
-            });
+        for index in self.active_queue_indices() {
+            let fd = self.queue_event(index).as_raw_fd();
+            event_manager.register(fd, EpollEvent::new(EventSet::IN, fd as u64), self_subscriber.clone())
+                .unwrap_or_else(|e| error!("Failed to register balloon queue {index} with event manager: {e:?}"));
+        }
 
         event_manager
             .unregister(self.activate_evt.as_raw_fd())
@@ -203,18 +168,18 @@ impl Subscriber for Balloon {
         let source = event.fd();
         let ifq = self.queue_event(IFQ_INDEX).as_raw_fd();
         let dfq = self.queue_event(DFQ_INDEX).as_raw_fd();
-        let stq = self.queue_event(STQ_INDEX).as_raw_fd();
-        let phq = self.queue_event(PHQ_INDEX).as_raw_fd();
-        let frq = self.queue_event(FRQ_INDEX).as_raw_fd();
+        let stq = self.stats_queue_index().map(|index| self.queue_event(index).as_raw_fd());
+        let phq = self.hint_queue_index().map(|index| self.queue_event(index).as_raw_fd());
+        let frq = self.reporting_queue_index().map(|index| self.queue_event(index).as_raw_fd());
         let activate_evt = self.activate_evt.as_raw_fd();
 
         if self.is_activated() {
             match source {
                 _ if source == ifq => self.handle_ifq_event(event),
                 _ if source == dfq => self.handle_dfq_event(event),
-                _ if source == stq => self.handle_stq_event(event),
-                _ if source == phq => self.handle_phq_event(event),
-                _ if source == frq => self.handle_frq_event(event),
+                _ if Some(source) == stq => self.handle_stq_event(event),
+                _ if Some(source) == phq => self.handle_phq_event(event),
+                _ if Some(source) == frq => self.handle_frq_event(event),
                 _ if source == activate_evt => {
                     self.handle_activate_event(event_manager);
                 }

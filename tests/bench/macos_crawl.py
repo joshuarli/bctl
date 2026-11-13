@@ -6,6 +6,7 @@ import functools
 import hashlib
 import http.server
 import json
+import os
 from pathlib import Path
 import statistics
 import signal
@@ -29,9 +30,12 @@ def main():
     parser.add_argument('--resource-rounds', type=int, default=5)
     parser.add_argument('--cpu-rounds', type=int, default=0)
     parser.add_argument('--bctl-image', type=Path, default=workflows.NANOS_IMAGE, help='image file with a matching .profile.img template')
+    parser.add_argument('--bctl-runtime-dir', type=Path, default=workflows.NANOS_RUNTIME)
+    parser.add_argument('--baseline-runtime-dir', type=Path, help='compare two Nanos runtimes instead of native Chromium')
     parser.add_argument('--native-arg', action='append', default=[])
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
+    sides = ['baseline', 'bctl'] if args.baseline_runtime_dir else ['native', 'bctl']
     if sys.platform != 'darwin' or min(args.pages, args.jobs, args.slots, args.budget_mib) < 1 or min(args.rounds, args.resource_rounds, args.cpu_rounds) < 0 or args.rounds + args.resource_rounds + args.cpu_rounds == 0:
         parser.error('requires macOS, positive workload sizes, and nonnegative rounds')
     workflows.SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -46,14 +50,19 @@ def main():
             return hashlib.file_digest(stream, 'sha256').hexdigest()
     inputs = [Path(__file__), Path(__file__).with_name('macos_crawl_worker.py'), Path(__file__).with_name('crawl_site.py'),
               Path(workflows.__file__), workflows.BCTL, args.bctl_image.resolve(),
-              workflows.ROOT / '.work/runtime/nanos-krun/nanos-krun', workflows.ROOT / '.work/runtime/nanos-krun/lib/libkrun.dylib',
-              workflows.ROOT / '.work/runtime/nanos-krun/firmware.fd', args.bctl_image.resolve().with_suffix('.profile.img'),
+              args.bctl_runtime_dir.resolve() / 'nanos-krun', args.bctl_runtime_dir.resolve() / 'lib/libkrun.dylib',
+              args.bctl_runtime_dir.resolve() / 'firmware.fd', args.bctl_image.resolve().with_suffix('.profile.img'),
               workflows.ROOT.parent / 'shadowdriver/py/python/shadowdriver/_native.abi3.so',
               workflows.ROOT.parent / 'shadowdriver/grab/src/grab/cli.py', workflows.ROOT.parent / 'shadowdriver/grab/src/grab/verify.py',
               Path('/Applications/Chromium.app/Contents/MacOS/Chromium')]
     if args.cpu_rounds:
         inputs.append(Path(__file__).with_name('macos_cpu.py'))
-    receipt = {'completed': False, 'configuration': vars(args) | {'out': str(args.out), 'bctl_image': str(args.bctl_image.resolve())}, 'attempts': [],
+    if args.baseline_runtime_dir:
+        inputs += [args.baseline_runtime_dir.resolve() / name for name in ('nanos-krun', 'lib/libkrun.dylib', 'firmware.fd')]
+    receipt = {'completed': False, 'configuration': vars(args) | {'out': str(args.out), 'bctl_image': str(args.bctl_image.resolve()),
+        'bctl_runtime_dir': str(args.bctl_runtime_dir.resolve()),
+        'baseline_runtime_dir': str(args.baseline_runtime_dir.resolve()) if args.baseline_runtime_dir else None},
+        'balloon_reclaim': os.environ.get('SMOLVM_BALLOON_RECLAIM'), 'attempts': [],
         'bctl_commit': workflows.invoke(['git', '-C', workflows.ROOT, 'rev-parse', 'HEAD']).strip(),
         'shadowdriver_commit': workflows.invoke(['git', '-C', workflows.ROOT.parent / 'shadowdriver', 'rev-parse', 'HEAD']).strip(),
         'shadowdriver_dirty': bool(workflows.invoke(['git', '-C', workflows.ROOT.parent / 'shadowdriver', 'status', '--porcelain']).strip()),
@@ -67,8 +76,9 @@ def main():
     try:
         for phase, rounds in [('latency', args.rounds), ('resources', args.resource_rounds), ('cpu', args.cpu_rounds)]:
             for index in range(rounds):
-                for side in (['native', 'bctl'] if index % 2 == 0 else ['bctl', 'native']):
-                    path = home / f'{phase}-{index}-{side}'
+                for side in (sides if index % 2 == 0 else list(reversed(sides))):
+                    tag = {'native': 'n', 'baseline': 'a', 'bctl': 'b'}[side]
+                    path = home / f'{phase[0]}{index}{tag}'
                     path.mkdir()
                     group = argparse.Namespace(path=path, socket_dir=path, roots=set())
                     attempt = {'phase': phase, 'round': index, 'side': side, 'artifacts': str(path.relative_to(workflows.ROOT)), 'gate_checks': []}
@@ -87,9 +97,11 @@ def main():
                             started = time.perf_counter()
                             for job in range(args.jobs):
                                 command = [sys.executable, Path(__file__).with_name('macos_crawl_worker.py'), '--path', path / str(job),
-                                    '--side', side, '--url', f'http://127.0.0.1:{server.server_port}/page-0.html', '--pages', str(args.pages), '--slots', str(args.slots)]
+                                    '--side', 'bctl' if side == 'baseline' else side, '--url', f'http://127.0.0.1:{server.server_port}/page-0.html', '--pages', str(args.pages), '--slots', str(args.slots)]
                                 command += [f'--native-arg={arg}' for arg in args.native_arg]
                                 command += ['--bctl-image', str(args.bctl_image.resolve())]
+                                runtime = args.baseline_runtime_dir if side == 'baseline' else args.bctl_runtime_dir
+                                command += ['--bctl-runtime-dir', str(runtime.resolve())]
                                 if phase == 'cpu':
                                     command.append('--cpu')
                                 log = (path / f'worker-{job}.log').open('wb')
@@ -141,7 +153,7 @@ def main():
         receipt['shadowdriver_final_commit'] = workflows.invoke(['git', '-C', workflows.ROOT.parent / 'shadowdriver', 'rev-parse', 'HEAD']).strip()
         if receipt['changed_inputs'] or receipt['shadowdriver_final_commit'] != receipt['shadowdriver_commit']:
             raise RuntimeError('crawl inputs changed during measurement')
-        for side in ['native', 'bctl']:
+        for side in sides:
             rows = [row for row in receipt['attempts'] if row['side'] == side and row['status'] == 'pass']
             metrics = {}
             for metric, phase in [('total_s', 'latency'), ('pages_per_s', 'latency'), ('sampled_peak_physical_bytes', 'resources'), ('cpu_s', 'cpu')]:

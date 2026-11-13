@@ -22,9 +22,7 @@ pub(crate) const IFQ_INDEX: usize = 0;
 pub(crate) const DFQ_INDEX: usize = 1;
 // Stats queue.
 pub(crate) const STQ_INDEX: usize = 2;
-// Page-hinting queue.
-pub(crate) const PHQ_INDEX: usize = 3;
-// Free page reporting queue.
+#[cfg(test)]
 pub(crate) const FRQ_INDEX: usize = 4;
 
 // Supported features.
@@ -188,6 +186,27 @@ impl Balloon {
         defs::BALLOON_DEV_ID
     }
 
+    // Linux virtio transports omit optional queues for features the driver did not negotiate.
+    pub(crate) fn stats_queue_index(&self) -> Option<usize> {
+        (self.acked_features & (1 << uapi::VIRTIO_BALLOON_F_STATS_VQ) != 0).then_some(STQ_INDEX)
+    }
+
+    pub(crate) fn hint_queue_index(&self) -> Option<usize> {
+        (self.acked_features & (1 << uapi::VIRTIO_BALLOON_F_FREE_PAGE_HINT) != 0)
+            .then_some(2 + usize::from(self.stats_queue_index().is_some()))
+    }
+
+    pub(crate) fn reporting_queue_index(&self) -> Option<usize> {
+        (self.acked_features & (1 << uapi::VIRTIO_BALLOON_F_REPORTING) != 0)
+            .then_some(2 + usize::from(self.stats_queue_index().is_some())
+                + usize::from(self.hint_queue_index().is_some()))
+    }
+
+    pub(crate) fn active_queue_indices(&self) -> impl Iterator<Item = usize> {
+        [Some(IFQ_INDEX), Some(DFQ_INDEX), self.stats_queue_index(),
+            self.hint_queue_index(), self.reporting_queue_index()].into_iter().flatten()
+    }
+
     /// Capture runtime state for checkpoint/fork. Both vCPUs and device event
     /// handling must be quiesced so the queues remain at a clean boundary.
     pub fn save_state(&self) -> BalloonState {
@@ -293,6 +312,9 @@ impl Balloon {
     /// the guest starts, `CMD_ID_STOP` when it is done); an in buffer is one
     /// free block the guest now holds, which the host discards.
     pub(crate) fn process_phq(&mut self) -> bool {
+        let Some(queue_index) = self.hint_queue_index() else {
+            return false;
+        };
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
             DeviceState::Inactive => return false,
@@ -303,7 +325,7 @@ impl Balloon {
             .expect("queues should exist when activated");
         let mut have_used = false;
 
-        while let Some(head) = queues[PHQ_INDEX].queue.pop(mem) {
+        while let Some(head) = queues[queue_index].queue.pop(mem) {
             let index = head.index;
             for desc in head.into_iter() {
                 if desc.is_write_only() {
@@ -327,7 +349,7 @@ impl Balloon {
                 }
             }
             have_used = true;
-            if let Err(e) = queues[PHQ_INDEX].queue.add_used(mem, index, 0) {
+            if let Err(e) = queues[queue_index].queue.add_used(mem, index, 0) {
                 error!("failed to add used elements to the hinting queue: {e:?}");
             }
         }
@@ -336,6 +358,9 @@ impl Balloon {
 
     pub fn process_frq(&mut self) -> bool {
         debug!("balloon: process_frq()");
+        let Some(queue_index) = self.reporting_queue_index() else {
+            return false;
+        };
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
             // This should never happen, it's been already validated in the event handler.
@@ -348,7 +373,7 @@ impl Balloon {
             .expect("queues should exist when activated");
         let mut have_used = false;
 
-        while let Some(head) = queues[FRQ_INDEX].queue.pop(mem) {
+        while let Some(head) = queues[queue_index].queue.pop(mem) {
             let index = head.index;
             // A reclaim pulse (inflate then deflate) makes the guest free and
             // re-report its idle memory; give that back whatever the host's
@@ -364,7 +389,7 @@ impl Balloon {
             }
 
             have_used = true;
-            if let Err(e) = queues[FRQ_INDEX].queue.add_used(mem, index, 0) {
+            if let Err(e) = queues[queue_index].queue.add_used(mem, index, 0) {
                 error!("failed to add used elements to the queue: {e:?}");
             }
         }
@@ -379,6 +404,9 @@ impl Balloon {
     ///
     /// Returns true if a sample was parsed.
     pub(crate) fn process_stq(&mut self) -> bool {
+        if self.stats_queue_index().is_none() {
+            return false;
+        }
         let mem = match self.device_state {
             DeviceState::Activated(ref mem, _) => mem,
             DeviceState::Inactive => return false,
@@ -438,6 +466,9 @@ impl Balloon {
     /// Ack the parked stats buffer, which is what makes the guest publish a
     /// fresh sample. Returns true if a request was actually issued.
     fn request_stats_sample(&mut self) -> bool {
+        if self.stats_queue_index().is_none() {
+            return false;
+        }
         if self.snapshot_quiesced {
             self.deferred_stats_request = true;
             return false;
@@ -907,13 +938,8 @@ impl VirtioDevice for Balloon {
     fn finish_restore_activation(&mut self) -> std::result::Result<(), String> {
         // Eventfd notifications do not survive a portable restore. The saved
         // available ring can still contain reports awaiting acknowledgment.
-        self.notify_pending_queues(
-            (1 << IFQ_INDEX)
-                | (1 << DFQ_INDEX)
-                | (1 << STQ_INDEX)
-                | (1 << PHQ_INDEX)
-                | (1 << FRQ_INDEX),
-        );
+        let pending = self.active_queue_indices().fold(0, |mask, index| mask | (1 << index));
+        self.notify_pending_queues(pending);
         // A checkpoint taken while the guest still held hinted blocks must not
         // leave them held forever: tell the driver the round is done, which
         // frees any it holds and is a no-op otherwise.
@@ -1184,6 +1210,7 @@ mod checkpoint_quiescence_tests {
     use super::*;
     use crate::legacy::DummyIrqChip;
     use crate::virtio::queue::tests::VirtQueue;
+    use polly::event_manager::{EventManager, Subscriber};
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
     use std::sync::Arc;
@@ -1193,6 +1220,10 @@ mod checkpoint_quiescence_tests {
     use vm_memory::GuestAddress;
 
     fn active_balloon(memory: &GuestMemoryMmap) -> (Balloon, Vec<VirtQueue<'_>>) {
+        active_balloon_with_features(memory, AVAIL_FEATURES)
+    }
+
+    fn active_balloon_with_features(memory: &GuestMemoryMmap, features: u64) -> (Balloon, Vec<VirtQueue<'_>>) {
         let rings: Vec<_> = (0..defs::NUM_QUEUES)
             .map(|i| VirtQueue::new(GuestAddress(0x1000 + i as u64 * 0x1000), memory, 8))
             .collect();
@@ -1206,6 +1237,7 @@ mod checkpoint_quiescence_tests {
             })
             .collect();
         let mut balloon = Balloon::new().unwrap();
+        balloon.set_acked_features(features);
         balloon
             .activate(
                 memory.clone(),
@@ -1215,6 +1247,46 @@ mod checkpoint_quiescence_tests {
             )
             .unwrap();
         (balloon, rings)
+    }
+
+    #[test]
+    fn reports_complete_when_optional_queues_are_not_negotiated() {
+        for optional in 0..4 {
+            let stats = optional & 1 != 0;
+            let hints = optional & 2 != 0;
+            let features = (1 << uapi::VIRTIO_F_VERSION_1)
+                | (1 << uapi::VIRTIO_BALLOON_F_REPORTING)
+                | if stats { 1 << uapi::VIRTIO_BALLOON_F_STATS_VQ } else { 0 }
+                | if hints { 1 << uapi::VIRTIO_BALLOON_F_FREE_PAGE_HINT } else { 0 };
+            let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x20000)]).unwrap();
+            let (mut balloon, rings) = active_balloon_with_features(&memory, features);
+            let report = 2 + usize::from(stats) + usize::from(hints);
+            rings[report].dtable[0].addr.set(0x10000);
+            rings[report].dtable[0].len.set(host_page_size() as u32);
+            rings[report].dtable[0].flags.set(2);
+            rings[report].avail.ring[0].set(0);
+            rings[report].avail.idx.set(1);
+            assert!(balloon.process_frq(), "stats={stats}, hints={hints}");
+            assert_eq!(rings[report].used.idx.get(), 1);
+            for (index, ring) in rings.iter().enumerate() {
+                if index != report {
+                    assert_eq!(ring.used.idx.get(), 0);
+                }
+            }
+            let mut manager = EventManager::new().unwrap();
+            let event = Arc::clone(&balloon.queues.as_ref().unwrap()[report].event);
+            let notification = EpollEvent::new(EventSet::IN, event.as_raw_fd() as u64);
+            rings[report].avail.ring[1].set(0);
+            rings[report].avail.idx.set(2);
+            balloon.quiesce_for_snapshot();
+            event.write(1).unwrap();
+            balloon.process(&notification, &mut manager);
+            assert_eq!(rings[report].used.idx.get(), 1);
+            assert_eq!(event.read().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+            balloon.rearm_after_snapshot();
+            balloon.process(&notification, &mut manager);
+            assert_eq!(rings[report].used.idx.get(), 2);
+        }
     }
 
     #[test]
@@ -1490,6 +1562,7 @@ mod stats_allocation_tests {
             })
             .collect();
         let mut balloon = Balloon::new().unwrap();
+        balloon.set_acked_features(1 << uapi::VIRTIO_BALLOON_F_STATS_VQ);
         balloon
             .activate(
                 memory.clone(),
