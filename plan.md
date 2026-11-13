@@ -10,6 +10,13 @@ bctl (`~/d/bctl`) adopts it; the owner hands bctl to this campaign's owner (2026
 
 ## Status
 
+- **macOS performance objective (2026-11-12):** prove Shadowdriver interactive
+  automation and Grab crawls against native stock Chromium. The agent-browser
+  bctl provider must also win on two typical workloads. The
+  [bctl workflow targets](https://github.com/joshuarli/bctl/blob/main/docs/macos-workflows.md) define latency,
+  memory, throughput, CPU, and functional acceptance. Earlier performance
+  waivers do not close this new objective.
+
 - **macOS resume (2026-11-12):** ARM harness, process probes, Helium, and
   200 fresh virtio-fs boots pass after moving filesystem initialization out
   of the storage spinlock. Another 200 persistent appliance boots pass after

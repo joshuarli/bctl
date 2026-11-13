@@ -98,5 +98,8 @@ The pinned Carbon independent reviewer was unavailable. No independent review
 is claimed. Pending-init detach handling was checked by source review; device
 hot-unplug during initialization was not exercised.
 
-This qualification does not close HYD-3 or HYD-4. Performance gates remain
-waived by the owner. No new performance result is claimed.
+This functional qualification does not close HYD-3 or HYD-4. Its performance
+gates were waived by the owner. The later
+[macOS workflow objective](https://github.com/joshuarli/bctl/blob/main/docs/macos-workflows.md) requires measured
+latency and resource wins for Shadowdriver, Grab, and agent-browser against
+native stock Chromium. That objective remains separate from this report.
