@@ -2,8 +2,8 @@
 
 This document explains how bctl will be packaged for macOS and Linux and
 installed by `~/usr`'s `sh sync`. The runtime default, directory split,
-runtime lookup, and archive packaging are implemented. Image fetching, release
-publishing, and the `~/usr` installer are not. The current manual installation
+runtime lookup, archive and image packaging, and image fetching are
+implemented. Release publishing and the `~/usr` installer are not. The current manual installation
 remains in [runtime.md](runtime.md#build-and-install).
 
 ## Scope
@@ -48,11 +48,27 @@ them in every archive would make each CLI update a 200 MB download.
 
 ## Image fetching
 
-bctl fetches its own images. A new `bctl image pull` reads the image digests
+bctl fetches its own images. `bctl image pull [IMAGE]` reads the image digests
 from the manifest built into the running bctl, downloads any missing image,
 verifies its digest, and installs it under the data directory. bctl already
 owns the image layout and the image and kernel pairing, so the fetcher lives
 beside that knowledge instead of in each installer.
+
+`release/package-images.sh` writes each image as a deterministic zip and an
+`images.json` that names the zip and every file's SHA-256. Building bctl with
+`BCTL_IMAGES_MANIFEST` pointing at that file embeds it, and
+`release/package.sh --images-manifest` copies the same digests into the release
+`manifest.json`. A bctl built without it refuses `image pull`.
+
+`image pull` does nothing when every file already has its listed digest.
+Otherwise it downloads the zip over HTTPS, following at most five redirects,
+and accepts plain HTTP only from a loopback address so that a local release can
+be tested. It checks the zip's digest. The zip must contain exactly the
+manifest's files, each stored or DEFLATE-compressed. Each file is extracted
+sparsely, so the 2 GiB `nanos-helium.img` takes about 640 MB on disk, and each
+must match its digest. Only then does `image pull` rename the files into place.
+Running VMs keep the files they opened. A failed pull leaves the installed
+images untouched.
 
 Images are GitHub release assets on the same `release-<sha>` releases. That
 matches how `sh sync` already discovers and verifies releases. A GitHub asset

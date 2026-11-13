@@ -2,6 +2,7 @@ mod agent_browser;
 mod authority;
 mod daemon;
 mod gateway;
+mod image;
 mod page;
 mod paths;
 mod protocol;
@@ -73,12 +74,14 @@ const USAGE: &str = "usage:
       every one takes --json.
   bctl agent-browser-plugin [--session NAME | --image IMAGE [--allow-private CIDR]...]
                                                      agent-browser's browser.provider plugin (docs/agent-browser.md)
+  bctl image pull [IMAGE]                            install a release image (default: nanos-helium) and verify it
   bctl doctor [--json]                               check the runtime and images
   bctl daemon                                        run the daemon in the foreground";
 
 enum Cli {
     Request { op: Op, request: Box<Request>, json: bool, open: bool },
     Doctor { json: bool },
+    ImagePull { image: Option<String> },
     ProfileLogin { profile: String, image: Option<String> },
     AgentBrowserPlugin(agent_browser::Lease),
     Daemon,
@@ -122,6 +125,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "tab" => return parse_tab_command(parser),
         "page" => return parse_page_command(parser),
         "agent-browser-plugin" => return parse_agent_browser_plugin(parser),
+        "image" => return parse_image_command(parser),
         "doctor" | "daemon" => (Op::Ping, false),
         other => return Err(format!("unknown command {other:?}").into()),
     };
@@ -148,6 +152,23 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "daemon" => Cli::Daemon,
         _ => Cli::Request { op, request: Box::new(request), json, open },
     })
+}
+
+const IMAGE_USAGE: &str = "usage: bctl image pull [IMAGE]";
+
+fn parse_image_command(mut parser: lexopt::Parser) -> Result<Cli, lexopt::Error> {
+    match parser.next()? {
+        Some(Value(v)) if v == "pull" => {}
+        _ => return Err(IMAGE_USAGE.into()),
+    }
+    let mut image = None;
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Value(v) if image.is_none() => image = Some(v.string()?),
+            _ => return Err(arg.unexpected()),
+        }
+    }
+    Ok(Cli::ImagePull { image })
 }
 
 const PLUGIN_USAGE: &str = "usage: bctl agent-browser-plugin [--session NAME | --image IMAGE [--allow-private CIDR]...]";
@@ -474,6 +495,7 @@ fn main() -> ExitCode {
             }
         },
         Cli::Doctor { json } => doctor(&paths, json),
+        Cli::ImagePull { image } => image_pull(&paths, image),
         Cli::ProfileLogin { profile, image } => profile_login(&paths, profile, image),
         Cli::AgentBrowserPlugin(lease) => agent_browser::run(&paths, &lease),
         Cli::Request { op, request, json, open } => match call(&paths, &request) {
@@ -487,6 +509,23 @@ fn main() -> ExitCode {
             }
             Err(error) => report(&error, json),
         },
+    }
+}
+
+fn image_pull(paths: &Paths, image: Option<String>) -> ExitCode {
+    let result = RuntimeKind::for_host().and_then(|kind| {
+        if kind != RuntimeKind::Nanos {
+            return Err(format!("bctl image pull installs Nanos images; BCTL_RUNTIME selects {}", kind.as_str()));
+        }
+        let manifest = image::Manifest::embedded()?;
+        image::pull(&paths.images(), &manifest, image.as_deref().unwrap_or(kind.default_image()))
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bctl: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -20,7 +20,9 @@ async-lock = "3"
 async-net = { package = "laputa-async-net", version = "0.3" }
 bytes = "1"
 futures-lite = { package = "laputa-futures-lite", version = "0.3", default-features = false, features = ["std"] }
-h12tiny = { version = "0.9", default-features = false, features = ["server", "http1", "web", "websocket"] }
+h12tiny = { version = "0.9", default-features = false, features = ["server", "http1", "web", "websocket", "client-sync", "tls"] }
+rawzip = { git = "https://github.com/laputa-systems/rawzip", rev = "35162d1668a8b97cefc782143e506e2c087b0b91" }
+zlib-rs = { git = "https://github.com/laputa-systems/zlib-rs", rev = "31a9badb3198ec413d45e07ce8e46d5f5f6ef1c5" }
 http = "1"
 bctl-runtime = { path = "../runtime" }
 bctl-runtime-nanos = { path = "../runtime-nanos" }

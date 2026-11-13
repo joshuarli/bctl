@@ -22,6 +22,16 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=BCTL_IMAGES_MANIFEST");
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let manifest = out.join("images.json");
+    if let Some(path) = std::env::var_os("BCTL_IMAGES_MANIFEST") {
+        println!("cargo:rerun-if-changed={}", Path::new(&path).display());
+        std::fs::copy(path, &manifest).expect("cannot copy image manifest");
+    } else {
+        std::fs::write(&manifest, []).expect("cannot create empty image manifest");
+    }
+    println!("cargo:rustc-env=BCTL_BUILD_TARGET={}", std::env::var("TARGET").unwrap());
     let dist = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../web/dist");
     println!("cargo:rerun-if-changed={}", dist.display());
     if !dist.join("index.html").exists() {
