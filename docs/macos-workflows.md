@@ -827,6 +827,80 @@ processes, and BCTL-21 tracks tracing them next. Interop passes 113 of 113 on
 the new kernel.
 
 
-## Operation-scoped trace handoff (BCTL-21)
+## Operation-scoped warm traces (BCTL-21)
 
-The existing `BCTL_TRACE_CHROMIUM=1` startup trace is short and cannot attribute warmed screenshots, clicks or navigation. Implement bounded per-operation trace capture with CDP request/response markers and paired native-default, native-software and Nanos receipts. Record renderer/main-thread, frame synchronization, copy-output/readback, encode, IPC and scheduling intervals where observable; label unknown intervals rather than guessing. Keep traces separate from uninstrumented performance comparisons. See [graphics performance campaign](CAMPAIGN-GRAPHICS-PERFORMANCE.md) for A/B gates, density and integration ownership.
+`tests/bench/macos_warm_trace.py` captures bounded per-operation CDP
+`Tracing.start`/`Tracing.end` windows around warmed `form_click`,
+`form_screenshot`, `news_open`, `news_click`, and `news_screenshot` steps across
+`native`, `native-software` (`--disable-gpu`), and `bctl` (Nanos). It correlates
+CDP relay command windows with Chromium trace events across `cdp_command`,
+`renderer_main`, `compositor_viz`, `copy_output_readback`, `image_encode`,
+`ipc_mojo`, and `scheduler_toplevel`, and reports `unattributed_ms` explicitly
+when trace categories do not cover part of the CDP browser interval. Traced runs
+set `"instrumented_trace": true` and remain separate from uninstrumented
+performance comparisons.
+
+The [warm trace receipt](../tests/bench/results/2026-11-13-experiments/warm-trace-receipt.json)
+passed `perf-gate-ready` before and after every side:
+
+| Operation | Side | CDP browser, ms | `renderer_main` union (CPU), ms | `compositor_viz` union (CPU), ms | `ipc_mojo` union (CPU), ms | `copy_output_readback` union (CPU), ms | `scheduler_toplevel` union (CPU), ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `form_click` | `native` | 19.3 | 1.5 (1.2) | 2.0 (1.6) | 2.9 (2.4) | 0.0 (0.0) | 9.2 (7.3) |
+| `form_click` | `native-software` | 18.0 | 1.5 (1.1) | 1.4 (1.1) | 2.6 (2.2) | 0.0 (0.0) | 6.8 (5.6) |
+| `form_click` | `bctl` | 31.8 | 4.3 (2.3) | 12.3 (9.8) | 8.1 (4.5) | 0.0 (0.0) | 22.3 (12.5) |
+| `form_screenshot` | `native` | 32.0 | 0.3 (0.2) | 1.1 (1.0) | 1.7 (1.4) | 0.3 (0.3) | 9.3 (8.4) |
+| `form_screenshot` | `native-software` | 24.1 | 0.3 (0.2) | 1.4 (1.2) | 1.7 (1.4) | 0.3 (0.3) | 7.0 (6.5) |
+| `form_screenshot` | `bctl` | 38.4 | 1.1 (0.5) | 3.5 (2.7) | 3.1 (1.8) | 0.9 (0.5) | 10.2 (7.6) |
+| `news_open` | `native` | 15.6 | 19.2 (18.3) | 3.1 (3.0) | 8.9 (8.1) | 0.0 (0.0) | 27.5 (25.7) |
+| `news_open` | `native-software` | 15.2 | 19.1 (18.2) | 3.4 (3.2) | 8.6 (7.9) | 0.0 (0.0) | 27.1 (25.4) |
+| `news_open` | `bctl` | 29.4 | 32.4 (24.7) | 12.2 (9.3) | 20.2 (10.5) | 0.0 (0.0) | 48.8 (34.8) |
+| `news_click` | `native` | 13.3 | 12.2 (11.5) | 2.2 (1.8) | 3.9 (3.1) | 0.0 (0.0) | 16.6 (14.9) |
+| `news_click` | `native-software` | 12.8 | 11.7 (11.1) | 2.4 (2.2) | 3.7 (3.2) | 0.0 (0.0) | 15.7 (14.2) |
+| `news_click` | `bctl` | 51.1 | 23.5 (19.3) | 11.7 (9.0) | 7.9 (4.1) | 0.0 (0.0) | 31.5 (23.0) |
+| `news_screenshot` | `native` | 37.7 | 7.4 (7.5) | 1.5 (1.3) | 7.2 (7.0) | 0.3 (0.3) | 24.1 (23.4) |
+| `news_screenshot` | `native-software` | 44.7 | 7.8 (7.7) | 3.1 (2.9) | 7.4 (7.1) | 0.3 (0.3) | 23.1 (22.6) |
+| `news_screenshot` | `bctl` | 58.4 | 9.6 (8.9) | 5.8 (5.1) | 9.2 (7.6) | 1.3 (1.0) | 24.1 (21.0) |
+
+`copy_output_readback` is at most 1.3 ms on all three backends. On `bctl`,
+`ipc_mojo` and `scheduler_toplevel` union wall time exceed thread CPU time by a
+wider margin than on `native-software` (for example, `news_open` `ipc_mojo` is
+20.2 ms wall vs 10.5 ms CPU on `bctl`, against 8.6 ms wall vs 7.9 ms CPU on
+`native-software`). Five follow-up kernel experiments targeting ASID width,
+idle-poll window, `kern_pause()` instructions, wake-affine queueing, and direct
+idle-CPU wakeups ([batch receipt](../tests/bench/results/2026-11-13-experiments/queue-batch.json),
+[wake-idle receipt](../tests/bench/results/2026-11-13-experiments/wake-idle.json))
+established no net workflow improvement; see the
+[optimization ledger](optimizations.md#guest-kernel).
+
+## Multi-instance density and shareable file footprint (BCTL-21)
+
+`tests/bench/macos_density.py` profiles deduplicated host `footprint -f bytes`
+across 1, 2, and 4 concurrent instances of `native`, `native-software`, and
+`bctl`, along with the guest browser's shareable file-backed upper bound
+(`--browser-files`). Guest internal RSS is never added to host physical
+footprint. All nine attempts in the
+[density receipt](../tests/bench/results/2026-11-13-experiments/density-receipt.json)
+passed `perf-gate-ready` before and after:
+
+| Side | Instances | Deduplicated physical, MiB | Per instance, MiB | Marginal, MiB | Dirty sum, MiB | Clean sum, MiB | `__TEXT` clean sum, MiB | Workflows/s per GiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `native` | 1 | 650.7 | 650.7 | — | 654.3 | 473.7 | 444.8 | 7.65 |
+| `native` | 2 | 1283.2 | 641.6 | 632.5 | 1293.3 | 945.6 | 887.8 | 7.18 |
+| `native` | 4 | 2585.3 | 646.3 | 644.9 | 2612.0 | 1895.5 | 1779.8 | 5.02 |
+| `native-software` | 1 | 287.5 | 287.5 | — | 292.6 | 471.3 | 444.5 | 16.64 |
+| `native-software` | 2 | 568.0 | 284.0 | 280.4 | 581.1 | 944.9 | 891.4 | 16.79 |
+| `native-software` | 4 | 1127.1 | 281.8 | 279.9 | 1159.9 | 1890.2 | 1783.4 | 16.07 |
+| `bctl` | 1 | 316.7 | 316.7 | — | 316.8 | 11.7 | 11.3 | 13.18 |
+| `bctl` | 2 | 633.2 | 316.6 | 316.5 | 633.5 | 23.4 | 22.5 | 12.48 |
+| `bctl` | 4 | 1267.4 | 316.8 | 316.9 | 1268.1 | 46.8 | 45.0 | 11.52 |
+
+Each `native-software` instance maps ~471.3 MiB of clean host file-backed pages
+(~444.5 MiB `__TEXT` and ~25.6 MiB `mapped file`) that the macOS page cache
+shares across instances and excludes from dirty `phys_footprint` (280.4–279.9 MiB
+marginal per additional instance). Each `bctl` VM loads its guest browser files
+from its disk image into guest RAM backed by private host `VM_ALLOCATE` dirty
+pages (316.5–316.9 MiB marginal per additional VM, with 11.7 MiB of clean host
+VMM `__TEXT` and `mapped file`). The unpacked Helium guest rootfs contains 247
+shareable ELF, `.pak`, and `icudtl.dat` files totaling 626,902,726 bytes
+(597.9 MiB) as an upper bound on file-backed browser assets (not observed
+resident or duplicated pages).

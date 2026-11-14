@@ -1,0 +1,2838 @@
+{
+  "instrumented_trace": true,
+  "attempts": [
+    {
+      "round": 0,
+      "side": "native",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.89 1.80 1.93 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.89 1.80 1.93 }",
+          "diagnostic": ""
+        }
+      ],
+      "operations": [
+        {
+          "operation": "form_click",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native/form_click.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652119893500,
+              "end_ns": 29652120109041
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652120277125,
+              "end_ns": 29652120653000
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29652120793208,
+              "end_ns": 29652121290791
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29652121453208,
+              "end_ns": 29652121796041
+            },
+            {
+              "method": "Input.insertText",
+              "start_ns": 29652121949041,
+              "end_ns": 29652122555833
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652132939166,
+              "end_ns": 29652133124125
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652133315625,
+              "end_ns": 29652133709458
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29652133848333,
+              "end_ns": 29652148814125
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29652148959250,
+              "end_ns": 29652149374083
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29652149509208,
+              "end_ns": 29652150036416
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652160503250,
+              "end_ns": 29652160686041
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652160837541,
+              "end_ns": 29652161110958
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652262355375,
+              "end_ns": 29652262708333
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 2.649,
+                  "cpu_ms": 2.028,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.512,
+                  "cpu_ms": 0.37462431940040636,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.773,
+                  "cpu_ms": 1.548113655739939,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.174,
+                  "cpu_ms": 0.15,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.216,
+                  "cpu_ms": 0.21401182013505826,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.013000000000000001,
+                  "cpu_ms": 0.011,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.022,
+                  "cpu_ms": 0.013272727272727273,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.051000000000000004,
+                  "cpu_ms": 0.041,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.003,
+                  "cpu_ms": 0.0,
+                  "cpu_available": false
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.018,
+                  "cpu_ms": 0.00977777777777778,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 5.989,
+                  "cpu_ms": 3.7297098360655734,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 1.543,
+                  "cpu_ms": 1.2095303888703153,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.479,
+                  "cpu_ms": 0.18326291853571267,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.329,
+                  "cpu_ms": 1.0863161217568829,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 3.663,
+                  "cpu_ms": 2.9800000000000004,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.0879999999999999,
+                  "cpu_ms": 0.9334675438596491,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.002,
+                  "cpu_ms": 0.001,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.22999999999999998,
+                  "cpu_ms": 0.1797163059163059,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.29200000000000004,
+                  "cpu_ms": 0.214,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 9.237,
+                "cpu_ms": 7.2684125054626865,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 1.546,
+                "cpu_ms": 1.2095303888703155,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 2.897,
+                "cpu_ms": 2.428804833805099,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 2.018,
+                "cpu_ms": 1.554838174032534,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 156.441,
+            "cdp_browser_ms": 19.334415,
+            "attributed_stage_union_ms": 9.892,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 9.442415,
+            "unattributed_ms": 19.334415,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "form_screenshot",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native/form_screenshot.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652406256750,
+              "end_ns": 29652406449916
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652406599208,
+              "end_ns": 29652407086875
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29652407237958,
+              "end_ns": 29652407490416
+            },
+            {
+              "method": "Page.captureScreenshot",
+              "start_ns": 29652407616041,
+              "end_ns": 29652438714625
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.717,
+                  "cpu_ms": 1.3539999999999999,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.279,
+                  "cpu_ms": 0.19683510737628385,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.125,
+                  "cpu_ms": 0.9736810466700399,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.324,
+                  "cpu_ms": 0.322,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.068,
+                  "cpu_ms": 0.044,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.034,
+                  "cpu_ms": 0.030285714285714284,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.443,
+                  "cpu_ms": 0.278303663003663,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.459,
+                  "cpu_ms": 0.27,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.096,
+                  "cpu_ms": 0.072,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.041,
+                  "cpu_ms": 0.03379047619047619,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.413,
+                  "cpu_ms": 1.036,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.776,
+                  "cpu_ms": 0.6348623223749822,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.274,
+                  "cpu_ms": 0.23054243840453104,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.03,
+                  "cpu_ms": 0.024502673796791444,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 6.973999999999999,
+                  "cpu_ms": 6.418,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.5750000000000001,
+                  "cpu_ms": 0.47716822991822994,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.07400000000000001,
+                  "cpu_ms": 0.07158157919666541,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.002,
+                  "cpu_ms": 0.001,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.049,
+                  "cpu_ms": 0.026000000000000002,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.027,
+                  "cpu_ms": 0.022772727272727274,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.004,
+                  "cpu_ms": 0.0016666666666666666,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 9.293,
+                "cpu_ms": 8.42122711504363,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 1.718,
+                "cpu_ms": 1.4234466256501808,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 0.278,
+                "cpu_ms": 0.2322091050711977,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 1.09,
+                "cpu_ms": 0.9601810326647363,
+                "cpu_available": true
+              },
+              "copy_output_readback": {
+                "union_ms": 0.326,
+                "cpu_ms": 0.323,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 45.501,
+            "cdp_browser_ms": 32.031875,
+            "attributed_stage_union_ms": 10.014,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 22.017875,
+            "unattributed_ms": 32.031875,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_open",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native/news_open.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652507157750,
+              "end_ns": 29652507360375
+            },
+            {
+              "method": "Page.navigate",
+              "start_ns": 29652507511125,
+              "end_ns": 29652510013041
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652517353000,
+              "end_ns": 29652527231708
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652527392625,
+              "end_ns": 29652529622458
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652535876458,
+              "end_ns": 29652536130875
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652547158208,
+              "end_ns": 29652547345708
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652547489541,
+              "end_ns": 29652547798500
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 4.0280000000000005,
+                  "cpu_ms": 3.478,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.7340000000000001,
+                  "cpu_ms": 0.5540237275882013,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 2.98,
+                  "cpu_ms": 2.788900407092151,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.332,
+                  "cpu_ms": 1.234,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.129,
+                  "cpu_ms": 0.10566945569050833,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.915,
+                  "cpu_ms": 0.8968333333333334,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.272,
+                  "cpu_ms": 0.22899999999999998,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.465,
+                  "cpu_ms": 0.42104662705090035,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.649,
+                  "cpu_ms": 0.423,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.539,
+                  "cpu_ms": 0.3699460317460317,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 24.364,
+                  "cpu_ms": 22.025999999999996,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 19.242,
+                  "cpu_ms": 18.29358287004327,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 2.9570000000000003,
+                  "cpu_ms": 2.527481240981241,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.21,
+                  "cpu_ms": 0.17972896722581252,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.10800000000000001,
+                  "cpu_ms": 0.099,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.143,
+                  "cpu_ms": 0.13127142857142857,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "ipc_mojo": {
+                  "union_ms": 7.414,
+                  "cpu_ms": 6.498256253598184,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 13.604,
+                  "cpu_ms": 11.569,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.209,
+                  "cpu_ms": 0.19624870945784134,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 27.526,
+                "cpu_ms": 25.67817479845484,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 8.922,
+                "cpu_ms": 8.097850065743561,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 19.249,
+                "cpu_ms": 18.30207794919939,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 3.133,
+                "cpu_ms": 2.960421057610636,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 54.262,
+            "cdp_browser_ms": 15.563958,
+            "attributed_stage_union_ms": 27.844,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 0.0,
+            "unattributed_ms": 15.563958,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_click",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native/news_click.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652808994625,
+              "end_ns": 29652809172208
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652809340375,
+              "end_ns": 29652809761250
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29652809905291,
+              "end_ns": 29652810585000
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29652810709125,
+              "end_ns": 29652812364833
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29652812493208,
+              "end_ns": 29652822322416
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652833505291,
+              "end_ns": 29652833711833
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652833905458,
+              "end_ns": 29652834218166
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.125,
+                  "cpu_ms": 0.101,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.067,
+                  "cpu_ms": 0.0578047619047619,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "ipc_mojo": {
+                  "union_ms": 0.542,
+                  "cpu_ms": 0.37987942920157075,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 2.665,
+                  "cpu_ms": 2.223,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.822,
+                  "cpu_ms": 1.6333117455481954,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "ipc_mojo": {
+                  "union_ms": 0.043,
+                  "cpu_ms": 0.031957575757575754,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.089,
+                  "cpu_ms": 0.06999999999999999,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.043,
+                  "cpu_ms": 0.03933333333333334,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "ipc_mojo": {
+                  "union_ms": 0.614,
+                  "cpu_ms": 0.4847949584761376,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 15.456999999999999,
+                  "cpu_ms": 13.108796992481201,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 12.222999999999999,
+                  "cpu_ms": 11.527740299809354,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.351,
+                  "cpu_ms": 0.17565668100015927,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.42500000000000004,
+                  "cpu_ms": 0.261,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.389,
+                  "cpu_ms": 0.2569343434343434,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.028,
+                  "cpu_ms": 0.018,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.032,
+                  "cpu_ms": 0.021784615384615385,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 5.446000000000001,
+                  "cpu_ms": 4.441,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 2.686,
+                  "cpu_ms": 2.1942948412698415,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.09999999999999999,
+                  "cpu_ms": 0.09337263446492655,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 16.603,
+                "cpu_ms": 14.913978300871278,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 3.856,
+                "cpu_ms": 3.102703080607349,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 2.157,
+                "cpu_ms": 1.8174898645080135,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 12.227,
+                "cpu_ms": 11.531062491081405,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 36.709,
+            "cdp_browser_ms": 13.282333,
+            "attributed_stage_union_ms": 16.926,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 0.0,
+            "unattributed_ms": 13.282333,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_screenshot",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native/news_screenshot.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29652992176916,
+              "end_ns": 29652992354916
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29652992499875,
+              "end_ns": 29652992971458
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29652993113333,
+              "end_ns": 29652993372625
+            },
+            {
+              "method": "Page.captureScreenshot",
+              "start_ns": 29652993497416,
+              "end_ns": 29653030295875
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.058,
+                  "cpu_ms": 0.057,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.104,
+                  "cpu_ms": 0.10019802604802605,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.074,
+                  "cpu_ms": 0.060000000000000005,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.077,
+                  "cpu_ms": 0.0780087440381558,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 2.443,
+                  "cpu_ms": 1.986,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.4,
+                  "cpu_ms": 0.31949526188465815,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.428,
+                  "cpu_ms": 1.2315395244258376,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.276,
+                  "cpu_ms": 0.276,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 9.200000000000001,
+                  "cpu_ms": 8.817999999999998,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 7.436999999999999,
+                  "cpu_ms": 7.504599339063199,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 5.877,
+                  "cpu_ms": 5.782387955188087,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.19299999999999998,
+                  "cpu_ms": 0.18090522979066928,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.094,
+                  "cpu_ms": 0.087,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.005,
+                  "cpu_ms": 0.0025,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.069,
+                  "cpu_ms": 0.08285844155844155,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.511,
+                  "cpu_ms": 0.3394578061578062,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.5890000000000001,
+                  "cpu_ms": 0.38999999999999996,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 15.357999999999999,
+                  "cpu_ms": 14.530000000000001,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.8620000000000001,
+                  "cpu_ms": 0.7613699665831244,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.055,
+                  "cpu_ms": 0.05244284907638945,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.002,
+                  "cpu_ms": 0.002,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 24.097,
+                "cpu_ms": 23.392299786861802,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 7.211,
+                "cpu_ms": 7.028410406989565,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 7.442,
+                "cpu_ms": 7.507099339063198,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 1.465,
+                "cpu_ms": 1.3015821849601066,
+                "cpu_available": true
+              },
+              "copy_output_readback": {
+                "union_ms": 0.278,
+                "cpu_ms": 0.278,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 51.743,
+            "cdp_browser_ms": 37.707334,
+            "attributed_stage_union_ms": 24.809,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 12.898334000000002,
+            "unattributed_ms": 37.707334,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        }
+      ],
+      "status": "pass"
+    },
+    {
+      "round": 0,
+      "side": "native-software",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.89 1.80 1.93 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.90 1.80 1.93 }",
+          "diagnostic": ""
+        }
+      ],
+      "operations": [
+        {
+          "operation": "form_click",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native-software/form_click.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29654787132916,
+              "end_ns": 29654787362541
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29654787537000,
+              "end_ns": 29654787936875
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29654788075083,
+              "end_ns": 29654788503458
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29654788709166,
+              "end_ns": 29654789029791
+            },
+            {
+              "method": "Input.insertText",
+              "start_ns": 29654789160500,
+              "end_ns": 29654789728500
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29654800691750,
+              "end_ns": 29654800877583
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29654801034333,
+              "end_ns": 29654801423958
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29654801550833,
+              "end_ns": 29654815250416
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29654815384541,
+              "end_ns": 29654815814750
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29654815925125,
+              "end_ns": 29654816435458
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29654825722000,
+              "end_ns": 29654825886333
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29654826012583,
+              "end_ns": 29654826272208
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29654927546791,
+              "end_ns": 29654927921916
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.242,
+                  "cpu_ms": 0.184,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.092,
+                  "cpu_ms": 0.8945448189548542,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.363,
+                  "cpu_ms": 0.2785512416262416,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.017,
+                  "cpu_ms": 0.014,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.014,
+                  "cpu_ms": 0.007285714285714286,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.066,
+                  "cpu_ms": 0.041999999999999996,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.003,
+                  "cpu_ms": 0.0,
+                  "cpu_available": false
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.017,
+                  "cpu_ms": 0.008941176470588235,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.10300000000000001,
+                  "cpu_ms": 0.08600000000000001,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.234,
+                  "cpu_ms": 0.23005590844340845,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 4.651000000000001,
+                  "cpu_ms": 3.4209945054945057,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 1.4549999999999998,
+                  "cpu_ms": 1.1479285412507798,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.223,
+                  "cpu_ms": 0.9889133977133978,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.32699999999999996,
+                  "cpu_ms": 0.3097841220898516,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.249,
+                  "cpu_ms": 0.19014653679653679,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.27,
+                  "cpu_ms": 0.196,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 3.207,
+                  "cpu_ms": 2.766,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.0390000000000001,
+                  "cpu_ms": 0.8937883116883117,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.002,
+                  "cpu_ms": 0.001,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 6.764,
+                "cpu_ms": 5.572074753108775,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 1.458,
+                "cpu_ms": 1.14792854125078,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 2.618,
+                "cpu_ms": 2.2206360728244903,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 1.354,
+                "cpu_ms": 1.1481423453860358,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 153.154,
+            "cdp_browser_ms": 17.961166,
+            "attributed_stage_union_ms": 7.737,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 10.224165999999999,
+            "unattributed_ms": 17.961166,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "form_screenshot",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native-software/form_screenshot.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29655062137500,
+              "end_ns": 29655062372958
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655062533666,
+              "end_ns": 29655063059541
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29655063211916,
+              "end_ns": 29655063477250
+            },
+            {
+              "method": "Page.captureScreenshot",
+              "start_ns": 29655063603375,
+              "end_ns": 29655086712333
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.55,
+                  "cpu_ms": 0.356,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.501,
+                  "cpu_ms": 0.35309747474747477,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.08099999999999999,
+                  "cpu_ms": 0.057,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.047,
+                  "cpu_ms": 0.043811111111111106,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.5109999999999997,
+                  "cpu_ms": 1.1640000000000001,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.305,
+                  "cpu_ms": 0.2529719259771168,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.786,
+                  "cpu_ms": 0.6695203210582521,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.128,
+                  "cpu_ms": 0.11382108327201848,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.163,
+                  "cpu_ms": 0.10999999999999999,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.218,
+                  "cpu_ms": 0.1691111111111111,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.251,
+                  "cpu_ms": 1.1484481226754,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.298,
+                  "cpu_ms": 0.297,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.07,
+                  "cpu_ms": 0.041,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.004,
+                  "cpu_ms": 0.0013333333333333333,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.033,
+                  "cpu_ms": 0.023476190476190477,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.05,
+                  "cpu_ms": 0.029,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.03,
+                  "cpu_ms": 0.024583333333333332,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "ipc_mojo": {
+                  "union_ms": 0.517,
+                  "cpu_ms": 0.41897662680456804,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 5.890000000000001,
+                  "cpu_ms": 5.454000000000001,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.001,
+                  "cpu_ms": 0.001,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 7.026,
+                "cpu_ms": 6.488901296368395,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 1.674,
+                "cpu_ms": 1.4356977015882275,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 0.309,
+                "cpu_ms": 0.2543052593104501,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 1.325,
+                "cpu_ms": 1.2119158646108839,
+                "cpu_available": true
+              },
+              "copy_output_readback": {
+                "union_ms": 0.299,
+                "cpu_ms": 0.298,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 37.724,
+            "cdp_browser_ms": 24.135625,
+            "attributed_stage_union_ms": 8.416,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 15.719625,
+            "unattributed_ms": 24.135625,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_open",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native-software/news_open.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29655152232166,
+              "end_ns": 29655152436500
+            },
+            {
+              "method": "Page.navigate",
+              "start_ns": 29655152570583,
+              "end_ns": 29655155154583
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655162415333,
+              "end_ns": 29655174732000
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655174896416,
+              "end_ns": 29655178079000
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655183072958,
+              "end_ns": 29655183332625
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29655193253375,
+              "end_ns": 29655193460625
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655193582708,
+              "end_ns": 29655193872250
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 25.139999999999997,
+                  "cpu_ms": 22.72,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 3.2009999999999996,
+                  "cpu_ms": 2.7034972562622563,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 19.704,
+                  "cpu_ms": 18.711929007710967,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 3.371,
+                  "cpu_ms": 3.165850152981983,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "ipc_mojo": {
+                  "union_ms": 0.145,
+                  "cpu_ms": 0.10252987012987014,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.111,
+                  "cpu_ms": 0.07100000000000001,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.321,
+                  "cpu_ms": 0.253,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.485,
+                  "cpu_ms": 0.4060102983571746,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.7210000000000001,
+                  "cpu_ms": 0.5108410256410256,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.648,
+                  "cpu_ms": 0.421,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.603,
+                  "cpu_ms": 0.37,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.942,
+                  "cpu_ms": 0.6706665579623834,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 2.463,
+                  "cpu_ms": 2.3225506569355545,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.338,
+                  "cpu_ms": 1.21,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.909,
+                  "cpu_ms": 0.8851666666666667,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.11099999999999999,
+                  "cpu_ms": 0.08055930735930736,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 14.432,
+                  "cpu_ms": 12.284999999999998,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 7.999,
+                  "cpu_ms": 6.909249485719594,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.667,
+                  "cpu_ms": 0.6284393149658466,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 27.978,
+                "cpu_ms": 25.814681718947064,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 10.326,
+                "cpu_ms": 9.10628097020872,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 19.711,
+                "cpu_ms": 18.721815812452448,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 4.274,
+                "cpu_ms": 4.068796013293268,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 55.471,
+            "cdp_browser_ms": 19.044044,
+            "attributed_stage_union_ms": 29.616,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 0.0,
+            "unattributed_ms": 19.044044,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_click",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native-software/news_click.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29655499734583,
+              "end_ns": 29655499903875
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655500057500,
+              "end_ns": 29655500460708
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29655500570625,
+              "end_ns": 29655502147291
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29655502299166,
+              "end_ns": 29655502799208
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29655502945708,
+              "end_ns": 29655512300541
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29655521876583,
+              "end_ns": 29655522063916
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655522203208,
+              "end_ns": 29655522502500
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.243,
+                  "cpu_ms": 0.186,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.506,
+                  "cpu_ms": 0.40803684640168014,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.497,
+                  "cpu_ms": 1.3522812001512305,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.052,
+                  "cpu_ms": 0.053000000000000005,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.085,
+                  "cpu_ms": 0.08953968253968253,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "ipc_mojo": {
+                  "union_ms": 0.585,
+                  "cpu_ms": 0.5082992386033134,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 14.281,
+                  "cpu_ms": 12.680097744360904,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 11.701,
+                  "cpu_ms": 11.07276936489783,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 2.606,
+                  "cpu_ms": 2.4507919534360805,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.10200000000000001,
+                  "cpu_ms": 0.087,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.071,
+                  "cpu_ms": 0.08626666666666666,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.43899999999999995,
+                  "cpu_ms": 0.2949984126984127,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.523,
+                  "cpu_ms": 0.361,
+                  "cpu_available": true
+                }
+              },
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.118,
+                  "cpu_ms": 0.099,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.038,
+                  "cpu_ms": 0.035833333333333335,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.056,
+                  "cpu_ms": 0.06286666666666667,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 5.458,
+                  "cpu_ms": 4.492999999999999,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 2.699,
+                  "cpu_ms": 2.200851214003388,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.29300000000000004,
+                  "cpu_ms": 0.2827899490980333,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 15.696,
+                "cpu_ms": 14.220014484261245,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 3.686,
+                "cpu_ms": 3.1549799260090676,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 11.706,
+                "cpu_ms": 11.078017485198583,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 2.368,
+                "cpu_ms": 2.2015491147018853,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 33.707,
+            "cdp_browser_ms": 12.490666,
+            "attributed_stage_union_ms": 16.079,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 0.0,
+            "unattributed_ms": 12.490666,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_screenshot",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-native-software/news_screenshot.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29655684297791,
+              "end_ns": 29655684501041
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29655684677041,
+              "end_ns": 29655685404916
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29655685612666,
+              "end_ns": 29655685969458
+            },
+            {
+              "method": "Page.captureScreenshot",
+              "start_ns": 29655686105458,
+              "end_ns": 29655729487250
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "WebUI Top Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.07400000000000001,
+                  "cpu_ms": 0.05600000000000001,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.042,
+                  "cpu_ms": 0.030226190476190476,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 0.005,
+                  "cpu_ms": 0.003,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.111,
+                  "cpu_ms": 0.07300000000000001,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.295,
+                  "cpu_ms": 0.22235590903349525,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 2.544,
+                  "cpu_ms": 2.415079607915357,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.269,
+                  "cpu_ms": 0.268,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.032,
+                  "cpu_ms": 0.025,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.037,
+                  "cpu_ms": 0.03263636363636364,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "ipc_mojo": {
+                  "union_ms": 0.625,
+                  "cpu_ms": 0.4326076271186441,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.531,
+                  "cpu_ms": 0.318,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.054,
+                  "cpu_ms": 0.028,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.041,
+                  "cpu_ms": 0.035467261904761904,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 9.707,
+                  "cpu_ms": 9.014,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 7.747,
+                  "cpu_ms": 7.665740815226176,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 6.149,
+                  "cpu_ms": 5.997252242798086,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.5550000000000002,
+                  "cpu_ms": 1.3884481659904298,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 15.745000000000001,
+                  "cpu_ms": 15.009,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.8470000000000001,
+                  "cpu_ms": 0.7437407027183343,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.004,
+                  "cpu_ms": 0.004,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.002,
+                  "cpu_ms": 0.001,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 23.149,
+                "cpu_ms": 22.56958376596771,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 7.426,
+                "cpu_ms": 7.1128715799314275,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 7.752,
+                "cpu_ms": 7.668740815226176,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 3.094,
+                "cpu_ms": 2.917068206709269,
+                "cpu_available": true
+              },
+              "copy_output_readback": {
+                "union_ms": 0.271,
+                "cpu_ms": 0.269,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 58.159,
+            "cdp_browser_ms": 44.669709,
+            "attributed_stage_union_ms": 25.649,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 19.020708999999997,
+            "unattributed_ms": 44.669709,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        }
+      ],
+      "status": "pass"
+    },
+    {
+      "round": 0,
+      "side": "bctl",
+      "gate_checks": [
+        {
+          "after": false,
+          "code": 0,
+          "load": "{ 1.90 1.80 1.93 }",
+          "diagnostic": ""
+        },
+        {
+          "after": true,
+          "code": 0,
+          "load": "{ 1.91 1.80 1.93 }",
+          "diagnostic": ""
+        }
+      ],
+      "operations": [
+        {
+          "operation": "form_click",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-bctl/form_click.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29657622741541,
+              "end_ns": 29657623108875
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29657623266875,
+              "end_ns": 29657623780625
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29657623925041,
+              "end_ns": 29657624718125
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29657624875125,
+              "end_ns": 29657625294500
+            },
+            {
+              "method": "Input.insertText",
+              "start_ns": 29657625423916,
+              "end_ns": 29657626322750
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29657639177708,
+              "end_ns": 29657639568916
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29657639761250,
+              "end_ns": 29657640392625
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29657640541958,
+              "end_ns": 29657647995541
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29657648190541,
+              "end_ns": 29657649731250
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29657649891875,
+              "end_ns": 29657666842083
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29657678718250,
+              "end_ns": 29657679120750
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29657679349583,
+              "end_ns": 29657680072625
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29657781797750,
+              "end_ns": 29657782539750
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 15.225,
+                  "cpu_ms": 7.422,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 4.017,
+                  "cpu_ms": 1.9045844017094016,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 2.565,
+                  "cpu_ms": 1.714819514502688,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.112,
+                  "cpu_ms": 0.023,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.035,
+                  "cpu_ms": 0.004,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 12.134,
+                  "cpu_ms": 6.169,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 4.274,
+                  "cpu_ms": 2.2862379824649914,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 3.21,
+                  "cpu_ms": 1.9985681126268886,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.6100000000000001,
+                  "cpu_ms": 0.4592752436179254,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.9690000000000001,
+                  "cpu_ms": 0.28900000000000003,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.43400000000000005,
+                  "cpu_ms": 0.16699999999999998,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.762,
+                  "cpu_ms": 0.406,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.904,
+                  "cpu_ms": 0.24557446808510636,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.374,
+                  "cpu_ms": 0.122,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 10.648,
+                  "cpu_ms": 8.349905850179468,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.218,
+                  "cpu_ms": 0.7170833333333333,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 22.324,
+                "cpu_ms": 12.453878149840834,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 4.274,
+                "cpu_ms": 2.2862379824649914,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 8.107,
+                "cpu_ms": 4.539771893998168,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 12.251,
+                "cpu_ms": 9.817423089983837,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 177.663,
+            "cdp_browser_ms": 31.827002,
+            "attributed_stage_union_ms": 26.741,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 5.086002000000001,
+            "unattributed_ms": 31.827002,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "form_screenshot",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-bctl/form_screenshot.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29658016204083,
+              "end_ns": 29658016547125
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658016737125,
+              "end_ns": 29658017375000
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29658017545666,
+              "end_ns": 29658017934125
+            },
+            {
+              "method": "Page.captureScreenshot",
+              "start_ns": 29658018076000,
+              "end_ns": 29658055151666
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Service: network.mojom.NetworkService": {
+                "ipc_mojo": {
+                  "union_ms": 0.097,
+                  "cpu_ms": 0.012,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.08299999999999999,
+                  "cpu_ms": 0.01,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 8.63,
+                  "cpu_ms": 6.539000000000001,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.013,
+                  "cpu_ms": 0.6000000000000001,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.7070000000000001,
+                  "cpu_ms": 0.4718519025741333,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.003,
+                  "cpu_ms": 0.002,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.106,
+                  "cpu_ms": 0.013000000000000001,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.057,
+                  "cpu_ms": 0.01,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 3.7430000000000003,
+                  "cpu_ms": 1.591,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.3719999999999999,
+                  "cpu_ms": 0.9106202531645571,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 1.208,
+                  "cpu_ms": 0.4573934027751479,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.17300000000000001,
+                  "cpu_ms": 0.11229906782872301,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.339,
+                  "cpu_ms": 0.123,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.677,
+                  "cpu_ms": 0.281,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 2.656,
+                  "cpu_ms": 2.149725627781232,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.871,
+                  "cpu_ms": 0.506,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.9850000000000001,
+                  "cpu_ms": 0.227,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.501,
+                  "cpu_ms": 0.155,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "ipc_mojo": {
+                "union_ms": 3.139,
+                "cpu_ms": 1.8080440151853738,
+                "cpu_available": true
+              },
+              "scheduler_toplevel": {
+                "union_ms": 10.157,
+                "cpu_ms": 7.559826916532418,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 1.126,
+                "cpu_ms": 0.45662498172251625,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 3.452,
+                "cpu_ms": 2.700034353382817,
+                "cpu_available": true
+              },
+              "copy_output_readback": {
+                "union_ms": 0.874,
+                "cpu_ms": 0.508,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 55.251,
+            "cdp_browser_ms": 38.445042,
+            "attributed_stage_union_ms": 13.192,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 25.253042,
+            "unattributed_ms": 38.445042,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_open",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-bctl/news_open.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29658126734333,
+              "end_ns": 29658127143000
+            },
+            {
+              "method": "Page.navigate",
+              "start_ns": 29658127332375,
+              "end_ns": 29658130747166
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658145082333,
+              "end_ns": 29658161329125
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658161522625,
+              "end_ns": 29658169494125
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658174419875,
+              "end_ns": 29658174916458
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29658185209208,
+              "end_ns": 29658185537625
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658185711541,
+              "end_ns": 29658186242750
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.734,
+                  "cpu_ms": 0.379,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.089,
+                  "cpu_ms": 0.257,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "ipc_mojo": {
+                  "union_ms": 0.304,
+                  "cpu_ms": 0.065,
+                  "cpu_available": true
+                },
+                "scheduler_toplevel": {
+                  "union_ms": 0.528,
+                  "cpu_ms": 0.064,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 26.626,
+                  "cpu_ms": 12.801,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 15.108,
+                  "cpu_ms": 7.1264766790656875,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.434,
+                  "cpu_ms": 0.872126900173629,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 46.4,
+                  "cpu_ms": 30.451,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 7.1899999999999995,
+                  "cpu_ms": 3.6108975033738195,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 32.376,
+                  "cpu_ms": 24.702877679618553,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 3.7929999999999997,
+                  "cpu_ms": 2.110590729983596,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.5150000000000001,
+                  "cpu_ms": 0.379,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.944,
+                  "cpu_ms": 0.695235933664105,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 7.943,
+                  "cpu_ms": 6.90968027212519,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.47000000000000003,
+                  "cpu_ms": 0.21900000000000003,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.25,
+                  "cpu_ms": 0.5244700210333864,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 48.776,
+                "cpu_ms": 34.83929210309614,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 20.243,
+                "cpu_ms": 10.483788427580846,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 32.376,
+                "cpu_ms": 24.702877679618553,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 12.166,
+                "cpu_ms": 9.333688525797236,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 75.443,
+            "cdp_browser_ms": 29.397959,
+            "attributed_stage_union_ms": 53.993,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 0.0,
+            "unattributed_ms": 29.397959,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_click",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-bctl/news_click.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29658499731125,
+              "end_ns": 29658499994750
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658500175000,
+              "end_ns": 29658500735041
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29658500860875,
+              "end_ns": 29658517019958
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29658517234125,
+              "end_ns": 29658518717708
+            },
+            {
+              "method": "Input.dispatchMouseEvent",
+              "start_ns": 29658518865250,
+              "end_ns": 29658550526875
+            },
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29658562376166,
+              "end_ns": 29658562720208
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658562901666,
+              "end_ns": 29658563576833
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.781,
+                  "cpu_ms": 0.42200000000000004,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.147,
+                  "cpu_ms": 0.311,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 31.66,
+                  "cpu_ms": 21.637,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 2.362,
+                  "cpu_ms": 1.0584860145755839,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 23.456,
+                  "cpu_ms": 19.31572914148737,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 4.356000000000001,
+                  "cpu_ms": 2.8141755916774667,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.134,
+                  "cpu_ms": 0.032,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.095,
+                  "cpu_ms": 0.032,
+                  "cpu_available": true
+                }
+              },
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 10.557999999999998,
+                  "cpu_ms": 6.04,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 4.859,
+                  "cpu_ms": 2.7303076923076923,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 0.6980000000000001,
+                  "cpu_ms": 0.43081619016113304,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.7070000000000001,
+                  "cpu_ms": 0.195,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 1.085,
+                  "cpu_ms": 0.41227718040621264,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 7.011,
+                  "cpu_ms": 5.965374492507084,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.131,
+                  "cpu_ms": 0.036000000000000004,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.19699999999999998,
+                  "cpu_ms": 0.05490697674418604,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 31.457,
+                "cpu_ms": 22.974276481050055,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 7.92,
+                "cpu_ms": 4.120705435899821,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 23.456,
+                "cpu_ms": 19.315729141487374,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 11.721,
+                "cpu_ms": 9.043378489816885,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 77.791,
+            "cdp_browser_ms": 51.147166,
+            "attributed_stage_union_ms": 36.609,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 14.538165999999997,
+            "unattributed_ms": 51.147166,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        },
+        {
+          "operation": "news_screenshot",
+          "trace": ".work/tmp/warm-trace-receipt-artifacts/0-bctl/news_screenshot.json.gz",
+          "cdp_calls": [
+            {
+              "method": "Browser.getVersion",
+              "start_ns": 29658768524000,
+              "end_ns": 29658768833541
+            },
+            {
+              "method": "Runtime.evaluate",
+              "start_ns": 29658769030666,
+              "end_ns": 29658769626000
+            },
+            {
+              "method": "Runtime.callFunctionOn",
+              "start_ns": 29658769796875,
+              "end_ns": 29658770156750
+            },
+            {
+              "method": "Page.captureScreenshot",
+              "start_ns": 29658770271583,
+              "end_ns": 29658827404833
+            }
+          ],
+          "analysis": {
+            "trace_window": {
+              "Browser": {
+                "scheduler_toplevel": {
+                  "union_ms": 13.899,
+                  "cpu_ms": 11.984,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.933,
+                  "cpu_ms": 0.5750000000000001,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 0.005,
+                  "cpu_ms": 0.003,
+                  "cpu_available": true
+                }
+              },
+              "Service: storage.mojom.StorageService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.155,
+                  "cpu_ms": 0.018000000000000002,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.052,
+                  "cpu_ms": 0.011,
+                  "cpu_available": true
+                }
+              },
+              "Service: tracing.mojom.TracingService": {
+                "scheduler_toplevel": {
+                  "union_ms": 1.3,
+                  "cpu_ms": 0.336,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.752,
+                  "cpu_ms": 0.23500000000000001,
+                  "cpu_available": true
+                }
+              },
+              "Renderer": {
+                "scheduler_toplevel": {
+                  "union_ms": 13.334999999999999,
+                  "cpu_ms": 10.488,
+                  "cpu_available": true
+                },
+                "renderer_main": {
+                  "union_ms": 9.57,
+                  "cpu_ms": 8.913285664919133,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 7.409000000000001,
+                  "cpu_ms": 6.676268651864416,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 1.637,
+                  "cpu_ms": 1.5186546938235368,
+                  "cpu_available": true
+                }
+              },
+              "GPU Process": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.806,
+                  "cpu_ms": 0.16999999999999998,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.696,
+                  "cpu_ms": 0.2338,
+                  "cpu_available": true
+                },
+                "compositor_viz": {
+                  "union_ms": 4.15,
+                  "cpu_ms": 3.634997228285401,
+                  "cpu_available": true
+                },
+                "copy_output_readback": {
+                  "union_ms": 1.302,
+                  "cpu_ms": 0.973,
+                  "cpu_available": true
+                }
+              },
+              "Service: network.mojom.NetworkService": {
+                "scheduler_toplevel": {
+                  "union_ms": 0.172,
+                  "cpu_ms": 0.015,
+                  "cpu_available": true
+                },
+                "ipc_mojo": {
+                  "union_ms": 0.12,
+                  "cpu_ms": 0.016,
+                  "cpu_available": true
+                }
+              }
+            },
+            "stage_totals": {
+              "scheduler_toplevel": {
+                "union_ms": 24.084,
+                "cpu_ms": 20.990664138458335,
+                "cpu_available": true
+              },
+              "ipc_mojo": {
+                "union_ms": 9.235,
+                "cpu_ms": 7.586270988773053,
+                "cpu_available": true
+              },
+              "renderer_main": {
+                "union_ms": 9.57,
+                "cpu_ms": 8.913285664919135,
+                "cpu_available": true
+              },
+              "compositor_viz": {
+                "union_ms": 5.775,
+                "cpu_ms": 5.149702032646889,
+                "cpu_available": true
+              },
+              "copy_output_readback": {
+                "union_ms": 1.307,
+                "cpu_ms": 0.976,
+                "cpu_available": true
+              }
+            },
+            "cdp_command_aligned": {},
+            "trace_window_ms": 73.828,
+            "cdp_browser_ms": 58.398,
+            "attributed_stage_union_ms": 29.49,
+            "aligned_attributed_stage_union_ms": 0.0,
+            "unattributed_vs_trace_window_ms": 28.908000000000005,
+            "unattributed_ms": 58.398,
+            "unscheduled_or_idle_ms": null,
+            "visibility": "Host CDP and trace clocks have different epochs; aligned totals use matching trace dispatch spans only. Unscheduled time is not observable."
+          }
+        }
+      ],
+      "status": "pass"
+    }
+  ]
+}
