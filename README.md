@@ -91,4 +91,4 @@ covers its layout, rules, toolchains, and qualification suites.
 ## Project status
 
 The [active campaign](docs/CAMPAIGN-ROADMAP.md) records the roadmap and
-qualification status. [TODO.md](TODO.md) tracks review findings.
+qualification status. [TODO.md](TODO.md) tracks review findings. The [graphics performance campaign](docs/CAMPAIGN-GRAPHICS-PERFORMANCE.md) prioritizes headless attribution while coordinating upstream tinyland damage and headed host/viewer optimization.
