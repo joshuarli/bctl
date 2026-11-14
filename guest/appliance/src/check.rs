@@ -26,6 +26,8 @@ pub fn run() -> Result<ExitCode, String> {
     Ok(if complete { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
+pub const HEADLESS_READY_REPORT: &str = "browser ok\nsandbox ok\ninput absent\n";
+
 pub fn headless_report() -> String {
     let mut report = String::new();
     for (stage, ok) in [("browser", cdp_answers()), ("sandbox", renderer_sandboxed())] {

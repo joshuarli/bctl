@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::accounts::{self, Account};
 use crate::browser::Display;
-use crate::check::{cdp_answers, headless_report, renderer_sandboxed};
+use crate::check::{HEADLESS_READY_REPORT, cdp_answers, headless_report, renderer_sandboxed};
 use crate::relay::{self, Log};
 use crate::signals::{Event, Signals, send};
 use crate::vsock::{VsockListener, VsockStream};
@@ -25,32 +25,49 @@ const BROWSER_CLOSE_GRACE: Duration = Duration::from_secs(8);
 const BROWSER_GRACE: Duration = Duration::from_secs(7);
 
 struct BootSignal {
-    ready: Mutex<bool>,
+    state: Mutex<(bool, bool)>,
     changed: Condvar,
 }
 
 impl BootSignal {
     fn new() -> Self {
-        Self { ready: Mutex::new(false), changed: Condvar::new() }
+        Self { state: Mutex::new((false, false)), changed: Condvar::new() }
     }
 
     fn notify(&self) {
-        *self.ready.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        *self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (true, true);
         self.changed.notify_all();
     }
 
     fn wait(&self, timeout: Duration) {
+        let _ = self.wait_inner(timeout, false);
+    }
+
+    fn wait_initial_ready(&self, timeout: Duration) -> bool {
+        self.wait_inner(timeout, true)
+    }
+
+    fn wait_inner(&self, timeout: Duration, claim_initial: bool) -> bool {
         let deadline = Instant::now() + timeout;
-        let mut ready = self.ready.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        while !*ready {
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !state.0 {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
+                return false;
             };
-            let (guard, result) = self.changed.wait_timeout(ready, remaining).unwrap_or_else(|poisoned| poisoned.into_inner());
-            ready = guard;
+            let (guard, result) = self.changed.wait_timeout(state, remaining).unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = guard;
             if result.timed_out() {
                 break;
             }
+        }
+        if !state.0 {
+            return false;
+        }
+        if claim_initial && state.1 {
+            state.1 = false;
+            true
+        } else {
+            false
         }
     }
 }
@@ -199,8 +216,11 @@ fn start_check_server(persistent: bool, boot: Arc<BootSignal>) -> Result<(), Str
         for client in listener.incoming() {
             match client {
                 Ok(mut client) => {
-                    boot.wait(CHECK_BOOT_WAIT);
-                    let mut report = headless_report();
+                    let mut report = if boot.wait_initial_ready(CHECK_BOOT_WAIT) {
+                        HEADLESS_READY_REPORT.to_string()
+                    } else {
+                        headless_report()
+                    };
                     if persistent { report.push_str("profile ok\n"); }
                     if let Err(error) = client.write_all(report.as_bytes()).and_then(|()| client.shutdown_write()) {
                         eprintln!("bctl-guest: check reply: {error}");
@@ -311,5 +331,14 @@ mod tests {
         let start = Instant::now();
         signal.wait(Duration::from_secs(5));
         assert!(start.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn boot_signal_grants_initial_ready_cache_only_once() {
+        let signal = BootSignal::new();
+        assert!(!signal.wait_initial_ready(Duration::from_millis(2)));
+        signal.notify();
+        assert!(signal.wait_initial_ready(Duration::from_millis(2)));
+        assert!(!signal.wait_initial_ready(Duration::from_millis(2)));
     }
 }
