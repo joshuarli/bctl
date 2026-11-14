@@ -32,3 +32,7 @@ for earlier attempts. Record every attempt there when it finishes, including
 ones that are rejected, inconclusive, or rule out a suspected cause.
 
 Do not run formatters or change pinned Rust toolchains.
+
+## Graphics performance execution
+
+For headless performance attribution and parallel headed damage work, follow [the graphics campaign](docs/CAMPAIGN-GRAPHICS-PERFORMANCE.md), BCTL-21/BCTL-22 in [TODO.md](TODO.md), and upstream tinyland TINY-14. The existing two-second startup trace is not a warm-operation trace. Preserve existing kernel campaigns and avoid duplicating tinyland compositor ownership in bctl.
