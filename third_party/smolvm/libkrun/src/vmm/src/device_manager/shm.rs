@@ -88,4 +88,18 @@ impl ShmManager {
         self.fs_regions.insert(index, region);
         Ok(())
     }
+
+    pub fn alloc_external_region(&mut self, size: usize, align: u64) -> Result<GuestAddress, Error> {
+        let align = align.max(self.page_size as u64);
+        let mask = align - 1;
+        let start = self
+            .next_guest_addr
+            .checked_add(mask)
+            .map(|addr| addr & !mask)
+            .ok_or(Error::OutOfSpace)?;
+        let size = align_upwards!(size, self.page_size);
+        let end = start.checked_add(size as u64).ok_or(Error::OutOfSpace)?;
+        self.next_guest_addr = end;
+        Ok(GuestAddress(start))
+    }
 }

@@ -35,6 +35,7 @@ pub struct BlockDeviceConfig {
     pub sync_mode: SyncMode,
     pub io_engine: BlockIoEngine,
     pub prepared_async: Option<PreparedAsyncIo>,
+    pub dax: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,7 +64,9 @@ impl BlockBuilder {
     }
 
     pub fn create_block(config: BlockDeviceConfig) -> Result<Block> {
-        devices::virtio::Block::new(
+        let dax = config.dax;
+        let path = config.disk_image_path.clone();
+        let mut block = devices::virtio::Block::new(
             config.block_id,
             None,
             config.cache_type,
@@ -75,6 +78,10 @@ impl BlockBuilder {
             config.io_engine,
             config.prepared_async,
         )
-        .map_err(BlockConfigError::CreateBlockDevice)
+        .map_err(BlockConfigError::CreateBlockDevice)?;
+        if dax {
+            block.set_dax_backing(path);
+        }
+        Ok(block)
     }
 }

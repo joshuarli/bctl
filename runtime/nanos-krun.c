@@ -69,7 +69,7 @@ int main(int argc, char **argv)
         return 1;
     if (!configured("configure VM", krun_set_vm_config((uint32_t)ctx, (uint8_t)cpus, (uint32_t)memory)) ||
         !configured("configure console", krun_add_serial_console_default((uint32_t)ctx, console[0], STDOUT_FILENO)) ||
-        !configured("attach disk", krun_add_disk((uint32_t)ctx, "root", argv[1], false)) ||
+        !configured("attach disk", krun_add_disk_dax((uint32_t)ctx, "root", argv[1], false)) ||
         (argc >= 10 && !configured("attach profile", krun_add_disk((uint32_t)ctx, "profile", argv[8], false))) ||
         !configured("load firmware", krun_set_firmware((uint32_t)ctx, argv[2])) ||
         !configured("add vsock", krun_add_vsock((uint32_t)ctx, 0)) ||

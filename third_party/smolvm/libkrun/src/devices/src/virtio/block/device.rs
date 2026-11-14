@@ -50,7 +50,7 @@ use super::worker::{AsyncIo, BlockWorker, PreparedAsyncIo, take_prepared_async_i
 use super::{
     super::{
         ActivateResult, DeviceQueue, DeviceState, QueueConfig, TYPE_BLOCK, VirtioDevice,
-        VmmExitObserver,
+        VirtioShmRegion, VmmExitObserver,
     },
     Error, NUM_QUEUES, QUEUE_CONFIG, SECTOR_SHIFT, SECTOR_SIZE,
 };
@@ -393,6 +393,20 @@ struct VirtioBlkConfig {
 unsafe impl ByteValued for VirtioBlkConfig {}
 
 /// Virtio device for exposing block level read/write operations on a host file.
+struct DaxMapping {
+    host_addr: usize,
+    len: usize,
+}
+
+impl Drop for DaxMapping {
+    fn drop(&mut self) {
+        // SAFETY: host_addr and len originate from a successful libc::mmap owned by DaxMapping.
+        unsafe {
+            libc::munmap(self.host_addr as *mut libc::c_void, self.len);
+        }
+    }
+}
+
 pub struct Block {
     // Host file and properties.
     disk: Option<DiskProperties>,
@@ -402,6 +416,9 @@ pub struct Block {
     direct_io: bool,
     sync_mode: SyncMode,
     io_engine: BlockIoEngine,
+    dax_backing_path: Option<String>,
+    shm_region: Option<VirtioShmRegion>,
+    dax_mapping: Option<DaxMapping>,
     worker_thread: Option<JoinHandle<BlockWorker>>,
     worker_stopfd: EventFd,
     /// A worker reclaimed by [`Self::quiesce_for_snapshot`] (stopped, drained):
@@ -665,6 +682,9 @@ impl Block {
             direct_io,
             sync_mode,
             io_engine,
+            dax_backing_path: None,
+            shm_region: None,
+            dax_mapping: None,
             avail_features,
             acked_features: 0u64,
             device_state: DeviceState::Inactive,
@@ -673,6 +693,19 @@ impl Block {
             quiesced_worker: None,
             snapshot_error: None,
         })
+    }
+
+    pub fn set_dax_backing(&mut self, path: String) {
+        self.dax_backing_path = Some(path);
+    }
+
+    pub fn dax_backing_path(&self) -> Option<&str> {
+        self.dax_backing_path.as_deref()
+    }
+
+    pub fn set_dax_mapping(&mut self, host_addr: usize, len: usize, region: VirtioShmRegion) {
+        self.dax_mapping = Some(DaxMapping { host_addr, len });
+        self.shm_region = Some(region);
     }
 
     /// Provides the ID of this block device.
@@ -1039,6 +1072,10 @@ impl VirtioDevice for Block {
     /// Re-arm the worker after a checkpoint/restore (resumes I/O).
     fn rearm_after_snapshot(&mut self) {
         self.rearm_worker();
+    }
+
+    fn shm_region(&self) -> Option<&VirtioShmRegion> {
+        self.shm_region.as_ref()
     }
 }
 

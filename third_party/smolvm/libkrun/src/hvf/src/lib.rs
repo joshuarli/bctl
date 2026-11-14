@@ -867,6 +867,27 @@ impl HvfVm {
         }
     }
 
+    pub fn map_memory_ro(
+        &self,
+        host_start_addr: u64,
+        guest_start_addr: u64,
+        size: u64,
+    ) -> Result<(), Error> {
+        let ret = unsafe {
+            hv_vm_map(
+                host_start_addr as *mut core::ffi::c_void,
+                guest_start_addr,
+                size.try_into().unwrap(),
+                (HV_MEMORY_READ | HV_MEMORY_EXEC).into(),
+            )
+        };
+        if ret != HV_SUCCESS {
+            Err(Error::MemoryMap)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn unmap_memory(&self, guest_start_addr: u64, size: u64) -> Result<(), Error> {
         let ret = unsafe { hv_vm_unmap(guest_start_addr, size.try_into().unwrap()) };
         if ret != HV_SUCCESS {

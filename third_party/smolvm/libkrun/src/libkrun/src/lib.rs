@@ -2922,13 +2922,13 @@ pub unsafe extern "C" fn krun_add_virtiofs4(
 }
 
 #[allow(clippy::missing_safety_doc)]
-#[unsafe(no_mangle)]
 #[cfg(feature = "blk")]
-pub unsafe extern "C" fn krun_add_disk(
+unsafe fn add_raw_disk(
     ctx_id: u32,
     c_block_id: *const c_char,
     c_disk_path: *const c_char,
     read_only: bool,
+    dax: bool,
 ) -> i32 {
     unsafe {
         let disk_path = match CStr::from_ptr(c_disk_path).to_str() {
@@ -2957,6 +2957,7 @@ pub unsafe extern "C" fn krun_add_disk(
                     sync_mode: SyncMode::Relaxed,
                     io_engine: devices::virtio::block::BlockIoEngine::Sync,
                     prepared_async: None,
+                    dax,
                 };
                 cfg.add_block_cfg(block_device_config);
             }
@@ -2964,6 +2965,38 @@ pub unsafe extern "C" fn krun_add_disk(
         }
 
         KRUN_SUCCESS
+    }
+}
+
+#[allow(clippy::missing_safety_doc)]
+#[unsafe(no_mangle)]
+#[cfg(feature = "blk")]
+pub unsafe extern "C" fn krun_add_disk(
+    ctx_id: u32,
+    c_block_id: *const c_char,
+    c_disk_path: *const c_char,
+    read_only: bool,
+) -> i32 {
+    unsafe { add_raw_disk(ctx_id, c_block_id, c_disk_path, read_only, false) }
+}
+
+#[allow(clippy::missing_safety_doc)]
+#[unsafe(no_mangle)]
+#[cfg(feature = "blk")]
+pub unsafe extern "C" fn krun_add_disk_dax(
+    ctx_id: u32,
+    c_block_id: *const c_char,
+    c_disk_path: *const c_char,
+    read_only: bool,
+) -> i32 {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (ctx_id, c_block_id, c_disk_path, read_only);
+        return -libc::ENOTSUP;
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        add_raw_disk(ctx_id, c_block_id, c_disk_path, read_only, true)
     }
 }
 
@@ -3009,6 +3042,7 @@ pub unsafe extern "C" fn krun_add_disk2(
                     sync_mode: SyncMode::Relaxed,
                     io_engine: devices::virtio::block::BlockIoEngine::Sync,
                     prepared_async: None,
+                    dax: false,
                 };
                 cfg.add_block_cfg(block_device_config);
             }
@@ -3105,6 +3139,7 @@ pub unsafe extern "C" fn krun_add_disk3(
                     sync_mode,
                     io_engine: devices::virtio::block::BlockIoEngine::Sync,
                     prepared_async: None,
+                    dax: false,
                 };
                 cfg.add_block_cfg(block_device_config);
             }
@@ -3192,6 +3227,7 @@ pub unsafe extern "C" fn krun_add_disk4(
                     sync_mode,
                     io_engine,
                     prepared_async,
+                    dax: false,
                 });
             }
             Entry::Vacant(_) => {

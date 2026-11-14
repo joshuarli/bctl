@@ -140,6 +140,8 @@ int32_t krun_set_cpu_template(uint32_t ctx_id, uint32_t cpu_template);
  */
 int32_t krun_add_disk(uint32_t ctx_id, const char *block_id, const char *disk_path, bool read_only);
 
+int32_t krun_add_disk_dax(uint32_t ctx_id, const char *block_id, const char *disk_path, bool read_only);
+
 /* Supported disk image formats */
 #define KRUN_DISK_FORMAT_RAW 0
 #define KRUN_DISK_FORMAT_QCOW2 1

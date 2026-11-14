@@ -1649,7 +1649,7 @@ pub fn build_microvm(
         _sender.clone(),
     )?;
     #[cfg(feature = "blk")]
-    attach_block_devices(&mut vmm, &vm_resources.block, intc.clone())?;
+    attach_block_devices(&mut vmm, &vm_resources.block, &mut _shm_manager, intc.clone())?;
 
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc.clone())?;
@@ -4029,16 +4029,105 @@ fn attach_balloon_device(
     Ok(())
 }
 
+#[cfg(all(feature = "blk", target_os = "macos"))]
+fn map_block_dax(
+    vmm: &Vmm,
+    block: &mut devices::virtio::Block,
+    shm_manager: &mut ShmManager,
+) -> std::result::Result<(), StartMicrovmError> {
+    use devices::virtio::VirtioShmRegion;
+    use std::fs::File;
+    use std::os::fd::AsRawFd;
+
+    let Some(path) = block.dax_backing_path() else {
+        return Ok(());
+    };
+    if vmm.prototype_memory.is_some() {
+        return Err(StartMicrovmError::AttachBlockDevice(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DAX block devices cannot be combined with memory growth",
+        )));
+    }
+    let file = File::open(path).map_err(StartMicrovmError::AttachBlockDevice)?;
+    let file_len = file
+        .metadata()
+        .map_err(StartMicrovmError::AttachBlockDevice)?
+        .len();
+    let shm_len = (file_len & !4095) as usize;
+    if shm_len < 4096 {
+        return Ok(());
+    }
+    // SAFETY: sysconf(_SC_PAGESIZE) has no preconditions and returns the host page size.
+    let host_page_size = (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize).max(16384);
+    let len_ceil = (file_len as usize)
+        .checked_add(host_page_size - 1)
+        .map(|v| v & !(host_page_size - 1))
+        .ok_or_else(|| {
+            StartMicrovmError::AttachBlockDevice(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "DAX image size overflow",
+            ))
+        })?;
+    // SAFETY: Read-only private file mapping for an open descriptor; bounds are len_ceil bytes.
+    let host_addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len_ceil,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if host_addr == libc::MAP_FAILED {
+        return Err(StartMicrovmError::AttachBlockDevice(
+            io::Error::last_os_error(),
+        ));
+    }
+    let guest_addr = match shm_manager.alloc_external_region(len_ceil, 2 << 20) {
+        Ok(addr) => addr,
+        Err(err) => {
+            // SAFETY: host_addr/len_ceil came from the successful libc::mmap call above.
+            unsafe { libc::munmap(host_addr, len_ceil) };
+            return Err(StartMicrovmError::ShmCreate(err));
+        }
+    };
+    let region = VirtioShmRegion {
+        host_addr: host_addr as u64,
+        guest_addr: guest_addr.raw_value(),
+        size: shm_len,
+    };
+    if let Err(err) = vmm
+        .vm
+        .hvf_vm()
+        .map_memory_ro(region.host_addr, region.guest_addr, len_ceil as u64)
+    {
+        // SAFETY: host_addr/len_ceil came from the successful libc::mmap call above.
+        unsafe { libc::munmap(host_addr, len_ceil) };
+        return Err(StartMicrovmError::AttachBlockDevice(io::Error::other(
+            format!("HVF map_memory_ro failed: {err:?}"),
+        )));
+    }
+    block.set_dax_mapping(host_addr as usize, len_ceil, region);
+    Ok(())
+}
+
 #[cfg(feature = "blk")]
 fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,
+    #[allow(unused_variables)] shm_manager: &mut ShmManager,
     intc: IrqChip,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     for block in block_devs.list.iter() {
-        let id = String::from(block.lock().unwrap().id());
+        let id = {
+            let mut guard = block.lock().unwrap();
+            #[cfg(target_os = "macos")]
+            map_block_dax(vmm, &mut guard, shm_manager)?;
+            String::from(guard.id())
+        };
 
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_mmio_device(vmm, id, intc.clone(), block.clone()).map_err(RegisterBlockDevice)?;
