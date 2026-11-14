@@ -104,6 +104,19 @@ action values carrying data bits. `test/runtime/seccomp_policy.c` compares
 these sandbox boundary conditions with native Linux/musl, including proof
 that a denied write remains denied after the rejected mode change.
 
+`SECCOMP_FILTER_FLAG_TSYNC` follows Linux's compatibility rule: a sibling with
+no seccomp mode is synchronized, a sibling in filter mode is synchronized only
+if its filter is in the caller's chain, and any other sibling (strict mode or a
+diverged filter) fails the call with that sibling's tid, or `ESRCH` with
+`TSYNC_ESRCH`, leaving every thread unchanged. Every filter or mode change and
+`TSYNC` runs under the process thread lock, and a new thread takes its
+parent's filter under the same lock, so a successful `TSYNC` covers threads
+created concurrently with it. A `clone(CLONE_THREAD)` that cannot allocate a
+thread returns `ENOMEM`, or `EAGAIN` when no thread id is available.
+`test/runtime/seccomp_race.c` compares the sibling-state outcomes with native
+Linux/musl and stresses thread creation and filter installation against
+`TSYNC`; the stress checks are probabilistic on the preceding kernel.
+
 `recvmsg` on `AF_UNIX` builds control data in kernel memory and copies it out
 with a fault guard. An unwritable `msg_control` returns the received bytes with
 `MSG_CTRUNC` and installs no descriptors, as Linux does. Concurrent `connect`

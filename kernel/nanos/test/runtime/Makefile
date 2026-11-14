@@ -35,6 +35,7 @@ PROGRAMS= \
 	resource_limits \
 	shared_brk \
 	seccomp_policy \
+	seccomp_race \
 	unix_socket_review \
 	sandbox \
 	sendfile \
@@ -341,6 +342,10 @@ LDFLAGS-mprotect_cow= -static
 
 SRCS-seccomp_policy= $(CURDIR)/seccomp_policy.c
 LDFLAGS-seccomp_policy= -static
+
+SRCS-seccomp_race= $(CURDIR)/seccomp_race.c
+LDFLAGS-seccomp_race= -static
+LIBS-seccomp_race= -lpthread
 
 SRCS-unix_socket_review= $(CURDIR)/unix_socket_review.c
 LDFLAGS-unix_socket_review= -static

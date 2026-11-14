@@ -60,3 +60,7 @@ $(OUT)/fixtures/seccomp_policy: $(ROOT)/nanos/test/runtime/seccomp_policy.c
 $(OUT)/fixtures/unix_socket_review: $(ROOT)/nanos/test/runtime/unix_socket_review.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -static -pthread $< -o $@
+
+$(OUT)/fixtures/seccomp_race: $(ROOT)/nanos/test/runtime/seccomp_race.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static -pthread $< -o $@

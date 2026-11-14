@@ -99,6 +99,8 @@ static sysreturn clone_validate(u64 flags)
     return 0;
 }
 
+static thread create_thread_err(process p, u64 tid, sysreturn *err);
+
 static sysreturn clone_internal(struct clone_args_internal *args)
 {
      u64 flags = args->flags;
@@ -124,14 +126,15 @@ static sysreturn clone_internal(struct clone_args_internal *args)
      if (!stack_size)
           return -EINVAL;
 
-     thread t = create_thread(current->p, INVALID_PHYSICAL);
+     sysreturn create_err;
+     thread t = create_thread_err(current->p, INVALID_PHYSICAL, &create_err);
+     if (t == INVALID_ADDRESS)
+          return create_err;
      context_frame f = thread_frame(t);
 
      clone_frame_pstate(f, thread_frame(current));
      thread_clone_sigmask(t, current);
-     spin_lock(&current->p->threads_lock);
      seccomp_fork(t, current);
-     spin_unlock(&current->p->threads_lock);
 
      set_syscall_return(t, 0);
      f[SYSCALL_FRAME_SP] = (u64)stack + stack_size;
@@ -553,10 +556,11 @@ closure_func_basic(thunk, void, free_thread)
     /* TODO: Intentionally leaking tracelog_attrs; no accounting for attrs lifetime... */
 }
 
-thread create_thread(process p, u64 tid)
+static thread create_thread_err(process p, u64 tid, sysreturn *err)
 {
     heap h = heap_locked(get_kernel_heaps());
 
+    *err = -ENOMEM;
     thread t = allocate(h, sizeof(struct thread));
     if (t == INVALID_ADDRESS)
         goto fail;
@@ -627,8 +631,10 @@ thread create_thread(process p, u64 tid)
         t->tid = tid;
         t->tids = p->pids;
     } else {
-        if (!pid_numbers_alloc(&t->tids, p->pid_ns))
-            goto fail_affinity;
+        if (!pid_numbers_alloc(&t->tids, p->pid_ns)) {
+            *err = -EAGAIN;
+            goto fail_pid;
+        }
         t->tid = t->tids.nr[0];
     }
     assert(t->tid != INVALID_PHYSICAL);
@@ -644,6 +650,8 @@ thread create_thread(process p, u64 tid)
     set(t->tracelog_attrs, sym(tid), aprintf(h, "%d", t->tid));
 #endif
     return t;
+  fail_pid:
+    deallocate_bitmap(t->task.affinity);
   fail_affinity:
     process_release(p);
     deallocate_blockq(t->thread_bq);
@@ -654,6 +662,12 @@ thread create_thread(process p, u64 tid)
   fail:
     msg_err("thread: failed to allocate structure");
     return INVALID_ADDRESS;
+}
+
+thread create_thread(process p, u64 tid)
+{
+    sysreturn err;
+    return create_thread_err(p, tid, &err);
 }
 
 NOTRACE
@@ -676,7 +690,6 @@ boolean exit_thread(thread t)
 
     wake_robust_list(t);
     t->robust_list = 0;
-    seccomp_thread_exit(t);
 
     spin_lock(&p->threads_lock);
     rbtree_remove_by_key(p->threads, &t->n);
@@ -690,6 +703,7 @@ boolean exit_thread(thread t)
     if (p->exec_thread == t)
         p->exec_thread = 0;
     spin_unlock(&p->threads_lock);
+    seccomp_thread_exit(t);
     if (exec_waiter)
         context_schedule_return(exec_waiter);
 

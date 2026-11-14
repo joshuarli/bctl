@@ -474,24 +474,16 @@ sysreturn seccomp_prctl(u64 mode, void *prog)
         return seccomp(SECCOMP_SET_MODE_FILTER, 0, prog);
     return -EINVAL;
 }
-static boolean seccomp_is_ancestor(seccomp_filter anc, seccomp_filter f)
+static boolean seccomp_can_sync(thread ot, seccomp_filter caller)
 {
-    if (!anc)
-        return f == 0;
-    while (f) {
-        if (f == anc)
-            return true;
-        f = f->prev;
-    }
-    return false;
-}
-static boolean seccomp_is_ancestor_or_eq(seccomp_filter anc, seccomp_filter f)
-{
-    if (anc == f)
+    if (ot->seccomp_mode == 0)
         return true;
-    if (!anc)
-        return f == 0;
-    return seccomp_is_ancestor(anc, f);
+    if (ot->seccomp_mode != SECCOMP_MODE_FILTER)
+        return false;
+    for (seccomp_filter f = caller; f; f = f->prev)
+        if (f == ot->seccomp)
+            return true;
+    return false;
 }
 sysreturn seccomp(u32 op, u32 flags, void *uargs)
 {
@@ -499,9 +491,13 @@ sysreturn seccomp(u32 op, u32 flags, void *uargs)
     if (op == SECCOMP_SET_MODE_STRICT) {
         if (flags != 0 || uargs != 0)
             return -EINVAL;
-        if (t->seccomp_mode == SECCOMP_MODE_FILTER)
+        spin_lock(&t->p->threads_lock);
+        if (t->seccomp_mode == SECCOMP_MODE_FILTER) {
+            spin_unlock(&t->p->threads_lock);
             return -EINVAL;
+        }
         t->seccomp_mode = SECCOMP_MODE_STRICT;
+        spin_unlock(&t->p->threads_lock);
         return 0;
     }
     if (op == SECCOMP_GET_ACTION_AVAIL) {
@@ -544,50 +540,46 @@ sysreturn seccomp(u32 op, u32 flags, void *uargs)
         deallocate(h, insns, byte_len);
         return rv;
     }
-    if (t->seccomp_mode == SECCOMP_MODE_STRICT) {
-        deallocate(h, insns, byte_len);
-        return -EINVAL;
-    }
-    seccomp_filter old = t->seccomp;
-    u32 path = (u32)prog.len + 4 + (old ? old->path_insns : 0);
-    if (path > 32768) {
-        deallocate(h, insns, byte_len);
-        return -ENOMEM;
-    }
     seccomp_filter nf = allocate(h, sizeof(*nf) + byte_len);
     if (nf == INVALID_ADDRESS) {
         deallocate(h, insns, byte_len);
         return -ENOMEM;
     }
-    nf->prev = old;
-    nf->path_insns = path;
+    nf->prev = 0;
     nf->len = prog.len;
-    init_refcount(&nf->refcount, 1, init_closure_func(&nf->free, thunk, seccomp_filter_free_cfn));
-    seccomp_reserve(old);
     runtime_memcpy(nf->insns, insns, byte_len);
     deallocate(h, insns, byte_len);
+    init_refcount(&nf->refcount, 1, init_closure_func(&nf->free, thunk, seccomp_filter_free_cfn));
+    spin_lock(&p->threads_lock);
+    if (t->seccomp_mode == SECCOMP_MODE_STRICT) {
+        spin_unlock(&p->threads_lock);
+        seccomp_release(nf);
+        return -EINVAL;
+    }
+    seccomp_filter old = t->seccomp;
+    u32 path = (u32)prog.len + 4 + (old ? old->path_insns : 0);
+    if (path > 32768) {
+        spin_unlock(&p->threads_lock);
+        seccomp_release(nf);
+        return -ENOMEM;
+    }
     if (flags & SECCOMP_FILTER_FLAG_TSYNC) {
-        spin_lock(&p->threads_lock);
-        thread bad = 0;
         for (rbnode n = rbtree_find_first(p->threads); n != INVALID_ADDRESS; n = rbnode_get_next(n)) {
             thread ot = struct_from_field(n, thread, n);
-            if (ot == t)
+            if (ot == t || seccomp_can_sync(ot, old))
                 continue;
-            if (!seccomp_is_ancestor_or_eq(ot->seccomp, old)) {
-                bad = ot;
-                thread_reserve(bad);
-                break;
-            }
-        }
-        if (bad) {
-            int bad_tid = bad->tid;
+            int bad_tid = ot->tid;
             spin_unlock(&p->threads_lock);
-            thread_release(bad);
             seccomp_release(nf);
             if (flags & SECCOMP_FILTER_FLAG_TSYNC_ESRCH)
                 return -ESRCH;
             return bad_tid;
         }
+    }
+    nf->prev = old;
+    nf->path_insns = path;
+    seccomp_reserve(old);
+    if (flags & SECCOMP_FILTER_FLAG_TSYNC) {
         u64 nthreads = rbtree_get_count(p->threads);
         for (u64 i = 1; i < nthreads; i++)
             seccomp_reserve(nf);
@@ -598,23 +590,27 @@ sysreturn seccomp(u32 op, u32 flags, void *uargs)
             ot->seccomp_mode = SECCOMP_MODE_FILTER;
             if (t->no_new_privs)
                 ot->no_new_privs = true;
-            if (prev_old)
-                seccomp_release(prev_old);
+            seccomp_release(prev_old);
         }
-        spin_unlock(&p->threads_lock);
-        return 0;
+    } else {
+        t->seccomp = nf;
+        t->seccomp_mode = SECCOMP_MODE_FILTER;
+        seccomp_release(old);
     }
-    t->seccomp = nf;
-    t->seccomp_mode = SECCOMP_MODE_FILTER;
-    seccomp_release(old);
+    spin_unlock(&p->threads_lock);
     return 0;
 }
 void seccomp_fork(thread child, thread parent)
 {
+    process p = parent->p;
+    spin_lock(&p->threads_lock);
+    seccomp_filter stale = child->seccomp;
     child->seccomp_mode = parent->seccomp_mode;
     child->seccomp = parent->seccomp;
     child->no_new_privs = parent->no_new_privs;
     seccomp_reserve(child->seccomp);
+    spin_unlock(&p->threads_lock);
+    seccomp_release(stale);
 }
 void seccomp_thread_exit(thread t)
 {
