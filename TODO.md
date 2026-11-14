@@ -1,14 +1,6 @@
 Prefix: BCTL
 Next: 24
 
-### BCTL-23 · P2 · Experimental WebMCP bridge is not qualified on Helium runtimes
-
-- **Area:** Browser
-- **Where:** `crates/bctl/src/webmcp.rs`, `docs/webmcp.md`, `tests/interop/`, `images/helium/`
-- **Problem:** The optional `bctl webmcp list/call` bridge is implemented over native page-eval with same-origin filtering and separate write/consequential opt-ins, but only expression-level unit tests are present. We have not proved that the deployed Helium/Chromium binary exposes `document.modelContext`, that origin-trial/permissions-policy conditions are met, or that `getTools`/`executeTool` operate end-to-end. WebMCP is a draft, so claiming general runtime support would be premature.
-- **Recommendation:** First compare the homegrown `document.modelContext.getTools` / `executeTool` JavaScript adapter with agent-browser v0.43.0's independently implemented **CDP WebMCP** discovery and invocation. Verify the JavaScript methods actually exist in the browser's WebMCP implementation; otherwise replace the incorrect adapter with a typed CDP surface or delete it in favor of the agent-browser provider rather than maintaining two divergent protocols. Then add a purpose-built HTTPS WebMCP fixture with known `snapshot`/`query`/`act`-style tools, read-only/write/consequential annotations, callback counters, and registration/navigation tests. Opt the feature in on a test image only and qualify v0.43.0 across Nanos and SmolVM on macOS and Linux, recording build, flags, secure-context policy, and VM receipts in `docs/compatibility.md`. Prove refusals never invoke callbacks, hostile data cannot inject JavaScript, cross-origin tools stay isolated, and human takeover is respected. Keep ordinary native CDP actions as fallback; do not globally enable experimental flags or add JS dependencies.
-- **Fix with:** `test-pyramid`
-- **Effort:** M
 ### BCTL-15 · P2 · A run queue can hold a null scheduler task
 
 - **Area:** Concurrency
@@ -68,6 +60,6 @@ Next: 24
 - **Area:** Kernel
 - **Where:** `kernel/`, `docs/kernel/campaign-report.md`
 - **Problem:** Hydrogen's campaign closed every functional gate but never ran its benchmark report (cold boot, image size, guest RSS, fork and IPC latency against native), its dead-code pass, or an independent review of the whole fork diff since upstream `e4b9c9e6`. The macOS repairs in `docs/kernel/macos-qualification.md` were never independently reviewed.
-- **Recommendation:** The [partial independent review](docs/kernel/fork-review.md) records a supported shared-`brk` race that needs a reproducer and repair. On a quiet host, write the benchmark table into `docs/kernel/campaign-report.md`. Complete the independent review of `git diff e4b9c9e65cd51ef29e5021835419a1d9a7733f20 HEAD -- kernel/nanos` and fix P1 and P2 findings with tests.
+- **Recommendation:** The [partial independent review](docs/kernel/fork-review.md) found a shared-`brk` race, now reproduced and repaired with [architecture receipts](docs/kernel/shared-brk.md). Most of the fork delta remains unreviewed. On a quiet host, write the benchmark table into `docs/kernel/campaign-report.md`. Complete the independent review of `git diff e4b9c9e65cd51ef29e5021835419a1d9a7733f20 HEAD -- kernel/nanos` and fix P1 and P2 findings with tests.
 - **Fix with:** `review`
 - **Effort:** L

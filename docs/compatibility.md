@@ -37,6 +37,47 @@ BCTL_RUNTIME=smolvm sh tests/interop/run.sh
 BCTL_RUNTIME=nanos sh tests/interop/run.sh
 ```
 
+## Experimental WebMCP
+
+On 2026-11-14, the dedicated HTTPS fixture passed 21 checks on each tuple
+with agent-browser 0.43.0. These receipts qualify the WebMCP test configuration
+separately from the general interoperability suite above.
+
+| Host | Runtime | Receipt |
+| --- | --- | --- |
+| macOS ARM64 | headed SmolVM 1.34.1 | [21/21](verification/2026-11-14-webmcp/mac-smolvm.json) |
+| macOS ARM64 | headless Nanos/libkrun | [21/21](verification/2026-11-14-webmcp/mac-nanos.json) |
+| Linux x86_64, KVM | headed SmolVM 1.34.1 | [21/21](verification/2026-11-14-webmcp/linux-smolvm.json) |
+| Linux x86_64, KVM | headless Nanos/QEMU | [21/21](verification/2026-11-14-webmcp/linux-nanos.json) |
+
+The browser is Helium 0.20.3.1, Chromium 156.0.8078.79. Each receipt records
+the test image SHA-256, actual browser command line, exposed JavaScript
+methods, feature flags and individual checks. The bctl adapter includes
+`ae198d3f`: JSON arguments are parsed as JSON data, preserving `__proto__`
+keys without object-literal prototype semantics. The preceding expression
+failed that fixture case.
+
+Both `WebMCPTesting` and `DevToolsWebMCPSupport` are enabled only in the
+test image. The fixture uses HTTPS with a generated two-day CA trusted in
+that image's NSS database; certificate verification remains enabled.
+Both fixture origins send `Permissions-Policy: tools=*`.
+No origin-trial token or production-site behavior is qualified.
+
+The checks compare bctl's JavaScript adapter with agent-browser's CDP
+catalog and invocation, verify same-origin filtering, hostile names and
+arguments, write/consequential refusals without callback execution, exactly-once
+authorized callbacks, dynamic and duplicate registration, and navigation.
+SmolVM additionally refuses discovery and invocation during human takeover.
+Nanos correctly refuses takeover itself because it has no input devices.
+
+The CDP comparison attaches through a browser capability and selects the
+native target. A direct page connection in agent-browser 0.43.0 does not
+provide the session identities its WebMCP event collector requires.
+The checker revokes its capability and closes its client on exit.
+Reproduce with the [fixture instructions](../tests/interop/webmcp/README.md).
+Ordinary images retain their existing flags and native CDP actions remain
+the fallback when the API is unavailable.
+
 ## Features
 
 ✓ passed, – not applicable, ? not run.
