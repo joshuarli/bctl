@@ -1,0 +1,32 @@
+{
+  "mode": "nanos",
+  "verdict": "PASS",
+  "detail": "",
+  "hydrogen": "fc033050193b2fd7b7f8ceef24a07b6a0243d602",
+  "dirty": true,
+  "kernel_sha256": "abcec0e65e75f2ef9848679d1c239e0ca638973be79029a0a7ebe28af0de6fcb",
+  "image_sha256": "c15fc644b2c2e21f548729bef4d7e19b952b550f1d942c6c2ec0cac9b47921fd",
+  "program": "shared_brk",
+  "binary_sha256": "6f482d83bfdc919bdc083bf178502c5e3cc16930b917c36a6531b7d91724a799",
+  "toolchain": {
+    "gcc": "15.2.0",
+    "qemu": "11.1.2",
+    "llvm": "llvm-musl-23.1.5-c4f9b08",
+    "musl": "1.2.6"
+  },
+  "qemu": {
+    "command": "/Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/build/krun-run /Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/images/shared_brk.img /Users/josh/d/bctl/.work/wt/todo-fixes/kernel/nanos/output/platform/virt/bin/kernel.img 1 1024",
+    "exit": 1,
+    "guest_exit": 0
+  },
+  "elapsed_seconds": 0.06,
+  "reproduce": "dev/bootstrap.sh && dev/build.sh && make -s -C tests/mini_chromium && dev/image.sh '-o' '/Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/images/shared_brk.img' '/Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/build/mini_chromium/fixtures/shared_brk' && dev/run.sh --smp 1 --mem 1G --timeout 50 --exit 0 /Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/images/shared_brk.img",
+  "tests": [
+    {
+      "name": "shared_brk_ranges",
+      "status": "PASS",
+      "detail": "resident=1,iteration=2000,mismatch=-1,break=360000,base=35f000"
+    }
+  ],
+  "frames": []
+}

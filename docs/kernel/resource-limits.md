@@ -43,6 +43,6 @@ At `883ff3f6`, the added namespace and zero-descriptor checks fail on Nanos and 
 ## Remaining limits
 
 The [independent review](fork-review.md) identified a separate shared-`brk` race.
-Distinct processes using `CLONE_VM` do not serialize the complete break transition.
-That source-supported risk remains under BCTL-20 and has no runtime reproducer yet.
+It is reproduced and repaired by `ea66aca4` and `f97b29a4`; see
+[shared break qualification](shared-brk.md).
 These results do not close BCTL-20's broader review or benchmark gates.

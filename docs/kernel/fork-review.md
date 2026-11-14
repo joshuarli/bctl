@@ -30,7 +30,10 @@ The descriptor allocators enforce zero and `F_DUPFD` validates its minimum.
 Both regressions pass natively and fail on the preceding Nanos kernel.
 After the repair, all seven resource-limit checks pass on both architectures
 at 1, 2 and 4 vCPUs. Receipts are linked from [resource limits](resource-limits.md).
-The shared-break finding remains open and has not been reproduced.
+`ea66aca4` reproduces and repairs the shared-break race. `f97b29a4` also
+repairs a populated-heap unmapping defect found in independent review of that
+candidate. See [shared break qualification](shared-brk.md) for the controls,
+architecture receipts and remaining limits.
 
 ## Coverage and limits
 

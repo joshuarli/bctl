@@ -1,0 +1,12 @@
+[79458.700455] NET: no network interface found
+MINI_CHROMIUM_TEST name=rlimit_target status=PASS detail=status=0x0
+[79458.715882] pipe: failed to allocate fd
+MINI_CHROMIUM_TEST name=rlimit_data_mappings status=PASS detail=status=0x0
+MINI_CHROMIUM_TEST name=rlimit_stack_and_errors status=PASS detail=status=0x0
+MINI_CHROMIUM_TEST name=rlimit_mapping_capacity status=PASS detail=status=0x0
+MINI_CHROMIUM_TEST name=rlimit_unmodeled_rejected status=PASS detail=status=0x0
+MINI_CHROMIUM_TEST name=rlimit_namespace_hard_ceiling status=PASS detail=status=0x0
+MINI_CHROMIUM_TEST name=rlimit_zero_descriptors status=PASS detail=status=0x0
+MINI_CHROMIUM_RESULT status=PASS passed=7 failed=0
+
+Angel shutdown trap failed; shutting down with PSCI, exit code 0.

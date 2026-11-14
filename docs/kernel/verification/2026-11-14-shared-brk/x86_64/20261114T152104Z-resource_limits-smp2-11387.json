@@ -1,0 +1,62 @@
+{
+  "mode": "nanos",
+  "verdict": "PASS",
+  "detail": "",
+  "hydrogen": "fc033050193b2fd7b7f8ceef24a07b6a0243d602",
+  "dirty": false,
+  "kernel_sha256": "061cd423c354f907bcfb3347c1bf456d96b88551be40a669a16798eefabf9912",
+  "image_sha256": "79a0a235ce2e0ec5e785f080ecefa53e84a101dab31ca49418ee75c8e267dcc5",
+  "program": "resource_limits",
+  "binary_sha256": "f44a0b0c92ae0ec0f0aec8efafbda8c87178b46410860471a9dee16d9a12a021",
+  "toolchain": {
+    "gcc": "15.2.0",
+    "qemu": "11.1.2",
+    "llvm": "llvm-musl-23.1.5-c4f9b08",
+    "musl": "1.2.6"
+  },
+  "qemu": {
+    "command": "qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m 1G -display none -monitor none -serial file:/home/josh/d/bctl-todo-qualification/kernel/.work/runs/20261114T152104Z-resource_limits-smp2-11387/serial.log -no-reboot -device isa-debug-exit -device virtio-rng-pci -device virtio-balloon-pci,free-page-reporting=on,vectors=5 -drive if=none,id=hd0,format=raw,file=/home/josh/d/bctl-todo-qualification/kernel/.work/images/resource_limits.img -device virtio-scsi-pci,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=hd0 -nic none -kernel /home/josh/d/bctl-todo-qualification/kernel/nanos/output/platform/pc/bin/kernel.img",
+    "exit": 1,
+    "guest_exit": 0
+  },
+  "elapsed_seconds": 0.15,
+  "reproduce": "dev/bootstrap.sh && dev/build.sh && make -s -C tests/mini_chromium && dev/image.sh '-o' '/home/josh/d/bctl-todo-qualification/kernel/.work/images/resource_limits.img' '--klib' 'tmpfs' '--klib' 'shmem' '/home/josh/d/bctl-todo-qualification/kernel/.work/build/mini_chromium/fixtures/resource_limits' && dev/run.sh --smp 2 --mem 1G --timeout 30 --exit 0 /home/josh/d/bctl-todo-qualification/kernel/.work/images/resource_limits.img",
+  "tests": [
+    {
+      "name": "rlimit_target",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_data_mappings",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_stack_and_errors",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_mapping_capacity",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_unmodeled_rejected",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_namespace_hard_ceiling",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_zero_descriptors",
+      "status": "PASS",
+      "detail": "status=0x0"
+    }
+  ],
+  "frames": []
+}

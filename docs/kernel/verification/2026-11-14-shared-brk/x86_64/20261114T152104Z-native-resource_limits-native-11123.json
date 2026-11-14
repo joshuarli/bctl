@@ -1,0 +1,62 @@
+{
+  "mode": "native",
+  "verdict": "PASS",
+  "detail": "",
+  "hydrogen": "fc033050193b2fd7b7f8ceef24a07b6a0243d602",
+  "dirty": false,
+  "kernel_sha256": "",
+  "image_sha256": "",
+  "program": "resource_limits",
+  "binary_sha256": "f44a0b0c92ae0ec0f0aec8efafbda8c87178b46410860471a9dee16d9a12a021",
+  "toolchain": {
+    "gcc": "15.2.0",
+    "qemu": "11.1.2",
+    "llvm": "llvm-musl-23.1.5-c4f9b08",
+    "musl": "1.2.6"
+  },
+  "qemu": {
+    "command": "",
+    "exit": 0,
+    "guest_exit": 0
+  },
+  "elapsed_seconds": 0.01,
+  "reproduce": "",
+  "tests": [
+    {
+      "name": "rlimit_target",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_data_mappings",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_stack_and_errors",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_mapping_capacity",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_unmodeled_rejected",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_namespace_hard_ceiling",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_zero_descriptors",
+      "status": "PASS",
+      "detail": "status=0x0"
+    }
+  ],
+  "frames": []
+}
