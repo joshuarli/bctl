@@ -83,6 +83,7 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
         arguments.push(format!("--proxy-server=socks5://127.0.0.1:{}", layout::EGRESS_PROXY_PORT));
         arguments.push("--proxy-bypass-list=<-loopback>".into());
         arguments.extend([
+            "--in-process-gpu".into(),
             "--disable-frame-rate-limit".into(),
             "--use-gl=disabled".into(),
             "--disable-crash-reporter".into(),
@@ -92,7 +93,7 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
             "--disable-sync".into(),
             "--disable-default-apps".into(),
             "--disable-extensions".into(),
-            "--disable-dev-shm-usage".into(),
+            "--disable-features=SpareRendererForSitePerProcess,OptimizationHints,MediaRouter".into(),
         ]);
     }
     arguments.extend([
