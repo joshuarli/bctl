@@ -132,6 +132,7 @@ RUNTIME_TESTS=	\
 	ktest \
 	mkdir \
 	mmap \
+	mprotect_cow \
 	netlink \
 	netsock \
 	pipe \

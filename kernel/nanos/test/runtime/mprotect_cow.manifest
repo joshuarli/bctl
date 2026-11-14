@@ -1,0 +1,9 @@
+(
+    children:(
+        mprotect_cow:(contents:(host:output/test/runtime/bin/mprotect_cow))
+        tmp:(children:())
+    )
+    program:/mprotect_cow
+    fault:t
+    environment:()
+)

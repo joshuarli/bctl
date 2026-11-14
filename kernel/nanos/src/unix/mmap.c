@@ -1334,10 +1334,14 @@ static sysreturn vmap_update_protections_locked(process p, range q, u32 newflags
         vmap vm = (vmap)rangemap_lookup(pvmap, r.start);
         vmap_assert(vm != INVALID_ADDRESS);
         u64 next = MIN(r.end, vm->node.r.end);
+        range ri = irange(r.start, next);
+        pageflags pf = pageflags_from_vmflags(newflags);
+        if (!(vm->flags & VMAP_FLAG_SHARED) && vm->cache_node)
+            pf = pageflags_readonly(pf);
         vmap_update_flags_intersection(pvmap, q, VMAP_FLAG_PROT_MASK, newflags, vm);
+        address_space_update_map_flags(p->vm->as, ri.start, range_span(ri), pf);
         r.start = next;
     }
-    address_space_update_map_flags(p->vm->as, q.start, range_span(q), pageflags_from_vmflags(newflags));
     vmap_paranoia_locked(pvmap);
     return 0;
 }
@@ -2213,6 +2217,11 @@ boolean mmap_cow_page(process_vm pvm, vmap vm, u64 vaddr)
         return true;
     phys &= ~PAGEMASK;
     pageflags flags = pageflags_from_vmflags(vm->flags);
+    if (vm->cache_node) {
+        u64 node_offset = vm->node_offset + (va - vm->node.r.start);
+        if (pagecache_node_page_is_cached(vm->cache_node, node_offset, phys))
+            return pagecache_node_do_page_cow(vm->cache_node, pvm->as, node_offset, va, flags);
+    }
     if (!page_is_shared(phys)) {
         address_space_update_map_flags(pvm->as, va, PAGESIZE, flags);
         return true;
