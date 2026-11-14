@@ -1,0 +1,32 @@
+{
+  "mode": "native",
+  "verdict": "PASS",
+  "detail": "",
+  "hydrogen": "fc033050193b2fd7b7f8ceef24a07b6a0243d602",
+  "dirty": true,
+  "kernel_sha256": "",
+  "image_sha256": "",
+  "program": "shared_brk",
+  "binary_sha256": "6f482d83bfdc919bdc083bf178502c5e3cc16930b917c36a6531b7d91724a799",
+  "toolchain": {
+    "gcc": "15.2.0",
+    "qemu": "11.1.2",
+    "llvm": "llvm-musl-23.1.5-c4f9b08",
+    "musl": "1.2.6"
+  },
+  "qemu": {
+    "command": "",
+    "exit": 0,
+    "guest_exit": 0
+  },
+  "elapsed_seconds": 0.05,
+  "reproduce": "",
+  "tests": [
+    {
+      "name": "shared_brk_ranges",
+      "status": "PASS",
+      "detail": "resident=1,iteration=2000,mismatch=-1,break=315db000,base=315da000"
+    }
+  ],
+  "frames": []
+}

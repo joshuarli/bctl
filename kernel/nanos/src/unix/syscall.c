@@ -1943,107 +1943,102 @@ sysreturn uname(struct utsname *v)
     return 0;
 }
 
-sysreturn setrlimit(int resource, const struct rlimit *rlim)
+static sysreturn process_rlimit(process p, int resource, const struct rlimit *new_limit,
+                                struct rlimit *old_limit, struct creds *caller)
 {
-    context ctx = get_current_context(current_cpu());
-    if (!memory_is_user(rlim, sizeof(struct rlimit)) || context_set_err(ctx))
-        return -EFAULT;
     sysreturn rv = 0;
-    process p = current->p;
+    process_lock(p);
+    boolean privileged = ns_capable_creds(caller, p->creds.user_ns, CAP_SYS_RESOURCE);
+    if (p != current->p && !privileged &&
+        (caller->uid != p->creds.uid || caller->uid != p->creds.euid ||
+         caller->uid != p->creds.suid || caller->gid != p->creds.gid ||
+         caller->gid != p->creds.egid || caller->gid != p->creds.sgid)) {
+        rv = -EPERM;
+        goto out;
+    }
+    u64 *soft, *hard;
     switch (resource) {
     case RLIMIT_STACK:
-        current->p->rlimit_stack = rlim->rlim_cur;
+        soft = &p->rlimit_stack;
+        hard = &p->rlimit_stack_max;
         break;
     case RLIMIT_NPROC:
-        if (rlim->rlim_cur > rlim->rlim_max)
-            rv = -EINVAL;
-        else if ((rlim->rlim_max > p->rlimit_nproc_max) && !capable(p, CAP_SYS_RESOURCE))
-            rv = -EPERM;
-        else {
-            p->rlimit_nproc_cur = rlim->rlim_cur;
-            p->rlimit_nproc_max = rlim->rlim_max;
-        }
+        soft = &p->rlimit_nproc_cur;
+        hard = &p->rlimit_nproc_max;
         break;
     case RLIMIT_DATA:
-        if (rlim->rlim_cur > rlim->rlim_max)
-            rv = -EINVAL;
-        else if ((rlim->rlim_max > p->rlimit_data_max) && !capable(p, CAP_SYS_RESOURCE))
-            rv = -EPERM;
-        else {
-            p->rlimit_data_cur = rlim->rlim_cur;
-            p->rlimit_data_max = rlim->rlim_max;
-        }
+        soft = &p->rlimit_data_cur;
+        hard = &p->rlimit_data_max;
         break;
     case RLIMIT_NOFILE:
-        if (rlim->rlim_cur > rlim->rlim_max)
-            rv = -EINVAL;
-        else if ((rlim->rlim_max > p->rlimit_nofile_max) && !capable(p, CAP_SYS_RESOURCE))
-            rv = -EPERM;
-        else {
-            p->rlimit_nofile_cur = rlim->rlim_cur;
-            p->rlimit_nofile_max = rlim->rlim_max;
-        }
-        break;
-    }
-    context_clear_err(ctx);
-    return rv;
-}
-
-sysreturn getrlimit(int resource, struct rlimit *rlim)
-{
-    context ctx = get_current_context(current_cpu());
-    if (!memory_is_user(rlim, sizeof(struct rlimit)) || context_set_err(ctx))
-        return -EFAULT;
-
-    sysreturn rv = 0;
-    switch (resource) {
-    case RLIMIT_DATA:
-        rlim->rlim_cur = current->p->rlimit_data_cur;
-        rlim->rlim_max = current->p->rlimit_data_max;
-        break;
-    case RLIMIT_STACK:
-        rlim->rlim_cur = current->p->rlimit_stack;
-        rlim->rlim_max = infinity;
+        soft = &p->rlimit_nofile_cur;
+        hard = &p->rlimit_nofile_max;
         break;
     case RLIMIT_CORE:
-        rlim->rlim_cur = rlim->rlim_max = 0;    // core dump not supported
-        break;
-    case RLIMIT_NOFILE:
-        rlim->rlim_cur = current->p->rlimit_nofile_cur;
-        rlim->rlim_max = current->p->rlimit_nofile_max;
-        break;
-    case RLIMIT_AS:
-        rlim->rlim_cur = rlim->rlim_max = heap_total(current->p->vm->virtual);
-        break;
-    case RLIMIT_NPROC:
-        rlim->rlim_cur = current->p->rlimit_nproc_cur;
-        rlim->rlim_max = current->p->rlimit_nproc_max;
-        break;
+        if (!new_limit) {
+            old_limit->rlim_cur = old_limit->rlim_max = 0;
+            goto out;
+        }
+        rv = -EINVAL;
+        goto out;
     default:
         rv = -EINVAL;
+        goto out;
     }
-
-    context_clear_err(ctx);
+    if (new_limit && new_limit->rlim_cur > new_limit->rlim_max) {
+        rv = -EINVAL;
+        goto out;
+    }
+    if (new_limit && new_limit->rlim_max > *hard &&
+        !ns_capable_creds(caller, user_ns_init(), CAP_SYS_RESOURCE)) {
+        rv = -EPERM;
+        goto out;
+    }
+    if (old_limit) {
+        old_limit->rlim_cur = *soft;
+        old_limit->rlim_max = *hard;
+    }
+    if (new_limit) {
+        *soft = new_limit->rlim_cur;
+        *hard = new_limit->rlim_max;
+    }
+  out:
+    process_unlock(p);
     return rv;
 }
 
 sysreturn prlimit64(int pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit)
 {
-    if (pid != 0) {
-        process target = process_get_ns(pid, current->p->pid_ns);
-        if (!target)
-            return -ESRCH;
-        process_release(target);
-    }
-    if (old_limit) {
-        sysreturn ret = getrlimit(resource, old_limit);
-        if (ret < 0)
-            return ret;
-    }
+    if (pid < 0)
+        return -EINVAL;
+    struct rlimit new_value, old_value;
+    if (new_limit && !copy_from_user(new_limit, &new_value, sizeof(new_value)))
+        return -EFAULT;
+    process p = pid ? process_get_ns(pid, current->p->pid_ns) : current->p;
+    if (!p)
+        return -ESRCH;
+    struct creds caller;
+    creds_snapshot(current->p, &caller);
+    sysreturn rv = process_rlimit(p, resource, new_limit ? &new_value : 0, &old_value, &caller);
+    if (pid)
+        process_release(p);
+    if (rv == 0 && old_limit && !copy_to_user(old_limit, &old_value, sizeof(old_value)))
+        rv = -EFAULT;
+    return rv;
+}
 
-    if (new_limit)
-        return setrlimit(resource, new_limit);
-    return 0;
+sysreturn setrlimit(int resource, const struct rlimit *rlim)
+{
+    if (!rlim)
+        return -EFAULT;
+    return prlimit64(0, resource, rlim, 0);
+}
+
+sysreturn getrlimit(int resource, struct rlimit *rlim)
+{
+    if (!rlim)
+        return -EFAULT;
+    return prlimit64(0, resource, 0, rlim);
 }
 
 static sysreturn getrusage(int who, struct rusage *usage)
@@ -2087,33 +2082,7 @@ static sysreturn getcwd(char *buf, u64 length)
 
 static sysreturn brk(void *addr)
 {
-    process p = current->p;
-    process_lock(p);
-
-    /* on failure, return the current break */
-    if (!addr || p->vm->brk == addr)
-        goto out;
-
-    u64 old_end = pad(u64_from_pointer(p->vm->brk), PAGESIZE);
-    u64 new_end = pad(u64_from_pointer(addr), PAGESIZE);
-    if (old_end > new_end) {
-        if (u64_from_pointer(addr) < p->vm->heap_base ||
-            !adjust_process_heap(p, old_end, new_end))
-            goto out;
-        smp_write_barrier();
-        address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
-    } else if (new_end > old_end) {
-        u64 alloc = new_end - old_end;
-        if (u64_from_pointer(addr) - p->vm->heap_base > p->rlimit_data_cur ||
-            !memory_is_user(pointer_from_u64(old_end), alloc) ||
-            !adjust_process_heap(p, old_end, new_end))
-            goto out;
-    }
-    p->vm->brk = addr;
-  out:
-    addr = p->vm->brk;
-    process_unlock(p);
-    return sysreturn_from_pointer(addr);
+    return sysreturn_from_pointer(process_set_brk(current->p, addr));
 }
 
 static sysreturn readlink_internal(filesystem fs, inode cwd, sstring pathname, char *buf,
@@ -2328,7 +2297,7 @@ sysreturn fcntl(int fd, int cmd, s64 arg)
         break;
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        if (arg < 0) {
+        if (arg < 0 || (u64)arg >= current->p->rlimit_nofile_cur) {
             rv = -EINVAL;
             break;
         }

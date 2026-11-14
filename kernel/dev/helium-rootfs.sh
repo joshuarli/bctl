@@ -8,12 +8,26 @@ if [ "$ARCH" = x86_64 ]; then
 	ARCHIVE_ROOT=helium-0.20.3.1-r5-linux-x86_64-musl
 	MUSL_APK_SHA256=e142255d0fa397f14318996bc10378093dcc069dc3dd1b6818c8f28a789c21da
 else
-	ARCHIVE=${HELIUM_ARCHIVE:?set HELIUM_ARCHIVE to helium-0.20.3.1-r6-linux-aarch64-musl.tar.xz}
+	ARCHIVE=${HELIUM_ARCHIVE:-}
 	ARCHIVE_SHA256=7289b25b30fa86d41928e63a4210b3006f43ba8da35d9cf5c874b05152215b7a
 	ARCHIVE_ROOT=helium-0.20.3.1-r6-linux-aarch64-musl
 	MUSL_APK_SHA256=2e17864102278d9049c3a56f1bceed9e8cf287065617e579325123443daed8a5
 fi
 MUSL_APK_URL=https://dl-cdn.alpinelinux.org/alpine/v3.24/main/$ARCH/musl-1.2.6-r3.apk
+
+case $# in
+0) ;;
+3)
+	ARCHIVE=$1 ARCHIVE_SHA256=$2 ARCHIVE_ROOT=$3
+	case $ARCHIVE_SHA256 in '' | *[!0-9a-f]*) die "archive digest must be SHA-256" ;; esac
+	[ "${#ARCHIVE_SHA256}" -eq 64 ] || die "archive digest must be SHA-256"
+	case $ARCHIVE_ROOT in '' | *[!a-zA-Z0-9._-]*) die "invalid archive root" ;; esac
+	[ "${ARCHIVE##*/}" = "$ARCHIVE_ROOT.tar.xz" ] || die "archive root must match the archive name"
+	;;
+*) die "usage: helium-rootfs.sh [ARCHIVE SHA256 ROOT]" ;;
+esac
+
+[ -n "$ARCHIVE" ] || die "set HELIUM_ARCHIVE to helium-0.20.3.1-r6-linux-aarch64-musl.tar.xz"
 
 DL=$WORK/dl/apk-3.24.2
 OUT=$WORK/helium
@@ -28,11 +42,8 @@ fetch() {
 ensure_work
 mkdir -p "$DL" "$OUT"
 
-if [ ! -f "$OUT/archive.ok" ] || ! [ "$(cat "$OUT/archive.ok")" = "$ARCHIVE_SHA256" ]; then
-	[ -f "$ARCHIVE" ] || die "missing Helium archive $ARCHIVE"
-	sha256_is "$ARCHIVE_SHA256" "$ARCHIVE" || die "Helium archive sha256 mismatch: $ARCHIVE"
-	printf '%s\n' "$ARCHIVE_SHA256" >"$OUT/archive.ok"
-fi
+[ -f "$ARCHIVE" ] || die "missing Helium archive $ARCHIVE"
+sha256_is "$ARCHIVE_SHA256" "$ARCHIVE" || die "Helium archive sha256 mismatch: $ARCHIVE"
 
 musl_apk=$DL/${MUSL_APK_URL##*/}
 if ! sha256_is "$MUSL_APK_SHA256" "$musl_apk"; then

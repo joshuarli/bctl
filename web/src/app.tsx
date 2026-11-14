@@ -9,6 +9,7 @@ const POLL_MS = 2000;
 export function stateTone(state: SessionView["state"]): Tone {
   switch (state) {
     case "ready": return "ok";
+    case "paused": return "warn";
     case "starting": return "info";
     case "stopping": return "warn";
     case "failing": return "bad";
@@ -37,7 +38,7 @@ function useSessions() {
     };
     void load();
     const timer = setInterval(() => void load(), POLL_MS);
-    onCleanup(() => { alive = false; clearInterval(timer); });
+    return () => { alive = false; clearInterval(timer); };
   });
   return { list, error };
 }

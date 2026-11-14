@@ -18,12 +18,11 @@ cancel operations and documented unsupported-browser errors. Its commands
 are `agent-browser webmcp list [TOOL] [--frame ID] --json` and
 `agent-browser webmcp invoke TOOL --params JSON [--frame ID]`.
 
-Contrast this with bctl's separate page-main-world adapter, which assumes
-`document.modelContext.getTools` and `executeTool` methods. **Those assumptions
-have not been validated against the actual Chromium interface in Helium.**
-Do not claim equivalence or runtime compatibility until BCTL-23's cross-
-runtime differential tests pass. The native agent-browser implementation
-and [provider integration](agent-browser.md) form the reference path.
+bctl's page-main-world adapter uses `document.modelContext.getTools` and
+`executeTool`. Both methods were exercised in Helium's Chromium 156 build
+on all four host/runtime tuples. The fixture compares discovery and invocation
+with agent-browser 0.43.0's CDP implementation. See the
+[qualification receipts](compatibility.md#experimental-webmcp).
 ## UI SDK bridge
 
 The November 2026 UI SDK agent bridge registers three browser tools using
@@ -81,14 +80,14 @@ connection, adds no daemon protocol variant, and introduces no JS package.
 
 ## Feature availability and qualification
 
-Neither Nanos nor SmolVM is claimed to support WebMCP yet. Availability
-requires a supporting Chromium build, a permitted origin-trial or feature
+Experimental WebMCP passes the dedicated fixture on both runtimes and hosts.
+Availability requires a supporting Chromium build, a permitted origin-trial or feature
 configuration, a secure HTTPS/localhost context, and registered tools.
 The CLI reports `WEBMCP_UNAVAILABLE` when the selected page lacks the API.
 Do not globally enable experimental Chromium features. Use a dedicated
 test image and preserve the regular CDP/accessibility fallback.
 
-Before claiming production support, complete these gates:
+The [fixture instructions](../tests/interop/webmcp/README.md) reproduce these gates:
 
 1. Run `cargo test -p bctl webmcp` for quoting and policy flag tests.
 2. In a deliberately feature-enabled Chromium test image, register a known
@@ -99,6 +98,14 @@ Before claiming production support, complete these gates:
    duplicate names, disabled API, and cross-origin frame restrictions.
 5. Run both host platforms and runtimes. Record browser versions, flags,
    permission policies, and receipts in [compatibility](compatibility.md).
+
+The test image enables `WebMCPTesting` and `DevToolsWebMCPSupport` and trusts
+only its generated fixture CA. Production images do not acquire those flags
+or certificates. The results establish compatibility with this Chromium build
+and test configuration; they do not qualify a public origin trial or future
+WebMCP drafts. Nanos has no input devices and refuses human takeover.
+On headed SmolVM, the fixture proves discovery and invocation are refused
+while a human holds the control lease, without invoking callbacks.
 
 Fallback: use `bctl page snapshot`, other native actions, or the existing
 [agent-browser provider](agent-browser.md).

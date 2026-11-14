@@ -290,7 +290,7 @@ else
     [ -z "$missing" ] || fail "libkrun.so has unresolved dependencies: $missing"
 fi
 
-version=$(HOME="$work/tmp/home" "$out.next/smolvm" --version)
+version=$("$out.next/smolvm" --version)
 [ "$version" = "smolvm $(lock .smolvm.version)" ] || fail "unexpected $version"
 
 rm -rf "$out"

@@ -1,0 +1,49 @@
+{
+  "status": "PASS",
+  "checks": [
+    "secure-context",
+    "javascript-methods",
+    "registered-catalog",
+    "cross-origin-isolation",
+    "prototype-keys-are-json-data",
+    "refusal:\"; globalThis.__injected = true; // <script>bad</script>:WEBMCP_TOOL_MISSING_OR_AMBIGUOUS:",
+    "snapshot-callback",
+    "hostile-json-is-data",
+    "hostile-name-is-data",
+    "refusal:act:WEBMCP_WRITE_OPT_IN_REQUIRED:",
+    "refusal:submit:WEBMCP_WRITE_OPT_IN_REQUIRED:",
+    "refusal:submit:WEBMCP_CONSEQUENTIAL_OPT_IN_REQUIRED:--allow-write",
+    "refusal:submit:WEBMCP_WRITE_OPT_IN_REQUIRED:--allow-consequential",
+    "distinct-opt-ins-invoke-once",
+    "agent-browser-cdp-catalog-and-invocation",
+    "dynamic-registration",
+    "duplicate-registration-preserves-original",
+    "refusal:ephemeral:WEBMCP_TOOL_MISSING_OR_AMBIGUOUS:",
+    "navigation-clears-registration",
+    "human-takeover-never-invokes",
+    "effective-feature-flags"
+  ],
+  "browser": {
+    "methods": [
+      "ontoolchange",
+      "ontoolactivated",
+      "ontoolcancel",
+      "executeTool",
+      "getTools",
+      "registerTool",
+      "constructor"
+    ],
+    "origin": "https://100.96.0.1:51531",
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+  },
+  "browser_command_line": " /opt/browser/helium.real --ozone-platform=wayland --start-maximized --remote-debugging-port=9221 --user-data-dir=/profile --no-first-run --no-default-browser-check --enable-features=WebMCPTesting,DevToolsWebMCPSupport --flag-switches-begin --flag-switches-end about:blank",
+  "display": "headed",
+  "image_sha256": "f40d3cfb20ff6abf8d38e1df2b9750ed3752c19239d6e9c680643520c81ad605",
+  "cdp_catalog_polls": 1,
+  "features": [
+    "WebMCPTesting",
+    "DevToolsWebMCPSupport"
+  ],
+  "certificate_verification": "fixture CA trusted in test-image NSS database",
+  "agent_browser_version": "agent-browser 0.43.0"
+}

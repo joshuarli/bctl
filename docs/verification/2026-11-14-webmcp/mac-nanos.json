@@ -1,0 +1,49 @@
+{
+  "status": "PASS",
+  "checks": [
+    "secure-context",
+    "javascript-methods",
+    "registered-catalog",
+    "cross-origin-isolation",
+    "prototype-keys-are-json-data",
+    "refusal:\"; globalThis.__injected = true; // <script>bad</script>:WEBMCP_TOOL_MISSING_OR_AMBIGUOUS:",
+    "snapshot-callback",
+    "hostile-json-is-data",
+    "hostile-name-is-data",
+    "refusal:act:WEBMCP_WRITE_OPT_IN_REQUIRED:",
+    "refusal:submit:WEBMCP_WRITE_OPT_IN_REQUIRED:",
+    "refusal:submit:WEBMCP_CONSEQUENTIAL_OPT_IN_REQUIRED:--allow-write",
+    "refusal:submit:WEBMCP_WRITE_OPT_IN_REQUIRED:--allow-consequential",
+    "distinct-opt-ins-invoke-once",
+    "agent-browser-cdp-catalog-and-invocation",
+    "dynamic-registration",
+    "duplicate-registration-preserves-original",
+    "refusal:ephemeral:WEBMCP_TOOL_MISSING_OR_AMBIGUOUS:",
+    "navigation-clears-registration",
+    "headless-takeover-is-unsupported",
+    "effective-feature-flags"
+  ],
+  "browser": {
+    "methods": [
+      "ontoolchange",
+      "ontoolactivated",
+      "ontoolcancel",
+      "executeTool",
+      "getTools",
+      "registerTool",
+      "constructor"
+    ],
+    "origin": "https://100.96.0.1:51531",
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36"
+  },
+  "browser_command_line": " /opt/browser/helium.real --headless=new --disable-gpu --proxy-server=socks5://127.0.0.1:1080 --proxy-bypass-list=<-loopback> --in-process-gpu --disable-frame-rate-limit --use-gl=disabled --disk-cache-dir=/tmp/cache --enable-features=ThrottleRepeatedNoDamageFrames:repeated_no_damage_frame_throttling_threshold1/1/repeated_no_damage_frame_throttling_factor1/16/repeated_no_damage_frame_throttling_threshold2/1/repeated_no_damage_frame_throttling_factor2/16 --disable-crash-reporter --disable-breakpad --disable-background-networking --disable-component-update --disable-sync --disable-default-apps --disable-extensions --disable-component-extensions-with-background-pages --disable-features=SpareRendererForSitePerProcess,OptimizationHints,MediaRouter,AutofillServerCommunication --remote-debugging-port=9221 --user-data-dir=/profile --no-first-run --no-default-browser-check --enable-features=ThrottleRepeatedNoDamageFrames:repeated_no_damage_frame_throttling_threshold1/1/repeated_no_damage_frame_throttling_factor1/16/repeated_no_damage_frame_throttling_threshold2/1/repeated_no_damage_frame_throttling_factor2/16,WebMCPTesting,DevToolsWebMCPSupport --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --flag-switches-begin --flag-switches-end --gpu-preferences=YAAAAAAAAAAoAQAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --use-gl=disabled about:blank",
+  "display": "headless",
+  "image_sha256": "2d29b7fd9b6f4f830b3a41ec775e265104c4261e5305dd1153c20b5f756bd27a",
+  "cdp_catalog_polls": 1,
+  "features": [
+    "WebMCPTesting",
+    "DevToolsWebMCPSupport"
+  ],
+  "certificate_verification": "fixture CA trusted in test-image NSS database",
+  "agent_browser_version": "agent-browser 0.43.0"
+}

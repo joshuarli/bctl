@@ -132,10 +132,15 @@ RUNTIME_TESTS=	\
 	ktest \
 	mkdir \
 	mmap \
+	mprotect_cow \
 	netlink \
 	netsock \
 	pipe \
 	readv \
+	resource_limits \
+	shared_brk \
+	seccomp_policy \
+	unix_socket_review \
 	sandbox \
 	sendfile \
 	shmem \

@@ -44,7 +44,7 @@ u64 allocate_fd(process p, void *f, u32 fd_flags)
         msg_err("fd allocation failed");
         goto out;
     }
-    if (p->rlimit_nofile_cur && fd >= p->rlimit_nofile_cur) {
+    if (fd >= p->rlimit_nofile_cur) {
         deallocate_u64((heap)fdt->fdallocator, fd, 1);
         fd = INVALID_PHYSICAL;
         goto out;
@@ -65,7 +65,7 @@ u64 allocate_fd_gte(process p, u64 min, void *f, u32 fd_flags)
     fdtable fdt = p->fdtable;
     spin_lock(&fdt->lock);
     u64 fd = id_heap_alloc_gte(fdt->fdallocator, 1, min);
-    if (fd != INVALID_PHYSICAL && p->rlimit_nofile_cur && fd >= p->rlimit_nofile_cur) {
+    if (fd != INVALID_PHYSICAL && fd >= p->rlimit_nofile_cur) {
         deallocate_u64((heap)fdt->fdallocator, fd, 1);
         fd = INVALID_PHYSICAL;
     }
@@ -859,6 +859,7 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->aio_ids = create_id_heap(locked, locked, 0, S32_MAX, 1, false);
     p->aio = allocate_vector(locked, 8);
     p->rlimit_stack = PROCESS_STACK_SIZE;
+    p->rlimit_stack_max = infinity;
     p->trace = 0;
     p->trap = 0;
     return p;
@@ -1246,6 +1247,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     c->dumpable = parent->dumpable;
     c->syscalls = parent->syscalls;
     c->rlimit_stack = parent->rlimit_stack;
+    c->rlimit_stack_max = parent->rlimit_stack_max;
     c->rlimit_nproc_cur = parent->rlimit_nproc_cur;
     c->rlimit_nproc_max = parent->rlimit_nproc_max;
     c->rlimit_nofile_cur = parent->rlimit_nofile_cur;

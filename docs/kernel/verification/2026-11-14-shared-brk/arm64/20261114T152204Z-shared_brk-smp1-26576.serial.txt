@@ -1,0 +1,5 @@
+[79454.053087] NET: no network interface found
+MINI_CHROMIUM_TEST name=shared_brk_ranges status=PASS detail=resident=1,iteration=2000,mismatch=-1,break=360000,base=35f000
+MINI_CHROMIUM_RESULT status=PASS passed=1 failed=0
+
+Angel shutdown trap failed; shutting down with PSCI, exit code 0.

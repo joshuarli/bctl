@@ -1,0 +1,3 @@
+[0.077051] NET: no network interface found
+MINI_CHROMIUM_TEST name=shared_brk_ranges status=PASS detail=resident=1,iteration=2000,mismatch=-1,break=2a5000,base=2a2000
+MINI_CHROMIUM_RESULT status=PASS passed=1 failed=0

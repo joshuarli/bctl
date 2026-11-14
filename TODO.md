@@ -1,14 +1,6 @@
 Prefix: BCTL
 Next: 24
 
-### BCTL-23 · P2 · Experimental WebMCP bridge is not qualified on Helium runtimes
-
-- **Area:** Browser
-- **Where:** `crates/bctl/src/webmcp.rs`, `docs/webmcp.md`, `tests/interop/`, `images/helium/`
-- **Problem:** The optional `bctl webmcp list/call` bridge is implemented over native page-eval with same-origin filtering and separate write/consequential opt-ins, but only expression-level unit tests are present. We have not proved that the deployed Helium/Chromium binary exposes `document.modelContext`, that origin-trial/permissions-policy conditions are met, or that `getTools`/`executeTool` operate end-to-end. WebMCP is a draft, so claiming general runtime support would be premature.
-- **Recommendation:** First compare the homegrown `document.modelContext.getTools` / `executeTool` JavaScript adapter with agent-browser v0.43.0's independently implemented **CDP WebMCP** discovery and invocation. Verify the JavaScript methods actually exist in the browser's WebMCP implementation; otherwise replace the incorrect adapter with a typed CDP surface or delete it in favor of the agent-browser provider rather than maintaining two divergent protocols. Then add a purpose-built HTTPS WebMCP fixture with known `snapshot`/`query`/`act`-style tools, read-only/write/consequential annotations, callback counters, and registration/navigation tests. Opt the feature in on a test image only and qualify v0.43.0 across Nanos and SmolVM on macOS and Linux, recording build, flags, secure-context policy, and VM receipts in `docs/compatibility.md`. Prove refusals never invoke callbacks, hostile data cannot inject JavaScript, cross-origin tools stay isolated, and human takeover is respected. Keep ordinary native CDP actions as fallback; do not globally enable experimental flags or add JS dependencies.
-- **Fix with:** `test-pyramid`
-- **Effort:** M
 ### BCTL-15 · P2 · A run queue can hold a null scheduler task
 
 - **Area:** Concurrency
@@ -31,8 +23,8 @@ Next: 24
 
 - **Area:** Concurrency
 - **Where:** `kernel/nanos/src/fs/9p.c`
-- **Problem:** The Linux kernel review found two supported 9p ownership risks that needed runtime regressions and a repair (`docs/kernel/campaign-report.md`, "Review and acceptance limits"). The later dentry and fsfile ownership repair (`aacbd732` and the "9p ownership and mutex wakeup repair" section) may cover them, but the review's detail lived only in a scratch file that no longer exists, so that cannot be checked. Separately, a regular file's handle free in `9p.c` mirrors the virtio-fs path that kept metadata because a file tuple has no parent link; by reading, the 9p path leaves the parent's entry pointing at freed memory, and no test covers it. The suspected free-path defect is unproven at runtime.
-- **Recommendation:** Rerun and commit the independent ownership review, reproduce each supported risk, then fix through the Rust 9p lifetime slice in [the active kernel campaign](docs/kernel/rust-adoption.md#hr2-9p-lifetimes-bctl-17). Move dentry, metadata/cache membership, fid and open-file/in-flight-I/O leases under an explicit Rust ownership model; retain C transport and page-cache mechanisms behind audited adapters. Cover last-close/relookup, unlink/rename with open handles, delayed completion, allocation/transport failure and exactly-once release in host tests and Linux x86_64 `sh kernel/dev/test.sh 9p`; test shared adapters on macOS ARM/virtio-fs without claiming 9p coverage there. Close only after review findings are resolved and the ownership changes and regressions are independently reviewed.
+- **Problem:** The [independent ownership review](docs/kernel/9p-ownership-review.md) at `a21c8882` identifies four source-supported risks: open-unlink/rename metadata lifetime, overlapping last-close/reopen ownership, fid-pressure metadata eviction, and fid reuse after failed clunk. Runtime regressions and the Rust lifetime repair remain outstanding. The regular-file last-close metadata free was already repaired by `aacbd732`; it is distinct from these remaining paths.
+- **Recommendation:** Reproduce each supported risk and fix through the Rust 9p lifetime slice in [the active kernel campaign](docs/kernel/rust-adoption.md#hr2-9p-lifetimes-bctl-17). Move dentry, metadata/cache membership, fid and open-file/in-flight-I/O leases under an explicit Rust ownership model; retain C transport and page-cache mechanisms behind audited adapters. Cover last-close/relookup, unlink/rename with open handles, delayed completion, allocation/transport failure and exactly-once release in host tests and Linux x86_64 `sh kernel/dev/test.sh 9p`; test shared adapters on macOS ARM/virtio-fs without claiming 9p coverage there. Close only after review findings are resolved and the ownership changes and regressions are independently reviewed.
 - **Fix with:** `review`
 - **Effort:** L
 
@@ -63,29 +55,11 @@ Next: 24
 - **Fix with:** `make-it-fast`
 - **Effort:** L
 
-### BCTL-10 · P3 · The web UI has no tone for paused sessions
-
-- **Area:** Types
-- **Where:** `web/src/api.ts:7`, `web/src/app.tsx:9`
-- **Problem:** The daemon reports `paused` sessions (`crates/bctl/src/daemon.rs:806`), but `SessionView["state"]` omits `paused`, so the type is wrong and `stateTone` returns undefined for a paused session's badge.
-- **Recommendation:** Add `paused` to the state union and a tone for it in `stateTone`, and check the badge renders for a paused session.
-- **Fix with:** none
-- **Effort:** S
-
-### BCTL-19 · P3 · Resource limits are partly modeled
-
-- **Area:** Kernel
-- **Where:** `kernel/nanos/src/unix/syscall.c`
-- **Problem:** `setrlimit` accepts and drops resources it does not model (`RLIMIT_AS`, `RLIMIT_CPU`, and others). `RLIMIT_DATA` bounds `brk` but not private writable mappings. `prlimit64` on another pid reads and writes the caller's limits.
-- **Recommendation:** Return the Linux error for unmodeled resources unless a consumer needs silent acceptance, apply `RLIMIT_DATA` to private writable mappings, and resolve the target pid in `prlimit64`, each with a probe check run natively and on Nanos.
-- **Fix with:** none
-- **Effort:** M
-
 ### BCTL-20 · P3 · The kernel fork has no benchmark report or independent review
 
 - **Area:** Kernel
 - **Where:** `kernel/`, `docs/kernel/campaign-report.md`
 - **Problem:** Hydrogen's campaign closed every functional gate but never ran its benchmark report (cold boot, image size, guest RSS, fork and IPC latency against native), its dead-code pass, or an independent review of the whole fork diff since upstream `e4b9c9e6`. The macOS repairs in `docs/kernel/macos-qualification.md` were never independently reviewed.
-- **Recommendation:** On a quiet host, write the benchmark table into `docs/kernel/campaign-report.md`. Then run an independent review of `git diff e4b9c9e65cd51ef29e5021835419a1d9a7733f20 HEAD -- kernel/nanos` and fix P1 and P2 findings with tests.
+- **Recommendation:** The [partial independent review](docs/kernel/fork-review.md) found a shared-`brk` race, now reproduced and repaired with [architecture receipts](docs/kernel/shared-brk.md). Most of the fork delta remains unreviewed. On a quiet host, write the benchmark table into `docs/kernel/campaign-report.md`. Complete the independent review of `git diff e4b9c9e65cd51ef29e5021835419a1d9a7733f20 HEAD -- kernel/nanos` and fix P1 and P2 findings with tests.
 - **Fix with:** `review`
 - **Effort:** L

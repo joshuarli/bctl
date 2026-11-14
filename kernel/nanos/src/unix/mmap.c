@@ -1078,19 +1078,61 @@ void *process_map_physical(process p, u64 phys_addr, u64 size, u64 vmflags)
     return pointer_from_u64(virt_addr);
 }
 
-boolean adjust_process_heap(process p, u64 old_end, u64 new_end)
+static boolean vmap_is_data(u64 flags)
 {
-    boolean adjusted = true;
+    return (flags & (VMAP_FLAG_WRITABLE | VMAP_FLAG_SHARED | VMAP_FLAG_STACK)) ==
+        VMAP_FLAG_WRITABLE;
+}
+
+static boolean process_data_limit_locked(process p, u64 added, range removed)
+{
+    u64 limit = p->rlimit_data_cur;
+    if (limit == 0)
+        limit = p->rlimit_data_max;
+    if (limit == infinity)
+        return true;
+    u64 used = 0, replaced = 0;
+    rangemap_foreach(p->vm->vmaps, n) {
+        vmap vm = (vmap)n;
+        if (vmap_is_data(vm->flags)) {
+            used += range_span(n->r);
+            if (ranges_intersect(n->r, removed))
+                replaced += range_span(range_intersection(n->r, removed));
+        }
+    }
+    if (added <= replaced)
+        return true;
+    return used <= limit && added - replaced <= limit - used;
+}
+
+void *process_set_brk(process p, void *addr)
+{
+    process_lock(p);
     vmap_lock(p);
+    u64 requested = u64_from_pointer(addr);
+    u64 new_end = pad(requested, PAGESIZE);
+    if (!addr || requested < p->vm->heap_base || new_end < requested)
+        goto out;
+    u64 old_end = pad(u64_from_pointer(p->vm->brk), PAGESIZE);
     if (new_end > old_end) {
+        u64 added = new_end - old_end;
         struct vmap k = ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE, 0, 0, 0, 0);
         k.node.r = irange(old_end, new_end);
-        adjusted = allocate_vmap_locked(p->vm->vmaps, &k) != INVALID_ADDRESS;
+        if (requested - p->vm->heap_base > p->rlimit_data_cur ||
+            !memory_is_user(pointer_from_u64(old_end), added) ||
+            !process_data_limit_locked(p, added, irange(0, 0)) ||
+            allocate_vmap_locked(p->vm->vmaps, &k) == INVALID_ADDRESS)
+            goto out;
     } else if (new_end < old_end) {
         process_remove_range_locked(p, irange(new_end, old_end), false);
+        address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
     }
+    p->vm->brk = addr;
+  out:
+    addr = p->vm->brk;
     vmap_unlock(p);
-    return adjusted;
+    process_unlock(p);
+    return addr;
 }
 
 sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void *new_address)
@@ -1182,6 +1224,13 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
             rv = sysreturn_from_pointer(old.start);
             goto unlock_out;
         }
+    }
+
+    if (vmap_is_data(k.flags) && new_size > old_size &&
+        !process_data_limit_locked(p, new_size - old_size,
+                                   (flags & MREMAP_FIXED) ? new : irange(0, 0))) {
+        rv = -ENOMEM;
+        goto unlock_out;
     }
 
     vmap_hold_backing(&k);
@@ -1414,16 +1463,31 @@ static sysreturn vmap_update_protections_locked(process p, range q, u32 newflags
     else if (res == RM_ABORT)
         return -EACCES;
 
+    u64 added = 0;
+    struct rmnode key = {.r = q};
+    rangemap_foreach_of_range(pvmap, n, &key) {
+        vmap vm = (vmap)n;
+        u64 flags = (vm->flags & ~VMAP_FLAG_PROT_MASK) | newflags;
+        if (!vmap_is_data(vm->flags) && vmap_is_data(flags))
+            added += range_span(range_intersection(n->r, q));
+    }
+    if (added && !process_data_limit_locked(p, added, irange(0, 0)))
+        return -ENOMEM;
+
     /* updating protections can lead to merging of nodes, so we cannot traverse */
     range r = q;
     while (range_span(r)) {
         vmap vm = (vmap)rangemap_lookup(pvmap, r.start);
         vmap_assert(vm != INVALID_ADDRESS);
         u64 next = MIN(r.end, vm->node.r.end);
+        range ri = irange(r.start, next);
+        pageflags pf = pageflags_from_vmflags(newflags);
+        if (!(vm->flags & VMAP_FLAG_SHARED) && vm->cache_node)
+            pf = pageflags_readonly(pf);
         vmap_update_flags_intersection(pvmap, q, VMAP_FLAG_PROT_MASK, newflags, vm);
+        address_space_update_map_flags(p->vm->as, ri.start, range_span(ri), pf);
         r.start = next;
     }
-    address_space_update_map_flags(p->vm->as, q.start, range_span(q), pageflags_from_vmflags(newflags));
     vmap_paranoia_locked(pvmap);
     return 0;
 }
@@ -1760,6 +1824,11 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             goto out_unlock;
         }
         q = irangel(vaddr, len);
+    }
+    if (vmap_is_data(vmflags) &&
+        !process_data_limit_locked(p, len, fixed ? q : irange(0, 0))) {
+        ret = -ENOMEM;
+        goto out_unlock;
     }
     if (vmap_mmap_type == VMAP_MMAP_TYPE_CUSTOM) {
         k.node.r = q;
@@ -2294,6 +2363,11 @@ boolean mmap_cow_page(process_vm pvm, vmap vm, u64 vaddr)
         return true;
     phys &= ~PAGEMASK;
     pageflags flags = pageflags_from_vmflags(vm->flags);
+    if (vm->cache_node) {
+        u64 node_offset = vm->node_offset + (va - vm->node.r.start);
+        if (pagecache_node_page_is_cached(vm->cache_node, node_offset, phys))
+            return pagecache_node_do_page_cow(vm->cache_node, pvm->as, node_offset, va, flags);
+    }
     if (!page_is_shared(phys)) {
         address_space_update_map_flags(pvm->as, va, PAGESIZE, flags);
         return true;

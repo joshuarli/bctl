@@ -1,0 +1,32 @@
+{
+  "mode": "nanos",
+  "verdict": "PASS",
+  "detail": "",
+  "hydrogen": "fc033050193b2fd7b7f8ceef24a07b6a0243d602",
+  "dirty": false,
+  "kernel_sha256": "061cd423c354f907bcfb3347c1bf456d96b88551be40a669a16798eefabf9912",
+  "image_sha256": "4b0d51cb75a898cf143df071a1d31c9d534708349e7f9bb337e3ba8a1d5b8419",
+  "program": "shared_brk",
+  "binary_sha256": "17c9393e8f2a3e8fd537e68d081f205c6f89ba32813e6d033b93ce4fbb337820",
+  "toolchain": {
+    "gcc": "15.2.0",
+    "qemu": "11.1.2",
+    "llvm": "llvm-musl-23.1.5-c4f9b08",
+    "musl": "1.2.6"
+  },
+  "qemu": {
+    "command": "qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 1 -m 1G -display none -monitor none -serial file:/home/josh/d/bctl-todo-qualification/kernel/.work/runs/20261114T152103Z-shared_brk-smp1-10773/serial.log -no-reboot -device isa-debug-exit -device virtio-rng-pci -device virtio-balloon-pci,free-page-reporting=on,vectors=5 -drive if=none,id=hd0,format=raw,file=/home/josh/d/bctl-todo-qualification/kernel/.work/images/shared_brk.img -device virtio-scsi-pci,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=hd0 -nic none -kernel /home/josh/d/bctl-todo-qualification/kernel/nanos/output/platform/pc/bin/kernel.img",
+    "exit": 1,
+    "guest_exit": 0
+  },
+  "elapsed_seconds": 0.14,
+  "reproduce": "dev/bootstrap.sh && dev/build.sh && make -s -C tests/mini_chromium && dev/image.sh '-o' '/home/josh/d/bctl-todo-qualification/kernel/.work/images/shared_brk.img' '/home/josh/d/bctl-todo-qualification/kernel/.work/build/mini_chromium/fixtures/shared_brk' && dev/run.sh --smp 1 --mem 1G --timeout 50 --exit 0 /home/josh/d/bctl-todo-qualification/kernel/.work/images/shared_brk.img",
+  "tests": [
+    {
+      "name": "shared_brk_ranges",
+      "status": "PASS",
+      "detail": "resident=1,iteration=2000,mismatch=-1,break=3a5000,base=3a4000"
+    }
+  ],
+  "frames": []
+}

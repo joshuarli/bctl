@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|resource-limits|shared-brk|seccomp-policy|unix-socket-review|mprotect-cow|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -35,11 +35,11 @@ case_verdict() {
 
 # The guest checks the share from inside; the host then checks what the guest left behind.
 case_virtiofs_files() {
-	smp=$1 share=$WORK/tmp/virtiofs-share-$1
+	smp=$1 share=$WORK/tmp/virtiofs-share-$1 name=${2:-virtiofs_files}
 	rm -rf "$share"
 	mkdir -p "$share/host_dir"
 	printf 'hello from the host\n' >"$share/from_host"
-	case_virtiofs=shared:$share case_verdict virtiofs_files "$smp" 60 PASS '' --mount shared:/shared "$FIXTURES/virtiofs_files"
+	case_virtiofs=shared:$share case_verdict "$name" "$smp" 60 PASS '' --mount shared:/shared "$FIXTURES/virtiofs_files"
 	# BSD wc pads the count; GNU wc does not.
 	bytes=$(wc -c <"$share/from_guest" 2>/dev/null | tr -d '[:space:]')
 	if [ "$bytes" != 1000 ] || [ -e "$share/gdir" ]; then
@@ -405,7 +405,8 @@ for suite in "$@"; do
 			for smp in 1 2; do case_virtiofs_files "$smp"; done
 			[ "$failures" -eq 0 ] || break
 			iteration=$((iteration + 1))
-		done ;;
+		done
+		case_virtiofs_files 1 virtiofs_long_run_label_exercises_unix_socket_address_limit ;;
 	9p)
 		[ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "9p suite requires Linux x86_64"
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/p9_close"
@@ -428,6 +429,32 @@ for suite in "$@"; do
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/wakeup_latency"
 		linux "$FIXTURES/wakeup_latency" | sed 's/^/native /'
 		for smp in 1 2 4; do case_verdict wakeup_latency "$smp" 120 PASS '' "$FIXTURES/wakeup_latency"; done ;;
+	seccomp-policy)
+		for name in seccomp_policy seccomp seccomp_arch; do
+			linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/$name"
+			fixture_native "$name" env
+			for smp in 1 2 4; do case_verdict "$name" "$smp" 60 PASS '' "$FIXTURES/$name"; done
+		done ;;
+	shared-brk)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/shared_brk"
+		fixture_native shared_brk env
+		for smp in 1 2 4; do case_verdict shared_brk "$smp" 50 PASS '' "$FIXTURES/shared_brk"; done ;;
+	resource-limits)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/resource_limits"
+		fixture_native resource_limits env
+		for smp in 1 2 4; do
+			case_verdict resource_limits "$smp" 30 PASS '' --klib tmpfs --klib shmem "$FIXTURES/resource_limits"
+		done ;;
+	unix-socket-review)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/unix_socket_review"
+		fixture_native unix_socket_review env
+		for smp in 1 2 4; do case_verdict unix_socket_review "$smp" 60 PASS '' "$FIXTURES/unix_socket_review"; done ;;
+	mprotect-cow)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/mprotect_cow"
+		fixture_native mprotect_cow env
+		for smp in 1 2 4; do
+			case_verdict mprotect_cow "$smp" 60 PASS '' --dir /tmp "$FIXTURES/mprotect_cow"
+		done ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

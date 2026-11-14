@@ -1,0 +1,6 @@
+(
+    children:(unix_socket_review:(contents:(host:output/test/runtime/bin/unix_socket_review)))
+    program:/unix_socket_review
+    fault:t
+    environment:()
+)

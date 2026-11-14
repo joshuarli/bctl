@@ -9,7 +9,7 @@ usage() {
 
 smp=1 mem=1G timeout=60 want_exit=0 net=0 label='' image='' native=0 exit_only=0 virtiofs='' p9=''
 grace=${HYDROGEN_RUN_GRACE:-5}
-owned=''
+owned='' vfs_dir=''
 sigall='for p; do kill -s "$sig" -- "-$p" 2>/dev/null || kill -s "$sig" "$p" 2>/dev/null || :; done'
 signal_owned() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "$2" 2>/dev/null || :; }
 spawn() {
@@ -44,6 +44,7 @@ cleanup() {
 	status=$?
 	rm -f "$expected"
 	reap_owned
+	[ -z "$vfs_dir" ] || rm -rf "$vfs_dir"
 	exit "$status"
 }
 trap cleanup EXIT
@@ -118,7 +119,9 @@ if [ "$net" -eq 1 ]; then nic='user,model=virtio-net-pci'; else nic='none'; fi
 machine=q35,accel=kvm
 if [ -n "$virtiofs" ]; then
 	command -v "$VIRTIOFSD" >/dev/null || die "missing $VIRTIOFSD: set VIRTIOFSD to a virtiofsd binary"
-	vfs_socket=$dir/virtiofs.sock
+	vfs_dir=$(mktemp -d "$WORK/tmp/vfs.XXXXXX")
+	vfs_socket=$vfs_dir/s
+	[ "$(printf '%s' "$vfs_socket" | wc -c)" -lt 108 ] || die "virtiofs socket path exceeds 107 bytes; use a shorter checkout path"
 	spawn "$VIRTIOFSD" --socket-path="$vfs_socket" --shared-dir="$(realpath "${virtiofs#*:}")" --sandbox=none \
 		--cache=auto >"$dir/virtiofsd.log" 2>&1
 	i=0

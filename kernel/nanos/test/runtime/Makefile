@@ -25,12 +25,17 @@ PROGRAMS= \
 	io_uring \
 	mkdir \
 	mmap \
+	mprotect_cow \
 	netlink \
 	netsock \
 	nullpage \
 	paging \
 	pipe \
 	readv \
+	resource_limits \
+	shared_brk \
+	seccomp_policy \
+	unix_socket_review \
 	sandbox \
 	sendfile \
 	shmem \
@@ -324,6 +329,22 @@ all: $(PROGRAMS)
 dummy:
 
 .PHONY: dummy
+
+SRCS-resource_limits= $(CURDIR)/resource_limits.c
+LDFLAGS-resource_limits= -static
+
+SRCS-shared_brk= $(CURDIR)/shared_brk.c
+LDFLAGS-shared_brk= -static
+
+SRCS-mprotect_cow= $(CURDIR)/mprotect_cow.c
+LDFLAGS-mprotect_cow= -static
+
+SRCS-seccomp_policy= $(CURDIR)/seccomp_policy.c
+LDFLAGS-seccomp_policy= -static
+
+SRCS-unix_socket_review= $(CURDIR)/unix_socket_review.c
+LDFLAGS-unix_socket_review= -static
+LIBS-unix_socket_review= -lpthread
 
 include ../../rules.mk
 

@@ -177,7 +177,7 @@ fi
 if [ "$rootfs_valid" = 1 ]; then
     echo "rootfs: reused"
 else
-    HELIUM_ARCHIVE=$archive sh "$tree/dev/helium-rootfs.sh" >"$work/rootfs.log" 2>&1 ||
+    sh "$tree/dev/helium-rootfs.sh" "$archive" "$sha256" "${name%.tar.xz}" >"$work/rootfs.log" 2>&1 ||
         { tail -n 20 "$work/rootfs.log" >&2; fail "the Nanos rootfs build failed"; }
     [ -d "$tree/.work/helium/rootfs" ] || fail "the Nanos rootfs build produced no rootfs"
     rm -rf "$rootfs"

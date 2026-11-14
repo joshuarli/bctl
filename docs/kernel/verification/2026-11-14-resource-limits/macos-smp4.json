@@ -1,0 +1,62 @@
+{
+  "mode": "nanos",
+  "verdict": "PASS",
+  "detail": "",
+  "hydrogen": "40e1b546a28c2cd6211aff36eec095f0f992ff0e",
+  "dirty": false,
+  "kernel_sha256": "a189d20ce6becec604828f112d6a67e2a3e0db53a36374a49ed5c9146d2b61d2",
+  "image_sha256": "90f3df0bbea5082ca0bab69fa1df856c7a5ecadd4c2a92555365dc308d8e6650",
+  "program": "resource_limits",
+  "binary_sha256": "f29a9fb2710387f59aba2578d7ad4908adc91e0b2af4f8a1e7c386544e00b57b",
+  "toolchain": {
+    "gcc": "15.2.0",
+    "qemu": "11.1.2",
+    "llvm": "llvm-musl-23.1.5-c4f9b08",
+    "musl": "1.2.6"
+  },
+  "qemu": {
+    "command": "/Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/build/krun-run /Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/images/resource_limits.img /Users/josh/d/bctl/.work/wt/todo-fixes/kernel/nanos/output/platform/virt/bin/kernel.img 4 1024",
+    "exit": 1,
+    "guest_exit": 0
+  },
+  "elapsed_seconds": 0.06,
+  "reproduce": "dev/bootstrap.sh && dev/build.sh && make -s -C tests/mini_chromium && dev/image.sh '-o' '/Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/images/resource_limits.img' '--klib' 'tmpfs' '--klib' 'shmem' '/Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/build/mini_chromium/fixtures/resource_limits' && dev/run.sh --smp 4 --mem 1G --timeout 30 --exit 0 /Users/josh/d/bctl/.work/wt/todo-fixes/kernel/.work/images/resource_limits.img",
+  "tests": [
+    {
+      "name": "rlimit_target",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_data_mappings",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_stack_and_errors",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_mapping_capacity",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_unmodeled_rejected",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_namespace_hard_ceiling",
+      "status": "PASS",
+      "detail": "status=0x0"
+    },
+    {
+      "name": "rlimit_zero_descriptors",
+      "status": "PASS",
+      "detail": "status=0x0"
+    }
+  ],
+  "frames": []
+}

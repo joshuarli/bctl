@@ -1,0 +1,6 @@
+(
+    children:(shared_brk:(contents:(host:output/test/runtime/bin/shared_brk)))
+    program:/shared_brk
+    fault:t
+    environment:()
+)

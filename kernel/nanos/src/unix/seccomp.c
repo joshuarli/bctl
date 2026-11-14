@@ -499,26 +499,22 @@ sysreturn seccomp(u32 op, u32 flags, void *uargs)
     if (op == SECCOMP_SET_MODE_STRICT) {
         if (flags != 0 || uargs != 0)
             return -EINVAL;
-        if (t->seccomp_mode == SECCOMP_MODE_FILTER) {
-            seccomp_filter old = t->seccomp;
-            t->seccomp = 0;
-            t->seccomp_mode = SECCOMP_MODE_STRICT;
-            seccomp_release(old);
-        } else {
-            t->seccomp_mode = SECCOMP_MODE_STRICT;
-        }
+        if (t->seccomp_mode == SECCOMP_MODE_FILTER)
+            return -EINVAL;
+        t->seccomp_mode = SECCOMP_MODE_STRICT;
         return 0;
     }
     if (op == SECCOMP_GET_ACTION_AVAIL) {
+        if (flags != 0)
+            return -EINVAL;
         u32 action = 0;
         if (!copy_from_user(uargs, &action, sizeof(action)))
             return -EFAULT;
-        u32 masked = action & SECCOMP_RET_ACTION_FULL;
-        if (masked == SECCOMP_RET_USER_NOTIF)
+        if (action == SECCOMP_RET_USER_NOTIF)
             return -EOPNOTSUPP;
-        if (seccomp_action_known(masked))
+        if (seccomp_action_known(action))
             return 0;
-        return -EINVAL;
+        return -EOPNOTSUPP;
     }
     if (op != SECCOMP_SET_MODE_FILTER)
         return -EINVAL;

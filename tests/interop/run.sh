@@ -136,9 +136,11 @@ printf '  host           %s %s\n' "$(uname -sm)" "$( (sw_vers -productVersion 2>
 if [ "$runtime" = smolvm ]; then
     runtime_receipt=$("$home/runtime/smolvm/smolvm" --version)
 elif [ "$(uname -s)" = Darwin ]; then
-    runtime_receipt="nanos on libkrun, hydrogen $(sed -n 's/^revision=//p' "$root/runtime/build-nanos-arm64.sh")"
+    kernel_file=$home/images/$image.kernel.img
+    [ -f "$kernel_file" ] || kernel_file=$home/runtime/nanos/kernel.img
+    runtime_receipt="nanos on libkrun, kernel sha256:$(sha256 "$kernel_file")"
 else
-    runtime_receipt="nanos on QEMU, hydrogen $(sed -n 's/^hydrogen_commit=//p' "$root/runtime/build-nanos.sh")"
+    runtime_receipt="nanos on QEMU, kernel sha256:$(sha256 "$home/images/$image.kernel.img")"
 fi
 printf '  runtime        %s\n' "$runtime_receipt"
 if command -v sha256sum >/dev/null; then image_digest=$(sha256sum "$image_file"); else image_digest=$(shasum -a 256 "$image_file"); fi

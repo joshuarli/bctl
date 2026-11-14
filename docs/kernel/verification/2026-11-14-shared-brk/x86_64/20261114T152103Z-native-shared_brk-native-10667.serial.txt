@@ -1,0 +1,2 @@
+MINI_CHROMIUM_TEST name=shared_brk_ranges status=PASS detail=resident=1,iteration=2000,mismatch=-1,break=1deb8000,base=1deb5000
+MINI_CHROMIUM_RESULT status=PASS passed=1 failed=0

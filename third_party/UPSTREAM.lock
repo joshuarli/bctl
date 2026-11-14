@@ -1,9 +1,9 @@
 [import]
 format = 1
 target = "main@59bdcf62d769f6491a6fc49f63f8cd8320f7ac58"
-source_identity = "sha256:147b5e4d79f8bcfcf69c5c28833ff65e385d3fdf9a8c7092d155d8855599b721"
+source_identity = "sha256:1d6ec86aae7ee3e73cea6614b340bbe424b70fad02bcf9c513b4c88ca5285416"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "libkrun-0002-gpu-2d-snapshot.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch", "libkrun-0008-vsock-close.patch", "libkrun-0009-balloon-optional-queues.patch", "libkrun-0010-display-partial-framebuffer.patch", "smolvm-0001-graviola-only-crypto.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "smolvm-0004-linux-mounts-override-stat.patch", "smolvm-0005-no-dad-on-guest-nic.patch", "smolvm-0006-display-vnc-damage.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "libkrun-0002-gpu-2d-snapshot.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch", "libkrun-0008-vsock-close.patch", "libkrun-0009-balloon-optional-queues.patch", "libkrun-0010-display-partial-framebuffer.patch", "libkrun-0011-hvf-root-dax.patch", "libkrun-0012-aarch64-direct-elf-boot.patch", "smolvm-0001-graviola-only-crypto.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "smolvm-0004-linux-mounts-override-stat.patch", "smolvm-0005-no-dad-on-guest-nic.patch", "smolvm-0006-display-vnc-damage.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -79,6 +79,16 @@ sha256 = "e06f56548087ce1929325b5eff1d89cc6c1c9d6ff51e18fc47289fb466e7fad6"
 path = "libkrun-0010-display-partial-framebuffer.patch"
 tree = "libkrun"
 sha256 = "260a54cf7932e1ba8d3e9b02095c0d6092a80de68c643b752b0d3a98ea7590e6"
+
+[[patch]]
+path = "libkrun-0011-hvf-root-dax.patch"
+tree = "libkrun"
+sha256 = "7d2f5b786b9377b7df9e628212d4841df4acbbcdf06f29c59d5f283c433cd296"
+
+[[patch]]
+path = "libkrun-0012-aarch64-direct-elf-boot.patch"
+tree = "libkrun"
+sha256 = "3dc09b24afbef80a428b9ed726e5a7718bde77e0f7462d2aa6728bead7c2282d"
 
 [[patch]]
 path = "smolvm-0001-graviola-only-crypto.patch"
