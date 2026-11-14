@@ -82,6 +82,7 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
     if display == Display::Headless {
         arguments.push(format!("--proxy-server=socks5://127.0.0.1:{}", layout::EGRESS_PROXY_PORT));
         arguments.push("--proxy-bypass-list=<-loopback>".into());
+        arguments.push("--disable-frame-rate-limit".into());
     }
     arguments.extend([
         format!("--remote-debugging-port={}", layout::BROWSER_CDP_PORT),
@@ -162,5 +163,12 @@ mod tests {
         let args = arguments(Display::Wayland, Path::new("/profile"), "about:blank");
         assert!(args.contains(&"--ozone-platform=wayland".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("--headless")));
+        assert!(!args.contains(&"--disable-frame-rate-limit".to_string()));
+    }
+
+    #[test]
+    fn headless_disables_the_frame_rate_limit() {
+        let args = arguments(Display::Headless, Path::new("/profile"), "about:blank");
+        assert!(args.contains(&"--disable-frame-rate-limit".to_string()));
     }
 }
