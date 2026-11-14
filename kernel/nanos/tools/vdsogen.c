@@ -46,8 +46,17 @@ int main(int argc, char ** argv)
 
     struct stat st;
 
-    if (argc != 3)
-        die("usage: %s <vdso.so> <output.c>\n", *argv);
+    unsigned long expected_size = 0;
+
+    if (argc < 3 || argc > 4)
+        die("usage: %s <vdso.so> <output.c> [vvar-offset]\n", *argv);
+    if (argc == 4) {
+        char *end = NULL;
+        errno = 0;
+        expected_size = strtoul(argv[3], &end, 0);
+        if (errno || !end || *end || !expected_size || (expected_size & (PAGESIZE - 1)))
+            die("invalid vvar offset: %s\n", argv[3]);
+    }
 
     fd = open(argv[1], O_RDONLY);
     if (fd == -1)
@@ -83,14 +92,13 @@ int main(int argc, char ** argv)
         );
     }
 
-    /* pad to multiple of page size */
     unsigned long rem = total & (PAGESIZE - 1);
-    if (rem != 0) {
-        unsigned long end = total + (PAGESIZE - rem);
-        for (; total < end; total++) {
-            fprintf(fp_out, "%s0x00,%s", (total % 8 == 0) ? "\n    " : "",
-                    (total % 8 != 7) ? " " : "");
-        }
+    unsigned long target = expected_size ? expected_size : (rem ? total + (PAGESIZE - rem) : total);
+    if (total > target)
+        die("%s (%lu bytes) exceeds vvar offset (%lu bytes)\n", argv[1], total, target);
+    for (; total < target; total++) {
+        fprintf(fp_out, "%s0x00,%s", (total % 8 == 0) ? "\n    " : "",
+                (total % 8 != 7) ? " " : "");
     }
 
     write_footer(fp_out, total);

@@ -65,7 +65,7 @@ VDSO_SRCDIR=    $(SRCDIR)/kernel
 VDSO_OBJDIR=    $(OBJDIR)/vdso
 VDSO_SRCS=      $(VDSO_SRCDIR)/vdso.c $(VDSO_SRCDIR)/vdso-now.c
 VDSO_OBJS=      $(patsubst $(VDSO_SRCDIR)/%.c,$(VDSO_OBJDIR)/%.o,$(VDSO_SRCS))
-VDSO_CFLAGS=    $(TARGET_CFLAGS) -DBUILD_VDSO -I$(INCLUDES) -I$(OBJDIR) -I$(OUTDIR) -I$(SRCDIR) -fPIC -c
+VDSO_CFLAGS=    $(TARGET_CFLAGS) -O3 -Wall -Werror -DBUILD_VDSO -I$(INCLUDES) -I$(OBJDIR) -I$(OUTDIR) -I$(SRCDIR) -fPIC -c
 VDSO_LDFLAGS=   -nostdlib -fPIC -shared --build-id=none --hash-style=both --eh-frame-hdr -T$(ARCHDIR)/vdso.lds
 VDSO_DEPS=      $(patsubst %.o,%.d,$(VDSO_OBJS))
 
@@ -73,8 +73,10 @@ LDFLAGS+=	$(KERNLDFLAGS) --undefined=_start -T linker_script
 
 STRIPFLAGS=	-g
 
+VDSO_STRIPPED=  $(VDSO_OBJDIR)/vdso.stripped.so
+CLEANFILES+=    $(VDSO_STRIPPED)
 msg_vdsogen=    VDSOGEN	$@
-cmd_vdsogen=    $(VDSOGEN) $(VDSO_OBJDIR)/vdso.so $@
+cmd_vdsogen=    $(STRIP) -S -R .comment -o $(VDSO_STRIPPED) $(VDSO_OBJDIR)/vdso.so && $(VDSOGEN) $(VDSO_STRIPPED) $@ $$($(OBJDUMP) -t $(VDSO_OBJDIR)/vdso.so | $(AWK) '/ vvar_page$$/{print "0x" $$1; exit}')
 
 msg_vdso_cc=    CC	$@
 cmd_vdso_cc=    $(CC) $(DEPFLAGS) $(VDSO_CFLAGS) -c $< -o $@

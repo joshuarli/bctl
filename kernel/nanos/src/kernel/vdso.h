@@ -29,3 +29,6 @@ struct pvclock_vcpu_time_info;
 VDSO u64 vdso_pvclock_now_ns(volatile struct pvclock_vcpu_time_info *);
 VDSO timestamp vdso_now(clock_id id);
 VDSO int vdso_getcpu(unsigned *cpu, unsigned *node);
+#ifdef __aarch64__
+VDSO timestamp vdso_cntvct_now(void);
+#endif

@@ -21,7 +21,7 @@ SECTIONS
      *   i. 1 for variables in the vva
      *  ii. 1 for the pvclock page
      */
-    vvar_page = ALIGN(4096);
+    vvar_page = ALIGN(4096) + 4096;
     __vdso_vdso_dat = vvar_page + 128;
     pvclock_page = vvar_page + 4096;
 }

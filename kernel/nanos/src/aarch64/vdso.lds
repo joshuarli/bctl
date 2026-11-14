@@ -36,13 +36,14 @@ SECTIONS
      */
 
     .eh_frame : { *(.eh_frame) } : text
+    .rodata : { *(.rodata*) } : text
     .text : { *(.text*) } : text
 
     /* 2 vvar pages follow the text:
      *   i. 1 for variables in the vva
      *  ii. 1 for the pvclock page
      */
-    vvar_page = ALIGN(4096);
+    vvar_page = ALIGN(4096) + 4096;
     __vdso_vdso_dat = vvar_page + 128;
     pvclock_page = vvar_page + 4096;
 }
@@ -75,6 +76,14 @@ VERSION
             __vdso_getcpu;
             time;
             __vdso_time;
+    };
+
+    LINUX_2.6.39 {
+        global:
+            __kernel_rt_sigreturn;
+            __kernel_gettimeofday;
+            __kernel_clock_gettime;
+            __kernel_clock_getres;
         local:
             *;
     };

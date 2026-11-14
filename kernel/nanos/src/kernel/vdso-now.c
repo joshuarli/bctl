@@ -56,22 +56,37 @@ vdso_now_pvclock(void)
     return nanoseconds(vdso_pvclock_now_ns(__vdso_pvclock));
 }
 
+#ifdef __aarch64__
 static inline timestamp
-vdso_now_none(void)
+vdso_cntvct_read(void)
 {
-    return VDSO_NO_NOW;
+    u64 t;
+    asm volatile("isb; mrs %0, CNTVCT_EL0" : "=r"(t));
+    u64 f = __vdso_dat->machine.cntfrq;
+    u64 secs = t / f;
+    u64 frac = t - secs * f;
+    return seconds(secs) | ((frac << 32) / f);
 }
 
-typedef timestamp (*vdso_now_fn)(void);
+VDSO timestamp
+vdso_cntvct_now(void)
+{
+    return vdso_cntvct_read();
+}
+#endif
 
-static inline vdso_now_fn
-vdso_get_now_fn(vdso_clock_id id)
+static inline timestamp
+vdso_read_now(vdso_clock_id id)
 {
     switch (id) {
     case VDSO_CLOCK_PVCLOCK:
-        return vdso_now_pvclock;
+        return vdso_now_pvclock();
+#ifdef __aarch64__
+    case VDSO_CLOCK_CNTVCT:
+        return vdso_cntvct_read();
+#endif
     default:
-        return vdso_now_none;
+        return VDSO_NO_NOW;
     }
 }
 
@@ -84,12 +99,13 @@ vdso_now(clock_id id)
 
     do {
         _gen = __vdso_dat->vdso_gen & ~1ull;
+        smp_read_barrier();
         switch (id) {
         case CLOCK_ID_MONOTONIC:
         case CLOCK_ID_MONOTONIC_RAW:
         case CLOCK_ID_MONOTONIC_COARSE:
         case CLOCK_ID_BOOTTIME:
-            _now = vdso_get_now_fn(__vdso_dat->clock_src)();
+            _now = vdso_read_now(__vdso_dat->clock_src);
             if (id == CLOCK_ID_MONOTONIC_RAW)
                 break;
             _off = clock_freq_adjust(_now - __vdso_dat->last_raw);
@@ -97,7 +113,7 @@ vdso_now(clock_id id)
 
         case CLOCK_ID_REALTIME:
         case CLOCK_ID_REALTIME_COARSE:
-            _now = vdso_get_now_fn(__vdso_dat->clock_src)();
+            _now = vdso_read_now(__vdso_dat->clock_src);
             _off = __vdso_dat->rtc_offset;
             _ival = _now - __vdso_dat->last_raw;
             _off += clock_freq_adjust(_ival);

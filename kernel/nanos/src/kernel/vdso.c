@@ -134,12 +134,56 @@ time(time_t * t)
 }
 
 #ifdef __aarch64__
+static sysreturn
+do_vdso_clock_getres(clockid_t clk_id, struct timespec * res)
+{
+    if (__vdso_dat->clock_src != VDSO_CLOCK_SYSCALL) {
+        switch (clk_id) {
+        case CLOCK_ID_REALTIME:
+        case CLOCK_ID_MONOTONIC:
+        case CLOCK_ID_MONOTONIC_RAW:
+        case CLOCK_ID_REALTIME_COARSE:
+        case CLOCK_ID_MONOTONIC_COARSE:
+        case CLOCK_ID_BOOTTIME:
+            if (res) {
+                res->tv_sec = 0;
+                res->tv_nsec = 1;
+            }
+            return 0;
+        default:
+            break;
+        }
+    }
+    return do_syscall(SYS_clock_getres, clk_id, res);
+}
+
 sysreturn __attribute__((noreturn)) __vdso_rt_sigreturn(void)
 {
     /* these two instructions cannot change - libgcc and others look
        for these when unwinding signal handlers */
     asm volatile ("mov x8, #139; svc #0"); // SYS_rt_sigreturn
     while (1);
+}
+
+sysreturn __attribute__((noreturn))
+__kernel_rt_sigreturn(void) __attribute__((alias("__vdso_rt_sigreturn")));
+
+sysreturn
+__kernel_clock_gettime(clockid_t clk_id, struct timespec * tp)
+{
+    return do_vdso_clock_gettime(clk_id, tp);
+}
+
+sysreturn
+__kernel_gettimeofday(struct timeval * tv, void * tz)
+{
+    return do_vdso_gettimeofday(tv, tz);
+}
+
+sysreturn
+__kernel_clock_getres(clockid_t clk_id, struct timespec * res)
+{
+    return do_vdso_clock_getres(clk_id, res);
 }
 #endif
 #ifdef __riscv

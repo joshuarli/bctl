@@ -310,6 +310,7 @@ static inline __attribute__((always_inline)) void kern_pause(void)
 /* XXX make names generic */
 #if defined(KERNEL) || defined(BUILD_VDSO)
 struct arch_vdso_dat {
+    u64 cntfrq;
 };
 
 static inline __attribute__((always_inline)) u64 rdtsc(void)
