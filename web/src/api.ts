@@ -4,7 +4,7 @@ export type SessionView = {
   image: string;
   resources: { width: number; height: number; cpus: number; memory_mib: number };
   allow_private: string[];
-  state: "stopped" | "starting" | "ready" | "stopping" | "failing" | "failed";
+  state: "stopped" | "starting" | "ready" | "paused" | "stopping" | "failing" | "failed";
   generation: number;
   stage: string | null;
   failure: string | null;

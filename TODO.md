@@ -63,15 +63,6 @@ Next: 24
 - **Fix with:** `make-it-fast`
 - **Effort:** L
 
-### BCTL-10 · P3 · The web UI has no tone for paused sessions
-
-- **Area:** Types
-- **Where:** `web/src/api.ts:7`, `web/src/app.tsx:9`
-- **Problem:** The daemon reports `paused` sessions (`crates/bctl/src/daemon.rs:806`), but `SessionView["state"]` omits `paused`, so the type is wrong and `stateTone` returns undefined for a paused session's badge.
-- **Recommendation:** Add `paused` to the state union and a tone for it in `stateTone`, and check the badge renders for a paused session.
-- **Fix with:** none
-- **Effort:** S
-
 ### BCTL-19 · P3 · Resource limits are partly modeled
 
 - **Area:** Kernel
