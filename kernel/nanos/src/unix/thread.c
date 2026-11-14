@@ -474,6 +474,12 @@ void thread_wakeup(thread t)
     sc->uc.blocked_on = 0;
     t->syscall = 0;
     context_release_refcount(&sc->uc.kc.context);
+    cpuinfo ci = current_cpu();
+    if (bitmap_get(t->task.affinity, ci->id)) {
+        cpuinfo prev = struct_from_field(t->scheduling_queue, cpuinfo, thread_queue);
+        if ((prev != ci) && !cpu_is_idle_polling(prev))
+            t->scheduling_queue = &ci->thread_queue;
+    }
     schedule_thread(t);
 }
 

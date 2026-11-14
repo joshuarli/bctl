@@ -121,6 +121,15 @@ struct cpuinfo {
 #endif
 };
 
+#define IDLE_POLL_NONE   0
+#define IDLE_POLL_ACTIVE 1
+#define IDLE_POLL_KICKED 2
+
+static inline boolean cpu_is_idle_polling(cpuinfo ci)
+{
+    return (*(volatile u32 *)&ci->idle_poll == IDLE_POLL_ACTIVE);
+}
+
 #define _IRQSAFE_1(rtype, name, t0)              \
     static inline rtype name ## _irqsafe (t0 a0) \
     {                                            \

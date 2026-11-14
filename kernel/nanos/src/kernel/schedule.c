@@ -29,9 +29,6 @@ BSS_RO_AFTER_INIT bitmap idle_cpu_mask;
 /* An idle CPU polls for this long before halting, so that a waker can hand it work by writing
  * memory instead of sending an IPI, which a hypervisor delivers to a halted vCPU slowly. */
 #define IDLE_POLL_US 50
-#define IDLE_POLL_NONE   0
-#define IDLE_POLL_ACTIVE 1
-#define IDLE_POLL_KICKED 2
 
 BSS_RO_AFTER_INIT timerqueue kernel_timers;
 BSS_RO_AFTER_INIT thunk timer_interrupt_handler;
@@ -152,7 +149,7 @@ static void migrate_idle_range(cpuinfo ci, u64 first_cpu, u64 ncpus, boolean pol
         sched_task task;
         if (!sched_queue_empty(&cpui->thread_queue)) {
             wakeup_cpu(cpu);
-        } else if ((!polling_only || (*(volatile u32 *)&cpui->idle_poll == IDLE_POLL_ACTIVE)) &&
+        } else if ((!polling_only || cpu_is_idle_polling(cpui)) &&
                    ((task = sched_dequeue_for_cpu(&ci->thread_queue, cpu)) != INVALID_ADDRESS)) {
             sched_debug("migrating thread from self to idle CPU %d\n", cpu);
             flush_profile_add(pushes, 1);
