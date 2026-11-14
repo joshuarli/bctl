@@ -63,20 +63,11 @@ Next: 24
 - **Fix with:** `make-it-fast`
 - **Effort:** L
 
-### BCTL-19 · P3 · Resource limits are partly modeled
-
-- **Area:** Kernel
-- **Where:** `kernel/nanos/src/unix/syscall.c`
-- **Problem:** `setrlimit` accepts and drops resources it does not model (`RLIMIT_AS`, `RLIMIT_CPU`, and others). `RLIMIT_DATA` bounds `brk` but not private writable mappings. `prlimit64` on another pid reads and writes the caller's limits.
-- **Recommendation:** Return the Linux error for unmodeled resources unless a consumer needs silent acceptance, apply `RLIMIT_DATA` to private writable mappings, and resolve the target pid in `prlimit64`, each with a probe check run natively and on Nanos.
-- **Fix with:** none
-- **Effort:** M
-
 ### BCTL-20 · P3 · The kernel fork has no benchmark report or independent review
 
 - **Area:** Kernel
 - **Where:** `kernel/`, `docs/kernel/campaign-report.md`
 - **Problem:** Hydrogen's campaign closed every functional gate but never ran its benchmark report (cold boot, image size, guest RSS, fork and IPC latency against native), its dead-code pass, or an independent review of the whole fork diff since upstream `e4b9c9e6`. The macOS repairs in `docs/kernel/macos-qualification.md` were never independently reviewed.
-- **Recommendation:** On a quiet host, write the benchmark table into `docs/kernel/campaign-report.md`. Then run an independent review of `git diff e4b9c9e65cd51ef29e5021835419a1d9a7733f20 HEAD -- kernel/nanos` and fix P1 and P2 findings with tests.
+- **Recommendation:** The [partial independent review](docs/kernel/fork-review.md) records a supported shared-`brk` race that needs a reproducer and repair. On a quiet host, write the benchmark table into `docs/kernel/campaign-report.md`. Complete the independent review of `git diff e4b9c9e65cd51ef29e5021835419a1d9a7733f20 HEAD -- kernel/nanos` and fix P1 and P2 findings with tests.
 - **Fix with:** `review`
 - **Effort:** L
