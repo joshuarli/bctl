@@ -44,7 +44,7 @@ u64 allocate_fd(process p, void *f, u32 fd_flags)
         msg_err("fd allocation failed");
         goto out;
     }
-    if (p->rlimit_nofile_cur && fd >= p->rlimit_nofile_cur) {
+    if (fd >= p->rlimit_nofile_cur) {
         deallocate_u64((heap)fdt->fdallocator, fd, 1);
         fd = INVALID_PHYSICAL;
         goto out;
@@ -65,7 +65,7 @@ u64 allocate_fd_gte(process p, u64 min, void *f, u32 fd_flags)
     fdtable fdt = p->fdtable;
     spin_lock(&fdt->lock);
     u64 fd = id_heap_alloc_gte(fdt->fdallocator, 1, min);
-    if (fd != INVALID_PHYSICAL && p->rlimit_nofile_cur && fd >= p->rlimit_nofile_cur) {
+    if (fd != INVALID_PHYSICAL && fd >= p->rlimit_nofile_cur) {
         deallocate_u64((heap)fdt->fdallocator, fd, 1);
         fd = INVALID_PHYSICAL;
     }

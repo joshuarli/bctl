@@ -1,5 +1,8 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
+#include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -165,6 +168,48 @@ static int unmodeled_limits(void)
     return 0;
 }
 
+static int namespace_hard_limit(void)
+{
+    struct rlimit limit = {64, 64};
+    if (setrlimit(RLIMIT_NOFILE, &limit))
+        return 1;
+    struct { uint32_t version; int pid; } header = {0x20080522, 0};
+    struct { uint32_t effective, permitted, inheritable; } capabilities[2] = {{0}, {0}};
+    if (syscall(SYS_capset, &header, capabilities) || unshare(CLONE_NEWUSER))
+        return 2;
+    limit.rlim_cur = limit.rlim_max = 128;
+    errno = 0;
+    if (setrlimit(RLIMIT_NOFILE, &limit) != -1 || errno != EPERM)
+        return 3;
+    if (getrlimit(RLIMIT_NOFILE, &limit) || limit.rlim_cur != 64 || limit.rlim_max != 64)
+        return 4;
+    return 0;
+}
+
+static int zero_descriptors(void)
+{
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit))
+        return 1;
+    limit.rlim_cur = 0;
+    if (setrlimit(RLIMIT_NOFILE, &limit))
+        return 2;
+    errno = 0;
+    if (open("/", O_RDONLY | O_DIRECTORY) != -1 || errno != EMFILE)
+        return 3;
+    errno = 0;
+    if (dup(STDOUT_FILENO) != -1 || errno != EMFILE)
+        return 4;
+    int descriptors[2];
+    errno = 0;
+    if (pipe(descriptors) != -1 || errno != EMFILE)
+        return 5;
+    errno = 0;
+    if (fcntl(STDOUT_FILENO, F_DUPFD, 0) != -1 || errno != EINVAL)
+        return 6;
+    return 0;
+}
+
 static int run(const char *name, int (*check)(void))
 {
     pid_t child = fork();
@@ -184,6 +229,8 @@ int main(void)
     failed += run("rlimit_stack_and_errors", stack_limits);
     failed += run("rlimit_mapping_capacity", mapping_capacity);
     failed += run("rlimit_unmodeled_rejected", unmodeled_limits);
-    printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", 5 - failed, failed);
+    failed += run("rlimit_namespace_hard_ceiling", namespace_hard_limit);
+    failed += run("rlimit_zero_descriptors", zero_descriptors);
+    printf("MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n", failed ? "FAIL" : "PASS", 7 - failed, failed);
     return !!failed;
 }

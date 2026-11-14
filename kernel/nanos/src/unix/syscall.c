@@ -1989,7 +1989,8 @@ static sysreturn process_rlimit(process p, int resource, const struct rlimit *ne
         rv = -EINVAL;
         goto out;
     }
-    if (new_limit && new_limit->rlim_max > *hard && !privileged) {
+    if (new_limit && new_limit->rlim_max > *hard &&
+        !ns_capable_creds(caller, user_ns_init(), CAP_SYS_RESOURCE)) {
         rv = -EPERM;
         goto out;
     }
@@ -2322,7 +2323,7 @@ sysreturn fcntl(int fd, int cmd, s64 arg)
         break;
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        if (arg < 0) {
+        if (arg < 0 || (u64)arg >= current->p->rlimit_nofile_cur) {
             rv = -EINVAL;
             break;
         }
