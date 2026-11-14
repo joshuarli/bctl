@@ -18,6 +18,7 @@ use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
+const READY_POLL: Duration = Duration::from_millis(2);
 
 struct Config {
     dir: PathBuf,
@@ -161,7 +162,7 @@ fn wait_for_runner(child: &mut Child, config: &Config) -> Result<(), String> {
         if Instant::now() >= deadline {
             return Err(format!("libkrun did not create its sockets within {:?}", config.start_timeout));
         }
-        thread::sleep(TICK);
+        thread::sleep(READY_POLL);
     }
     Ok(())
 }

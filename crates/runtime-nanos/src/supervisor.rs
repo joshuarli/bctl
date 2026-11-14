@@ -30,6 +30,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const GUEST_STOP_TIMEOUT: Duration = Duration::from_secs(18);
 const QUIT_GRACE: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_millis(50);
+const READY_POLL: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -194,7 +195,7 @@ fn wait_for(path: &Path, child: &mut Child, what: &str, timeout: Duration) -> Re
         if Instant::now() >= deadline {
             return Err(format!("{what} did not create {} within {timeout:?}", path.display()));
         }
-        thread::sleep(TICK);
+        thread::sleep(READY_POLL);
     }
     Ok(())
 }

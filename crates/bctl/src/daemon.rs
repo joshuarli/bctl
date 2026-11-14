@@ -698,7 +698,7 @@ impl Daemon {
             let record = self.store().session(name).map_err(store_failure)?;
             match record.state {
                 SessionState::Ready => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
-                SessionState::Starting | SessionState::Stopping => thread::sleep(Duration::from_millis(200)),
+                SessionState::Starting | SessionState::Stopping => thread::sleep(Duration::from_millis(10)),
                 SessionState::Failing => {
                     if let Err(error) = self.retry_failing(name) {
                         return Err(Response::failure(

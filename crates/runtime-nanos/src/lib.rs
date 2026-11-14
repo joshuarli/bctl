@@ -358,7 +358,7 @@ impl Nanos {
                 Err(RuntimeError::NotReady { stage, .. }) => { startup.mark(stage.as_str()); on_stage(stage); }
                 Err(error) => return Err(error),
             }
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(2));
         }
     }
 
