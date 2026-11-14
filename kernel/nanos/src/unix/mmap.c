@@ -154,7 +154,7 @@ closure_func_basic(thunk, void, pending_fault_complete)
     demand_page_done(ctx, vaddr, s);
     context_schedule_return(ctx);
     if (pn) {
-        if (range_valid(ra)) {
+        if (range_valid(ra) && !pagecache_node_dax_active(pn)) {
             if (range_span(ra) > FILE_READAHEAD_DEFAULT)
                 ra.end = ra.start + FILE_READAHEAD_DEFAULT;
             pagecache_node_fetch_pages(pn, ra, 0, 0);
@@ -392,6 +392,131 @@ closure_func_basic(thunk, void, pending_fault_filebacked)
                        pf->filebacked.private_page, h);
 }
 
+static boolean mmap_filebacked_cached_batch(process p, vmap vm, pagecache_node pn, u64 page_addr,
+                                          u64 node_offset, u64 padlen, pageflags flags)
+{
+    u64 win_size = U64_FROM_BIT(17);
+    u64 win_mask = win_size - 1;
+    u64 win_start = MAX(vm->node.r.start, page_addr & ~win_mask);
+    u64 win_end = MIN(vm->node.r.end, (page_addr & ~win_mask) + win_size);
+    u64 start_off = vm->node_offset + (win_start - vm->node.r.start);
+    u64 max_off = MIN(vm->node_offset + (win_end - vm->node.r.start), padlen);
+    u64 count = (max_off > start_off) ? ((max_off - start_off) >> PAGELOG) : 0;
+    if ((count == 0) || (count > 32))
+        return false;
+    void *kvirts[32];
+    if (pagecache_get_filled_pages(pn, start_off, node_offset, count, kvirts) == 0)
+        return false;
+    pagetable_lock();
+    for (u64 i = 0; i < count; i++) {
+        if (!kvirts[i])
+            continue;
+        u64 va = win_start + (i << PAGELOG);
+        if (address_space_physical_locked(p->vm->as, va) == INVALID_PHYSICAL) {
+            address_space_map_locked(p->vm->as, va, physical_from_virtual(kvirts[i]),
+                                     PAGESIZE, flags);
+            kvirts[i] = 0;
+        }
+    }
+    pagetable_unlock();
+    for (u64 i = 0; i < count; i++) {
+        if (kvirts[i])
+            pagecache_release_page(pn, start_off + (i << PAGELOG));
+    }
+    return true;
+}
+
+static boolean mmap_filebacked_dax_private(process p, vmap vm, pagecache_node pn, u64 page_addr,
+                                         u64 vmap_offset, u64 node_offset, boolean private_page,
+                                         status *err)
+{
+    u64 dax_phys = INVALID_PHYSICAL;
+    u64 dax_off = 0, dax_len = 0;
+    u64 copy_len = PAGESIZE;
+    boolean batch_priv = false;
+    if (vm->flags & VMAP_FLAG_TAIL_BSS) {
+        if (vmap_offset >= (vm->bss_offset & ~PAGEMASK))
+            copy_len = (vmap_offset >= vm->bss_offset)
+                ? 0
+                : MIN(PAGESIZE, vm->bss_offset - vmap_offset);
+        else
+            batch_priv = private_page;
+    } else {
+        batch_priv = private_page;
+    }
+    range req = irangel(node_offset, PAGESIZE);
+    u64 map_va = page_addr;
+    if (batch_priv) {
+        u64 win_size = U64_FROM_BIT(16);
+        u64 win_mask = win_size - 1;
+        u64 max_va = (vm->flags & VMAP_FLAG_TAIL_BSS)
+            ? MIN(vm->node.r.end, vm->node.r.start + (vm->bss_offset & ~PAGEMASK))
+            : vm->node.r.end;
+        u64 win_start = MAX(vm->node.r.start, page_addr & ~win_mask);
+        u64 win_end = MIN(max_va, (page_addr & ~win_mask) + win_size);
+        req = irange(vm->node_offset + (win_start - vm->node.r.start),
+                     vm->node_offset + (win_end - vm->node.r.start));
+    }
+    if ((copy_len != 0) &&
+        !pagecache_get_dax_extent(pn, req, node_offset, &dax_off, &dax_phys, &dax_len))
+        return false;
+    if (copy_len == 0)
+        dax_len = PAGESIZE;
+    else if (batch_priv)
+        map_va = vm->node.r.start + (dax_off - vm->node_offset);
+    void *copy = allocate(mmap_info.virtual_backed, dax_len);
+    if ((copy == INVALID_ADDRESS) && (dax_len > PAGESIZE)) {
+        dax_phys += node_offset - dax_off;
+        dax_off = node_offset;
+        dax_len = PAGESIZE;
+        map_va = page_addr;
+        copy = allocate(mmap_info.virtual_backed, PAGESIZE);
+    }
+    if (copy == INVALID_ADDRESS) {
+        *err = timm_oom;
+        return true;
+    }
+    if (copy_len == 0) {
+        zero(copy, PAGESIZE);
+    } else if (dax_len > PAGESIZE) {
+        runtime_memcpy(copy, pointer_from_u64(dax_virt_from_phys(dax_phys)), dax_len);
+    } else {
+        runtime_memcpy(copy, pointer_from_u64(dax_virt_from_phys(dax_phys)), copy_len);
+        if (copy_len < PAGESIZE)
+            zero(copy + copy_len, PAGESIZE - copy_len);
+    }
+    u64 u_start = page_addr;
+    u64 u_end = page_addr + PAGESIZE;
+    pagetable_lock();
+    boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
+    boolean dax_active = (copy_len == 0) || pagecache_node_dax_active(pn);
+    if (do_map && dax_active) {
+        while ((u_start > map_va) &&
+               (address_space_physical_locked(p->vm->as, u_start - PAGESIZE) == INVALID_PHYSICAL))
+            u_start -= PAGESIZE;
+        while ((u_end < map_va + dax_len) &&
+               (address_space_physical_locked(p->vm->as, u_end) == INVALID_PHYSICAL))
+            u_end += PAGESIZE;
+        address_space_map_locked(p->vm->as, u_start,
+                                 physical_from_virtual(copy) + (u_start - map_va),
+                                 u_end - u_start, pageflags_from_vmflags(vm->flags));
+    }
+    pagetable_unlock();
+    if (!do_map || !dax_active) {
+        deallocate(mmap_info.virtual_backed, copy, dax_len);
+    } else {
+        if (u_start > map_va)
+            deallocate(mmap_info.virtual_backed, copy, u_start - map_va);
+        if (u_end < map_va + dax_len)
+            deallocate(mmap_info.virtual_backed, copy + (u_end - map_va), map_va + dax_len - u_end);
+    }
+    if (!do_map || dax_active) {
+        *err = STATUS_OK;
+        return true;
+    }
+    return false;
+}
+
 static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm, pending_fault *pf)
 {
     pageflags flags = pageflags_from_vmflags(vm->flags);
@@ -402,7 +527,7 @@ static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm,
     boolean shared = (vm->flags & VMAP_FLAG_SHARED) != 0;
     boolean private_page = (vm->flags & VMAP_FLAG_PROG) && (vm->flags & VMAP_FLAG_WRITABLE);
     if (!shared && !private_page)
-        flags = pageflags_readonly(flags); /* cow */
+        flags = pageflags_readonly(flags);
 
     pf_debug("   node %p (start 0x%lx), offset 0x%lx, vm flags 0x%lx, pageflags 0x%lx\n",
              pn, vm->node.r.start, node_offset, vm->flags, flags.w);
@@ -417,52 +542,42 @@ static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm,
     range kvirt;
     status s;
     if (!*pf) {
-        kvirt = pagecache_get_page_if_filled(pn, node_offset, private_page);
-        if (range_span(kvirt) != 0)
-            return mmap_filebacked_page(p, vm, page_addr, flags, kvirt, private_page);
-        if (!private_page && !(vm->flags & VMAP_FLAG_TAIL_BSS) &&
-            (!shared || !(vm->allowed_flags & VMAP_FLAG_WRITABLE))) {
+        if (!private_page && !(vm->flags & VMAP_FLAG_TAIL_BSS)) {
+            if (mmap_filebacked_cached_batch(p, vm, pn, page_addr, node_offset, padlen, flags))
+                return STATUS_OK;
+        } else {
+            kvirt = pagecache_get_page_if_filled(pn, node_offset, private_page);
+            if (range_span(kvirt) != 0)
+                return mmap_filebacked_page(p, vm, page_addr, flags, kvirt, private_page);
+        }
+        if (!shared && (private_page ||
+                        (!(vm->flags & VMAP_FLAG_TAIL_BSS) &&
+                         (vm->flags & VMAP_FLAG_WRITABLE) && is_write_fault(ctx->frame)))) {
+            status dax_status = STATUS_OK;
+            if (mmap_filebacked_dax_private(p, vm, pn, page_addr, vmap_offset, node_offset,
+                                            private_page, &dax_status))
+                return dax_status;
+        } else if (!private_page && !(vm->flags & VMAP_FLAG_TAIL_BSS) &&
+                   (!shared || !(vm->allowed_flags & VMAP_FLAG_WRITABLE))) {
             u64 dax_phys = INVALID_PHYSICAL;
             u64 dax_off = 0, dax_len = 0;
-            if (!shared && (vm->flags & VMAP_FLAG_WRITABLE) && is_write_fault(ctx->frame)) {
-                if (pagecache_get_dax_extent(pn, irangel(node_offset, PAGESIZE), node_offset,
-                                             &dax_off, &dax_phys, &dax_len)) {
-                    void *copy = allocate(mmap_info.virtual_backed, PAGESIZE);
-                    if (copy == INVALID_ADDRESS)
-                        return timm_oom;
-                    runtime_memcpy(copy, pointer_from_u64(dax_virt_from_phys(dax_phys)), PAGESIZE);
-                    physical copy_phys = physical_from_virtual(copy);
-                    pagetable_lock();
-                    boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
-                    boolean dax_active = pagecache_node_dax_active(pn);
-                    if (do_map && dax_active)
-                        address_space_map_locked(p->vm->as, page_addr, copy_phys, PAGESIZE,
-                                                 pageflags_from_vmflags(vm->flags));
-                    pagetable_unlock();
-                    if (!do_map || !dax_active)
-                        page_free_phys(copy_phys);
-                    if (!do_map || dax_active)
-                        return STATUS_OK;
-                }
-            } else {
-                u64 win_size = U64_FROM_BIT(19);
-                u64 win_mask = win_size - 1;
-                u64 win_start = MAX(vm->node.r.start, page_addr & ~win_mask);
-                u64 win_end = MIN(vm->node.r.end, (page_addr & ~win_mask) + win_size);
-                range req = irange(vm->node_offset + (win_start - vm->node.r.start),
-                                   vm->node_offset + (win_end - vm->node.r.start));
-                if (pagecache_get_dax_extent(pn, req, node_offset, &dax_off, &dax_phys, &dax_len)) {
-                    u64 map_va = vm->node.r.start + (dax_off - vm->node_offset);
-                    pagetable_lock();
-                    boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
-                    boolean dax_active = pagecache_node_dax_active(pn);
-                    if (do_map && dax_active)
-                        address_space_map_absent_locked(p->vm->as, map_va, dax_phys, dax_len,
-                                                        pageflags_readonly(flags));
-                    pagetable_unlock();
-                    if (!do_map || dax_active)
-                        return STATUS_OK;
-                }
+            u64 win_size = U64_FROM_BIT(19);
+            u64 win_mask = win_size - 1;
+            u64 win_start = MAX(vm->node.r.start, page_addr & ~win_mask);
+            u64 win_end = MIN(vm->node.r.end, (page_addr & ~win_mask) + win_size);
+            range req = irange(vm->node_offset + (win_start - vm->node.r.start),
+                               vm->node_offset + (win_end - vm->node.r.start));
+            if (pagecache_get_dax_extent(pn, req, node_offset, &dax_off, &dax_phys, &dax_len)) {
+                u64 map_va = vm->node.r.start + (dax_off - vm->node_offset);
+                pagetable_lock();
+                boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
+                boolean dax_active = pagecache_node_dax_active(pn);
+                if (do_map && dax_active)
+                    address_space_map_absent_locked(p->vm->as, map_va, dax_phys, dax_len,
+                                                    pageflags_readonly(flags));
+                pagetable_unlock();
+                if (!do_map || dax_active)
+                    return STATUS_OK;
             }
         }
         pending_fault new_pf = new_pending_fault_locked(p, ctx, vaddr);

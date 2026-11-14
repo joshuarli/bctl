@@ -1627,6 +1627,52 @@ closure_function(1, 3, void, pagecache_read_sg,
     pagecache_node pn = bound(pn);
     pagecache pc = pn->pv->pc;
     pagecache_debug("%s: node %p, q %R, sg %p, completion %F\n", func_ss, pn, q, sg, completion);
+    if (pagecache_node_dax_active(pn) && !range_empty(q)) {
+        u64 full_end = pagecache_get_node_length(pn) & ~PAGEMASK;
+        u64 dax_limit = MIN(q.end, full_end);
+        if (q.start < dax_limit) {
+            context user_ctx = context_from_closure(completion);
+            context ctx = get_current_context(current_cpu());
+            if (!user_ctx)
+                user_ctx = ctx;
+            address_space prev_as = 0;
+            if (ctx != user_ctx) {
+                prev_as = use_address_space(user_ctx->as);
+                use_fault_handler(user_ctx->fault_handler);
+            }
+            boolean fault_ok = sg_fault_in(sg, dax_limit - q.start, true);
+            if (fault_ok) {
+                u64 req_end = MIN(pad(dax_limit, PAGESIZE), full_end);
+                while (q.start < dax_limit) {
+                    u64 cur_page = q.start & ~PAGEMASK;
+                    u64 dax_off = 0, dax_phys = 0, dax_len = 0;
+                    if (!pagecache_get_dax_extent(pn, irange(cur_page, req_end), cur_page,
+                                                  &dax_off, &dax_phys, &dax_len))
+                        break;
+                    u64 skip = q.start - dax_off;
+                    u64 copy_len = MIN(dax_limit - q.start, dax_len - skip);
+                    u64 copied = sg_copy_from_buf(
+                        pointer_from_u64(dax_virt_from_phys(dax_phys) + skip), sg, copy_len);
+                    q.start += copied;
+                    if (copied < copy_len)
+                        break;
+                }
+            }
+            if (ctx != user_ctx) {
+                clear_fault_handler();
+                restore_address_space(prev_as);
+            }
+            if (!fault_ok) {
+                status s = timm("result", "invalid user memory");
+                apply(completion, timm_append(s, "fsstatus", "%d", -EFAULT));
+                return;
+            }
+            if (q.start == q.end) {
+                apply(completion, STATUS_OK);
+                return;
+            }
+        }
+    }
     status_handler read_sg_finish = closure(pc->h, pagecache_read_sg_finish, pn, q, sg, completion);
     if (read_sg_finish != INVALID_ADDRESS) {
         u64 read_end = q.end;
@@ -2184,6 +2230,40 @@ range pagecache_get_page_if_filled(pagecache_node pn, u64 node_offset, boolean p
   out:
     pagecache_unlock_node(pn);
     return kvirt;
+}
+
+u64 pagecache_get_filled_pages(pagecache_node pn, u64 start_offset, u64 fault_offset,
+                               u64 count, void **kvirts)
+{
+    pagecache pc = pn->pv->pc;
+    if ((count == 0) || (cache_pagesize(pc) != PAGESIZE))
+        return 0;
+    zero(kvirts, count * sizeof(void *));
+    int order = pc->page_order;
+    u64 base_pi = start_offset >> order;
+    u64 fault_pi = fault_offset >> order;
+    if ((fault_pi < base_pi) || (fault_pi >= base_pi + count))
+        return 0;
+    pagecache_lock_node(pn);
+    pagecache_page fault_pp = page_lookup_nodelocked(pn, fault_pi);
+    if ((fault_pp == INVALID_ADDRESS) || !touch_or_fill_page_nodelocked(pn, fault_pp, 0)) {
+        pagecache_unlock_node(pn);
+        return 0;
+    }
+    kvirts[fault_pi - base_pi] = fault_pp->kvirt;
+    u64 filled = 1;
+    for (pagecache_page pp = page_lookup_at_or_next_nodelocked(pn, base_pi);
+         (pp != INVALID_ADDRESS) && (page_offset(pp) < base_pi + count);
+         pp = (pagecache_page)rbnode_get_next(&pp->rbnode)) {
+        if (pp == fault_pp)
+            continue;
+        if (touch_or_fill_page_nodelocked(pn, pp, 0)) {
+            kvirts[page_offset(pp) - base_pi] = pp->kvirt;
+            filled++;
+        }
+    }
+    pagecache_unlock_node(pn);
+    return filled;
 }
 
 boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physical phys)

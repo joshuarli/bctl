@@ -57,6 +57,8 @@ void pagecache_node_fetch_pages(pagecache_node pn, range r /* bytes */, sg_list 
 void pagecache_get_page(pagecache_node pn, u64 node_offset, u64 size, boolean private,
                         pagecache_page_handler handler);
 range pagecache_get_page_if_filled(pagecache_node pn, u64 node_offset, boolean private);
+u64 pagecache_get_filled_pages(pagecache_node pn, u64 start_offset, u64 fault_offset,
+                               u64 count, void **kvirts);
 void pagecache_release_page(pagecache_node pn, u64 node_offset);
 boolean pagecache_node_page_is_cached(pagecache_node pn, u64 node_offset, physical phys);
 

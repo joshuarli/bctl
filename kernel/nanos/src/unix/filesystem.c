@@ -85,11 +85,13 @@ void file_readahead(file f, u64 offset, u64 len)
     }
     if (ra_size > 0) {
         pagecache_node pn = fsfile_get_cachenode(f->fsf);
-        thunk t = closure(heap_locked(get_kernel_heaps()), file_cache_async, pn,
-                          irangel(offset + len, ra_size));
-        if (t != INVALID_ADDRESS) {
-            pagecache_node_ref(pn);
-            async_apply(t);
+        if (!pagecache_node_dax_active(pn)) {
+            thunk t = closure(heap_locked(get_kernel_heaps()), file_cache_async, pn,
+                              irangel(offset + len, ra_size));
+            if (t != INVALID_ADDRESS) {
+                pagecache_node_ref(pn);
+                async_apply(t);
+            }
         }
     }
 }
@@ -1003,9 +1005,11 @@ sysreturn fadvise64(int fd, s64 off, u64 len, int advice)
         break;
     case POSIX_FADV_WILLNEED: {
         pagecache_node pn = fsfile_get_cachenode(f->fsf);
-        range r = (len != 0) ? irangel(off, len) :
-                irange(off, pagecache_get_node_length(pn));
-        pagecache_node_fetch_pages(pn, r, 0, 0);
+        if (!pagecache_node_dax_active(pn)) {
+            range r = (len != 0) ? irangel(off, len) :
+                    irange(off, pagecache_get_node_length(pn));
+            pagecache_node_fetch_pages(pn, r, 0, 0);
+        }
         break;
     }
     case POSIX_FADV_DONTNEED:
