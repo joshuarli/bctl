@@ -959,20 +959,33 @@ static boolean process_data_limit_locked(process p, u64 added, range removed)
     return used <= limit && added - replaced <= limit - used;
 }
 
-boolean adjust_process_heap(process p, u64 old_end, u64 new_end)
+void *process_set_brk(process p, void *addr)
 {
-    boolean adjusted = true;
+    process_lock(p);
     vmap_lock(p);
+    u64 requested = u64_from_pointer(addr);
+    u64 new_end = pad(requested, PAGESIZE);
+    if (!addr || requested < p->vm->heap_base || new_end < requested)
+        goto out;
+    u64 old_end = pad(u64_from_pointer(p->vm->brk), PAGESIZE);
     if (new_end > old_end) {
+        u64 added = new_end - old_end;
         struct vmap k = ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE, 0, 0, 0, 0);
         k.node.r = irange(old_end, new_end);
-        adjusted = process_data_limit_locked(p, new_end - old_end, irange(0, 0)) &&
-            allocate_vmap_locked(p->vm->vmaps, &k) != INVALID_ADDRESS;
+        if (requested - p->vm->heap_base > p->rlimit_data_cur ||
+            !memory_is_user(pointer_from_u64(old_end), added) ||
+            !process_data_limit_locked(p, added, irange(0, 0)) ||
+            allocate_vmap_locked(p->vm->vmaps, &k) == INVALID_ADDRESS)
+            goto out;
     } else if (new_end < old_end) {
-        process_remove_range_locked(p, irange(new_end, old_end), false);
+        process_remove_range_locked(p, irange(new_end, old_end), true);
     }
+    p->vm->brk = addr;
+  out:
+    addr = p->vm->brk;
     vmap_unlock(p);
-    return adjusted;
+    process_unlock(p);
+    return addr;
 }
 
 sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void *new_address)

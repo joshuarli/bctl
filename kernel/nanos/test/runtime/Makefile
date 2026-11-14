@@ -32,6 +32,7 @@ PROGRAMS= \
 	pipe \
 	readv \
 	resource_limits \
+	shared_brk \
 	sandbox \
 	sendfile \
 	shmem \
@@ -328,6 +329,9 @@ dummy:
 
 SRCS-resource_limits= $(CURDIR)/resource_limits.c
 LDFLAGS-resource_limits= -static
+
+SRCS-shared_brk= $(CURDIR)/shared_brk.c
+LDFLAGS-shared_brk= -static
 
 include ../../rules.mk
 

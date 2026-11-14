@@ -137,6 +137,7 @@ RUNTIME_TESTS=	\
 	pipe \
 	readv \
 	resource_limits \
+	shared_brk \
 	sandbox \
 	sendfile \
 	shmem \

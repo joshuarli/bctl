@@ -596,7 +596,8 @@ static inline sysreturn blockq_block_required(unix_context t, u64 bq_flags)
 }
 
 vmap allocate_vmap(process p, range r, struct vmap q);
-boolean adjust_process_heap(process p, u64 old_end, u64 new_end);
+/* p must be the calling thread's process. Failure returns its current break. */
+void *process_set_brk(process p, void *addr);
 
 u64 process_get_virt_range(process p, u64 size, range region);
 void *process_map_physical(process p, u64 phys_addr, u64 size, u64 vmflags);

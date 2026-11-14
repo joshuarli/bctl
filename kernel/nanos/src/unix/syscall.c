@@ -2082,33 +2082,7 @@ static sysreturn getcwd(char *buf, u64 length)
 
 static sysreturn brk(void *addr)
 {
-    process p = current->p;
-    process_lock(p);
-
-    /* on failure, return the current break */
-    if (!addr || p->vm->brk == addr)
-        goto out;
-
-    u64 old_end = pad(u64_from_pointer(p->vm->brk), PAGESIZE);
-    u64 new_end = pad(u64_from_pointer(addr), PAGESIZE);
-    if (old_end > new_end) {
-        if (u64_from_pointer(addr) < p->vm->heap_base ||
-            !adjust_process_heap(p, old_end, new_end))
-            goto out;
-        smp_write_barrier();
-        address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
-    } else if (new_end > old_end) {
-        u64 alloc = new_end - old_end;
-        if (u64_from_pointer(addr) - p->vm->heap_base > p->rlimit_data_cur ||
-            !memory_is_user(pointer_from_u64(old_end), alloc) ||
-            !adjust_process_heap(p, old_end, new_end))
-            goto out;
-    }
-    p->vm->brk = addr;
-  out:
-    addr = p->vm->brk;
-    process_unlock(p);
-    return sysreturn_from_pointer(addr);
+    return sysreturn_from_pointer(process_set_brk(current->p, addr));
 }
 
 static sysreturn readlink_internal(filesystem fs, inode cwd, sstring pathname, char *buf,

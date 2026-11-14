@@ -46,6 +46,9 @@ Fork/exec mechanics in the browser child (`base/process/launch_posix.cc`): fds r
 
 Thread creation under musl: `clone(CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID|CLONE_DETACHED)` (`0x400000`); exactly this mask is allowed in sandboxed processes (`syscall_parameters_restrictions.cc:151-156`; `strace-full.txt:194`).
 
+`brk` serializes its complete transition through the shared address space's vmap lock.
+The `shared_brk` regression exercises the same shared-VM invariant with separate `CLONE_VM` processes.
+
 ## 2. Layer-1 sandbox: selection and sequence
 
 Selection (browser, `content/browser/zygote_host/zygote_host_impl_linux.cc`):

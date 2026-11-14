@@ -44,3 +44,7 @@ $(OUT)/fixtures/cow_stress_dyn: fixtures/cow_stress.c
 $(OUT)/fixtures/resource_limits: $(ROOT)/nanos/test/runtime/resource_limits.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -static $< -o $@
+
+$(OUT)/fixtures/shared_brk: $(ROOT)/nanos/test/runtime/shared_brk.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static $< -o $@
