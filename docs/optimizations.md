@@ -95,6 +95,6 @@ Statuses:
 | --- | --- | --- | --- | --- |
 | GPU rasterization as the explanation for the native lead | Native with `--disable-gpu` is no slower than native with the GPU (form screenshot 11.8 vs 19.5 ms, form total 39.7 vs 37.8 ms). | Ruled out | [native software receipt](../tests/bench/results/2026-11-13-macos-workflows/warm-cdp-native-software.json) | — |
 | Slower guest CPU or missing CPU features | In-page compute, allocate-and-touch, and canvas raster match native within 3%. `AT_HWCAP` advertises NEON, CRC32, and the crypto extensions. | Ruled out | [workflow write-up](macos-workflows.md#wakeups-and-address-space-switches) | — |
-| Tracing one screenshot and one click step on both sides | — | Untried | BCTL-21 | — |
+| Operation-scoped warm screenshot and click tracing (startup-only BCTL_TRACE_CHROMIUM=1 is insufficient) | — | Untried | [BCTL-21 graphics campaign](CAMPAIGN-GRAPHICS-PERFORMANCE.md) | — |
 | Sharing read-only file pages, such as the browser binary, across VMs for crawl density | — | Untried | BCTL-21 | — |
 | Running a woken thread on the waker's CPU (wake-affine), as an alternative or complement to idle polling | — | Untried | — | Idle polling's remaining 6 µs round trip matters in a profile |
