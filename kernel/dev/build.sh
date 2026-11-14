@@ -3,8 +3,8 @@ set -eu
 . "$(dirname -- "$0")/common.sh"
 
 if [ "$(uname -s)" = Darwin ]; then
-	[ -n "${HYDROGEN_KRUN:-}" ] && [ -f "$HYDROGEN_KRUN/lib/libkrun.dylib" ] && [ -f "$HYDROGEN_KRUN/firmware.fd" ] ||
-		die "set HYDROGEN_KRUN to a libkrun bundle holding lib/libkrun.dylib and firmware.fd"
+	[ -n "${HYDROGEN_KRUN:-}" ] && [ -f "$HYDROGEN_KRUN/lib/libkrun.dylib" ] ||
+		die "set HYDROGEN_KRUN to a libkrun bundle holding lib/libkrun.dylib"
 	ensure_work
 	ensure_builder
 	linux "$ROOT/dev/build.sh" "$@"

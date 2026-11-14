@@ -85,7 +85,7 @@ hvf=0
 [ "$(uname -s)" != Darwin ] || [ "$native" -eq 1 ] || hvf=1
 if [ "$hvf" -eq 1 ]; then
 	[ "$net" -eq 0 ] || die "--net is not supported under HVF"
-	[ -x "$KRUN_RUN" ] && [ -f "${HYDROGEN_KRUN:-}/firmware.fd" ] || die "missing $KRUN_RUN or HYDROGEN_KRUN: run dev/build.sh"
+	[ -x "$KRUN_RUN" ] || die "missing $KRUN_RUN: run dev/build.sh"
 	case $mem in
 	*G) mib=$((${mem%G} * 1024)) ;;
 	*M) mib=${mem%M} ;;
@@ -108,7 +108,7 @@ if [ "$native" -eq 1 ]; then
 	start=$(now)
 	spawn sh -c 'cd "$0" && exec "$@"' "$dir" "$@" >"$serial" 2>"$dir/stderr.log"
 elif [ "$hvf" -eq 1 ]; then
-	set -- "$KRUN_RUN" "$image" "$HYDROGEN_KRUN/firmware.fd" "$smp" "$mib"
+	set -- "$KRUN_RUN" "$image" "$kernel" "$smp" "$mib"
 	[ -z "$virtiofs" ] || set -- "$@" "${virtiofs%%:*}" "$(realpath "${virtiofs#*:}")"
 	qemu_cmd=$*
 	start=$(now)
