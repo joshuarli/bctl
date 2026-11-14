@@ -53,7 +53,7 @@ pub fn cdp_answers() -> bool {
     stream.read_exact(&mut head).is_ok() && head.starts_with(b"HTTP/1.1 200")
 }
 
-fn renderer_sandboxed() -> bool {
+pub fn renderer_sandboxed() -> bool {
     procfs::pids()
         .into_iter()
         .find(|&pid| is_renderer(&procfs::cmdline(pid)))

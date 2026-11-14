@@ -4,14 +4,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::accounts::{self, Account};
 use crate::browser::{DISPLAY_ENV, Display};
-use crate::check::{cdp_answers, headless_report};
+use crate::check::{cdp_answers, headless_report, renderer_sandboxed};
 use crate::relay::{self, Log};
 use crate::signals::{Event, Signals, send};
 use crate::vsock::{VsockListener, VsockStream};
@@ -19,9 +19,41 @@ use crate::layout;
 
 const TICK: Duration = Duration::from_millis(100);
 const BRING_UP_TICK: Duration = Duration::from_millis(2);
+const CHECK_BOOT_WAIT: Duration = Duration::from_secs(3);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(60);
 const BROWSER_CLOSE_GRACE: Duration = Duration::from_secs(8);
 const BROWSER_GRACE: Duration = Duration::from_secs(7);
+
+struct BootSignal {
+    ready: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl BootSignal {
+    fn new() -> Self {
+        Self { ready: Mutex::new(false), changed: Condvar::new() }
+    }
+
+    fn notify(&self) {
+        *self.ready.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        self.changed.notify_all();
+    }
+
+    fn wait(&self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut ready = self.ready.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*ready {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let (guard, result) = self.changed.wait_timeout(ready, remaining).unwrap_or_else(|poisoned| poisoned.into_inner());
+            ready = guard;
+            if result.timed_out() {
+                break;
+            }
+        }
+    }
+}
 
 fn io_error(what: impl AsRef<Path>) -> impl FnOnce(io::Error) -> String {
     move |error| format!("{}: {error}", what.as_ref().display())
@@ -34,6 +66,8 @@ fn own(path: &Path, account: &Account) -> Result<(), String> {
 pub fn run(persistent: bool) -> Result<ExitCode, String> {
     crate::startup::mark("begin");
     let signals = Signals::block()?;
+    let boot = Arc::new(BootSignal::new());
+    start_check_server(persistent, Arc::clone(&boot))?;
     if persistent {
         let mounts = fs::read_to_string("/proc/mounts").map_err(io_error("/proc/mounts"))?;
         if !mounts.lines().any(|line| line.split_whitespace().nth(1) == Some("/profile")) {
@@ -70,7 +104,9 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     let stopping = Arc::new(AtomicBool::new(false));
-    let outcome = bring_up(&signals, &mut child, persistent.then_some((shutdown_tx, Arc::clone(&stopping))))
+    let brought_up = bring_up(&signals, &mut child, persistent.then_some((shutdown_tx, Arc::clone(&stopping))), &boot);
+    boot.notify();
+    let outcome = brought_up
         .and_then(|()| hold(&signals, &mut child, &stopping));
     let stopped = stop_browser(&mut child);
     let outcome = outcome.and_then(|code| stopped.map(|()| code));
@@ -113,11 +149,26 @@ fn echo_log_tail(path: &Path) {
     }
 }
 
-fn bring_up(signals: &Signals, child: &mut Child, shutdown: Option<(mpsc::Sender<VsockStream>, Arc<AtomicBool>)>) -> Result<(), String> {
+fn bring_up(
+    signals: &Signals,
+    child: &mut Child,
+    shutdown: Option<(mpsc::Sender<VsockStream>, Arc<AtomicBool>)>,
+    boot: &BootSignal,
+) -> Result<(), String> {
+    let relay_log = Log::open(&layout::log("relay.log"))?;
+    relay::start_egress(&relay_log)?;
+    if let Some((shutdown, stopping)) = shutdown {
+        let listener = VsockListener::bind(layout::VSOCK_STOP_PORT).map_err(|e| format!("listen for shutdown: {e}"))?;
+        thread::spawn(move || {
+            if let Ok(stream) = listener.accept() && shutdown.send(stream).is_ok() {
+                stopping.store(true, Ordering::Release);
+            }
+        });
+    }
     let deadline = Instant::now() + BROWSER_TIMEOUT;
     loop {
         crate::startup::mark("cdp_probe_begin");
-        let ready = cdp_answers();
+        let ready = cdp_answers() && renderer_sandboxed();
         crate::startup::mark(if ready { "cdp_probe_ready" } else { "cdp_probe_missing" });
         if ready { break; }
         if let Some(status) = child.try_wait().map_err(io_error("browser"))? {
@@ -131,30 +182,21 @@ fn bring_up(signals: &Signals, child: &mut Child, shutdown: Option<(mpsc::Sender
         }
     }
     crate::startup::mark("cdp_answered");
-    let relay_log = Log::open(&layout::log("relay.log"))?;
     relay::start_vsock(layout::VSOCK_CDP_PORT, &relay_log)?;
-    relay::start_egress(&relay_log)?;
-    start_check_server(shutdown.is_some())?;
-    if let Some((shutdown, stopping)) = shutdown {
-        let listener = VsockListener::bind(layout::VSOCK_STOP_PORT).map_err(|e| format!("listen for shutdown: {e}"))?;
-        thread::spawn(move || {
-            if let Ok(stream) = listener.accept() && shutdown.send(stream).is_ok() {
-                stopping.store(true, Ordering::Release);
-            }
-        });
-    }
     crate::startup::mark("relays_ready");
+    boot.notify();
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "bctl-guest: ready").and_then(|()| stdout.flush()).map_err(io_error("stdout"))
 }
 
-fn start_check_server(persistent: bool) -> Result<(), String> {
+fn start_check_server(persistent: bool, boot: Arc<BootSignal>) -> Result<(), String> {
     let port = layout::VSOCK_CHECK_PORT;
     let listener = VsockListener::bind(port).map_err(|e| format!("listen on vsock port {port}: {e}"))?;
     thread::spawn(move || {
         for client in listener.incoming() {
             match client {
                 Ok(mut client) => {
+                    boot.wait(CHECK_BOOT_WAIT);
                     let mut report = headless_report();
                     if persistent { report.push_str("profile ok\n"); }
                     if let Err(error) = client.write_all(report.as_bytes()).and_then(|()| client.shutdown_write()) {
@@ -247,5 +289,24 @@ mod tests {
         drop(host);
         done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         answering.join().unwrap();
+    }
+
+    #[test]
+    fn boot_signal_blocks_until_notified_then_returns_immediately() {
+        let signal = Arc::new(BootSignal::new());
+        signal.wait(Duration::from_millis(5));
+        let waiter_signal = Arc::clone(&signal);
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            waiter_signal.wait(Duration::from_secs(5));
+            done_tx.send(()).unwrap();
+        });
+        assert_eq!(done_rx.recv_timeout(Duration::from_millis(30)), Err(mpsc::RecvTimeoutError::Timeout));
+        signal.notify();
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        waiter.join().unwrap();
+        let start = Instant::now();
+        signal.wait(Duration::from_secs(5));
+        assert!(start.elapsed() < Duration::from_millis(50));
     }
 }
