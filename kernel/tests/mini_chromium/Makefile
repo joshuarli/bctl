@@ -64,3 +64,7 @@ $(OUT)/fixtures/unix_socket_review: $(ROOT)/nanos/test/runtime/unix_socket_revie
 $(OUT)/fixtures/ns_isolation: $(ROOT)/nanos/test/runtime/ns_isolation.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -static $< -o $@
+
+$(OUT)/fixtures/seccomp_race: $(ROOT)/nanos/test/runtime/seccomp_race.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static -pthread $< -o $@

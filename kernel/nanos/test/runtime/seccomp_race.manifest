@@ -1,0 +1,6 @@
+(
+    children:(seccomp_race:(contents:(host:output/test/runtime/bin/seccomp_race)))
+    program:/seccomp_race
+    fault:t
+    environment:()
+)

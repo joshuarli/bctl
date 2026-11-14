@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|resource-limits|shared-brk|seccomp-policy|unix-socket-review|mprotect-cow|ns-isolation|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|resource-limits|shared-brk|seccomp-policy|seccomp-race|unix-socket-review|mprotect-cow|ns-isolation|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -435,6 +435,10 @@ for suite in "$@"; do
 			fixture_native "$name" env
 			for smp in 1 2 4; do case_verdict "$name" "$smp" 60 PASS '' "$FIXTURES/$name"; done
 		done ;;
+	seccomp-race)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/seccomp_race"
+		fixture_native seccomp_race env
+		for smp in 1 2 4; do case_verdict seccomp_race "$smp" 120 PASS '' "$FIXTURES/seccomp_race"; done ;;
 	shared-brk)
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/shared_brk"
 		fixture_native shared_brk env
