@@ -904,3 +904,32 @@ VMM `__TEXT` and `mapped file`). The unpacked Helium guest rootfs contains 247
 shareable ELF, `.pak`, and `icudtl.dat` files totaling 626,902,726 bytes
 (597.9 MiB) as an upper bound on file-backed browser assets (not observed
 resident or duplicated pages).
+
+## Headless frame-rate limit removal (BCTL-21)
+
+Commit `9a3760b3` passes `--disable-frame-rate-limit` for headless guest
+launches in [guest/appliance/src/browser.rs](../guest/appliance/src/browser.rs)
+after accepting the active CPU trade-off. In the production `change`-tier kernel
+experiment ([change receipt](../tests/bench/results/2026-11-13-experiments/disable-frame-rate-limit-change.json)),
+`latency`, `probe`, and the 104-run `harness` gate pass with zero discarded
+runs: warm form drops from 93.22 to 27.23 ms browser time (279.56 to 128.61 ms
+wall), warm news drops from 149.80 to 110.24 ms browser time (255.65 to
+224.61 ms wall), and active VM CPU increases from 1.96 to 3.82 s.
+
+Nanos interop passes 113 of 113 on the rebuilt `nanos-helium` image. A
+reduced 3-round `macos_workflows.py --native-arg=--disable-gpu --rounds 3
+--resource-rounds 3 --cpu-rounds 3` check
+([workflow receipt](../tests/bench/results/2026-11-13-macos-workflows/frame-rate-limit-software.json),
+run on `9a3760b3` with the un-committed change receipt untracked and zero
+input edits during execution) passes 72 of 72 trials and all 48 timed load
+checks. Because each cell has three samples rather than five, `summary` records
+no formal medians and observed min–max ranges are reported directly:
+
+| Workload | Native `--disable-gpu` complete ms | Nanos complete ms | Native `--disable-gpu` MiB | Nanos MiB | Native `--disable-gpu` CPU s | Nanos CPU s |
+| --- | --- | --- | --- | --- | --- | --- |
+| Shadowdriver form | 515.8–852.4 | 905.2–996.1 | 320.1–397.9 | 355.3–358.3 | 1.29–1.30 | 2.08–2.27 |
+| Grab, four pages | 15463.0–15918.5 | 16184.0–16296.4 | 431.0–431.7 | 400.5–402.2 | 2.62–2.71 | 6.46–7.23 |
+| `agent-browser` form | 1098.1–1692.2 | 982.2–1048.7 | 444.8–451.2 | 358.0–361.0 | 1.41–1.43 | 1.99–2.11 |
+| `agent-browser` warm form | 225.1–391.3 | 117.6–139.4 | — | — | — | — |
+| `agent-browser` news | 1072.1–1120.9 | 1143.3–1170.1 | 496.7–516.0 | 376.6–377.5 | 1.65–1.65 | 2.34–2.47 |
+| `agent-browser` warm news | 158.9–206.2 | 262.0–267.3 | — | — | — | — |
