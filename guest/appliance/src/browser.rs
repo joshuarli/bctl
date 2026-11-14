@@ -90,8 +90,13 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
         arguments.extend([
             "--in-process-gpu".into(),
             "--disable-frame-rate-limit".into(),
-            "--use-gl=disabled".into(),
-            "--disable-crash-reporter".into(),
+            "--animation-duration-scale=0".into(),
+            "--wm-window-animations-disabled".into(),
+            "--disable-smooth-scrolling".into(),
+            "--cc-scroll-animation-duration-in-seconds=0".into(),
+            "--force-prefers-reduced-motion".into(),
+            "--hide-scrollbars".into(),
+            "--disk-cache-dir=/tmp/cache".into(),
             "--disable-breakpad".into(),
             "--disable-background-networking".into(),
             "--disable-component-update".into(),
@@ -99,7 +104,12 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
             "--disable-default-apps".into(),
             "--disable-extensions".into(),
             "--disable-component-extensions-with-background-pages".into(),
-            "--disable-features=SpareRendererForSitePerProcess,OptimizationHints,MediaRouter,AutofillServerCommunication".into(),
+            "--metrics-recording-only".into(),
+            "--no-pings".into(),
+            "--password-store=basic".into(),
+            "--disable-hang-monitor".into(),
+            "--enable-features=NetworkServiceInProcess2,LazyKeyedServiceInstantiation,LazyKeyedServiceInstantiationExtensions,LazyKeyedServiceInstantiationExtensionsApi,LazyKeyedServiceInstantiationStorageNotification,LazyKeyedServiceInstantiationVisitedUrlRanking,LazyKeyedServiceInstantiationOptimizationGuide,LazyKeyedServiceInstantiationAutofillAndPassword,LazyKeyedServiceInstantiationSafetyHub".into(),
+            "--disable-features=SpareRendererForSitePerProcess,OptimizationHints,MediaRouter,AutofillServerCommunication,SegmentationPlatform,overlay-scrollbars,helium-noise,helium-split-clienthello".into(),
         ]);
     }
     arguments.extend([
@@ -185,8 +195,11 @@ mod tests {
     }
 
     #[test]
-    fn headless_disables_the_frame_rate_limit() {
+    fn headless_disables_frame_rate_limit_and_caches_in_tmpfs() {
         let args = arguments(Display::Headless, Path::new("/profile"), "about:blank");
+        assert!(args.contains(&"--disk-cache-dir=/tmp/cache".to_string()));
+        assert!(args.contains(&"--in-process-gpu".to_string()));
+        assert!(!args.contains(&"--use-gl=disabled".to_string()));
         assert!(args.contains(&"--disable-frame-rate-limit".to_string()));
     }
 }
