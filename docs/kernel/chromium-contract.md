@@ -96,6 +96,14 @@ The mount namespace is never changed. The new network namespace has no interface
 
 ## 3. Renderer seccomp-BPF
 
+Installed seccomp filters cannot be discarded by switching to strict mode:
+both `seccomp(SET_MODE_STRICT)` and `prctl(PR_SET_SECCOMP, MODE_STRICT)`
+return `EINVAL` from filter mode. `GET_ACTION_AVAIL` requires zero flags and
+an exact supported action, returning `EOPNOTSUPP` for unknown actions or
+action values carrying data bits. `test/runtime/seccomp_policy.c` compares
+these sandbox boundary conditions with native Linux/musl, including proof
+that a denied write remains denied after the rejected mode change.
+
 ### Installation
 
 | Step | Operation | Cite |

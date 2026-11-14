@@ -48,3 +48,7 @@ $(OUT)/fixtures/resource_limits: $(ROOT)/nanos/test/runtime/resource_limits.c
 $(OUT)/fixtures/shared_brk: $(ROOT)/nanos/test/runtime/shared_brk.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -static $< -o $@
+
+$(OUT)/fixtures/seccomp_policy: $(ROOT)/nanos/test/runtime/seccomp_policy.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static $< -o $@

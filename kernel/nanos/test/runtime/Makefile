@@ -33,6 +33,7 @@ PROGRAMS= \
 	readv \
 	resource_limits \
 	shared_brk \
+	seccomp_policy \
 	sandbox \
 	sendfile \
 	shmem \
@@ -332,6 +333,9 @@ LDFLAGS-resource_limits= -static
 
 SRCS-shared_brk= $(CURDIR)/shared_brk.c
 LDFLAGS-shared_brk= -static
+
+SRCS-seccomp_policy= $(CURDIR)/seccomp_policy.c
+LDFLAGS-seccomp_policy= -static
 
 include ../../rules.mk
 
