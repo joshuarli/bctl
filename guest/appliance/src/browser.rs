@@ -82,7 +82,18 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
     if display == Display::Headless {
         arguments.push(format!("--proxy-server=socks5://127.0.0.1:{}", layout::EGRESS_PROXY_PORT));
         arguments.push("--proxy-bypass-list=<-loopback>".into());
-        arguments.push("--disable-frame-rate-limit".into());
+        arguments.extend([
+            "--disable-frame-rate-limit".into(),
+            "--use-gl=disabled".into(),
+            "--disable-crash-reporter".into(),
+            "--disable-breakpad".into(),
+            "--disable-background-networking".into(),
+            "--disable-component-update".into(),
+            "--disable-sync".into(),
+            "--disable-default-apps".into(),
+            "--disable-extensions".into(),
+            "--disable-dev-shm-usage".into(),
+        ]);
     }
     arguments.extend([
         format!("--remote-debugging-port={}", layout::BROWSER_CDP_PORT),

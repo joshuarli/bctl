@@ -18,6 +18,7 @@ use crate::vsock::{VsockListener, VsockStream};
 use crate::layout;
 
 const TICK: Duration = Duration::from_millis(100);
+const BRING_UP_TICK: Duration = Duration::from_millis(2);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(60);
 const BROWSER_CLOSE_GRACE: Duration = Duration::from_secs(8);
 const BROWSER_GRACE: Duration = Duration::from_secs(7);
@@ -122,7 +123,7 @@ fn bring_up(signals: &Signals, child: &mut Child, shutdown: Option<(mpsc::Sender
         if let Some(status) = child.try_wait().map_err(io_error("browser"))? {
             return Err(format!("the browser exited before CDP answered: {status}"));
         }
-        if let Some(Event::Stop(signal)) = signals.wait(TICK) {
+        if let Some(Event::Stop(signal)) = signals.wait(BRING_UP_TICK) {
             return Err(format!("signal {signal} before the browser was ready"));
         }
         if Instant::now() >= deadline {
