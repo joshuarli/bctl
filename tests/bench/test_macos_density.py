@@ -20,15 +20,26 @@ def block(pid, physical, peak):
 
 class DensityTests(unittest.TestCase):
     def test_categories_and_deduplicated_summary(self):
-        output = block(1001, 120000000, 135000000) + block(1002, 120000000, 140000000) + 'Summary Footprint: 200000000 B\n'
+        shared_subtable = '''Shared with Chromium [1001]:
+  5000000 B           0 B           0 B          1    VM_ALLOCATE
+        0 B    10000000 B           0 B          2    mapped file
+  5000000 B    10000000 B           0 B          3    TOTAL
+  Auxiliary data:
+    phys_footprint: 120000000 B
+    phys_footprint_peak: 140000000 B
+Summary Footprint: 200000000 B
+245000000 B   200000000 B     8000000 B        161    TOTAL
+'''
+        second = block(1002, 120000000, 140000000).split('    phys_footprint:', 1)[0] + shared_subtable
+        output = block(1001, 120000000, 135000000) + second
         result = parse_footprint(output, {1001, 1002})
         self.assertEqual(result['physical_bytes'], 200000000)
         self.assertEqual(result['peak_physical_bytes'], 275000000)
-        self.assertEqual(result['dirty_bytes'], 240000000)
-        self.assertEqual(result['clean_bytes'], 190000000)
+        self.assertEqual(result['dirty_bytes'], 245000000)
+        self.assertEqual(result['clean_bytes'], 200000000)
         self.assertEqual(result['reclaimable_bytes'], 8000000)
         self.assertEqual(result['text_clean_bytes'], 130000000)
-        self.assertEqual(result['mapped_file_clean_bytes'], 60000000)
+        self.assertEqual(result['mapped_file_clean_bytes'], 70000000)
         self.assertEqual(set(result['processes']), {1001, 1002})
 
     def test_missing_process_and_total_fail(self):

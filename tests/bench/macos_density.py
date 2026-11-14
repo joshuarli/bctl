@@ -33,12 +33,12 @@ def parse_footprint(output, expected):
         if len(peaks) != 1:
             raise ValueError('missing process peak')
         process_categories = {}
+        category_block = re.split(r'^\s*(?:Auxiliary data:|Summary Footprint:)', block, maxsplit=1, flags=re.M)[0]
         for dirty, clean, reclaimable, regions, name in re.findall(
-                r'^\s*([\d,]+) B\s+([\d,]+) B\s+([\d,]+) B\s+([\d,]+)\s+(.+?)\s*$', block, re.M):
+                r'^\s*([\d,]+) B\s+([\d,]+) B\s+([\d,]+) B\s+([\d,]+)\s+(.+?)\s*$', category_block, re.M):
             values = tuple(int(value.replace(',', '')) for value in (dirty, clean, reclaimable))
-            if name in process_categories:
-                raise ValueError('duplicate category')
-            process_categories[name] = values
+            old = process_categories.get(name, (0, 0, 0))
+            process_categories[name] = tuple(a + b for a, b in zip(old, values))
         if 'TOTAL' not in process_categories:
             raise ValueError('missing category total')
         processes[pid] = {'physical_bytes': int(match.group(2).replace(',', '')),
