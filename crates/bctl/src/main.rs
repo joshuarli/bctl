@@ -578,7 +578,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     };
     let mut deadline = None;
     let mut spawned = false;
-    let mut pause = Duration::from_millis(1);
+    let mut pause = Duration::from_micros(200);
     let ping = Request { op: Op::Ping.as_str().into(), ..Request::empty() };
     loop {
         let error = match send(paths, &ping) {
@@ -599,7 +599,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
             spawned = true;
         }
         thread::sleep(pause);
-        pause = (pause * 2).min(Duration::from_millis(10));
+        pause = (pause * 2).min(Duration::from_millis(5));
     }
 }
 

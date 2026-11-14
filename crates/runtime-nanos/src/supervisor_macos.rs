@@ -16,7 +16,7 @@ use crate::profile::prepare_profile;
 use crate::supervisor_lock;
 use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST_EGRESS_PORT, GUEST_STOP_PORT, SUPERVISOR_LOG, UNTERMINATED_EXIT, VSOCK_SOCKET, connect_guest};
 
-const START_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
 const READY_POLL: Duration = Duration::from_micros(500);
 
@@ -98,9 +98,14 @@ pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     }
 }
 
-struct Failure {
-    message: String,
-    unterminated: bool,
+pub(crate) struct Failure {
+    pub(crate) message: String,
+    pub(crate) unterminated: bool,
+}
+
+pub(crate) enum ServeError {
+    Spawn(io::Error),
+    Failed(Failure),
 }
 
 impl From<String> for Failure {
@@ -114,11 +119,11 @@ fn log_file(dir: &Path, name: &str) -> Result<File, String> {
     OpenOptions::new().create(true).append(true).open(&path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Failure> {
-    let exe = std::env::current_exe().map_err(|error| format!("current executable: {error}"))?;
-    let mut child = Command::new(&exe).args(prefix).arg("serve").args(args).process_group(0)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log_file(&config.dir, SUPERVISOR_LOG)?)
-        .spawn().map_err(|error| format!("{}: {error}", exe.display()))?;
+pub(crate) fn launch_serve(mut command: Command, dir: &Path, start_timeout: Duration) -> Result<(), ServeError> {
+    let stderr = log_file(dir, SUPERVISOR_LOG).map_err(|error| ServeError::Failed(Failure::from(error)))?;
+    let mut child = command.process_group(0)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(stderr)
+        .spawn().map_err(ServeError::Spawn)?;
     let stdout = child.stdout.take().expect("stdout was piped");
     let mut group = OwnedGroup::new(child);
     let (sender, receiver) = mpsc::channel();
@@ -127,22 +132,32 @@ fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Failu
         let _ = BufReader::new(stdout).read_line(&mut line);
         let _ = sender.send(line);
     });
-    match receiver.recv_timeout(config.start_timeout) {
+    match receiver.recv_timeout(start_timeout) {
         Ok(line) if line.trim() == "ready" => {
             drop(group.disarm());
             Ok(())
         }
         outcome => {
             let terminated = group.terminate();
-            let log = fs::read_to_string(config.dir.join(SUPERVISOR_LOG)).unwrap_or_default();
+            let log = fs::read_to_string(dir.join(SUPERVISOR_LOG)).unwrap_or_default();
             let last = log.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no message");
             let mut message = format!("the supervisor did not start libkrun ({outcome:?}): {last}");
             if let Err(error) = &terminated {
                 message = format!("{message}; {error}");
             }
-            Err(Failure { message, unterminated: terminated.is_err() })
+            Err(ServeError::Failed(Failure { message, unterminated: terminated.is_err() }))
         }
     }
+}
+
+fn launch(prefix: &[&str], config: &Config, args: &[String]) -> Result<(), Failure> {
+    let exe = std::env::current_exe().map_err(|error| format!("current executable: {error}"))?;
+    let mut command = Command::new(&exe);
+    command.args(prefix).arg("serve").args(args);
+    launch_serve(command, &config.dir, config.start_timeout).map_err(|error| match error {
+        ServeError::Spawn(error) => Failure::from(format!("{}: {error}", exe.display())),
+        ServeError::Failed(failure) => failure,
+    })
 }
 
 fn socket(dir: &Path, port: u32) -> PathBuf {

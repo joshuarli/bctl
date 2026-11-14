@@ -81,6 +81,11 @@ pub fn run(paths: Paths) -> Result<(), String> {
         return Err(format!("another bctl daemon owns {}", paths.home.display()));
     }
 
+    let socket = paths.socket();
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).map_err(|e| format!("cannot listen on {}: {e}", socket.display()))?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+
     let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
     let runtime = Runtime::new(RuntimeKind::for_host()?, &paths)?;
     let daemon = Arc::new(Daemon {
@@ -108,10 +113,6 @@ pub fn run(paths: Paths) -> Result<(), String> {
     let watcher = Arc::clone(&daemon);
     thread::spawn(move || watcher.watch_health());
 
-    let socket = daemon.paths.socket();
-    let _ = fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket).map_err(|e| format!("cannot listen on {}: {e}", socket.display()))?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     eprintln!("bctl daemon: listening on {}", socket.display());
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };

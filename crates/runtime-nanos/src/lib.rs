@@ -241,7 +241,7 @@ impl Nanos {
         };
         let mut command = Command::new(&self.tools.supervisor);
         command.args(&self.tools.supervisor_args)
-            .arg("launch")
+            .arg(if cfg!(target_os = "macos") { "serve" } else { "launch" })
             .arg("--dir")
             .arg(&dir)
             .arg("--image")
@@ -267,25 +267,50 @@ impl Nanos {
                 command.arg("--runner").arg(runner).arg("--kernel").arg(kernel);
             }
         }
-        let output = command.args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()])).output();
-        let output = match output {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&dir);
-                let _ = fs::remove_dir_all(&socket_dir);
-                return Err(RuntimeError::Spawn { message: format!("{}: {error}", self.tools.supervisor.display()) });
+        command.args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()]));
+        #[cfg(target_os = "macos")]
+        {
+            match supervisor::launch_serve(command, &dir, supervisor::START_TIMEOUT) {
+                Ok(()) => Ok(()),
+                Err(supervisor::ServeError::Spawn(error)) => {
+                    let _ = fs::remove_dir_all(&dir);
+                    let _ = fs::remove_dir_all(&socket_dir);
+                    Err(RuntimeError::Spawn { message: format!("{}: {error}", self.tools.supervisor.display()) })
+                }
+                Err(supervisor::ServeError::Failed(failure)) => {
+                    if failure.unterminated {
+                        return Err(RuntimeError::Supervisor {
+                            operation: "launch",
+                            message: format!("{}; {} and {} are kept because processes remain", failure.message, dir.display(), socket_dir.display()),
+                        });
+                    }
+                    let _ = fs::remove_dir_all(&dir);
+                    let _ = fs::remove_dir_all(&socket_dir);
+                    Err(RuntimeError::Supervisor { operation: "launch", message: failure.message })
+                }
             }
-        };
-        if output.status.success() {
-            return Ok(());
         }
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if output.status.code() == Some(UNTERMINATED_EXIT) {
-            return Err(RuntimeError::Supervisor { operation: "launch", message: format!("{message}; {} and {} are kept because processes remain", dir.display(), socket_dir.display()) });
+        #[cfg(not(target_os = "macos"))]
+        {
+            let output = match command.output() {
+                Ok(output) => output,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&dir);
+                    let _ = fs::remove_dir_all(&socket_dir);
+                    return Err(RuntimeError::Spawn { message: format!("{}: {error}", self.tools.supervisor.display()) });
+                }
+            };
+            if output.status.success() {
+                return Ok(());
+            }
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if output.status.code() == Some(UNTERMINATED_EXIT) {
+                return Err(RuntimeError::Supervisor { operation: "launch", message: format!("{message}; {} and {} are kept because processes remain", dir.display(), socket_dir.display()) });
+            }
+            let _ = fs::remove_dir_all(&dir);
+            let _ = fs::remove_dir_all(&socket_dir);
+            Err(RuntimeError::Supervisor { operation: "launch", message })
         }
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_dir_all(&socket_dir);
-        Err(RuntimeError::Supervisor { operation: "launch", message })
     }
 
     /// Stops the VM and deletes its directory; a machine that is already gone is not an error.
