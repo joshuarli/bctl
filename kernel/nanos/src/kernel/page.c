@@ -961,6 +961,7 @@ void init_address_spaces(heap h)
     static struct address_space kas;
     kas.root = get_pagetable_base(0);
     kas.h = 0;
+    kas.asid = arch_asid_allocate();
     pagetable_lock();
     u64 *root = pointer_from_pteaddr(kas.root);
     for (int i = PT_ROOT_KERNEL_INDEX; i < PTE_ENTRIES; i++) {

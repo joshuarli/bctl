@@ -75,21 +75,31 @@ void init_mmu(u64 device_base, u64 vtarget)
 }
 
 #ifdef KERNEL
-/* Every ARMv8 implementation supports 8-bit ASIDs. ASID 0 is shared by the kernel address space and
- * by any address space created while all others are in use; loading it flushes the local TLB. */
-#define ASID_COUNT 256
+#define ASID_COUNT_8BIT  256
+#define ASID_COUNT_16BIT 65536
 
 static struct spinlock asid_lock;
-static u64 asid_in_use[ASID_COUNT / 64] = {1};
+static u64 asid_in_use[ASID_COUNT_16BIT / 64] = {1};
+
+static inline u32 arch_asid_words(void)
+{
+    u64 mmfr0 = read_psr(ID_AA64MMFR0_EL1);
+    u32 count = (field_from_u64(mmfr0, ID_AA64MMFR0_EL1_ASIDBits) == ID_AA64MMFR0_EL1_ASIDBits_16BIT)
+        ? ASID_COUNT_16BIT : ASID_COUNT_8BIT;
+    return count / 64;
+}
 
 u16 arch_asid_allocate(void)
 {
     u16 asid = 0;
+    u32 words = arch_asid_words();
     u64 flags = spin_lock_irq(&asid_lock);
-    for (int i = 1; i < ASID_COUNT; i++) {
-        if (!(asid_in_use[i / 64] & U64_FROM_BIT(i % 64))) {
-            asid_in_use[i / 64] |= U64_FROM_BIT(i % 64);
-            asid = i;
+    for (u32 w = 0; w < words; w++) {
+        u64 free_bits = ~asid_in_use[w];
+        if (free_bits) {
+            u64 bit = lsb(free_bits);
+            asid_in_use[w] |= U64_FROM_BIT(bit);
+            asid = w * 64 + bit;
             break;
         }
     }
@@ -139,6 +149,10 @@ void enable_mmu(u64 vtarget)
         u64_from_field(TCR_EL1_TG0, TCR_EL1_TG0_4KB) |
         u64_from_field(TCR_EL1_ORGN0, TCR_EL1_xRGN_WB) |
         u64_from_field(TCR_EL1_IRGN0, TCR_EL1_xRGN_WB);
+
+    if (field_from_u64(read_psr(ID_AA64MMFR0_EL1), ID_AA64MMFR0_EL1_ASIDBits) ==
+        ID_AA64MMFR0_EL1_ASIDBits_16BIT)
+        tcr_el1 |= TCR_EL1_AS;
 
     page_init_debug("tcr_el1: ");
     page_init_debug_u64(tcr_el1);

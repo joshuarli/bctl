@@ -304,7 +304,7 @@ static inline __attribute__((always_inline)) u8 compare_and_swap_8(u8 *p, u8 old
 
 static inline __attribute__((always_inline)) void kern_pause(void)
 {
-    asm volatile("dsb sy; wfe" ::: "memory");
+    asm volatile("yield" ::: "memory");
 }
 
 /* XXX make names generic */

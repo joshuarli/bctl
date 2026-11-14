@@ -42,7 +42,6 @@ NOTRACE void __attribute__((noreturn)) kernel_sleep(void)
     // handler...we shouldn't return here if we do get interrupted
     cpuinfo ci = current_cpu();
     sched_debug("sleep\n");
-    address_space_switch(kernel_address_space);
     ci->state = cpu_idle;
     ci->idle_poll = IDLE_POLL_ACTIVE;
     bitmap_set_atomic(idle_cpu_mask, ci->id, 1);
@@ -61,6 +60,7 @@ NOTRACE void __attribute__((noreturn)) kernel_sleep(void)
         runloop();
     }
 
+    address_space_switch(kernel_address_space);
     while (1) {
         wait_for_interrupt();
     }
@@ -143,7 +143,7 @@ static sched_task migrate_to_self(sched_task t, u64 self, u64 first_cpu, u64 ncp
     return t;
 }
 
-static void migrate_from_self(cpuinfo ci, u64 first_cpu, u64 ncpus)
+static void migrate_idle_range(cpuinfo ci, u64 first_cpu, u64 ncpus, boolean polling_only)
 {
     u64 cpu;
     while ((ncpus > 0) &&
@@ -152,7 +152,8 @@ static void migrate_from_self(cpuinfo ci, u64 first_cpu, u64 ncpus)
         sched_task task;
         if (!sched_queue_empty(&cpui->thread_queue)) {
             wakeup_cpu(cpu);
-        } else if ((task = sched_dequeue_for_cpu(&ci->thread_queue, cpu)) != INVALID_ADDRESS) {
+        } else if ((!polling_only || (*(volatile u32 *)&cpui->idle_poll == IDLE_POLL_ACTIVE)) &&
+                   ((task = sched_dequeue_for_cpu(&ci->thread_queue, cpu)) != INVALID_ADDRESS)) {
             sched_debug("migrating thread from self to idle CPU %d\n", cpu);
             flush_profile_add(pushes, 1);
             sched_enqueue(&cpui->thread_queue, task);
@@ -160,6 +161,19 @@ static void migrate_from_self(cpuinfo ci, u64 first_cpu, u64 ncpus)
         }
         ncpus -= cpu - first_cpu + 1;
         first_cpu = cpu + 1;
+    }
+}
+
+static void migrate_from_self(cpuinfo ci, u64 self)
+{
+    for (int pass = 0; pass < 2; pass++) {
+        boolean polling_only = (pass == 0);
+        if (polling_only || !sched_queue_empty(&ci->thread_queue)) {
+            if (self + 1 < total_processors)
+                migrate_idle_range(ci, self + 1, total_processors - self - 1, polling_only);
+            if (self > 0)
+                migrate_idle_range(ci, 0, self, polling_only);
+        }
     }
 }
 
@@ -285,12 +299,7 @@ NOTRACE void __attribute__((noreturn)) runloop_internal(void)
                 }
             }
         } else {
-            /* Wake up idle CPUs that have a non-empty thread queue, and if our
-             * thread queue is non-empty, migrate our threads to idle CPUs. */
-            if (self + 1 < total_processors)
-                migrate_from_self(ci, self + 1, total_processors - self - 1);
-            if (self > 0)
-                migrate_from_self(ci, 0, self);
+            migrate_from_self(ci, self);
         }
         if (t != INVALID_ADDRESS) {
             if (!timeout) {
