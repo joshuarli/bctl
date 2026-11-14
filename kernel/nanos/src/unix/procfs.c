@@ -1360,14 +1360,20 @@ boolean procfs_ns_link(tuple n, char *buf, u64 bufsiz, sysreturn *rv)
 static fdesc procfs_fd_target(int pid, int fd, sysreturn *rv)
 {
     process self = current->p;
-    if (pid != self->pid && !capable(self, CAP_SYS_PTRACE)) {
-        *rv = -EACCES;
-        return 0;
-    }
     process p = process_get(pid);
     if (!p) {
         *rv = -ENOENT;
         return 0;
+    }
+    if (p != self) {
+        user_namespace target_ns = process_user_ns(p);
+        boolean allowed = ns_capable(self, target_ns, CAP_SYS_PTRACE);
+        user_ns_release(target_ns);
+        if (!allowed) {
+            process_release(p);
+            *rv = -EACCES;
+            return 0;
+        }
     }
     fdesc f = procfs_get_fdesc(p, fd, 0);
     process_release(p);

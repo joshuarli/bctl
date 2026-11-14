@@ -1768,8 +1768,12 @@ static boolean process_signal_permitted(process sender, process target)
     struct creds s, t;
     creds_snapshot(sender, &s);
     creds_snapshot(target, &t);
-    return (s.cap_effective & (1ull << CAP_KILL)) || (s.euid == t.suid) || (s.euid == t.uid) ||
-           (s.uid == t.suid) || (s.uid == t.uid);
+    if ((s.euid == t.suid) || (s.euid == t.uid) || (s.uid == t.suid) || (s.uid == t.uid))
+        return true;
+    user_namespace target_ns = process_user_ns(target);
+    boolean permitted = ns_capable(sender, target_ns, CAP_KILL);
+    user_ns_release(target_ns);
+    return permitted;
 }
 
 sysreturn process_signal(process sender, int pid, struct siginfo *si)

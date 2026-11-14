@@ -135,6 +135,7 @@ RUNTIME_TESTS=	\
 	mprotect_cow \
 	netlink \
 	netsock \
+	ns_isolation \
 	pipe \
 	readv \
 	resource_limits \

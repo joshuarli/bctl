@@ -29,6 +29,7 @@ PROGRAMS= \
 	netlink \
 	netsock \
 	nullpage \
+	ns_isolation \
 	paging \
 	pipe \
 	readv \
@@ -332,6 +333,9 @@ dummy:
 
 SRCS-resource_limits= $(CURDIR)/resource_limits.c
 LDFLAGS-resource_limits= -static
+
+SRCS-ns_isolation= $(CURDIR)/ns_isolation.c
+LDFLAGS-ns_isolation= -static
 
 SRCS-shared_brk= $(CURDIR)/shared_brk.c
 LDFLAGS-shared_brk= -static

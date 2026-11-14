@@ -437,7 +437,7 @@ boolean ns_capable_creds(struct creds *c, user_namespace target, int cap)
             return !!(c->cap_effective & (1ull << cap));
         if (!ns->parent || ns->level <= c->user_ns->level)
             return false;
-        if (ns->owner == c->euid)
+        if (ns->parent == c->user_ns && ns->owner == c->euid)
             return true;
         ns = ns->parent;
     }

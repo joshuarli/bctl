@@ -2467,20 +2467,30 @@ boolean capable(process p, int cap)
     return r;
 }
 
+static boolean creds_id_is_ns_root(struct creds *c, u32 uid)
+{
+    u32 root_kid;
+    return user_ns_to_kuid(c->user_ns, 0, &root_kid) && uid == root_kid;
+}
+
 static void creds_fix_caps_locked(struct creds *c, u32 old_uid, u32 old_euid, u32 old_suid,
                                   u32 old_fsuid)
 {
-    if ((old_uid == 0 || old_euid == 0 || old_suid == 0) &&
-        (c->uid != 0 && c->euid != 0 && c->suid != 0)) {
+    boolean old_root_euid = creds_id_is_ns_root(c, old_euid);
+    boolean new_root_euid = creds_id_is_ns_root(c, c->euid);
+    boolean old_root_fsuid = creds_id_is_ns_root(c, old_fsuid);
+    boolean new_root_fsuid = creds_id_is_ns_root(c, c->fsuid);
+    if ((creds_id_is_ns_root(c, old_uid) || old_root_euid || creds_id_is_ns_root(c, old_suid)) &&
+        (!creds_id_is_ns_root(c, c->uid) && !new_root_euid && !creds_id_is_ns_root(c, c->suid))) {
         c->cap_permitted = c->cap_effective = c->cap_ambient = 0;
     }
-    if (old_euid == 0 && c->euid != 0)
+    if (old_root_euid && !new_root_euid)
         c->cap_effective = 0;
-    if (old_euid != 0 && c->euid == 0)
+    if (!old_root_euid && new_root_euid)
         c->cap_effective = c->cap_permitted;
-    if (old_fsuid == 0 && c->fsuid != 0)
+    if (old_root_fsuid && !new_root_fsuid)
         c->cap_effective &= ~CAP_FS_SET;
-    if (old_fsuid != 0 && c->fsuid == 0)
+    if (!old_root_fsuid && new_root_fsuid)
         c->cap_effective |= c->cap_permitted & CAP_FS_SET;
 }
 
