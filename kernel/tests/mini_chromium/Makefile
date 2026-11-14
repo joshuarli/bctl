@@ -49,6 +49,10 @@ $(OUT)/fixtures/shared_brk: $(ROOT)/nanos/test/runtime/shared_brk.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -static $< -o $@
 
+$(OUT)/fixtures/mprotect_cow: $(ROOT)/nanos/test/runtime/mprotect_cow.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static $< -o $@
+
 $(OUT)/fixtures/seccomp_policy: $(ROOT)/nanos/test/runtime/seccomp_policy.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -static $< -o $@

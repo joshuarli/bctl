@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|resource-limits|shared-brk|seccomp-policy|unix-socket-review|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|resource-limits|shared-brk|seccomp-policy|unix-socket-review|mprotect-cow|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -449,6 +449,12 @@ for suite in "$@"; do
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/unix_socket_review"
 		fixture_native unix_socket_review env
 		for smp in 1 2 4; do case_verdict unix_socket_review "$smp" 60 PASS '' "$FIXTURES/unix_socket_review"; done ;;
+	mprotect-cow)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/mprotect_cow"
+		fixture_native mprotect_cow env
+		for smp in 1 2 4; do
+			case_verdict mprotect_cow "$smp" 60 PASS '' --dir /tmp "$FIXTURES/mprotect_cow"
+		done ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

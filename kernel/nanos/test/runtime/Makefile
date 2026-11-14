@@ -25,6 +25,7 @@ PROGRAMS= \
 	io_uring \
 	mkdir \
 	mmap \
+	mprotect_cow \
 	netlink \
 	netsock \
 	nullpage \
@@ -334,6 +335,9 @@ LDFLAGS-resource_limits= -static
 
 SRCS-shared_brk= $(CURDIR)/shared_brk.c
 LDFLAGS-shared_brk= -static
+
+SRCS-mprotect_cow= $(CURDIR)/mprotect_cow.c
+LDFLAGS-mprotect_cow= -static
 
 SRCS-seccomp_policy= $(CURDIR)/seccomp_policy.c
 LDFLAGS-seccomp_policy= -static
