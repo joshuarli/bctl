@@ -455,8 +455,10 @@ def main():
     class Handler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *_):
             pass
+    class Server(http.server.ThreadingHTTPServer):
+        request_queue_size = 128
     handler = functools.partial(Handler, directory=args.shadowdriver / 'grab/tests/fixtures/capture-concurrency')
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    server = Server(('127.0.0.1', 0), handler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     news_server = None
@@ -465,7 +467,7 @@ def main():
         news_root = ROOT / '.work/dl/speedometer/src'
         results['speedometer_commit'] = invoke(['git', '-C', news_root, 'rev-parse', 'HEAD']).strip()
         results['speedometer_dirty'] = bool(invoke(['git', '-C', news_root, 'status', '--porcelain']).strip())
-        news_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(
+        news_server = Server(('127.0.0.1', 0), functools.partial(
             Handler, directory=news_root / 'resources/newssite/news-next/dist'))
         news_thread = threading.Thread(target=news_server.serve_forever)
         news_thread.start()
