@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::net::Ipv6Addr;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use h12tiny::web::{Request, Router, WebSocketFrame, WebSocketOpCode, WebSocketPa
 use http::{HeaderValue, Method, Response, StatusCode, header};
 use miniserde::{Deserialize, Serialize, json};
 
-use crate::authority::{AttachRefused, Attachment, Authority, Contested, Control, Controller, TakeRefused, Viewer};
+use crate::authority::{AttachRefused, Attachment, Authority, Contested, Control, Controller, Standing, TakeRefused, Viewer};
 use crate::daemon::Daemon;
 use crate::protocol::Request as DaemonRequest;
 
@@ -30,6 +31,99 @@ mod runs;
 
 const LOGIN_TOKEN_LIFETIME: Duration = Duration::from_secs(120);
 const COOKIE: &str = "bctl_session";
+const MAX_IDLE_WORKERS: usize = 16;
+const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+type Job = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+struct PoolState {
+    queue: VecDeque<Job>,
+    idle: usize,
+}
+
+#[derive(Default)]
+struct WorkerPool {
+    state: Mutex<PoolState>,
+    available: Condvar,
+}
+
+impl WorkerPool {
+    fn spawn(self: &Arc<Self>, job: impl FnOnce() + Send + 'static) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.queue.push_back(Box::new(job));
+        if state.idle >= state.queue.len() {
+            self.available.notify_one();
+            return;
+        }
+        drop(state);
+        let pool = Arc::clone(self);
+        thread::spawn(move || pool.run());
+    }
+
+    fn run(&self) {
+        while let Some(job) = self.next_job() {
+            job();
+        }
+    }
+
+    fn next_job(&self) -> Option<Job> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(job) = state.queue.pop_front() {
+            return Some(job);
+        }
+        if state.idle >= MAX_IDLE_WORKERS {
+            return None;
+        }
+        loop {
+            state.idle += 1;
+            let (guard, timeout) = self.available.wait_timeout(state, WORKER_IDLE_TIMEOUT).unwrap_or_else(|p| p.into_inner());
+            state = guard;
+            state.idle = state.idle.saturating_sub(1);
+            if let Some(job) = state.queue.pop_front() {
+                return Some(job);
+            }
+            if timeout.timed_out() || state.idle >= MAX_IDLE_WORKERS {
+                return None;
+            }
+        }
+    }
+}
+
+struct WatchedCdp {
+    token: String,
+    stream: Arc<StdUnixStream>,
+    standing: Standing,
+    finished: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct WatchedState {
+    epoch: u64,
+    items: Vec<Arc<WatchedCdp>>,
+}
+
+#[derive(Default)]
+struct WatchedSet {
+    state: Mutex<WatchedState>,
+    changed: Condvar,
+}
+
+impl WatchedSet {
+    fn watch(&self, entry: Arc<WatchedCdp>) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.items.push(entry);
+        state.epoch = state.epoch.wrapping_add(1);
+        self.changed.notify_all();
+    }
+
+    fn notify(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.epoch = state.epoch.wrapping_add(1);
+        self.changed.notify_all();
+    }
+}
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
@@ -40,6 +134,8 @@ pub struct Gateway {
     sessions: HashSet<String>,
     /// Unguessable CDP capabilities, each bound to one browser session until revoked.
     capabilities: Vec<(String, SessionName)>,
+    pool: Arc<WorkerPool>,
+    watched: Arc<WatchedSet>,
 }
 
 impl Gateway {
@@ -70,9 +166,9 @@ fn random_token() -> io::Result<String> {
     random_hex::<32>()
 }
 
-fn executor() -> BoxExecutor {
-    BoxExecutor::new(FnExecutor::new(|future: BoxSendFuture| {
-        thread::spawn(move || futures_lite::future::block_on(future));
+fn executor(pool: Arc<WorkerPool>) -> BoxExecutor {
+    BoxExecutor::new(FnExecutor::new(move |future: BoxSendFuture| {
+        pool.spawn(move || futures_lite::future::block_on(future));
     }))
 }
 
@@ -82,8 +178,25 @@ fn listener_port(daemon: &Arc<Daemon>, gateway: &mut Gateway) -> io::Result<u16>
     }
     let listener = futures_lite::future::block_on(TcpListener::bind("127.0.0.1:0"))?;
     let port = listener.local_addr()?.port();
-    let daemon = Arc::clone(daemon);
-    thread::spawn(move || futures_lite::future::block_on(accept(listener, daemon, port)));
+    let v6_listener = futures_lite::future::block_on(TcpListener::bind((Ipv6Addr::LOCALHOST, port))).ok();
+    let daemon_for_accept = Arc::clone(daemon);
+    let pool = Arc::clone(&gateway.pool);
+    thread::spawn(move || {
+        let router = Router::<()>::new().fallback(move |request: Request| {
+            let daemon = Arc::clone(&daemon_for_accept);
+            async move { handle(&daemon, port, request) }
+        });
+        let serve = |bound: TcpListener| accept(bound, router.clone(), Arc::clone(&pool));
+        futures_lite::future::block_on(async move {
+            match v6_listener {
+                Some(v6) => {
+                    futures_lite::future::zip(serve(listener), serve(v6)).await;
+                }
+                None => serve(listener).await,
+            }
+        });
+    });
+    spawn_cdp_watcher(Arc::clone(daemon), Arc::clone(&gateway.watched));
     gateway.port = Some(port);
     Ok(port)
 }
@@ -119,24 +232,56 @@ fn cdp_url_token(url: &str) -> Option<&str> {
 
 pub fn revoke_cdp_url(daemon: &Daemon, url: &str) {
     let Some(token) = cdp_url_token(url) else { return };
-    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capabilities.retain(|(candidate, _)| !constant_time_eq(candidate.as_bytes(), token.as_bytes()));
+    let watched = {
+        let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
+        gateway.capabilities.retain(|(candidate, _)| !constant_time_eq(candidate.as_bytes(), token.as_bytes()));
+        Arc::clone(&gateway.watched)
+    };
+    watched.notify();
 }
 
 pub fn revoke_cdp(daemon: &Daemon, session: &SessionName) {
-    daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capabilities.retain(|(_, bound)| bound != session);
+    let watched = {
+        let mut gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
+        gateway.capabilities.retain(|(_, bound)| bound != session);
+        Arc::clone(&gateway.watched)
+    };
+    watched.notify();
 }
 
-async fn accept(listener: TcpListener, daemon: Arc<Daemon>, port: u16) {
-    let router = Router::<()>::new().fallback(move |request: Request| {
-        let daemon = Arc::clone(&daemon);
-        async move { handle(&daemon, port, request) }
+fn spawn_cdp_watcher(daemon: Arc<Daemon>, watched: Arc<WatchedSet>) {
+    thread::spawn(move || loop {
+        let (checked_epoch, snapshot) = {
+            let mut state = watched.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.items.retain(|entry| !entry.finished.load(Ordering::Acquire));
+            if state.items.is_empty() {
+                let _guard = watched.changed.wait(state).unwrap_or_else(|p| p.into_inner());
+                continue;
+            }
+            (state.epoch, state.items.clone())
+        };
+        for entry in snapshot {
+            let live = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capability_session(&entry.token).is_some();
+            if !live || entry.standing.evicted() {
+                let _ = entry.stream.shutdown(std::net::Shutdown::Both);
+                entry.finished.store(true, Ordering::Release);
+            }
+        }
+        let state = watched.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.epoch == checked_epoch && !state.items.is_empty() {
+            let _ = watched.changed.wait_timeout(state, WATCH_POLL_INTERVAL);
+        }
     });
+}
+
+async fn accept(listener: TcpListener, router: Router<()>, pool: Arc<WorkerPool>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else { continue };
         let _ = stream.set_nodelay(true);
         let router = router.clone();
-        thread::spawn(move || {
-            let builder = auto::Builder::new(executor()).http1_only();
+        let worker_pool = Arc::clone(&pool);
+        pool.spawn(move || {
+            let builder = auto::Builder::new(executor(worker_pool)).http1_only();
             let _ = futures_lite::future::block_on(builder.serve_connection(FuturesIo::new(stream), router));
         });
     }
@@ -288,24 +433,39 @@ struct CdpTarget {
     url: String,
 }
 
+fn parse_content_length(head: &[u8]) -> Option<usize> {
+    let head = std::str::from_utf8(head).ok()?;
+    head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+    })
+}
+
 pub(crate) fn cdp_get(socket: &Path, path: &str) -> Result<String, String> {
     let mut stream = StdUnixStream::connect(socket).map_err(|e| format!("CDP: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").map_err(|e| e.to_string())?;
     let mut response = Vec::new();
     let mut chunk = [0; 8192];
+    let mut header_end = None;
+    let mut content_length = None;
     loop {
         let n = stream.read(&mut chunk).map_err(|e| format!("CDP: {e}"))?;
+        let prev_len = response.len();
         response.extend_from_slice(&chunk[..n]);
-        let text = String::from_utf8_lossy(&response).into_owned();
-        if let Some((head, body)) = text.split_once("\r\n\r\n") {
-            let length = head
-                .lines()
-                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>()))
-                .and_then(Result::ok);
-            if n == 0 || length.is_some_and(|len| body.len() >= len) {
-                return Ok(body.to_string());
+        if header_end.is_none() {
+            let search_from = prev_len.saturating_sub(3);
+            if let Some(pos) = response[search_from..].windows(4).position(|w| w == b"\r\n\r\n") {
+                let end = search_from + pos + 4;
+                content_length = parse_content_length(&response[..end - 4]);
+                header_end = Some(end);
             }
+        }
+        if let Some(end) = header_end
+            && (n == 0 || content_length.is_some_and(|len| response.len() - end >= len))
+        {
+            let body_end = content_length.map_or(response.len(), |len| (end + len).min(response.len()));
+            return Ok(String::from_utf8_lossy(&response[end..body_end]).into_owned());
         }
         if n == 0 {
             return Err("CDP closed the connection".into());
@@ -349,7 +509,22 @@ fn handle_cdp(daemon: &Arc<Daemon>, host: &str, token: &str, request: &mut Reque
     let path = request.uri().path().trim_end_matches('/').to_string();
     let upgrading = request.headers().contains_key(header::UPGRADE);
     match (request.method(), path.as_str()) {
-        (&Method::GET, "/json/version" | "/json/list" | "/json") if !upgrading => {
+        (&Method::GET, "/json/version") if !upgrading => {
+            let body = if let Some(cached) = daemon.cached_version_json(&session) {
+                Ok(cached)
+            } else {
+                let fresh = cdp_get(&cdp_socket, "/json/version");
+                if let Ok(ref raw) = fresh {
+                    daemon.cache_version_json(&session, &cdp_socket, raw);
+                }
+                fresh
+            };
+            match body.and_then(|body| rewrite_targets(&body, host)) {
+                Ok(body) => respond(StatusCode::OK, "application/json", body),
+                Err(e) => text(StatusCode::BAD_GATEWAY, &e),
+            }
+        }
+        (&Method::GET, "/json/list" | "/json") if !upgrading => {
             match cdp_get(&cdp_socket, &path).and_then(|body| rewrite_targets(&body, host)) {
                 Ok(body) => respond(StatusCode::OK, "application/json", body),
                 Err(e) => text(StatusCode::BAD_GATEWAY, &e),
@@ -398,7 +573,7 @@ fn rewrite_targets(body: &str, host: &str) -> Result<String, String> {
     Ok(json::to_string(&value))
 }
 
-fn guest_websocket(cdp_socket: &Path, path: &str, key: &str) -> Result<(StdUnixStream, String), String> {
+fn guest_websocket(cdp_socket: &Path, path: &str, key: &str) -> Result<(StdUnixStream, String, Vec<u8>), String> {
     let mut stream = StdUnixStream::connect(cdp_socket).map_err(|e| format!("CDP: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     write!(
@@ -406,15 +581,24 @@ fn guest_websocket(cdp_socket: &Path, path: &str, key: &str) -> Result<(StdUnixS
         "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
     )
     .map_err(|e| e.to_string())?;
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() > 8192 || stream.read(&mut byte).map_err(|e| format!("CDP: {e}"))? == 0 {
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    let header_end = loop {
+        let search_from = buf.len().saturating_sub(3);
+        let n = stream.read(&mut chunk).map_err(|e| format!("CDP: {e}"))?;
+        if n == 0 {
             return Err("CDP closed the connection during the websocket handshake".into());
         }
-        head.push(byte[0]);
-    }
-    let head = String::from_utf8_lossy(&head);
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = buf[search_from..].windows(4).position(|w| w == b"\r\n\r\n") {
+            break search_from + pos + 4;
+        }
+        if buf.len() > 8192 {
+            return Err("CDP closed the connection during the websocket handshake".into());
+        }
+    };
+    let leftover = buf.split_off(header_end);
+    let head = String::from_utf8_lossy(&buf);
     if !head.lines().next().is_some_and(|status| status.split_whitespace().nth(1) == Some("101")) {
         return Err("CDP refused the websocket upgrade".into());
     }
@@ -424,7 +608,7 @@ fn guest_websocket(cdp_socket: &Path, path: &str, key: &str) -> Result<(StdUnixS
         .map(|(_, value)| value.trim().to_string())
         .ok_or("CDP sent no Sec-WebSocket-Accept")?;
     stream.set_read_timeout(None).map_err(|e| e.to_string())?;
-    Ok((stream, accept))
+    Ok((stream, accept, leftover))
 }
 
 fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, attachment: Attachment, cdp_socket: &Path, path: &str, request: &mut Request) -> Response<BoxBody> {
@@ -432,11 +616,11 @@ fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, attachment: Attachment, c
     if header_str(request, header::SEC_WEBSOCKET_VERSION) != Some("13") || key.len() != 24 || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)) {
         return text(StatusCode::BAD_REQUEST, "Not a WebSocket upgrade.");
     }
-    let (guest, accept) = match guest_websocket(cdp_socket, path, key) {
+    let (guest, accept, leftover) = match guest_websocket(cdp_socket, path, key) {
         Ok(guest) => guest,
         Err(e) => return text(StatusCode::BAD_GATEWAY, &e),
     };
-    let Ok(watched) = guest.try_clone() else {
+    let Ok(watched_stream) = guest.try_clone() else {
         return text(StatusCode::BAD_GATEWAY, "Could not watch the CDP connection.");
     };
     let Ok(guest) = async_net::unix::UnixStream::try_from(guest) else {
@@ -453,33 +637,34 @@ fn proxy_cdp_socket(daemon: &Arc<Daemon>, token: &str, attachment: Attachment, c
         Err(_) => return text(StatusCode::BAD_GATEWAY, "CDP sent a malformed Sec-WebSocket-Accept."),
     };
 
-    let finished = Arc::new(AtomicBool::new(false));
-    let (daemon, token) = (Arc::clone(daemon), token.to_string());
-    let done = Arc::clone(&finished);
-    let standing = attachment.standing();
-    thread::spawn(move || {
-        while !done.load(Ordering::Acquire) {
-            let live = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).capability_session(&token).is_some();
-            if !live || standing.evicted() {
-                let _ = watched.shutdown(std::net::Shutdown::Both);
-            }
-            thread::sleep(Duration::from_millis(250));
-        }
+    let (pool, watched) = {
+        let gateway = daemon.gateway.lock().unwrap_or_else(|p| p.into_inner());
+        (Arc::clone(&gateway.pool), Arc::clone(&gateway.watched))
+    };
+    let entry = Arc::new(WatchedCdp {
+        token: token.to_string(),
+        stream: Arc::new(watched_stream),
+        standing: attachment.standing(),
+        finished: Arc::new(AtomicBool::new(false)),
     });
-    thread::spawn(move || {
+    watched.watch(Arc::clone(&entry));
+    pool.spawn(move || {
         futures_lite::future::block_on(async move {
             let _attachment = attachment;
             if let Ok(upgraded) = on_upgrade.await {
                 let (mut client_read, mut client_write) = futures_lite::io::split(HyperIo::new(upgraded));
                 let (mut guest_read, mut guest_write) = (guest.clone(), guest);
-                futures_lite::future::race(
-                    futures_lite::io::copy(&mut client_read, &mut guest_write),
-                    futures_lite::io::copy(&mut guest_read, &mut client_write),
-                )
-                .await
-                .ok();
+                if leftover.is_empty() || client_write.write_all(&leftover).await.is_ok() {
+                    futures_lite::future::race(
+                        futures_lite::io::copy(&mut client_read, &mut guest_write),
+                        futures_lite::io::copy(&mut guest_read, &mut client_write),
+                    )
+                    .await
+                    .ok();
+                }
             }
-            finished.store(true, Ordering::Release);
+            entry.finished.store(true, Ordering::Release);
+            watched.notify();
         });
     });
     response
@@ -498,8 +683,9 @@ fn proxy_vnc(daemon: &Arc<Daemon>, name: &str, request: &mut Request, viewer: St
         Err(e) => return text(StatusCode::BAD_REQUEST, &e.to_string()),
     };
     let response = upgrade.response();
+    let pool = Arc::clone(&daemon.gateway.lock().unwrap_or_else(|p| p.into_inner()).pool);
     let daemon = Arc::clone(daemon);
-    thread::spawn(move || {
+    pool.spawn(move || {
         futures_lite::future::block_on(async move {
             let policy = || {
                 let holds = daemon.authority.of(&session, |control| *control.authority() == Authority::Human(viewer.clone()));

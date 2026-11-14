@@ -45,6 +45,13 @@ pub enum InputSupport {
 pub struct Ready {
     pub input: InputSupport,
     pub browser: String,
+    pub version_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionResponse {
+    pub browser: String,
+    pub body: String,
 }
 
 /// A stable short directory name for a machine's Unix sockets.
@@ -60,20 +67,25 @@ pub fn machine_socket_key(machine: &str) -> String {
 pub fn cdp_browser(port: u16) -> Option<String> {
     let stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    version_browser(stream, &format!("127.0.0.1:{port}"))
+    version_response(stream, &format!("127.0.0.1:{port}")).map(|v| v.browser)
+}
+
+/// The `Browser` field and raw JSON body of `/json/version` on a Unix socket, if CDP answers there.
+pub fn cdp_socket_version(socket: &Path) -> Option<VersionResponse> {
+    let stream = UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    version_response(stream, "localhost")
 }
 
 /// The `Browser` field of `/json/version` on a Unix socket, if CDP answers there.
 pub fn cdp_socket_browser(socket: &Path) -> Option<String> {
-    let stream = UnixStream::connect(socket).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    version_browser(stream, "localhost")
+    cdp_socket_version(socket).map(|v| v.browser)
 }
 
 const MAX_VERSION_HEAD: usize = 16 * 1024;
 const MAX_VERSION_BODY: usize = 64 * 1024;
 
-fn version_browser(mut stream: impl Read + Write, host: &str) -> Option<String> {
+fn version_response(mut stream: impl Read + Write, host: &str) -> Option<VersionResponse> {
     #[derive(Deserialize)]
     struct Version {
         #[serde(rename = "Browser")]
@@ -92,10 +104,13 @@ fn version_browser(mut stream: impl Read + Write, host: &str) -> Option<String> 
         if body.is_none() {
             match response.windows(4).position(|window| window == b"\r\n\r\n") {
                 Some(end) => {
-                    let head = String::from_utf8_lossy(&response[..end]);
+                    let head = std::str::from_utf8(&response[..end]).ok()?;
                     let length: usize = head
                         .lines()
-                        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))?
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.trim().eq_ignore_ascii_case("content-length").then_some(value.trim())
+                        })?
                         .parse()
                         .ok()?;
                     if length > MAX_VERSION_BODY {
@@ -111,9 +126,14 @@ fn version_browser(mut stream: impl Read + Write, host: &str) -> Option<String> 
             && response.len() >= start + length
         {
             let text = std::str::from_utf8(&response[start..start + length]).ok()?;
-            return json::from_str::<Version>(text).ok().map(|v| v.browser);
+            return json::from_str::<Version>(text).ok().map(|v| VersionResponse { browser: v.browser, body: text.to_string() });
         }
     }
+}
+
+#[cfg(test)]
+fn version_browser(stream: impl Read + Write, host: &str) -> Option<String> {
+    version_response(stream, host).map(|v| v.browser)
 }
 
 #[cfg(test)]

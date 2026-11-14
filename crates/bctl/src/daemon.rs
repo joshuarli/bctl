@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -42,11 +42,19 @@ struct Observed {
     input: Option<InputSupport>,
 }
 
+struct ReadySession {
+    cdp_socket: PathBuf,
+    version_json: Option<String>,
+}
+
 pub(crate) struct Daemon {
     paths: Paths,
     store: Mutex<Store>,
     runtime: Runtime,
     observed: Mutex<HashMap<SessionName, Observed>>,
+    ready_sessions: Mutex<HashMap<SessionName, ReadySession>>,
+    state_epoch: Mutex<u64>,
+    state_changed: Condvar,
     live: Mutex<HashMap<SessionName, Arc<Live>>>,
     busy: Mutex<HashSet<SessionName>>,
     tearing_down: Mutex<HashSet<SessionName>>,
@@ -93,6 +101,9 @@ pub fn run(paths: Paths) -> Result<(), String> {
         paths,
         store: Mutex::new(store),
         observed: Mutex::default(),
+        ready_sessions: Mutex::default(),
+        state_epoch: Mutex::default(),
+        state_changed: Condvar::new(),
         live: Mutex::default(),
         busy: Mutex::default(),
         tearing_down: Mutex::default(),
@@ -349,9 +360,16 @@ impl Daemon {
         self.stop_live_run_for(&record.name, cause);
         self.authority.of(&record.name, Control::reset);
         let _teardown = self.teardown(&record.name);
-        let began = self.store().begin_failure(&record.name, record.generation, cause);
+        let began = {
+            let mut store = self.store();
+            let began = store.begin_failure(&record.name, record.generation, cause);
+            if matches!(began, Ok(true)) {
+                self.clear_ready(&record.name);
+            }
+            began
+        };
         match began {
-            Ok(true) => {}
+            Ok(true) => self.notify_state_changed(),
             Ok(false) => return,
             Err(error) => {
                 eprintln!("bctl daemon: cannot record {}'s failure: {error}", record.name);
@@ -412,6 +430,40 @@ impl Daemon {
     fn observe(&self, session: &SessionName, update: impl FnOnce(&mut Observed)) {
         let mut observed = self.observed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         update(observed.entry(session.clone()).or_default());
+    }
+
+    fn record_ready(&self, session: &SessionName, machine: &MachineName, version_json: Option<String>) {
+        let cdp_socket = self.paths.cdp_socket(&machine.to_string());
+        lock(&self.ready_sessions).insert(session.clone(), ReadySession { cdp_socket, version_json });
+    }
+
+    fn clear_ready(&self, session: &SessionName) {
+        lock(&self.ready_sessions).remove(session);
+    }
+
+    fn notify_state_changed(&self) {
+        let mut epoch = lock(&self.state_epoch);
+        *epoch = epoch.wrapping_add(1);
+        self.state_changed.notify_all();
+    }
+
+    fn wait_state_change(&self, since: u64) {
+        let epoch = lock(&self.state_epoch);
+        if *epoch == since {
+            let _ = self.state_changed.wait_timeout(epoch, Duration::from_millis(50));
+        }
+    }
+
+    pub(crate) fn cached_version_json(&self, name: &SessionName) -> Option<String> {
+        lock(&self.ready_sessions).get(name).and_then(|s| s.version_json.clone())
+    }
+
+    pub(crate) fn cache_version_json(&self, name: &SessionName, socket: &Path, body: &str) {
+        if let Some(entry) = lock(&self.ready_sessions).get_mut(name)
+            && entry.cdp_socket == socket
+        {
+            entry.version_json = Some(body.to_string());
+        }
     }
 
     /// Restores ownership after a restart: adopt current-generation VMs, stop stale ones, interrupt orphaned attempts.
@@ -539,8 +591,14 @@ impl Daemon {
             Op::Rm => {
                 let name = session()?;
                 tabs::close(self, &name);
-                let runs: Vec<i64> = self.store().runs(Some(&name)).map_err(internal)?.iter().map(|r| r.id).collect();
-                self.store().delete_session(&name).map_err(store_failure)?;
+                let runs: Vec<i64> = {
+                    let mut store = self.store();
+                    let runs = store.runs(Some(&name)).map_err(internal)?.iter().map(|r| r.id).collect();
+                    store.delete_session(&name).map_err(store_failure)?;
+                    self.clear_ready(&name);
+                    runs
+                };
+                self.notify_state_changed();
                 for run in runs {
                     let dir = self.paths.run_dir(run);
                     if let Err(error) = fs::remove_dir_all(&dir)
@@ -695,10 +753,11 @@ impl Daemon {
             self.store().create_session(name, &profile, &image, resources, &allow_private.unwrap_or_default()).map_err(store_failure)?;
         }
         loop {
+            let epoch = *lock(&self.state_epoch);
             let record = self.store().session(name).map_err(store_failure)?;
             match record.state {
                 SessionState::Ready => return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() }),
-                SessionState::Starting | SessionState::Stopping => thread::sleep(Duration::from_millis(10)),
+                SessionState::Starting | SessionState::Stopping => self.wait_state_change(epoch),
                 SessionState::Failing => {
                     if let Err(error) = self.retry_failing(name) {
                         return Err(Response::failure(
@@ -731,18 +790,26 @@ impl Daemon {
         let display = (u16::try_from(width).map_err(internal)?, u16::try_from(height).map_err(internal)?);
         let cpus = u8::try_from(cpus).map_err(internal)?;
         let endpoints = Endpoints { vnc_port: free_port().map_err(internal)? };
-        let machine = self.store().begin_start(name, endpoints).map_err(store_failure)?;
+        let machine = {
+            let mut store = self.store();
+            let machine = store.begin_start(name, endpoints).map_err(store_failure)?;
+            self.clear_ready(name);
+            machine
+        };
+        self.notify_state_changed();
         self.observe(name, |o| *o = Observed::default());
         let profile_dir = match self.ensure_profile_dir(&profile).and_then(|dir| clear_stale_browser_lock(&dir).map(|()| dir)) {
             Ok(path) => path,
             Err(error) => {
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+                self.notify_state_changed();
                 return Err(internal(error).into());
             }
         };
         let files_dir = self.files_dir(name);
         if let Err(error) = private_dir(&files_dir) {
             let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+            self.notify_state_changed();
             return Err(internal(error).into());
         }
         let image_path = match self.runtime.image_path(&self.paths, &image).canonicalize() {
@@ -750,6 +817,7 @@ impl Daemon {
             Err(error) => {
                 let message = format!("cannot resolve image {image}: {error}");
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&message));
+                self.notify_state_changed();
                 return Err(Response::failure(ErrorCode::ImageMissing, message, None).into());
             }
         };
@@ -757,6 +825,7 @@ impl Daemon {
             Ok(path) => path,
             Err(error) => {
                 let _ = self.store().transition(name, machine.generation, SessionState::Failed, Some(&error));
+                self.notify_state_changed();
                 return Err(internal(error).into());
             }
         };
@@ -808,7 +877,12 @@ impl Daemon {
         if let Err(error) = self.runtime.pause(&machine) {
             return Err(runtime_failure(&error, name).into());
         }
-        self.store().transition(name, record.generation, SessionState::Paused, None).map_err(store_failure)?;
+        {
+            let mut store = self.store();
+            store.transition(name, record.generation, SessionState::Paused, None).map_err(store_failure)?;
+            self.clear_ready(name);
+        }
+        self.notify_state_changed();
         let record = self.store().session(name).map_err(store_failure)?;
         Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() })
     }
@@ -909,8 +983,16 @@ impl Daemon {
     }
 
     pub(crate) fn cdp_socket(&self, name: &SessionName) -> Option<PathBuf> {
-        let record = self.store().session(name).ok()?;
-        (record.state == SessionState::Ready).then(|| self.paths.cdp_socket(&MachineName { session: record.name, generation: record.generation }.to_string()))
+        if let Some(entry) = lock(&self.ready_sessions).get(name) {
+            return Some(entry.cdp_socket.clone());
+        }
+        let store = self.store();
+        let record = store.session(name).ok()?;
+        (record.state == SessionState::Ready).then(|| {
+            let cdp_socket = self.paths.cdp_socket(&MachineName { session: record.name, generation: record.generation }.to_string());
+            lock(&self.ready_sessions).entry(name.clone()).or_insert_with(|| ReadySession { cdp_socket: cdp_socket.clone(), version_json: None });
+            cdp_socket
+        })
     }
 
     /// The VNC port to proxy and whether this runtime has input devices at all.
@@ -937,10 +1019,18 @@ impl Daemon {
                     o.stage = None;
                     o.input = Some(ready.input);
                 });
-                let transition = self.store().transition(session, machine.generation, SessionState::Ready, None);
+                let transition = {
+                    let mut store = self.store();
+                    let transition = store.transition(session, machine.generation, SessionState::Ready, None);
+                    if transition.is_ok() {
+                        self.record_ready(session, machine, ready.version_json);
+                    }
+                    transition
+                };
                 if let Err(e) = transition {
                     eprintln!("bctl daemon: {machine} became ready but the record moved on: {e}");
                 }
+                self.notify_state_changed();
             }
             Err(error) => self.fail_start(machine, &error),
         }
@@ -955,11 +1045,21 @@ impl Daemon {
         match self.runtime.remove(machine) {
             Ok(()) => {
                 self.discard_endpoints(machine);
-                let _ = self.store().transition(&machine.session, machine.generation, SessionState::Failed, Some(&error.to_string()));
+                {
+                    let mut store = self.store();
+                    let _ = store.transition(&machine.session, machine.generation, SessionState::Failed, Some(&error.to_string()));
+                    self.clear_ready(&machine.session);
+                }
+                self.notify_state_changed();
             }
             Err(e) => {
                 eprintln!("bctl daemon: could not remove {machine}; {} keeps its profile until it is removed: {e}", machine.session);
-                let _ = self.store().transition(&machine.session, machine.generation, SessionState::Failing, Some(&error.to_string()));
+                {
+                    let mut store = self.store();
+                    let _ = store.transition(&machine.session, machine.generation, SessionState::Failing, Some(&error.to_string()));
+                    self.clear_ready(&machine.session);
+                }
+                self.notify_state_changed();
             }
         }
     }
@@ -982,7 +1082,12 @@ impl Daemon {
                 }
                 self.discard_endpoints(&machine);
                 self.observe(name, |o| *o = Observed::default());
-                self.store().transition(name, record.generation, SessionState::Stopped, record.failure.as_deref()).map_err(store_failure)?;
+                {
+                    let mut store = self.store();
+                    store.transition(name, record.generation, SessionState::Stopped, record.failure.as_deref()).map_err(store_failure)?;
+                    self.clear_ready(name);
+                }
+                self.notify_state_changed();
                 let record = self.store().session(name).map_err(store_failure)?;
                 return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() });
             }
@@ -992,13 +1097,23 @@ impl Daemon {
                     eprintln!("bctl daemon: could not remove failed {machine}: {error}");
                 }
                 self.discard_endpoints(&machine);
-                self.store().transition(name, record.generation, SessionState::Stopped, record.failure.as_deref()).map_err(store_failure)?;
+                {
+                    let mut store = self.store();
+                    store.transition(name, record.generation, SessionState::Stopped, record.failure.as_deref()).map_err(store_failure)?;
+                    self.clear_ready(name);
+                }
+                self.notify_state_changed();
                 let record = self.store().session(name).map_err(store_failure)?;
                 return Ok(Response { sessions: vec![self.view(&record)], ..Response::empty() });
             }
             SessionState::Starting | SessionState::Ready | SessionState::Stopping | SessionState::Paused => {}
         }
-        self.store().transition(name, record.generation, SessionState::Stopping, None).map_err(store_failure)?;
+        {
+            let mut store = self.store();
+            store.transition(name, record.generation, SessionState::Stopping, None).map_err(store_failure)?;
+            self.clear_ready(name);
+        }
+        self.notify_state_changed();
         let machine = MachineName { session: name.clone(), generation: record.generation };
         self.finish_stop(&record, &machine);
         let record = self.store().session(name).map_err(store_failure)?;
@@ -1277,11 +1392,17 @@ impl Daemon {
                 };
                 self.discard_endpoints(machine);
                 self.observe(&record.name, |o| *o = Observed::default());
-                let _ = self.store().transition(&record.name, generation, SessionState::Stopped, note.as_deref());
+                {
+                    let mut store = self.store();
+                    let _ = store.transition(&record.name, generation, SessionState::Stopped, note.as_deref());
+                    self.clear_ready(&record.name);
+                }
+                self.notify_state_changed();
             }
             Err(error) => {
                 eprintln!("bctl daemon: could not stop {machine}: {error}");
                 let _ = self.store().transition(&record.name, generation, SessionState::Stopping, Some(&error.to_string()));
+                self.notify_state_changed();
             }
         }
     }
@@ -1415,6 +1536,9 @@ exit 0
                 paths,
                 store: Mutex::new(store),
                 observed: Mutex::default(),
+                ready_sessions: Mutex::default(),
+                state_epoch: Mutex::default(),
+                state_changed: Condvar::new(),
                 live: Mutex::default(),
                 busy: Mutex::default(),
                 tearing_down: Mutex::default(),

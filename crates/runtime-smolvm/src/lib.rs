@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bctl_core::{Endpoints, MachineName, MachineObservation, MachineState};
-use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_browser};
+use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_version};
 use bctl_rfb::Client;
 use miniserde::{Deserialize, json};
 
@@ -423,7 +423,7 @@ impl SmolVm {
         if let Some(stage) = report.first_missing() {
             return Err(not_ready(stage, "bctl-guest check reports it missing".into()));
         }
-        let browser = cdp_socket_browser(cdp_socket).ok_or_else(|| not_ready(Stage::Cdp, "no /json/version through the CDP socket".into()))?;
+        let version = cdp_socket_version(cdp_socket).ok_or_else(|| not_ready(Stage::Cdp, "no /json/version through the CDP socket".into()))?;
         let mut vnc = Client::connect(("127.0.0.1", endpoints.vnc_port), Duration::from_secs(5))
             .map_err(|e| not_ready(Stage::Display, format!("VNC: {e}")))?;
         let frame = vnc.refresh().map_err(|e| not_ready(Stage::Display, format!("VNC: {e}")))?;
@@ -432,7 +432,7 @@ impl SmolVm {
         if !drawn {
             return Err(not_ready(Stage::Display, "framebuffer is still black".into()));
         }
-        Ok(Ready { input: report.input, browser })
+        Ok(Ready { input: report.input, browser: version.browser, version_json: Some(version.body) })
     }
 }
 

@@ -156,7 +156,13 @@ impl Runtime {
             RuntimeKind::SmolVm => Runtime::SmolVm(SmolVm::new(paths.runtime())),
             RuntimeKind::Nanos => {
                 let dir = paths.nanos_runtime();
-                let supervisor = std::env::current_exe().map_err(|e| format!("cannot find the bctl executable: {e}"))?;
+                let exe = std::env::current_exe().map_err(|e| format!("cannot find the bctl executable: {e}"))?;
+                let sibling = exe.with_file_name("bctl-nanos-vm");
+                let (supervisor, supervisor_args) = if sibling.is_file() {
+                    (sibling, Vec::new())
+                } else {
+                    (exe, vec![NANOS_SUPERVISOR_COMMAND.to_string()])
+                };
                 #[cfg(target_os = "macos")]
                 let backend = Backend::Libkrun { runner: dir.join("nanos-krun"), kernel: dir.join("kernel.img") };
                 #[cfg(not(target_os = "macos"))]
@@ -168,7 +174,7 @@ impl Runtime {
                     paths.home.join("machines"),
                     Toolchain {
                         supervisor,
-                        supervisor_args: vec![NANOS_SUPERVISOR_COMMAND.to_string()],
+                        supervisor_args,
                         backend,
                     },
                 ))

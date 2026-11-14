@@ -8,7 +8,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_browser};
+use bctl_runtime::{InputSupport, Ready, Stage, cdp_socket_version};
 
 pub mod egress;
 pub mod profile;
@@ -405,8 +405,8 @@ impl Nanos {
         if let Some(stage) = report.first_missing() {
             return Err(not_ready(stage, "the guest check reports it missing".into()));
         }
-        let browser = cdp_socket_browser(cdp_socket).ok_or_else(|| not_ready(Stage::Cdp, "no /json/version through the CDP socket".into()))?;
-        Ok(Ready { input: InputSupport::Headless, browser })
+        let version = cdp_socket_version(cdp_socket).ok_or_else(|| not_ready(Stage::Cdp, "no /json/version through the CDP socket".into()))?;
+        Ok(Ready { input: InputSupport::Headless, browser: version.browser, version_json: Some(version.body) })
     }
 }
 

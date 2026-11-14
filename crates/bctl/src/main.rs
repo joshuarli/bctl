@@ -571,6 +571,13 @@ fn spawn_daemon(paths: &Paths) -> std::io::Result<()> {
         .map(drop)
 }
 
+fn retryable_direct_op(op: &str) -> bool {
+    matches!(
+        Op::parse(op),
+        Some(Op::Ping | Op::Status | Op::Inspect | Op::TabList | Op::PageSnapshot | Op::PageResolve | Op::PageGet)
+    )
+}
+
 // macOS reports EOF when a Unix peer closes with unread bytes, so only a side-effect-free ping can safely retry EOF.
 fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     let unreachable = |e: std::io::Error| {
@@ -579,16 +586,25 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     let mut deadline = None;
     let mut spawned = false;
     let mut pause = Duration::from_micros(200);
+    let direct = retryable_direct_op(&request.op);
     let ping = Request { op: Op::Ping.as_str().into(), ..Request::empty() };
     loop {
-        let error = match send(paths, &ping) {
-            Ok(_) => match send(paths, request) {
+        let error = if direct {
+            match send(paths, request) {
                 Ok(response) => return Ok(response),
-                Err(e) if never_delivered(&e) => e,
+                Err(e) if never_delivered(&e) || e.kind() == ErrorKind::UnexpectedEof => e,
                 Err(e) => return Err(unreachable(e)),
-            },
-            Err(e) if never_delivered(&e) || e.kind() == ErrorKind::UnexpectedEof => e,
-            Err(e) => return Err(unreachable(e)),
+            }
+        } else {
+            match send(paths, &ping) {
+                Ok(_) => match send(paths, request) {
+                    Ok(response) => return Ok(response),
+                    Err(e) if never_delivered(&e) => e,
+                    Err(e) => return Err(unreachable(e)),
+                },
+                Err(e) if never_delivered(&e) || e.kind() == ErrorKind::UnexpectedEof => e,
+                Err(e) => return Err(unreachable(e)),
+            }
         };
         let deadline = *deadline.get_or_insert_with(|| Instant::now() + DAEMON_START_DEADLINE);
         if Instant::now() > deadline {
