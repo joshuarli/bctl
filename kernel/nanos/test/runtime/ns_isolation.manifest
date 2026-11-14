@@ -1,0 +1,6 @@
+(
+    children:(ns_isolation:(contents:(host:output/test/runtime/bin/ns_isolation)))
+    program:/ns_isolation
+    fault:t
+    environment:()
+)

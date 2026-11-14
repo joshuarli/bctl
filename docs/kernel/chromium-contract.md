@@ -94,6 +94,8 @@ Resulting observed state (`status.txt`, `status2.txt`):
 
 The mount namespace is never changed. The new network namespace has no interfaces other than what the kernel creates; the renderers share the zygote's netns.
 
+Capabilities are scoped to user namespaces as on Linux. A holder of `CAP_KILL` or `CAP_SYS_PTRACE` inside a user namespace has no authority over processes in an ancestor or sibling namespace, so `kill` and `/proc/<pid>/fd` access check the capability against the target's user namespace. A namespace owner's implicit capabilities apply only from the namespace's parent. Dropping the uid of a namespace's mapped root drops capabilities, whatever kernel uid the root maps to. `test/runtime/ns_isolation.c` compares these cases with native Linux/musl.
+
 ## 3. Renderer seccomp-BPF
 
 Installed seccomp filters cannot be discarded by switching to strict mode:
