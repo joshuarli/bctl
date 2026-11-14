@@ -39,6 +39,25 @@ impl Display {
 pub fn exec() -> Result<ExitCode, String> {
     crate::startup::mark("browser_entry");
     let display = Display::from_env()?;
+    let (executable, mut command) = prepare_command(display)?;
+    crate::startup::mark("chromium_exec_begin");
+    let error = command.exec();
+    Err(format!("exec {}: {error}", executable.display()))
+}
+
+fn startup_trace() -> Result<Option<PathBuf>, String> {
+    match std::env::var("BCTL_TRACE_CHROMIUM") {
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Ok(value) if value == "1" => {
+            let browser = accounts::user(layout::BROWSER_USER)?;
+            Ok(Some(layout::downloads_dir(&browser.home).join("chromium-startup.json")))
+        }
+        Ok(value) => Err(format!("BCTL_TRACE_CHROMIUM must be 1 or unset, not {value:?}")),
+        Err(std::env::VarError::NotUnicode(value)) => Err(format!("BCTL_TRACE_CHROMIUM must be 1 or unset, not {value:?}")),
+    }
+}
+
+pub(crate) fn prepare_command(display: Display) -> Result<(PathBuf, Command), String> {
     disable_bundled_ublock_origin(&layout::profile_dir())?;
     let executable = fs::canonicalize(layout::BROWSER_LINK).map_err(|e| format!("{}: {e}", layout::BROWSER_LINK))?;
     let root = executable.parent().ok_or_else(|| format!("{} has no parent directory", executable.display()))?;
@@ -56,21 +75,7 @@ pub fn exec() -> Result<ExitCode, String> {
         command.args(["--trace-startup=startup,toplevel", "--trace-startup-duration=2", "--trace-startup-format=json"])
             .arg(output);
     }
-    crate::startup::mark("chromium_exec_begin");
-    let error = command.exec();
-    Err(format!("exec {}: {error}", executable.display()))
-}
-
-fn startup_trace() -> Result<Option<PathBuf>, String> {
-    match std::env::var("BCTL_TRACE_CHROMIUM") {
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Ok(value) if value == "1" => {
-            let browser = accounts::user(layout::BROWSER_USER)?;
-            Ok(Some(layout::downloads_dir(&browser.home).join("chromium-startup.json")))
-        }
-        Ok(value) => Err(format!("BCTL_TRACE_CHROMIUM must be 1 or unset, not {value:?}")),
-        Err(std::env::VarError::NotUnicode(value)) => Err(format!("BCTL_TRACE_CHROMIUM must be 1 or unset, not {value:?}")),
-    }
+    Ok((executable, command))
 }
 
 fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
@@ -93,7 +98,8 @@ fn arguments(display: Display, profile: &Path, start_url: &str) -> Vec<String> {
             "--disable-sync".into(),
             "--disable-default-apps".into(),
             "--disable-extensions".into(),
-            "--disable-features=SpareRendererForSitePerProcess,OptimizationHints,MediaRouter".into(),
+            "--disable-component-extensions-with-background-pages".into(),
+            "--disable-features=SpareRendererForSitePerProcess,OptimizationHints,MediaRouter,AutofillServerCommunication".into(),
         ]);
     }
     arguments.extend([

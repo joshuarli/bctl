@@ -3,14 +3,14 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::process::{Child, ExitCode, Stdio};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::accounts::{self, Account};
-use crate::browser::{DISPLAY_ENV, Display};
+use crate::browser::Display;
 use crate::check::{cdp_answers, headless_report, renderer_sandboxed};
 use crate::relay::{self, Log};
 use crate::signals::{Event, Signals, send};
@@ -88,18 +88,21 @@ pub fn run(persistent: bool) -> Result<ExitCode, String> {
     own(&browser_log, &browser)?;
     crate::startup::mark("directories_ready");
 
-    let mut command = Command::new(layout::SELF);
-    command.arg("browser")
+    let (executable, mut command) = crate::browser::prepare_command(Display::Headless)?;
+    let local_state = profile.join("Local State");
+    if local_state.exists() {
+        own(&local_state, &browser)?;
+    }
+    command
         .uid(browser.uid)
         .gid(browser.gid)
-        .env(DISPLAY_ENV, Display::Headless.as_str())
         .env("HOME", &browser.home)
         .env("USER", layout::BROWSER_USER)
         .stdin(Stdio::null());
     signals.unblock_in(&mut command);
     crate::startup::mark("browser_spawn_begin");
     let mut child = command.spawn()
-        .map_err(io_error(layout::SELF))?;
+        .map_err(io_error(&executable))?;
     crate::startup::mark("browser_spawned");
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel();

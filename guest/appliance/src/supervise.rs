@@ -122,6 +122,7 @@ impl Supervisor {
             .gid(browser.gid)
             .env("HOME", &browser.home)
             .env("USER", layout::BROWSER_USER)
+            .env(crate::browser::DISPLAY_ENV, crate::browser::Display::Wayland.as_str())
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("LIBSEAT_BACKEND", "seatd")
             .env("SEATD_SOCK", layout::SEAT_SOCKET)

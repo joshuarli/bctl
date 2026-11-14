@@ -62,6 +62,33 @@ cp "/lib/ld-musl-$arch.so.1" "$rootfs/lib/"
 ln -s "ld-musl-$arch.so.1" "$rootfs/lib/libc.musl-$arch.so.1"
 ln -s /opt/browser/helium "$rootfs/usr/local/bin/browser"
 
+mkdir -p "$browser/fontconfig/cache"
+cat > "$browser/fontconfig/fonts.conf" <<'EOF'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <dir prefix="relative">../fonts</dir>
+  <cachedir>/opt/browser/fontconfig/cache</cachedir>
+  <cachedir prefix="xdg">fontconfig</cachedir>
+  <include ignore_missing="yes">conf.d</include>
+</fontconfig>
+EOF
+find "$browser/fonts" -type d -exec touch -d "@0" {} +
+[ ! -e /opt/browser ] || fail "/opt/browser unexpectedly exists in builder"
+fc_tmp=$(mktemp -d)
+mkdir -p /opt
+mv "$browser" /opt/browser
+env -i PATH=/usr/bin:/bin HOME="$fc_tmp" LD_LIBRARY_PATH="/opt/browser/lib:/opt/browser:$rootfs/usr/local/lib" \
+    FONTCONFIG_FILE=/opt/browser/fontconfig/fonts.conf FONTCONFIG_PATH=/opt/browser/fontconfig \
+    /opt/browser/helium --headless --no-sandbox --use-gl=disabled --user-data-dir="$fc_tmp/profile" --dump-dom about:blank >/dev/null 2>&1 \
+    || { mv /opt/browser "$browser"; rm -rf "$fc_tmp"; fail "helium failed to warm fontconfig cache"; }
+mv /opt/browser "$browser"
+rm -rf "$fc_tmp"
+[ -n "$(ls -A "$browser/fontconfig/cache" 2>/dev/null)" ] || fail "helium wrote no fontconfig cache"
+chmod 0755 "$browser/fontconfig/cache"
+chmod 0644 "$browser/fontconfig/cache/"*
+find "$browser/fonts" -type d -exec touch -d "@0" {} +
+
 version=$(env -i HOME=/home/browser LD_LIBRARY_PATH=/opt/browser/lib:/opt/browser /usr/sbin/chroot "$rootfs" /opt/browser/helium --version) \
     || fail "helium --version failed in the assembled rootfs"
 case $version in
