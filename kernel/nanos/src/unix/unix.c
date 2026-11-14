@@ -859,6 +859,7 @@ static process process_alloc(unix_heaps uh, tuple root, filesystem fs, int pid)
     p->aio_ids = create_id_heap(locked, locked, 0, S32_MAX, 1, false);
     p->aio = allocate_vector(locked, 8);
     p->rlimit_stack = PROCESS_STACK_SIZE;
+    p->rlimit_stack_max = infinity;
     p->trace = 0;
     p->trap = 0;
     return p;
@@ -1246,6 +1247,7 @@ sysreturn fork_process(thread t, struct clone_args_internal *args)
     c->dumpable = parent->dumpable;
     c->syscalls = parent->syscalls;
     c->rlimit_stack = parent->rlimit_stack;
+    c->rlimit_stack_max = parent->rlimit_stack_max;
     c->rlimit_nproc_cur = parent->rlimit_nproc_cur;
     c->rlimit_nproc_max = parent->rlimit_nproc_max;
     c->rlimit_nofile_cur = parent->rlimit_nofile_cur;

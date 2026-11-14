@@ -1,0 +1,11 @@
+(
+    boot:(children:(klib:(children:(
+        tmpfs:(contents:(host:ARCH_DIR/bin/tmpfs))
+        shmem:(contents:(host:ARCH_DIR/bin/shmem))
+    ))))
+    children:(resource_limits:(contents:(host:output/test/runtime/bin/resource_limits)))
+    program:/resource_limits
+    klibs:bootfs
+    fault:t
+    environment:()
+)

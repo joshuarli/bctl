@@ -136,6 +136,7 @@ RUNTIME_TESTS=	\
 	netsock \
 	pipe \
 	readv \
+	resource_limits \
 	sandbox \
 	sendfile \
 	shmem \

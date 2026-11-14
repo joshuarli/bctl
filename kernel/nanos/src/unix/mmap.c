@@ -932,6 +932,33 @@ void *process_map_physical(process p, u64 phys_addr, u64 size, u64 vmflags)
     return pointer_from_u64(virt_addr);
 }
 
+static boolean vmap_is_data(u64 flags)
+{
+    return (flags & (VMAP_FLAG_WRITABLE | VMAP_FLAG_SHARED | VMAP_FLAG_STACK)) ==
+        VMAP_FLAG_WRITABLE;
+}
+
+static boolean process_data_limit_locked(process p, u64 added, range removed)
+{
+    u64 limit = p->rlimit_data_cur;
+    if (limit == 0)
+        limit = p->rlimit_data_max;
+    if (limit == infinity)
+        return true;
+    u64 used = 0, replaced = 0;
+    rangemap_foreach(p->vm->vmaps, n) {
+        vmap vm = (vmap)n;
+        if (vmap_is_data(vm->flags)) {
+            used += range_span(n->r);
+            if (ranges_intersect(n->r, removed))
+                replaced += range_span(range_intersection(n->r, removed));
+        }
+    }
+    if (added <= replaced)
+        return true;
+    return used <= limit && added - replaced <= limit - used;
+}
+
 boolean adjust_process_heap(process p, u64 old_end, u64 new_end)
 {
     boolean adjusted = true;
@@ -939,7 +966,8 @@ boolean adjust_process_heap(process p, u64 old_end, u64 new_end)
     if (new_end > old_end) {
         struct vmap k = ivmap(VMAP_FLAG_HEAP | VMAP_FLAG_READABLE | VMAP_FLAG_WRITABLE, 0, 0, 0, 0);
         k.node.r = irange(old_end, new_end);
-        adjusted = allocate_vmap_locked(p->vm->vmaps, &k) != INVALID_ADDRESS;
+        adjusted = process_data_limit_locked(p, new_end - old_end, irange(0, 0)) &&
+            allocate_vmap_locked(p->vm->vmaps, &k) != INVALID_ADDRESS;
     } else if (new_end < old_end) {
         process_remove_range_locked(p, irange(new_end, old_end), false);
     }
@@ -1036,6 +1064,13 @@ sysreturn mremap(void *old_address, u64 old_size, u64 new_size, int flags, void 
             rv = sysreturn_from_pointer(old.start);
             goto unlock_out;
         }
+    }
+
+    if (vmap_is_data(k.flags) && new_size > old_size &&
+        !process_data_limit_locked(p, new_size - old_size,
+                                   (flags & MREMAP_FIXED) ? new : irange(0, 0))) {
+        rv = -ENOMEM;
+        goto unlock_out;
     }
 
     vmap_hold_backing(&k);
@@ -1267,6 +1302,17 @@ static sysreturn vmap_update_protections_locked(process p, range q, u32 newflags
         return -ENOMEM;
     else if (res == RM_ABORT)
         return -EACCES;
+
+    u64 added = 0;
+    struct rmnode key = {.r = q};
+    rangemap_foreach_of_range(pvmap, n, &key) {
+        vmap vm = (vmap)n;
+        u64 flags = (vm->flags & ~VMAP_FLAG_PROT_MASK) | newflags;
+        if (!vmap_is_data(vm->flags) && vmap_is_data(flags))
+            added += range_span(range_intersection(n->r, q));
+    }
+    if (added && !process_data_limit_locked(p, added, irange(0, 0)))
+        return -ENOMEM;
 
     /* updating protections can lead to merging of nodes, so we cannot traverse */
     range r = q;
@@ -1614,6 +1660,11 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             goto out_unlock;
         }
         q = irangel(vaddr, len);
+    }
+    if (vmap_is_data(vmflags) &&
+        !process_data_limit_locked(p, len, fixed ? q : irange(0, 0))) {
+        ret = -ENOMEM;
+        goto out_unlock;
     }
     if (vmap_mmap_type == VMAP_MMAP_TYPE_CUSTOM) {
         k.node.r = q;

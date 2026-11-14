@@ -2,7 +2,7 @@
 set -eu
 . "$(dirname -- "$0")/common.sh"
 
-usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|helium-native|helium|helium-stress|external..."; }
+usage() { die "usage: dev/test.sh harness|virtiofs [--repeat N]|9p|vsock|debug|metrics|probe-native|probe [--repeat N | --stress]|upstream|g0|resource-limits|helium-native|helium|helium-stress|external..."; }
 
 FIXTURES=$WORK/build/mini_chromium/fixtures
 IMAGES=$WORK/images
@@ -428,6 +428,12 @@ for suite in "$@"; do
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/wakeup_latency"
 		linux "$FIXTURES/wakeup_latency" | sed 's/^/native /'
 		for smp in 1 2 4; do case_verdict wakeup_latency "$smp" 120 PASS '' "$FIXTURES/wakeup_latency"; done ;;
+	resource-limits)
+		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/resource_limits"
+		fixture_native resource_limits env
+		for smp in 1 2 4; do
+			case_verdict resource_limits "$smp" 30 PASS '' --klib tmpfs --klib shmem "$FIXTURES/resource_limits"
+		done ;;
 	metrics) suite_metrics ;;
 	probe-native) linux make -s -C "$ROOT/tests/mini_chromium"; probe_native mini_chromium; probe_native mini_chromium_raw ;;
 	probe) suite_probe ;;

@@ -40,3 +40,7 @@ $(OUT)/fixtures/cow_stress_dyn: fixtures/cow_stress.c
 	$(CC) $(CFLAGS) -pthread $< -o $@
 
 .PHONY: all
+
+$(OUT)/fixtures/resource_limits: $(ROOT)/nanos/test/runtime/resource_limits.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -static $< -o $@

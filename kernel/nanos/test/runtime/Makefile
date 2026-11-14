@@ -31,6 +31,7 @@ PROGRAMS= \
 	paging \
 	pipe \
 	readv \
+	resource_limits \
 	sandbox \
 	sendfile \
 	shmem \
@@ -324,6 +325,9 @@ all: $(PROGRAMS)
 dummy:
 
 .PHONY: dummy
+
+SRCS-resource_limits= $(CURDIR)/resource_limits.c
+LDFLAGS-resource_limits= -static
 
 include ../../rules.mk
 
