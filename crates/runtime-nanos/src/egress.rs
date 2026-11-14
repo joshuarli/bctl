@@ -218,7 +218,10 @@ pub fn serve(mut client: UnixStream, policy: &Policy) {
         }
     };
     let upstream = match TcpStream::connect_timeout(&target, CONNECT_TIMEOUT) {
-        Ok(upstream) => upstream,
+        Ok(upstream) => {
+            let _ = upstream.set_nodelay(true);
+            upstream
+        }
         Err(error) => {
             eprintln!("bctl-nanos-vm: egress to {target}: {error}");
             let _ = reply(&mut client, REPLY_HOST_UNREACHABLE);

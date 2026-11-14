@@ -73,6 +73,7 @@ pub fn start_egress(log: &Log) -> Result<(), String> {
         for client in listener.incoming() {
             match client {
                 Ok(client) => {
+                    let _ = client.set_nodelay(true);
                     let log = log.clone();
                     thread::spawn(move || match VsockStream::connect(layout::VSOCK_HOST_CID, layout::VSOCK_EGRESS_PORT) {
                         Ok(host) => pipe(client, host, &log),
@@ -117,7 +118,10 @@ fn serve<S: Stream>(incoming: impl Iterator<Item = io::Result<S>>, log: &Log) {
 
 fn bridge<S: Stream>(client: S, log: &Log) {
     match TcpStream::connect((Ipv4Addr::LOCALHOST, layout::BROWSER_CDP_PORT)) {
-        Ok(upstream) => pipe(client, upstream, log),
+        Ok(upstream) => {
+            let _ = upstream.set_nodelay(true);
+            pipe(client, upstream, log);
+        }
         Err(error) => log.line(&format!("connect to the browser: {error}")),
     }
 }

@@ -133,6 +133,7 @@ async fn accept(listener: TcpListener, daemon: Arc<Daemon>, port: u16) {
     });
     loop {
         let Ok((stream, _)) = listener.accept().await else { continue };
+        let _ = stream.set_nodelay(true);
         let router = router.clone();
         thread::spawn(move || {
             let builder = auto::Builder::new(executor()).http1_only();
@@ -505,6 +506,7 @@ fn proxy_vnc(daemon: &Arc<Daemon>, name: &str, request: &mut Request, viewer: St
                 if interactive && holds { InputPolicy::Forward } else { InputPolicy::Drop }
             };
             if let (Ok(vnc), Ok(connection)) = (TcpStream::connect(("127.0.0.1", vnc_port)).await, upgrade.into_connection().await) {
+                let _ = vnc.set_nodelay(true);
                 relay(connection, vnc, policy).await;
             }
             daemon.authority.of(&session, |control| control.abandon(&viewer));
