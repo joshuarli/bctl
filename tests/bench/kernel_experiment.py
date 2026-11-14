@@ -94,7 +94,7 @@ def build(ref, cflags, tier, archive):
         logged(['sh', 'kernel/dev/bootstrap.sh'], out / 'bootstrap.log', env | {'TMPDIR': str(tree / 'kernel/.work/tmp')}, tree)
         logged(['sh', 'runtime/build-nanos-arm64.sh'], out / 'kernel.log', env, tree)
         logged(['sh', 'images/nanos-helium/build-macos.sh'], out / 'image.log', env, tree)
-        for name in ('nanos-helium.img', 'nanos-helium.profile.img'):
+        for name in ('nanos-helium.img', 'nanos-helium.profile.img', 'nanos-helium.kernel.img'):
             subprocess.run(['cp', '-c', tree / '.work/images' / name, out / name], check=True)
         build_seconds = time.monotonic() - started
         gate_seconds, absent = {}, []

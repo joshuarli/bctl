@@ -61,6 +61,12 @@ pub fn image_kernel(image: &Path) -> PathBuf {
     image.with_extension("kernel.img")
 }
 
+#[cfg(target_os = "macos")]
+fn resolve_libkrun_kernel(image: &Path, fallback: &Path) -> PathBuf {
+    let kernel = image_kernel(image);
+    if kernel.is_file() { kernel } else { fallback.to_path_buf() }
+}
+
 /// The host side of the Nanos runtime.
 #[derive(Debug, Clone)]
 pub struct Toolchain {
@@ -264,7 +270,7 @@ impl Nanos {
             }
             #[cfg(target_os = "macos")]
             Backend::Libkrun { runner, kernel } => {
-                command.arg("--runner").arg(runner).arg("--kernel").arg(kernel);
+                command.arg("--runner").arg(runner).arg("--kernel").arg(resolve_libkrun_kernel(&spec.image, kernel));
             }
         }
         command.args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()]));
@@ -524,5 +530,20 @@ mod tests {
         assert!(!survived, "the supervisor's process group {group} survived remove");
         removed.unwrap();
         assert!(!machine_dir.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn libkrun_prefers_image_kernel_when_present() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let dir = root.join(".work/tmp").join(format!("nanos-kernel-sel-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("disk.img");
+        let fallback = dir.join("fallback.img");
+        assert_eq!(resolve_libkrun_kernel(&image, &fallback), fallback);
+        let beside = image_kernel(&image);
+        fs::write(&beside, b"kernel").unwrap();
+        assert_eq!(resolve_libkrun_kernel(&image, &fallback), beside);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -57,7 +57,9 @@ if [ "$runtime" = smolvm ]; then
 elif [ "$(uname -s)" = Darwin ]; then
     image=nanos-helium
     ln -s "$root/.work/runtime/nanos-krun" "$home/runtime/nanos"
-    for f in nanos-helium.img nanos-helium.profile.img; do ln -s "$root/.work/images/$f" "$home/images/$f"; done
+    for f in nanos-helium.img nanos-helium.profile.img nanos-helium.kernel.img; do
+        [ -e "$root/.work/images/$f" ] && ln -s "$root/.work/images/$f" "$home/images/$f"
+    done
     image_file=$root/.work/images/nanos-helium.img
 else
     image=nanos-helium

@@ -204,6 +204,9 @@ class Trial:
         (home / 'runtime/nanos').symlink_to(runtime_path.resolve())
         for name, target in [('nanos-helium.img', image_path), ('nanos-helium.profile.img', image_path.with_suffix('.profile.img'))]:
             (home / 'images' / name).symlink_to(target.resolve())
+        kernel_path = image_path.with_suffix('.kernel.img')
+        if kernel_path.exists():
+            (home / 'images/nanos-helium.kernel.img').symlink_to(kernel_path.resolve())
         self.image = 'nanos-helium'
         if args.native_arg:
             self.env['AGENT_BROWSER_ARGS'] = ','.join(args.native_arg)
@@ -428,6 +431,9 @@ def main():
     runtime_files = [args.bctl_image.resolve(), args.bctl_image.resolve().with_suffix('.profile.img'),
                      args.bctl_runtime_dir.resolve() / 'nanos-krun', args.bctl_runtime_dir.resolve() / 'lib/libkrun.dylib',
                      args.bctl_runtime_dir.resolve() / 'kernel.img']
+    image_kernel = args.bctl_image.resolve().with_suffix('.kernel.img')
+    if image_kernel.exists():
+        runtime_files.append(image_kernel)
     results = {'started': stamp, 'completed': False, 'runtime': args.runtime, 'native_binary': str(args.native_binary),
         'native_version': invoke([args.native_binary, '--version']).strip(), 'bctl_commit': invoke(['git', '-C', ROOT, 'rev-parse', 'HEAD']).strip(),
         'shadowdriver_commit': invoke(['git', '-C', args.shadowdriver, 'rev-parse', 'HEAD']).strip(), 'attempts': [], 'summary': {},

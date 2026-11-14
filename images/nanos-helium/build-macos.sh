@@ -33,6 +33,8 @@ docker run --rm --platform linux/arm64 -v "$tree:/src" -v "$rootfs:/rootfs:ro" -
             /images/nanos-helium.img.new < /images/nanos-helium.img.manifest &&
         "$mkfs" -e -l profile -s 2g /images/nanos-helium.profile.img.new
     ' >/dev/null || fail "cannot create the persistent profile volumes"
+cp "$tree/nanos/output/platform/virt/bin/kernel.img" "$images/nanos-helium.kernel.img.new"
 mv "$images/nanos-helium.img.new" "$images/nanos-helium.img"
 mv "$images/nanos-helium.profile.img.new" "$images/nanos-helium.profile.img"
+mv "$images/nanos-helium.kernel.img.new" "$images/nanos-helium.kernel.img"
 echo "$images/nanos-helium.img"
