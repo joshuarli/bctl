@@ -508,32 +508,14 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
         deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
         return 0;
     }
-    context ctx = get_current_context(current_cpu());
     int local_installed[SCM_MAX_FD];
+    u8 kbuf[SCM_CMSG_SPACE(sizeof(unix_ucred)) + SCM_CMSG_SPACE(SCM_MAX_FD * sizeof(int))];
     u16 local_count = 0;
     u64 off = 0;
     boolean truncated = false;
-    u64 controllen = 0;
-    void *control = 0;
     sysreturn err = 0;
-    if (context_set_err(ctx)) {
-        for (u16 i = 0; i < local_count; i++)
-            deallocate_fd(receiver, local_installed[i]);
-        for (u16 i = 0; i < scm->nfds; i++)
-            vector_push(dropped, scm->fds[i]);
-        if (scm->has_cred && scm->cred.p)
-            process_release(scm->cred.p);
-        if (scm->has_auto && scm->auto_cred.p)
-            process_release(scm->auto_cred.p);
-        heap h = heap_locked(get_kernel_heaps());
-        deallocate(h, scm, sizeof(*scm) + scm->nfds * sizeof(fdesc));
-        if (installed_count)
-            *installed_count = 0;
-        *ctrunc = false;
-        return -EFAULT;
-    }
-    controllen = m->msg_controllen;
-    control = m->msg_control;
+    u64 controllen = m->msg_controllen;
+    void *control = m->msg_control;
     if (!control)
         controllen = 0;
     {
@@ -544,24 +526,24 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
             if (controllen - off < need) {
                 truncated = true;
             } else {
-                u8 *cp = (u8 *)control + off;
+                u8 *cp = kbuf + off;
                 s32 pid = process_visible_pid(use_cred.p, receiver);
                 user_namespace receiver_ns = process_user_ns(receiver);
                 u32 local_uid = user_ns_from_kuid(receiver_ns, use_cred.uid);
                 u32 local_gid = user_ns_from_kgid(receiver_ns, use_cred.gid);
-            user_ns_release(receiver_ns);
-            *(u32 *)cp = (u32)SCM_CMSG_LEN(sizeof(unix_ucred));
-            *(u32 *)(cp + 4) = 0;
-            *(s32 *)(cp + 8) = SOL_SOCKET;
-            *(s32 *)(cp + 12) = SCM_CREDENTIALS;
-            *(s32 *)(cp + 16) = pid;
-            *(u32 *)(cp + 20) = local_uid;
-            *(u32 *)(cp + 24) = local_gid;
-            for (u64 i = 28; i < need; i++)
-                cp[i] = 0;
-            off += need;
+                user_ns_release(receiver_ns);
+                *(u32 *)cp = (u32)SCM_CMSG_LEN(sizeof(unix_ucred));
+                *(u32 *)(cp + 4) = 0;
+                *(s32 *)(cp + 8) = SOL_SOCKET;
+                *(s32 *)(cp + 12) = SCM_CREDENTIALS;
+                *(s32 *)(cp + 16) = pid;
+                *(u32 *)(cp + 20) = local_uid;
+                *(u32 *)(cp + 24) = local_gid;
+                for (u64 i = 28; i < need; i++)
+                    cp[i] = 0;
+                off += need;
+            }
         }
-    }
     }
     if (scm->nfds) {
         if (controllen - off < sizeof(unix_cmsghdr)) {
@@ -584,7 +566,7 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
             if (local_count < scm->nfds)
                 truncated = true;
             if (local_count) {
-                u8 *cp = (u8 *)control + off;
+                u8 *cp = kbuf + off;
                 *(u32 *)cp = (u32)(sizeof(unix_cmsghdr) + local_count * sizeof(int));
                 *(u32 *)(cp + 4) = 0;
                 *(s32 *)(cp + 8) = SOL_SOCKET;
@@ -598,9 +580,21 @@ static sysreturn scm_deliver(unixsock_scm scm, struct msghdr *m, int recv_flags,
             }
         }
     }
-    m->msg_controllen = off;
-    err = 0;
-    context_clear_err(ctx);
+    if (off && !copy_to_user(control, kbuf, off)) {
+        for (u16 i = 0; i < local_count; i++)
+            deallocate_fd(receiver, local_installed[i]);
+        local_count = 0;
+        off = 0;
+        if (scm->nfds)
+            truncated = true;
+    }
+    if (!copy_to_user(&m->msg_controllen, &off, sizeof(off))) {
+        for (u16 i = 0; i < local_count; i++)
+            deallocate_fd(receiver, local_installed[i]);
+        local_count = 0;
+        truncated = false;
+        err = -EFAULT;
+    }
     for (u16 i = local_count; i < scm->nfds; i++)
         vector_push(dropped, scm->fds[i]);
     if (scm->has_cred && scm->cred.p)
@@ -1560,6 +1554,7 @@ out:
     unixsock_unlock(s);
     if (rv == 0)
         unixsock_notify_reader(listener);
+    refcount_release(&listener->refcount);
     socket_release(&s->sock);
     syscall_return(t, rv);
     closure_finish();
@@ -1582,24 +1577,33 @@ static sysreturn unixsock_connect(struct sock *sock, struct sockaddr *addr,
     }
     if (unixsock_is_conn_oriented(s)) {
         blockq_action ba = contextual_closure(connect_bh, s, current, listener);
-        if (ba == INVALID_ADDRESS)
+        if (ba == INVALID_ADDRESS) {
             rv = -ENOMEM;
+            goto out;
+        }
         return blockq_check(listener->sock.txbq, ba, false);
     } else {
-        if (s->notify_handle != INVALID_ADDRESS)
-            notify_remove(s->peer->sock.f.ns, s->notify_handle, false);
+        notify_entry handle = notify_add(listener->sock.f.ns, EPOLLOUT | EPOLLERR | EPOLLHUP,
+                                         init_closure_func(&s->event_handler, event_handler,
+                                                           unixsock_event_handler));
         unixsock_lock(s);
-        unixsock_disconnect(s);
-        s->notify_handle = notify_add(listener->sock.f.ns, EPOLLOUT | EPOLLERR | EPOLLHUP,
-                                      init_closure_func(&s->event_handler, event_handler,
-                                                        unixsock_event_handler));
-        if (s->notify_handle == INVALID_ADDRESS)
+        unixsock old_peer = s->peer;
+        notify_entry old_handle = s->notify_handle;
+        s->peer = 0;
+        s->notify_handle = INVALID_ADDRESS;
+        if (handle == INVALID_ADDRESS) {
             rv = -ENOMEM;
-        else {
+        } else {
+            s->notify_handle = handle;
             unixsock_conn_internal(s, listener);
             unixsock_peercred_set(s, listener->peercred.p, listener->peercred.uid, listener->peercred.gid);
         }
         unixsock_unlock(s);
+        if (old_peer) {
+            if (old_handle != INVALID_ADDRESS)
+                notify_remove(old_peer->sock.f.ns, old_handle, false);
+            refcount_release(&old_peer->refcount);
+        }
     }
 out:
     if (listener)
@@ -1688,11 +1692,18 @@ out:
 static sysreturn unixsock_getsockname(struct sock *sock, struct sockaddr *addr, socklen_t *addrlen)
 {
     unixsock s = (unixsock)sock;
+    struct unix_address local;
     unixsock_lock(s);
-    unixsock_addr_copy((struct sockaddr_un *)addr, &s->local_addr, addrlen);
+    local = s->local_addr;
     unixsock_unlock(s);
+    sysreturn rv = 0;
+    socklen_t ulen;
+    if (!get_user_value(addrlen, &ulen) || !set_user_value(addrlen, local.len))
+        rv = -EFAULT;
+    else if (MIN(ulen, local.len) && !copy_to_user(addr, &local.sa, MIN(ulen, local.len)))
+        rv = -EFAULT;
     socket_release(sock);
-    return 0;
+    return rv;
 }
 
 static sysreturn unixsock_setsockopt(struct sock *sock, int level,
@@ -1765,6 +1776,8 @@ static sysreturn unixsock_getsockopt(struct sock *sock, int level,
         case SO_PEERCRED: {
             unixsock_lock(s);
             process p = s->peercred.p;
+            if (p)
+                process_reserve(p);
             u32 uid = s->peercred.uid;
             u32 gid = s->peercred.gid;
             unixsock_unlock(s);
@@ -1778,6 +1791,8 @@ static sysreturn unixsock_getsockopt(struct sock *sock, int level,
             ret_optval.cred.pid = process_visible_pid(p, cur);
             ret_optval.cred.uid = uid;
             ret_optval.cred.gid = gid;
+            if (p)
+                process_release(p);
             ret_optlen = sizeof(ret_optval.cred);
             break;
         }

@@ -139,6 +139,7 @@ RUNTIME_TESTS=	\
 	resource_limits \
 	shared_brk \
 	seccomp_policy \
+	unix_socket_review \
 	sandbox \
 	sendfile \
 	shmem \

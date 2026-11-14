@@ -104,6 +104,12 @@ action values carrying data bits. `test/runtime/seccomp_policy.c` compares
 these sandbox boundary conditions with native Linux/musl, including proof
 that a denied write remains denied after the rejected mode change.
 
+`recvmsg` on `AF_UNIX` builds control data in kernel memory and copies it out
+with a fault guard. An unwritable `msg_control` returns the received bytes with
+`MSG_CTRUNC` and installs no descriptors, as Linux does. Concurrent `connect`
+on one `SOCK_DGRAM` socket swaps its peer under the socket lock.
+`test/runtime/unix_socket_review.c` compares these cases with native Linux/musl.
+
 ### Installation
 
 | Step | Operation | Cite |
