@@ -1,6 +1,14 @@
 Prefix: BCTL
-Next: 23
+Next: 24
 
+### BCTL-23 · P2 · Experimental WebMCP bridge is not qualified on Helium runtimes
+
+- **Area:** Browser
+- **Where:** `crates/bctl/src/webmcp.rs`, `docs/webmcp.md`, `tests/interop/`, `images/helium/`
+- **Problem:** The optional `bctl webmcp list/call` bridge is implemented over native page-eval with same-origin filtering and separate write/consequential opt-ins, but only expression-level unit tests are present. We have not proved that the deployed Helium/Chromium binary exposes `document.modelContext`, that origin-trial/permissions-policy conditions are met, or that `getTools`/`executeTool` operate end-to-end. WebMCP is a draft, so claiming general runtime support would be premature.
+- **Recommendation:** Add a purpose-built HTTPS WebMCP fixture with known `snapshot`/`query`/`act`-style tools, read-only/write/consequential annotations, callbacks recording invocations, and toolchange/navigation tests. Opt the feature in on a test image only, measure semantics across Nanos and SmolVM on macOS and Linux, and record exact Chromium build, flags, secure-context policy, and VM receipts in `docs/compatibility.md`. Prove refusal does not invoke callbacks, malformed/hostile input cannot inject JS, cross-origin tools remain inaccessible, and human takeover is respected. Avoid an unconditional runtime flag, JS dependencies, or a new daemon/browser connection. If Chromium lacks the API, keep the feature optional and use native CDP actions as fallback.
+- **Fix with:** `test-pyramid`
+- **Effort:** M
 ### BCTL-15 · P2 · A run queue can hold a null scheduler task
 
 - **Area:** Concurrency

@@ -9,6 +9,16 @@ Sources: [draft](https://webmachinelearning.github.io/webmcp/),
 [Chrome guide](https://developer.chrome.com/docs/modern-web-guidance/guides/webmcp/agentic-javascript-tools),
 [UI SDK agent bridge](https://ui-sdk.dev/docs/agents).
 
+## UI SDK bridge
+
+The November 2026 UI SDK agent bridge registers three browser tools using
+`registerTools(agent, { allow })`: `snapshot`, `query`, and `act`.
+`snapshot`/`query` advertise `readOnlyHint: true`; `act` is mutating and
+requires `--allow-write` from this CLI. The UI SDK's own per-step `allow`
+callback and component permissions still apply. Run `list` to read the live
+input schemas rather than assuming the shape of a snapshot, query or action.
+Do not adopt UI SDK as a bctl dashboard dependency just to consume those
+registered tools; this CLI consumes whichever site's WebMCP tools exist.
 ## CLI
 
 Select a bctl page first; example tool names below are illustrative:
