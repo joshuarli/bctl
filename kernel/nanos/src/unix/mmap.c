@@ -978,7 +978,8 @@ void *process_set_brk(process p, void *addr)
             allocate_vmap_locked(p->vm->vmaps, &k) == INVALID_ADDRESS)
             goto out;
     } else if (new_end < old_end) {
-        process_remove_range_locked(p, irange(new_end, old_end), true);
+        process_remove_range_locked(p, irange(new_end, old_end), false);
+        address_space_unmap_and_free_phys(p->vm->as, new_end, old_end - new_end);
     }
     p->vm->brk = addr;
   out:

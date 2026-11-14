@@ -21,6 +21,45 @@ static struct {
 } shared;
 static pid_t owner;
 
+static void unmapped_fault(int signal)
+{
+    _exit(signal == SIGSEGV ? 77 : 78);
+}
+
+static int read_unmapped(void *address)
+{
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != owner)
+        return 1;
+    struct sigaction action = {.sa_handler = unmapped_fault};
+    if (sigemptyset(&action.sa_mask) || sigaction(SIGSEGV, &action, NULL))
+        return 2;
+    volatile unsigned char value = *(volatile unsigned char *)address;
+    (void)value;
+    return 0;
+}
+
+static int resident_shrink(uintptr_t base, size_t page)
+{
+    if ((uintptr_t)syscall(SYS_brk, base + 3 * page) != base + 3 * page)
+        return 0;
+    *(volatile unsigned char *)(base + 2 * page) = 90;
+    if ((uintptr_t)syscall(SYS_brk, base + page) != base + page)
+        return 0;
+    const size_t stack_size = 64 * 1024;
+    void *stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (stack == MAP_FAILED)
+        return 0;
+    pid_t child = clone(read_unmapped, (char *)stack + stack_size, CLONE_VM | SIGCHLD, (void *)(base + 2 * page));
+    int status;
+    int ok = child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 77;
+    munmap(stack, stack_size);
+    if ((uintptr_t)syscall(SYS_brk, base + 3 * page) != base + 3 * page)
+        return 0;
+    ok &= *(volatile unsigned char *)(base + 2 * page) == 0;
+    ok &= (uintptr_t)syscall(SYS_brk, base + page) == base + page;
+    return ok;
+}
+
 static int worker(void *argument)
 {
     unsigned index = (uintptr_t)argument;
@@ -52,8 +91,9 @@ int main(void)
     void *stacks[2];
     pid_t children[2] = {-1, -1};
     unsigned created = 0, iteration = 0;
-    int ok = 1;
-    for (unsigned i = 0; i < 2; i++) {
+    int resident = resident_shrink(base, page);
+    int ok = resident;
+    for (unsigned i = 0; ok && i < 2; i++) {
         stacks[i] = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (stacks[i] == MAP_FAILED) {
             ok = 0;
@@ -105,9 +145,9 @@ int main(void)
     syscall(SYS_brk, original);
     char record[384];
     int length = snprintf(record, sizeof record,
-        "MINI_CHROMIUM_TEST name=shared_brk_ranges status=%s detail=iteration=%u,mismatch=%d,break=%lx,base=%lx\n"
+        "MINI_CHROMIUM_TEST name=shared_brk_ranges status=%s detail=resident=%d,iteration=%u,mismatch=%d,break=%lx,base=%lx\n"
         "MINI_CHROMIUM_RESULT status=%s passed=%d failed=%d\n",
-        ok ? "PASS" : "FAIL", iteration, mismatch, (unsigned long)final, (unsigned long)base,
+        ok ? "PASS" : "FAIL", resident, iteration, mismatch, (unsigned long)final, (unsigned long)base,
         ok ? "PASS" : "FAIL", ok, !ok);
     if (length < 0 || (size_t)length >= sizeof record || write(STDOUT_FILENO, record, (size_t)length) != length)
         return 1;
