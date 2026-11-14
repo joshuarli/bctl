@@ -41,6 +41,7 @@ extern "C" {
 /* The backend shows the guest's pointer itself: the guest hands over the pointer image and its
  * position instead of drawing a software pointer into every frame. */
 #define KRUN_DISPLAY_FEATURE_CURSOR 2
+#define KRUN_DISPLAY_FEATURE_PARTIAL_FRAMEBUFFER 4
 
 /**
  * Called to create a display instance.

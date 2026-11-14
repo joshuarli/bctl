@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
 /// `KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER`.
 const FEATURE_BASIC_FRAMEBUFFER: u64 = 1;
 const FEATURE_CURSOR: u64 = 2;
+const FEATURE_PARTIAL_FRAMEBUFFER: u64 = 4;
 
 const ERR_INVALID_SCANOUT_ID: i32 = -3;
 const ERR_INVALID_PARAM: i32 = -4;
@@ -98,7 +99,9 @@ struct KrunDisplayBackend {
 #[derive(Clone)]
 pub struct Frame {
     /// Raw pixels, `width * height * 4` bytes in `format`'s byte order.
-    pub buf: Vec<u8>,
+    pub buf: Arc<Vec<u8>>,
+    #[allow(missing_docs)]
+    pub damage: Option<DamageRect>,
     /// Frame width in pixels.
     pub width: u32,
     /// Frame height in pixels.
@@ -108,6 +111,67 @@ pub struct Frame {
     /// Bumped on every present. Viewers compare against their last value to
     /// tell a new frame from a repeat without diffing pixels.
     pub generation: u64,
+}
+
+#[allow(missing_docs)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[allow(missing_docs)]
+impl DamageRect {
+    pub fn clipped(self, width: u32, height: u32) -> Option<Self> {
+        let x2 = self.x.saturating_add(self.width).min(width);
+        let y2 = self.y.saturating_add(self.height).min(height);
+        (self.x < x2 && self.y < y2).then_some(Self { x: self.x, y: self.y, width: x2.saturating_sub(self.x), height: y2.saturating_sub(self.y) })
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let x2 = self.x.saturating_add(self.width).max(other.x.saturating_add(other.width));
+        let y2 = self.y.saturating_add(self.height).max(other.y.saturating_add(other.height));
+        Self { x, y, width: x2 - x, height: y2 - y }
+    }
+
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let x2 = self.x.saturating_add(self.width).min(other.x.saturating_add(other.width));
+        let y2 = self.y.saturating_add(self.height).min(other.y.saturating_add(other.height));
+        (x < x2 && y < y2).then_some(Self { x, y, width: x2.saturating_sub(x), height: y2.saturating_sub(y) })
+    }
+
+    pub fn byte_len(self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * 4
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamageSince {
+    Unchanged,
+    Partial(DamageRect),
+    Full,
+}
+
+#[allow(missing_docs)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DisplayStats {
+    pub frames_presented: u64,
+    pub staging_bytes_copied: u64,
+    pub front_clones: u64,
+    pub front_in_place: u64,
+}
+
+#[derive(Default)]
+struct DamageHistory {
+    entries: std::collections::VecDeque<(u64, u32, u32, Option<DamageRect>)>,
+    stats: DisplayStats,
 }
 
 /// The guest's pointer as the VMM hands it over: the image the guest put on
@@ -181,6 +245,7 @@ pub struct DisplayFramebuffer {
     staging: std::cell::UnsafeCell<Staging>,
     front: Mutex<Frame>,
     presented: Condvar,
+    history: Mutex<DamageHistory>,
     cursor: Mutex<Cursor>,
     /// Mirrors `cursor.generation` so waiters can test it under `front`.
     cursor_generation: std::sync::atomic::AtomicU64,
@@ -224,13 +289,15 @@ impl DisplayFramebuffer {
                 configured: false,
             }),
             front: Mutex::new(Frame {
-                buf: Vec::new(),
+                buf: Arc::new(Vec::new()),
+                damage: None,
                 width: 0,
                 height: 0,
                 format: FORMAT_B8G8R8A8,
                 generation: 0,
             }),
             presented: Condvar::new(),
+            history: Mutex::new(DamageHistory::default()),
             cursor: Mutex::new(Cursor::default()),
             cursor_generation: std::sync::atomic::AtomicU64::new(0),
             trace,
@@ -294,12 +361,99 @@ impl DisplayFramebuffer {
         let fb = Self::new();
         {
             let mut front = fb.front.lock().unwrap();
-            front.buf = pixel.repeat((width * height) as usize);
+            front.buf = Arc::new(pixel.repeat((width * height) as usize));
             front.width = width;
             front.height = height;
             front.generation = 1;
         }
         fb
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(width: u32, height: u32, pixel: [u8; 4]) -> Arc<Self> {
+        let fb = Arc::new(Self::new());
+        fb.present_test_rect(width, height, None, pixel);
+        fb
+    }
+
+    #[cfg(test)]
+    pub(crate) fn present_test_rect(
+        self: &Arc<Self>,
+        width: u32,
+        height: u32,
+        rect: Option<DamageRect>,
+        pixel: [u8; 4],
+    ) {
+        let raw = Arc::as_ptr(self) as *mut c_void;
+        unsafe {
+            assert_eq!(
+                display_configure_scanout(raw, 0, width, height, width, height, FORMAT_B8G8R8A8),
+                0
+            );
+            let mut buf: *mut u8 = std::ptr::null_mut();
+            let mut len: usize = 0;
+            assert_eq!(display_alloc_frame(raw, 0, &mut buf, &mut len), 0);
+            let slice = std::slice::from_raw_parts_mut(buf, len);
+            let target = rect.unwrap_or(DamageRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            });
+            let stride = width as usize * BYTES_PER_PIXEL;
+            for y in target.y..target.y + target.height {
+                for x in target.x..target.x + target.width {
+                    let off = y as usize * stride + x as usize * BYTES_PER_PIXEL;
+                    slice[off..off + 4].copy_from_slice(&pixel);
+                }
+            }
+            match rect {
+                Some(r) => {
+                    let krect = KrunRect {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                    };
+                    assert_eq!(display_present_frame(raw, 0, 0, &krect), 0);
+                }
+                None => {
+                    assert_eq!(display_present_frame(raw, 0, 0, std::ptr::null()), 0);
+                }
+            }
+        }
+    }
+
+    #[allow(missing_docs)]
+    pub fn stats(&self) -> DisplayStats {
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).stats
+    }
+
+    #[allow(missing_docs)]
+    pub fn damage_since(&self, since_generation: u64, target_generation: u64) -> DamageSince {
+        if since_generation == target_generation {
+            return DamageSince::Unchanged;
+        }
+        if since_generation > target_generation {
+            return DamageSince::Full;
+        }
+        let history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+        let mut expected = since_generation;
+        let mut geometry = None;
+        let mut damage: Option<DamageRect> = None;
+        for &(generation, width, height, rect) in history.entries.iter().filter(|e| e.0 > since_generation && e.0 <= target_generation) {
+            if expected.checked_add(1) != Some(generation) || geometry.is_some_and(|g| g != (width, height)) {
+                return DamageSince::Full;
+            }
+            let Some(rect) = rect else { return DamageSince::Full };
+            damage = Some(damage.map_or(rect, |old| old.union(rect)));
+            geometry = Some((width, height));
+            expected = generation;
+        }
+        if expected != target_generation {
+            return DamageSince::Full;
+        }
+        damage.map_or(DamageSince::Full, DamageSince::Partial)
     }
 
     /// The pointer as last reported by the guest.
@@ -425,8 +579,10 @@ unsafe extern "C" fn display_configure_scanout(
 
     let staging = unsafe { &mut *fb.staging.get() };
     let len = width as usize * height as usize * BYTES_PER_PIXEL;
-    staging.buf.clear();
-    staging.buf.resize(len, 0);
+    if !staging.configured || staging.width != width || staging.height != height || staging.format != format {
+        staging.buf.clear();
+        staging.buf.resize(len, 0);
+    }
     staging.width = width;
     staging.height = height;
     staging.format = format;
@@ -493,7 +649,7 @@ unsafe extern "C" fn display_present_frame(
     instance: *mut c_void,
     scanout_id: u32,
     _frame_id: u32,
-    _damage: *const KrunRect,
+    damage: *const KrunRect,
 ) -> i32 {
     if scanout_id != 0 {
         return ERR_INVALID_SCANOUT_ID;
@@ -509,16 +665,45 @@ unsafe extern "C" fn display_present_frame(
 
     {
         let mut front = fb.front.lock().unwrap_or_else(|e| e.into_inner());
-        // Copy the whole frame rather than honouring the damage rect: the
-        // front buffer may be a different generation than the damage was
-        // computed against, and a viewer that joined mid-stream would inherit
-        // stale pixels outside the damaged area.
-        front.buf.clear();
-        front.buf.extend_from_slice(&staging.buf);
+        let rect = if damage.is_null() {
+            None
+        } else {
+            let raw = unsafe { &*damage };
+            DamageRect { x: raw.x, y: raw.y, width: raw.width, height: raw.height }.clipped(staging.width, staging.height)
+        };
+        let rect = if front.width == staging.width && front.height == staging.height && front.format == staging.format && front.buf.len() == staging.buf.len() { rect } else { None };
+        let mut history = fb.history.lock().unwrap_or_else(|e| e.into_inner());
+        if Arc::strong_count(&front.buf) > 1 {
+            history.stats.front_clones += 1;
+        } else {
+            history.stats.front_in_place += 1;
+        }
+        let destination = Arc::make_mut(&mut front.buf);
+        let copied = if let Some(rect) = rect {
+            let stride = staging.width as usize * BYTES_PER_PIXEL;
+            let start = rect.x as usize * BYTES_PER_PIXEL;
+            let len = rect.width as usize * BYTES_PER_PIXEL;
+            for y in rect.y..rect.y + rect.height {
+                let offset = y as usize * stride + start;
+                destination[offset..offset + len].copy_from_slice(&staging.buf[offset..offset + len]);
+            }
+            rect.byte_len()
+        } else {
+            destination.clear();
+            destination.extend_from_slice(&staging.buf);
+            staging.buf.len() as u64
+        };
         front.width = staging.width;
         front.height = staging.height;
         front.format = staging.format;
+        front.damage = rect;
         front.generation = front.generation.wrapping_add(1);
+        history.stats.frames_presented += 1;
+        history.stats.staging_bytes_copied += copied;
+        history.entries.push_back((front.generation, front.width, front.height, rect));
+        if history.entries.len() > 64 {
+            history.entries.pop_front();
+        }
     }
     fb.presented.notify_all();
 
@@ -672,7 +857,7 @@ pub fn install(
     let raw = Arc::into_raw(Arc::clone(&state));
 
     let backend = KrunDisplayBackend {
-        features: FEATURE_BASIC_FRAMEBUFFER | FEATURE_CURSOR,
+        features: FEATURE_BASIC_FRAMEBUFFER | FEATURE_CURSOR | FEATURE_PARTIAL_FRAMEBUFFER,
         create_userdata: raw as *const c_void,
         create: Some(display_create),
         vtable: BasicFramebufferVtable {
@@ -744,7 +929,8 @@ mod tests {
 
     fn frame(format: u32, buf: Vec<u8>) -> Frame {
         Frame {
-            buf,
+            buf: Arc::new(buf),
+            damage: None,
             width: 1,
             height: 1,
             format,
@@ -798,6 +984,38 @@ mod tests {
         assert_eq!((f.width, f.height), (2, 2));
         assert_eq!(f.generation, 1);
         assert!(f.buf.iter().all(|&b| b == 0x7f));
+    }
+
+    #[test]
+    fn partial_publication_preserves_pixels_and_tracks_history() {
+        let fb = Arc::new(DisplayFramebuffer::new());
+        let raw = Arc::as_ptr(&fb) as *mut c_void;
+        let mut buf = std::ptr::null_mut();
+        let mut len = 0;
+        unsafe {
+            assert_eq!(display_configure_scanout(raw, 0, 4, 4, 4, 4, FORMAT_B8G8R8A8), 0);
+            assert_eq!(display_alloc_frame(raw, 0, &mut buf, &mut len), 0);
+            std::ptr::write_bytes(buf, 1, len);
+            assert_eq!(display_present_frame(raw, 0, 0, std::ptr::null()), 0);
+            let first = fb.latest().unwrap();
+            assert_eq!(display_configure_scanout(raw, 0, 4, 4, 4, 4, FORMAT_B8G8R8A8), 0);
+            assert_eq!(display_alloc_frame(raw, 0, &mut buf, &mut len), 0);
+            assert_eq!(*buf, 1);
+            std::ptr::write_bytes(buf.add(20), 2, 4);
+            let rect = KrunRect { x: 1, y: 1, width: 1, height: 1 };
+            assert_eq!(display_present_frame(raw, 0, 0, &rect), 0);
+            let second = fb.latest().unwrap();
+            assert_eq!(first.buf[20], 1);
+            assert_eq!(second.buf[20], 2);
+            assert_eq!(second.buf[0], 1);
+            assert_eq!(fb.damage_since(1, 2), DamageSince::Partial(DamageRect { x: 1, y: 1, width: 1, height: 1 }));
+            assert_eq!(fb.stats().staging_bytes_copied, 68);
+            for _ in 0..65 { assert_eq!(display_present_frame(raw, 0, 0, &rect), 0); }
+            assert_eq!(fb.damage_since(1, 67), DamageSince::Full);
+            assert_eq!(display_configure_scanout(raw, 0, 2, 2, 2, 2, FORMAT_B8G8R8A8), 0);
+            assert_eq!(display_present_frame(raw, 0, 0, &rect), 0);
+            assert_eq!(fb.damage_since(67, 68), DamageSince::Full);
+        }
     }
 
     #[test]

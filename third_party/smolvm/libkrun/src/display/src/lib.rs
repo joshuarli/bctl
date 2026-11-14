@@ -21,6 +21,7 @@ bitflags! {
     pub struct DisplayFeatures: u64 {
         const BASIC_FRAMEBUFFER = header::KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER as u64;
         const CURSOR = header::KRUN_DISPLAY_FEATURE_CURSOR as u64;
+        const PARTIAL_FRAMEBUFFER = header::KRUN_DISPLAY_FEATURE_PARTIAL_FRAMEBUFFER as u64;
     }
 }
 

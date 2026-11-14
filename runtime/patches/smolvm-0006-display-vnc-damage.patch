@@ -1,0 +1,1123 @@
+diff --git a/src/agent/display.rs b/src/agent/display.rs
+index 59b63e12..fe1e14f8 100644
+--- a/src/agent/display.rs
++++ b/src/agent/display.rs
+@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
+ /// `KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER`.
+ const FEATURE_BASIC_FRAMEBUFFER: u64 = 1;
+ const FEATURE_CURSOR: u64 = 2;
++const FEATURE_PARTIAL_FRAMEBUFFER: u64 = 4;
+ 
+ const ERR_INVALID_SCANOUT_ID: i32 = -3;
+ const ERR_INVALID_PARAM: i32 = -4;
+@@ -98,7 +99,9 @@ struct KrunDisplayBackend {
+ #[derive(Clone)]
+ pub struct Frame {
+     /// Raw pixels, `width * height * 4` bytes in `format`'s byte order.
+-    pub buf: Vec<u8>,
++    pub buf: Arc<Vec<u8>>,
++    #[allow(missing_docs)]
++    pub damage: Option<DamageRect>,
+     /// Frame width in pixels.
+     pub width: u32,
+     /// Frame height in pixels.
+@@ -110,6 +113,67 @@ pub struct Frame {
+     pub generation: u64,
+ }
+ 
++#[allow(missing_docs)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct DamageRect {
++    pub x: u32,
++    pub y: u32,
++    pub width: u32,
++    pub height: u32,
++}
++
++#[allow(missing_docs)]
++impl DamageRect {
++    pub fn clipped(self, width: u32, height: u32) -> Option<Self> {
++        let x2 = self.x.saturating_add(self.width).min(width);
++        let y2 = self.y.saturating_add(self.height).min(height);
++        (self.x < x2 && self.y < y2).then_some(Self { x: self.x, y: self.y, width: x2.saturating_sub(self.x), height: y2.saturating_sub(self.y) })
++    }
++
++    pub fn union(self, other: Self) -> Self {
++        let x = self.x.min(other.x);
++        let y = self.y.min(other.y);
++        let x2 = self.x.saturating_add(self.width).max(other.x.saturating_add(other.width));
++        let y2 = self.y.saturating_add(self.height).max(other.y.saturating_add(other.height));
++        Self { x, y, width: x2 - x, height: y2 - y }
++    }
++
++    pub fn intersection(self, other: Self) -> Option<Self> {
++        let x = self.x.max(other.x);
++        let y = self.y.max(other.y);
++        let x2 = self.x.saturating_add(self.width).min(other.x.saturating_add(other.width));
++        let y2 = self.y.saturating_add(self.height).min(other.y.saturating_add(other.height));
++        (x < x2 && y < y2).then_some(Self { x, y, width: x2.saturating_sub(x), height: y2.saturating_sub(y) })
++    }
++
++    pub fn byte_len(self) -> u64 {
++        u64::from(self.width) * u64::from(self.height) * 4
++    }
++}
++
++#[allow(missing_docs)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum DamageSince {
++    Unchanged,
++    Partial(DamageRect),
++    Full,
++}
++
++#[allow(missing_docs)]
++#[derive(Clone, Copy, Debug, Default)]
++pub struct DisplayStats {
++    pub frames_presented: u64,
++    pub staging_bytes_copied: u64,
++    pub front_clones: u64,
++    pub front_in_place: u64,
++}
++
++#[derive(Default)]
++struct DamageHistory {
++    entries: std::collections::VecDeque<(u64, u32, u32, Option<DamageRect>)>,
++    stats: DisplayStats,
++}
++
+ /// The guest's pointer as the VMM hands it over: the image the guest put on
+ /// its hardware cursor plane and where the hot spot is. With the pointer on
+ /// that plane the guest no longer draws it into frames, so viewers either
+@@ -181,6 +245,7 @@ pub struct DisplayFramebuffer {
+     staging: std::cell::UnsafeCell<Staging>,
+     front: Mutex<Frame>,
+     presented: Condvar,
++    history: Mutex<DamageHistory>,
+     cursor: Mutex<Cursor>,
+     /// Mirrors `cursor.generation` so waiters can test it under `front`.
+     cursor_generation: std::sync::atomic::AtomicU64,
+@@ -224,13 +289,15 @@ impl DisplayFramebuffer {
+                 configured: false,
+             }),
+             front: Mutex::new(Frame {
+-                buf: Vec::new(),
++                buf: Arc::new(Vec::new()),
++                damage: None,
+                 width: 0,
+                 height: 0,
+                 format: FORMAT_B8G8R8A8,
+                 generation: 0,
+             }),
+             presented: Condvar::new(),
++            history: Mutex::new(DamageHistory::default()),
+             cursor: Mutex::new(Cursor::default()),
+             cursor_generation: std::sync::atomic::AtomicU64::new(0),
+             trace,
+@@ -294,7 +361,7 @@ impl DisplayFramebuffer {
+         let fb = Self::new();
+         {
+             let mut front = fb.front.lock().unwrap();
+-            front.buf = pixel.repeat((width * height) as usize);
++            front.buf = Arc::new(pixel.repeat((width * height) as usize));
+             front.width = width;
+             front.height = height;
+             front.generation = 1;
+@@ -302,6 +369,93 @@ impl DisplayFramebuffer {
+         fb
+     }
+ 
++    #[cfg(test)]
++    pub(crate) fn new_for_test(width: u32, height: u32, pixel: [u8; 4]) -> Arc<Self> {
++        let fb = Arc::new(Self::new());
++        fb.present_test_rect(width, height, None, pixel);
++        fb
++    }
++
++    #[cfg(test)]
++    pub(crate) fn present_test_rect(
++        self: &Arc<Self>,
++        width: u32,
++        height: u32,
++        rect: Option<DamageRect>,
++        pixel: [u8; 4],
++    ) {
++        let raw = Arc::as_ptr(self) as *mut c_void;
++        unsafe {
++            assert_eq!(
++                display_configure_scanout(raw, 0, width, height, width, height, FORMAT_B8G8R8A8),
++                0
++            );
++            let mut buf: *mut u8 = std::ptr::null_mut();
++            let mut len: usize = 0;
++            assert_eq!(display_alloc_frame(raw, 0, &mut buf, &mut len), 0);
++            let slice = std::slice::from_raw_parts_mut(buf, len);
++            let target = rect.unwrap_or(DamageRect {
++                x: 0,
++                y: 0,
++                width,
++                height,
++            });
++            let stride = width as usize * BYTES_PER_PIXEL;
++            for y in target.y..target.y + target.height {
++                for x in target.x..target.x + target.width {
++                    let off = y as usize * stride + x as usize * BYTES_PER_PIXEL;
++                    slice[off..off + 4].copy_from_slice(&pixel);
++                }
++            }
++            match rect {
++                Some(r) => {
++                    let krect = KrunRect {
++                        x: r.x,
++                        y: r.y,
++                        width: r.width,
++                        height: r.height,
++                    };
++                    assert_eq!(display_present_frame(raw, 0, 0, &krect), 0);
++                }
++                None => {
++                    assert_eq!(display_present_frame(raw, 0, 0, std::ptr::null()), 0);
++                }
++            }
++        }
++    }
++
++    #[allow(missing_docs)]
++    pub fn stats(&self) -> DisplayStats {
++        self.history.lock().unwrap_or_else(|e| e.into_inner()).stats
++    }
++
++    #[allow(missing_docs)]
++    pub fn damage_since(&self, since_generation: u64, target_generation: u64) -> DamageSince {
++        if since_generation == target_generation {
++            return DamageSince::Unchanged;
++        }
++        if since_generation > target_generation {
++            return DamageSince::Full;
++        }
++        let history = self.history.lock().unwrap_or_else(|e| e.into_inner());
++        let mut expected = since_generation;
++        let mut geometry = None;
++        let mut damage: Option<DamageRect> = None;
++        for &(generation, width, height, rect) in history.entries.iter().filter(|e| e.0 > since_generation && e.0 <= target_generation) {
++            if expected.checked_add(1) != Some(generation) || geometry.is_some_and(|g| g != (width, height)) {
++                return DamageSince::Full;
++            }
++            let Some(rect) = rect else { return DamageSince::Full };
++            damage = Some(damage.map_or(rect, |old| old.union(rect)));
++            geometry = Some((width, height));
++            expected = generation;
++        }
++        if expected != target_generation {
++            return DamageSince::Full;
++        }
++        damage.map_or(DamageSince::Full, DamageSince::Partial)
++    }
++
+     /// The pointer as last reported by the guest.
+     pub fn cursor(&self) -> Cursor {
+         self.cursor
+@@ -425,8 +579,10 @@ unsafe extern "C" fn display_configure_scanout(
+ 
+     let staging = unsafe { &mut *fb.staging.get() };
+     let len = width as usize * height as usize * BYTES_PER_PIXEL;
+-    staging.buf.clear();
+-    staging.buf.resize(len, 0);
++    if !staging.configured || staging.width != width || staging.height != height || staging.format != format {
++        staging.buf.clear();
++        staging.buf.resize(len, 0);
++    }
+     staging.width = width;
+     staging.height = height;
+     staging.format = format;
+@@ -493,7 +649,7 @@ unsafe extern "C" fn display_present_frame(
+     instance: *mut c_void,
+     scanout_id: u32,
+     _frame_id: u32,
+-    _damage: *const KrunRect,
++    damage: *const KrunRect,
+ ) -> i32 {
+     if scanout_id != 0 {
+         return ERR_INVALID_SCANOUT_ID;
+@@ -509,16 +665,45 @@ unsafe extern "C" fn display_present_frame(
+ 
+     {
+         let mut front = fb.front.lock().unwrap_or_else(|e| e.into_inner());
+-        // Copy the whole frame rather than honouring the damage rect: the
+-        // front buffer may be a different generation than the damage was
+-        // computed against, and a viewer that joined mid-stream would inherit
+-        // stale pixels outside the damaged area.
+-        front.buf.clear();
+-        front.buf.extend_from_slice(&staging.buf);
++        let rect = if damage.is_null() {
++            None
++        } else {
++            let raw = unsafe { &*damage };
++            DamageRect { x: raw.x, y: raw.y, width: raw.width, height: raw.height }.clipped(staging.width, staging.height)
++        };
++        let rect = if front.width == staging.width && front.height == staging.height && front.format == staging.format && front.buf.len() == staging.buf.len() { rect } else { None };
++        let mut history = fb.history.lock().unwrap_or_else(|e| e.into_inner());
++        if Arc::strong_count(&front.buf) > 1 {
++            history.stats.front_clones += 1;
++        } else {
++            history.stats.front_in_place += 1;
++        }
++        let destination = Arc::make_mut(&mut front.buf);
++        let copied = if let Some(rect) = rect {
++            let stride = staging.width as usize * BYTES_PER_PIXEL;
++            let start = rect.x as usize * BYTES_PER_PIXEL;
++            let len = rect.width as usize * BYTES_PER_PIXEL;
++            for y in rect.y..rect.y + rect.height {
++                let offset = y as usize * stride + start;
++                destination[offset..offset + len].copy_from_slice(&staging.buf[offset..offset + len]);
++            }
++            rect.byte_len()
++        } else {
++            destination.clear();
++            destination.extend_from_slice(&staging.buf);
++            staging.buf.len() as u64
++        };
+         front.width = staging.width;
+         front.height = staging.height;
+         front.format = staging.format;
++        front.damage = rect;
+         front.generation = front.generation.wrapping_add(1);
++        history.stats.frames_presented += 1;
++        history.stats.staging_bytes_copied += copied;
++        history.entries.push_back((front.generation, front.width, front.height, rect));
++        if history.entries.len() > 64 {
++            history.entries.pop_front();
++        }
+     }
+     fb.presented.notify_all();
+ 
+@@ -672,7 +857,7 @@ pub fn install(
+     let raw = Arc::into_raw(Arc::clone(&state));
+ 
+     let backend = KrunDisplayBackend {
+-        features: FEATURE_BASIC_FRAMEBUFFER | FEATURE_CURSOR,
++        features: FEATURE_BASIC_FRAMEBUFFER | FEATURE_CURSOR | FEATURE_PARTIAL_FRAMEBUFFER,
+         create_userdata: raw as *const c_void,
+         create: Some(display_create),
+         vtable: BasicFramebufferVtable {
+@@ -744,7 +929,8 @@ mod tests {
+ 
+     fn frame(format: u32, buf: Vec<u8>) -> Frame {
+         Frame {
+-            buf,
++            buf: Arc::new(buf),
++            damage: None,
+             width: 1,
+             height: 1,
+             format,
+@@ -800,6 +986,38 @@ mod tests {
+         assert!(f.buf.iter().all(|&b| b == 0x7f));
+     }
+ 
++    #[test]
++    fn partial_publication_preserves_pixels_and_tracks_history() {
++        let fb = Arc::new(DisplayFramebuffer::new());
++        let raw = Arc::as_ptr(&fb) as *mut c_void;
++        let mut buf = std::ptr::null_mut();
++        let mut len = 0;
++        unsafe {
++            assert_eq!(display_configure_scanout(raw, 0, 4, 4, 4, 4, FORMAT_B8G8R8A8), 0);
++            assert_eq!(display_alloc_frame(raw, 0, &mut buf, &mut len), 0);
++            std::ptr::write_bytes(buf, 1, len);
++            assert_eq!(display_present_frame(raw, 0, 0, std::ptr::null()), 0);
++            let first = fb.latest().unwrap();
++            assert_eq!(display_configure_scanout(raw, 0, 4, 4, 4, 4, FORMAT_B8G8R8A8), 0);
++            assert_eq!(display_alloc_frame(raw, 0, &mut buf, &mut len), 0);
++            assert_eq!(*buf, 1);
++            std::ptr::write_bytes(buf.add(20), 2, 4);
++            let rect = KrunRect { x: 1, y: 1, width: 1, height: 1 };
++            assert_eq!(display_present_frame(raw, 0, 0, &rect), 0);
++            let second = fb.latest().unwrap();
++            assert_eq!(first.buf[20], 1);
++            assert_eq!(second.buf[20], 2);
++            assert_eq!(second.buf[0], 1);
++            assert_eq!(fb.damage_since(1, 2), DamageSince::Partial(DamageRect { x: 1, y: 1, width: 1, height: 1 }));
++            assert_eq!(fb.stats().staging_bytes_copied, 68);
++            for _ in 0..65 { assert_eq!(display_present_frame(raw, 0, 0, &rect), 0); }
++            assert_eq!(fb.damage_since(1, 67), DamageSince::Full);
++            assert_eq!(display_configure_scanout(raw, 0, 2, 2, 2, 2, FORMAT_B8G8R8A8), 0);
++            assert_eq!(display_present_frame(raw, 0, 0, &rect), 0);
++            assert_eq!(fb.damage_since(67, 68), DamageSince::Full);
++        }
++    }
++
+     #[test]
+     fn alloc_before_configure_is_rejected() {
+         let fb = Arc::new(DisplayFramebuffer::new());
+diff --git a/src/agent/vnc.rs b/src/agent/vnc.rs
+index 0a5cd3e8..e90334e3 100644
+--- a/src/agent/vnc.rs
++++ b/src/agent/vnc.rs
+@@ -25,7 +25,20 @@ use std::sync::mpsc::{Sender, TryRecvError};
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+-use super::display::{self, Cursor, DisplayFramebuffer, Frame};
++use super::display::{self, Cursor, DamageRect, DamageSince, DisplayFramebuffer, Frame};
++
++#[allow(missing_docs)]
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct VncUpdateStats {
++    pub updates_sent: u64,
++    pub full_scans: u64,
++    pub partial_scans: u64,
++    pub tiles_compared: u64,
++    pub bytes_compared: u64,
++    pub rects_sent: u64,
++    pub rect_bytes_sent: u64,
++    pub wire_bytes_sent: u64,
++}
+ 
+ const RFB_VERSION: &[u8; 12] = b"RFB 003.008\n";
+ const SECURITY_NONE: u8 = 1;
+@@ -441,9 +454,11 @@ enum ClientMsg {
+     SetEncodings(Vec<i32>),
+     UpdateRequest {
+         incremental: bool,
++        region: DamageRect,
+     },
+     ContinuousUpdates {
+         enable: bool,
++        region: DamageRect,
+     },
+     /// Where the client just put its pointer, for compositing: the guest
+     /// follows it one-to-one, and this is known before the guest says so.
+@@ -517,10 +532,8 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+ 
+     tracing::info!(width, height, "vnc client connected");
+ 
+-    // --- message loop ----------------------------------------------------
+     let mut last_generation = 0u64;
+-    // BGRX pixels of the last frame this client was sent, for damage diffing.
+-    let mut last_sent: Option<Vec<u8>> = None;
++    let mut diff_state = ClientFrameState::default();
+     let mut fmt_state = ClientState {
+         fmt,
+         supports_resize: false,
+@@ -528,15 +541,13 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+         wants_pixels: true,
+         pending: None,
+         continuous: false,
++        region: DamageRect { x: 0, y: 0, width, height },
+         pointer: None,
+         pointer_moved: false,
+     };
+     let mut last_cursor_generation = 0u64;
+     let mut last_cursor_image_generation = 0u64;
+ 
+-    // The reader thread owns the socket's read half: input is injected the
+-    // moment it arrives, and control messages reach this loop by channel, so
+-    // waiting for a frame never delays a keystroke or a pointer move.
+     let size = Arc::new((AtomicU32::new(width), AtomicU32::new(height)));
+     let (tx, rx) = std::sync::mpsc::channel::<ClientMsg>();
+     {
+@@ -552,7 +563,6 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+     }
+ 
+     loop {
+-        // Everything the client has said so far, without blocking.
+         loop {
+             match rx.try_recv() {
+                 Ok(msg) => apply_client_msg(msg, &mut fmt_state, &mut s)?,
+@@ -561,7 +571,6 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+             }
+         }
+         if fmt_state.pending.is_none() && !fmt_state.continuous {
+-            // Nothing to send until the client asks (or enables pushing).
+             match rx.recv() {
+                 Ok(msg) => {
+                     apply_client_msg(msg, &mut fmt_state, &mut s)?;
+@@ -578,14 +587,10 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+             (fb.latest(), Some(fb.cursor()))
+         };
+         let frame_changed = new_frame.is_some();
+-        // For a client that cannot draw the pointer, its own pointer move is
+-        // a change too: the pointer is composited where the client put it.
+         let cursor_changed =
+             new_cursor.is_some() || (fmt_state.pointer_moved && !fmt_state.supports_cursor);
+-        if !frame_changed && !cursor_changed {
++        if !frame_changed && !cursor_changed && fmt_state.pending.is_none() {
+             if fmt_state.pending.is_some() && !fmt_state.continuous {
+-                // A request the classic way: answer promptly, even if with
+-                // nothing, so the client's request loop keeps turning.
+                 s.write_all(&[0u8, 0, 0, 0])?;
+                 fmt_state.pending = None;
+             }
+@@ -600,11 +605,8 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+         fmt_state.pointer_moved = false;
+ 
+         let mut rects: Vec<Vec<u8>> = Vec::new();
+-        // A client that draws the pointer itself needs pixels only for a new
+-        // frame; one that does not needs them whenever the pointer moved,
+-        // because the pointer lives in the pixels.
+         let need_pixels = fmt_state.wants_pixels
+-            && (frame_changed || (cursor_changed && !fmt_state.supports_cursor));
++            && (frame_changed || fmt_state.pending.is_some() || (cursor_changed && !fmt_state.supports_cursor));
+         if need_pixels {
+             let Some(frame) = new_frame.clone().or_else(|| fb.latest()) else {
+                 if !fmt_state.continuous {
+@@ -628,21 +630,21 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+                          reconnect to pick up the new size"
+                     );
+                 }
+-                last_sent = None;
++                diff_state.reset();
+             }
+-            let mut bgrx = display::to_bgrx(&frame).into_owned();
+-            if !fmt_state.supports_cursor {
+-                composite_cursor(&mut bgrx, frame.width, frame.height, &cursor);
+-            }
+-            match last_sent.as_ref() {
+-                Some(prev) if incremental && prev.len() == bgrx.len() => {
+-                    rects.extend(frame_diff_rects(&frame, &bgrx, prev, &fmt_state.fmt));
+-                }
+-                _ => rects.push(frame_rect(&frame, &bgrx, &fmt_state.fmt)),
+-            }
+-            last_sent = Some(bgrx);
++            rects.extend(diff_state.diff_frame(
++                &fb,
++                &frame,
++                &cursor,
++                fmt_state.supports_cursor,
++                cursor_changed,
++                &fmt_state.fmt,
++                fmt_state.region,
++                incremental,
++            ));
+             last_generation = frame.generation;
+         } else if let Some(frame) = new_frame.as_ref() {
++            diff_state.observe_frame(&fb, frame);
+             last_generation = frame.generation;
+         }
+         if fmt_state.supports_cursor
+@@ -655,11 +657,10 @@ fn run_client<R: Read + Send + 'static, W: Write>(
+             last_cursor_generation = generation;
+         }
+         if rects.is_empty() && fmt_state.continuous {
+-            // A pointer move for a client drawing its own pointer: nothing
+-            // to push.
+             continue;
+         }
+-        write_update(&mut s, &rects)?;
++        let wire_bytes = write_update(&mut s, &rects)?;
++        diff_state.record_wire_update(wire_bytes);
+         fmt_state.pending = None;
+     }
+ }
+@@ -676,6 +677,7 @@ struct ClientState {
+     pending: Option<bool>,
+     /// ContinuousUpdates is on: push as the display changes.
+     continuous: bool,
++    region: DamageRect,
+     /// The client's own pointer position, if it has sent one.
+     pointer: Option<(u32, u32)>,
+     /// The client moved its pointer since the last update it was sent.
+@@ -715,11 +717,13 @@ fn apply_client_msg<W: Write>(
+                 s.write_all(&[MSG_END_OF_CONTINUOUS_UPDATES])?;
+             }
+         }
+-        ClientMsg::UpdateRequest { incremental } => {
++        ClientMsg::UpdateRequest { incremental, region } => {
++            st.region = region;
+             // A full request outranks a pending incremental one.
+             st.pending = Some(st.pending.unwrap_or(true) && incremental);
+         }
+-        ClientMsg::ContinuousUpdates { enable } => {
++        ClientMsg::ContinuousUpdates { enable, region } => {
++            st.region = region;
+             st.continuous = enable;
+             if !enable {
+                 s.write_all(&[MSG_END_OF_CONTINUOUS_UPDATES])?;
+@@ -735,6 +739,15 @@ fn apply_client_msg<W: Write>(
+     Ok(())
+ }
+ 
++fn request_region(req: &[u8; 9]) -> DamageRect {
++    DamageRect {
++        x: u16::from_be_bytes([req[1], req[2]]) as u32,
++        y: u16::from_be_bytes([req[3], req[4]]) as u32,
++        width: u16::from_be_bytes([req[5], req[6]]) as u32,
++        height: u16::from_be_bytes([req[7], req[8]]) as u32,
++    }
++}
++
+ /// Parse client messages until the connection ends. Keyboard and pointer
+ /// events go straight into the guest; the rest goes to the update loop.
+ fn read_client_messages<R: Read>(
+@@ -780,7 +793,7 @@ fn read_client_messages<R: Read>(
+                 let mut req = [0u8; 9];
+                 s.read_exact(&mut req)?;
+                 let incremental = req[0] != 0;
+-                if tx.send(ClientMsg::UpdateRequest { incremental }).is_err() {
++                if tx.send(ClientMsg::UpdateRequest { incremental, region: request_region(&req) }).is_err() {
+                     return Ok(());
+                 }
+             }
+@@ -789,7 +802,7 @@ fn read_client_messages<R: Read>(
+                 let mut req = [0u8; 9];
+                 s.read_exact(&mut req)?;
+                 let enable = req[0] != 0;
+-                if tx.send(ClientMsg::ContinuousUpdates { enable }).is_err() {
++                if tx.send(ClientMsg::ContinuousUpdates { enable, region: request_region(&req) }).is_err() {
+                     return Ok(());
+                 }
+             }
+@@ -955,14 +968,14 @@ fn send_resize<S: Write>(s: &mut S, width: u32, height: u32) -> std::io::Result<
+     s.write_all(&msg)
+ }
+ 
+-/// One FramebufferUpdate carrying the given already-encoded rectangles.
+-fn write_update<S: Write>(s: &mut S, rects: &[Vec<u8>]) -> std::io::Result<()> {
++fn write_update<S: Write>(s: &mut S, rects: &[Vec<u8>]) -> std::io::Result<usize> {
+     let mut msg = vec![0u8, 0];
+     msg.extend_from_slice(&(rects.len() as u16).to_be_bytes());
+     for r in rects {
+         msg.extend_from_slice(r);
+     }
+-    s.write_all(&msg)
++    s.write_all(&msg)?;
++    Ok(msg.len())
+ }
+ 
+ fn rect_header(x: u32, y: u32, w: u32, h: u32, encoding: i32) -> Vec<u8> {
+@@ -975,13 +988,6 @@ fn rect_header(x: u32, y: u32, w: u32, h: u32, encoding: i32) -> Vec<u8> {
+     rect
+ }
+ 
+-/// The whole frame as one Raw rectangle.
+-fn frame_rect(frame: &Frame, bgrx: &[u8], fmt: &PixelFormat) -> Vec<u8> {
+-    let mut rect = rect_header(0, 0, frame.width, frame.height, ENCODING_RAW);
+-    rect.extend_from_slice(&encode_pixels(bgrx, fmt));
+-    rect
+-}
+-
+ /// The pointer as a Cursor pseudo-rectangle: the image in the client's pixel
+ /// format followed by a one-bit-per-pixel mask, hot spot in the position
+ /// fields. An empty (hidden) pointer is a 0x0 rectangle.
+@@ -1047,48 +1053,286 @@ fn composite_cursor(bgrx: &mut [u8], width: u32, height: u32, cursor: &Cursor) {
+     }
+ }
+ 
+-/// Only the changed tiles since `prev`, as Raw rectangles; empty when the
+-/// pixels did not change.
+-fn frame_diff_rects(frame: &Frame, bgrx: &[u8], prev: &[u8], fmt: &PixelFormat) -> Vec<Vec<u8>> {
+-    const BAND_ROWS: usize = 16;
+-    const TILE_COLS: usize = 64;
+-    let width = frame.width as usize;
+-    let height = frame.height as usize;
+-    let row = width * 4;
++const TILE_COLS: u32 = 64;
++const BAND_ROWS: u32 = 16;
+ 
+-    // Dirty 64x16 tiles, merged horizontally within a band and then
+-    // vertically across bands. Full-width bands made pointer-sized damage
+-    // cost ~160 KB per frame at 1280 wide; a tile run costs a few KB.
+-    struct Rect {
+-        x: usize,
+-        y: usize,
+-        w: usize,
+-        h: usize,
++#[derive(Clone, Copy)]
++struct TileRect {
++    x: u32,
++    y: u32,
++    w: u32,
++    h: u32,
++}
++
++fn cursor_damage_rect(cursor: &Cursor, width: u32, height: u32) -> Option<DamageRect> {
++    if !cursor.is_visible() {
++        return None;
+     }
+-    let mut rects: Vec<Rect> = Vec::new();
+-    let mut y = 0;
+-    while y < height {
+-        let h = BAND_ROWS.min(height - y);
+-        let mut x = 0;
+-        while x < width {
+-            let w = TILE_COLS.min(width - x);
+-            let dirty = (y..y + h).any(|r| {
+-                let a = r * row + x * 4;
+-                bgrx[a..a + w * 4] != prev[a..a + w * 4]
++    let left = (cursor.x as i64 - cursor.hot_x as i64).clamp(0, width as i64) as u32;
++    let top = (cursor.y as i64 - cursor.hot_y as i64).clamp(0, height as i64) as u32;
++    let right = (cursor.x as i64 - cursor.hot_x as i64 + cursor.width as i64)
++        .clamp(0, width as i64) as u32;
++    let bottom = (cursor.y as i64 - cursor.hot_y as i64 + cursor.height as i64)
++        .clamp(0, height as i64) as u32;
++    DamageRect {
++        x: left,
++        y: top,
++        width: right.saturating_sub(left),
++        height: bottom.saturating_sub(top),
++    }
++    .clipped(width, height)
++}
++
++fn rect_subtract(a: DamageRect, b: DamageRect) -> Option<DamageRect> {
++    let ax2 = a.x.saturating_add(a.width);
++    let ay2 = a.y.saturating_add(a.height);
++    let bx2 = b.x.saturating_add(b.width);
++    let by2 = b.y.saturating_add(b.height);
++    if b.x <= a.x && b.y <= a.y && bx2 >= ax2 && by2 >= ay2 {
++        return None;
++    }
++    if bx2 <= a.x || by2 <= a.y || b.x >= ax2 || b.y >= ay2 {
++        return Some(a);
++    }
++    if b.y <= a.y && by2 >= ay2 {
++        if b.x <= a.x && bx2 < ax2 {
++            return Some(DamageRect {
++                x: bx2,
++                y: a.y,
++                width: ax2 - bx2,
++                height: a.height,
+             });
+-            if dirty {
+-                match rects.last_mut() {
+-                    Some(last) if last.y == y && last.x + last.w == x => last.w += w,
+-                    _ => rects.push(Rect { x, y, w, h }),
++        }
++        if b.x > a.x && bx2 >= ax2 {
++            return Some(DamageRect {
++                x: a.x,
++                y: a.y,
++                width: b.x - a.x,
++                height: a.height,
++            });
++        }
++    }
++    if b.x <= a.x && bx2 >= ax2 {
++        if b.y <= a.y && by2 < ay2 {
++            return Some(DamageRect {
++                x: a.x,
++                y: by2,
++                width: a.width,
++                height: ay2 - by2,
++            });
++        }
++        if b.y > a.y && by2 >= ay2 {
++            return Some(DamageRect {
++                x: a.x,
++                y: a.y,
++                width: a.width,
++                height: b.y - a.y,
++            });
++        }
++    }
++    Some(a)
++}
++
++#[derive(Default)]
++struct ClientFrameState {
++    width: u32,
++    height: u32,
++    last_generation: u64,
++    last_sent: Vec<u8>,
++    sent_pixels: Vec<bool>,
++    pending_damage: Option<DamageRect>,
++    prev_cursor_rect: Option<DamageRect>,
++    stats: VncUpdateStats,
++}
++
++impl ClientFrameState {
++    fn reset(&mut self) {
++        self.width = 0;
++        self.height = 0;
++        self.last_generation = 0;
++        self.last_sent.clear();
++        self.sent_pixels.clear();
++        self.pending_damage = None;
++        self.prev_cursor_rect = None;
++    }
++
++    fn record_wire_update(&mut self, wire_bytes: usize) {
++        self.stats.updates_sent += 1;
++        self.stats.wire_bytes_sent += wire_bytes as u64;
++    }
++
++    fn observe_frame(&mut self, fb: &DisplayFramebuffer, frame: &Frame) {
++        let full = DamageRect {
++            x: 0,
++            y: 0,
++            width: frame.width,
++            height: frame.height,
++        }
++        .clipped(frame.width, frame.height);
++        let expected_len = (frame.width as usize) * (frame.height as usize) * 4;
++        if (self.width, self.height) != (frame.width, frame.height)
++            || self.last_sent.len() != expected_len
++        {
++            self.width = frame.width;
++            self.height = frame.height;
++            self.last_generation = frame.generation;
++            self.last_sent.clear();
++            self.last_sent.resize(expected_len, 0);
++            self.sent_pixels.clear();
++            self.sent_pixels
++                .resize((frame.width as usize) * (frame.height as usize), false);
++            self.pending_damage = full;
++            self.prev_cursor_rect = None;
++            return;
++        }
++        if self.last_generation == 0 {
++            self.pending_damage = full;
++        } else if frame.generation != self.last_generation {
++            match fb.damage_since(self.last_generation, frame.generation) {
++                DamageSince::Unchanged => {}
++                DamageSince::Full => self.pending_damage = full,
++                DamageSince::Partial(d) => {
++                    if let Some(clipped) = d.clipped(frame.width, frame.height) {
++                        self.pending_damage =
++                            Some(self.pending_damage.map_or(clipped, |p| p.union(clipped)));
++                    }
+                 }
+             }
+-            x += w;
+         }
+-        y += h;
++        self.last_generation = frame.generation;
+     }
+-    // Merge a rect with the one directly above it when they span the same
+-    // columns, so a scrolling window is still one rectangle, not sixteen.
+-    let mut merged: Vec<Rect> = Vec::new();
++
++    #[allow(clippy::too_many_arguments)]
++    fn diff_frame(
++        &mut self,
++        fb: &DisplayFramebuffer,
++        frame: &Frame,
++        cursor: &Cursor,
++        supports_cursor: bool,
++        cursor_changed: bool,
++        fmt: &PixelFormat,
++        req_region: DamageRect,
++        incremental: bool,
++    ) -> Vec<Vec<u8>> {
++        self.observe_frame(fb, frame);
++        if !supports_cursor {
++            let cur_rect = cursor_damage_rect(cursor, frame.width, frame.height);
++            if cursor_changed || self.prev_cursor_rect != cur_rect {
++                for r in [self.prev_cursor_rect, cur_rect].into_iter().flatten() {
++                    self.pending_damage = Some(self.pending_damage.map_or(r, |p| p.union(r)));
++                }
++            }
++            self.prev_cursor_rect = cur_rect;
++        } else {
++            self.prev_cursor_rect = None;
++        }
++
++        let Some(viewport) = req_region.clipped(frame.width, frame.height) else {
++            return Vec::new();
++        };
++        let scan_region = if !incremental {
++            Some(viewport)
++        } else {
++            self.pending_damage.and_then(|p| viewport.intersection(p))
++        };
++        let Some(scan) = scan_region else {
++            return Vec::new();
++        };
++        if let Some(pending) = self.pending_damage {
++            self.pending_damage = rect_subtract(pending, viewport);
++        }
++
++        let mut bgrx = display::to_bgrx(frame);
++        if !supports_cursor && cursor.is_visible() {
++            composite_cursor(bgrx.to_mut(), frame.width, frame.height, cursor);
++        }
++
++        frame_diff_rects_with_stats(
++            frame,
++            &bgrx,
++            &mut self.last_sent,
++            &mut self.sent_pixels,
++            fmt,
++            scan,
++            !incremental,
++            &mut self.stats,
++        )
++    }
++}
++
++#[allow(clippy::too_many_arguments)]
++fn frame_diff_rects_with_stats(
++    frame: &Frame,
++    bgrx: &[u8],
++    prev: &mut [u8],
++    valid: &mut [bool],
++    fmt: &PixelFormat,
++    region: DamageRect,
++    force: bool,
++    stats: &mut VncUpdateStats,
++) -> Vec<Vec<u8>> {
++    let Some(region) = region.clipped(frame.width, frame.height) else {
++        return Vec::new();
++    };
++    if region.x == 0
++        && region.y == 0
++        && region.width == frame.width
++        && region.height == frame.height
++    {
++        stats.full_scans += 1;
++    } else {
++        stats.partial_scans += 1;
++    }
++
++    let stride = frame.width as usize * 4;
++    let right = region.x + region.width;
++    let bottom = region.y + region.height;
++    let mut rects: Vec<TileRect> = Vec::new();
++
++    if force {
++        stats.tiles_compared += 1;
++        rects.push(TileRect {
++            x: region.x,
++            y: region.y,
++            w: region.width,
++            h: region.height,
++        });
++    } else {
++        let mut y = region.y;
++        while y < bottom {
++            let h = (BAND_ROWS - y % BAND_ROWS).min(bottom - y);
++            let mut x = region.x;
++            while x < right {
++                let w = (TILE_COLS - x % TILE_COLS).min(right - x);
++                stats.tiles_compared += 1;
++                let mut dirty = false;
++                for line in y..y + h {
++                    let offset = line as usize * stride + x as usize * 4;
++                    let pixels = line as usize * frame.width as usize + x as usize;
++                    stats.bytes_compared += (w * 4) as u64;
++                    if valid[pixels..pixels + w as usize].iter().any(|v| !v)
++                        || bgrx[offset..offset + w as usize * 4]
++                            != prev[offset..offset + w as usize * 4]
++                    {
++                        dirty = true;
++                        break;
++                    }
++                }
++                if dirty {
++                    match rects.last_mut() {
++                        Some(last) if last.y == y && last.h == h && last.x + last.w == x => {
++                            last.w += w;
++                        }
++                        _ => rects.push(TileRect { x, y, w, h }),
++                    }
++                }
++                x += w;
++            }
++            y += h;
++        }
++    }
++
++    let mut merged: Vec<TileRect> = Vec::new();
+     for r in rects {
+         match merged
+             .iter_mut()
+@@ -1103,13 +1347,20 @@ fn frame_diff_rects(frame: &Frame, bgrx: &[u8], prev: &[u8], fmt: &PixelFormat)
+     let mut out = Vec::with_capacity(merged.len());
+     let mut pixels = Vec::new();
+     for r in merged {
+-        let mut rect = rect_header(r.x as u32, r.y as u32, r.w as u32, r.h as u32, ENCODING_RAW);
++        let mut rect = rect_header(r.x, r.y, r.w, r.h, ENCODING_RAW);
+         pixels.clear();
++        pixels.reserve((r.w * r.h * 4) as usize);
+         for line in r.y..r.y + r.h {
+-            let a = line * row + r.x * 4;
+-            pixels.extend_from_slice(&bgrx[a..a + r.w * 4]);
++            let offset = line as usize * stride + r.x as usize * 4;
++            let end = offset + r.w as usize * 4;
++            pixels.extend_from_slice(&bgrx[offset..end]);
++            prev[offset..end].copy_from_slice(&bgrx[offset..end]);
++            let start = line as usize * frame.width as usize + r.x as usize;
++            valid[start..start + r.w as usize].fill(true);
+         }
+         rect.extend_from_slice(&encode_pixels(&pixels, fmt));
++        stats.rects_sent += 1;
++        stats.rect_bytes_sent += (r.w * r.h * 4) as u64;
+         out.push(rect);
+     }
+     out
+@@ -1156,6 +1407,175 @@ pub fn parse_bind_addr(raw: &str) -> Option<String> {
+ mod tests {
+     use super::*;
+ 
++    fn apply_raw_rects(client: &mut [u8], stride_w: usize, rects: &[Vec<u8>]) {
++        for rect in rects {
++            let x = u16::from_be_bytes([rect[0], rect[1]]) as usize;
++            let y = u16::from_be_bytes([rect[2], rect[3]]) as usize;
++            let w = u16::from_be_bytes([rect[4], rect[5]]) as usize;
++            let h = u16::from_be_bytes([rect[6], rect[7]]) as usize;
++            for row in 0..h {
++                let dst = ((y + row) * stride_w + x) * 4;
++                let src = 12 + row * w * 4;
++                client[dst..dst + w * 4].copy_from_slice(&rect[src..src + w * 4]);
++            }
++        }
++    }
++
++    #[test]
++    fn partial_requests_preserve_unsent_pixels() {
++        let fb = display::DisplayFramebuffer::new_for_test(8, 4, [7, 7, 7, 255]);
++        let frame = fb.latest().unwrap();
++        let cursor = fb.cursor();
++        let mut state = ClientFrameState::default();
++        let mut client = vec![0; frame.buf.len()];
++        let left = DamageRect { x: 0, y: 0, width: 3, height: 4 };
++        let full = DamageRect { x: 0, y: 0, width: 8, height: 4 };
++
++        let first = state.diff_frame(&fb, &frame, &cursor, true, false, &PixelFormat::bgrx(), left, false);
++        apply_raw_rects(&mut client, 8, &first);
++        let second = state.diff_frame(&fb, &frame, &cursor, true, false, &PixelFormat::bgrx(), full, true);
++        apply_raw_rects(&mut client, 8, &second);
++        assert_eq!(client, *frame.buf);
++    }
++
++    #[test]
++    fn alternating_two_buffer_damage_bounds_tile_comparisons() {
++        let (w, h) = (256u32, 128u32);
++        let full = DamageRect { x: 0, y: 0, width: w, height: h };
++        let fb = display::DisplayFramebuffer::new_for_test(w, h, [10, 20, 30, 255]);
++        let cursor = fb.cursor();
++        let mut state = ClientFrameState::default();
++        let mut client = vec![0u8; (w * h * 4) as usize];
++
++        let f1 = fb.latest().unwrap();
++        let r1 = state.diff_frame(&fb, &f1, &cursor, true, false, &PixelFormat::bgrx(), full, false);
++        apply_raw_rects(&mut client, w as usize, &r1);
++        assert_eq!(client, *f1.buf);
++        assert_eq!(state.stats.full_scans, 1);
++        assert_eq!(state.stats.partial_scans, 0);
++
++        let flip_a = DamageRect { x: 8, y: 4, width: 12, height: 8 };
++        fb.present_test_rect(w, h, Some(flip_a), [40, 50, 60, 255]);
++        let f2 = fb.latest().unwrap();
++        let r2 = state.diff_frame(&fb, &f2, &cursor, true, false, &PixelFormat::bgrx(), full, true);
++        apply_raw_rects(&mut client, w as usize, &r2);
++        assert_eq!(client, *f2.buf);
++        assert_eq!(state.stats.partial_scans, 1);
++        assert_eq!(state.stats.tiles_compared, 2);
++
++        let flip_b = DamageRect { x: 140, y: 70, width: 10, height: 6 };
++        fb.present_test_rect(w, h, Some(flip_b), [90, 100, 110, 255]);
++        let f3 = fb.latest().unwrap();
++        let r3 = state.diff_frame(&fb, &f3, &cursor, true, false, &PixelFormat::bgrx(), full, true);
++        apply_raw_rects(&mut client, w as usize, &r3);
++        assert_eq!(client, *f3.buf);
++        assert_eq!(state.stats.partial_scans, 2);
++        assert_eq!(state.stats.tiles_compared, 3);
++    }
++
++    #[test]
++    fn missed_generations_union_intermediate_damage_and_match_oracle() {
++        let (w, h) = (256u32, 128u32);
++        let full = DamageRect { x: 0, y: 0, width: w, height: h };
++        let fb = display::DisplayFramebuffer::new_for_test(w, h, [1, 2, 3, 255]);
++        let cursor = fb.cursor();
++        let mut state = ClientFrameState::default();
++        let mut client = vec![0u8; (w * h * 4) as usize];
++
++        let f1 = fb.latest().unwrap();
++        let r1 = state.diff_frame(&fb, &f1, &cursor, true, false, &PixelFormat::bgrx(), full, false);
++        apply_raw_rects(&mut client, w as usize, &r1);
++
++        fb.present_test_rect(w, h, Some(DamageRect { x: 4, y: 2, width: 8, height: 4 }), [11, 12, 13, 255]);
++        fb.present_test_rect(w, h, Some(DamageRect { x: 20, y: 6, width: 10, height: 4 }), [21, 22, 23, 255]);
++        fb.present_test_rect(w, h, Some(DamageRect { x: 40, y: 8, width: 6, height: 4 }), [31, 32, 33, 255]);
++
++        let f4 = fb.latest().unwrap();
++        assert_eq!(f4.generation, 4);
++        let r4 = state.diff_frame(&fb, &f4, &cursor, true, false, &PixelFormat::bgrx(), full, true);
++        apply_raw_rects(&mut client, w as usize, &r4);
++        assert_eq!(client, *f4.buf);
++        assert_eq!(state.stats.partial_scans, 1);
++        assert_eq!(state.stats.tiles_compared, 2);
++    }
++
++    #[test]
++    fn damage_history_overflow_and_resize_fall_back_to_full_scan_and_recover() {
++        let (w, h) = (128u32, 64u32);
++        let full = DamageRect { x: 0, y: 0, width: w, height: h };
++        let fb = display::DisplayFramebuffer::new_for_test(w, h, [5, 6, 7, 255]);
++        let cursor = fb.cursor();
++        let mut state = ClientFrameState::default();
++        let mut client = vec![0u8; (w * h * 4) as usize];
++
++        let f1 = fb.latest().unwrap();
++        let r1 = state.diff_frame(&fb, &f1, &cursor, true, false, &PixelFormat::bgrx(), full, false);
++        apply_raw_rects(&mut client, w as usize, &r1);
++
++        for i in 0..68u32 {
++            let x = (i * 3) % (w - 4);
++            let y = (i * 2) % (h - 4);
++            fb.present_test_rect(
++                w,
++                h,
++                Some(DamageRect { x, y, width: 4, height: 4 }),
++                [(i & 0xff) as u8, 99, 88, 255],
++            );
++        }
++        let f_overflow = fb.latest().unwrap();
++        let r_overflow = state.diff_frame(
++            &fb,
++            &f_overflow,
++            &cursor,
++            true,
++            false,
++            &PixelFormat::bgrx(),
++            full,
++            true,
++        );
++        apply_raw_rects(&mut client, w as usize, &r_overflow);
++        assert_eq!(client, *f_overflow.buf);
++        assert_eq!(state.stats.full_scans, 2);
++
++        let (nw, nh) = (64u32, 32u32);
++        let nfull = DamageRect { x: 0, y: 0, width: nw, height: nh };
++        fb.present_test_rect(nw, nh, None, [77, 66, 55, 255]);
++        state.reset();
++        let mut nclient = vec![0u8; (nw * nh * 4) as usize];
++        let f_resized = fb.latest().unwrap();
++        let r_resized = state.diff_frame(
++            &fb,
++            &f_resized,
++            &cursor,
++            true,
++            false,
++            &PixelFormat::bgrx(),
++            nfull,
++            true,
++        );
++        apply_raw_rects(&mut nclient, nw as usize, &r_resized);
++        assert_eq!(nclient, *f_resized.buf);
++    }
++
++    #[test]
++    fn adjacent_dirty_tiles_merge_horizontally_and_vertically() {
++        let (w, h) = (256u32, 128u32);
++        let full = DamageRect { x: 0, y: 0, width: w, height: h };
++        let fb = display::DisplayFramebuffer::new_for_test(w, h, [1, 1, 1, 255]);
++        let cursor = fb.cursor();
++        let mut state = ClientFrameState::default();
++        let f1 = fb.latest().unwrap();
++        let _ = state.diff_frame(&fb, &f1, &cursor, true, false, &PixelFormat::bgrx(), full, false);
++
++        let dirty = DamageRect { x: 0, y: 0, width: 128, height: 32 };
++        fb.present_test_rect(w, h, Some(dirty), [2, 2, 2, 255]);
++        let f2 = fb.latest().unwrap();
++        let rects = state.diff_frame(&fb, &f2, &cursor, true, false, &PixelFormat::bgrx(), full, true);
++        assert_eq!(rects.len(), 1);
++        assert_eq!(u16::from_be_bytes([rects[0][4], rects[0][5]]), 128);
++        assert_eq!(u16::from_be_bytes([rects[0][6], rects[0][7]]), 32);
++    }
++
+     #[test]
+     fn bare_port_binds_loopback_only() {
+         assert_eq!(parse_bind_addr("5900").as_deref(), Some("127.0.0.1:5900"));

@@ -1,0 +1,1086 @@
+diff --git a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+index 0c611a87..a56457b8 100644
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -150,6 +150,56 @@ impl AssociatedScanouts {
+     }
+ }
+ 
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct VirtioGpuDamageStats {
++    pub transfer_writes: u64,
++    pub transfer_write_bytes: u64,
++    pub scanouts_presented: u64,
++    pub full_reads: u64,
++    pub partial_reads: u64,
++    pub bytes_read: u64,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct ScanoutConfig {
++    scanout_id: u32,
++    width: u32,
++    height: u32,
++    format: ResourceFormat,
++}
++
++fn rect_clipped(rect: Rect, width: u32, height: u32) -> Option<Rect> {
++    let x2 = rect.x.saturating_add(rect.width).min(width);
++    let y2 = rect.y.saturating_add(rect.height).min(height);
++    (rect.x < x2 && rect.y < y2).then_some(Rect {
++        x: rect.x,
++        y: rect.y,
++        width: x2.saturating_sub(rect.x),
++        height: y2.saturating_sub(rect.y),
++    })
++}
++
++fn rect_union(a: Rect, b: Rect) -> Rect {
++    let x = a.x.min(b.x);
++    let y = a.y.min(b.y);
++    let x2 = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
++    let y2 = a.y.saturating_add(a.height).max(b.y.saturating_add(b.height));
++    Rect {
++        x,
++        y,
++        width: x2 - x,
++        height: y2 - y,
++    }
++}
++
++fn rect_is_full(rect: Rect, width: u32, height: u32) -> bool {
++    rect.x == 0 && rect.y == 0 && rect.width >= width && rect.height >= height
++}
++
++fn rect_bytes(rect: Rect) -> u64 {
++    u64::from(rect.width) * u64::from(rect.height) * ResourceFormat::BYTES_PER_PIXEL as u64
++}
++
+ #[derive(Copy, Clone)]
+ struct VirtioGpuResource {
+     id: u32,
+@@ -157,14 +207,16 @@ struct VirtioGpuResource {
+     height: u32,
+     scanouts: AssociatedScanouts,
+     format: Option<ResourceFormat>,
+-    size: u64, // only for blob resources
++    size: u64,
+     shmem_offset: Option<u64>,
+     rutabaga_external_mapping: bool,
++    transfer_damage: Option<Rect>,
++    dirty_since_present: bool,
++    presented_config: Option<ScanoutConfig>,
++    last_present_seq: u64,
+ }
+ 
+ impl VirtioGpuResource {
+-    /// Creates a new VirtioGpuResource with the given metadata.  Width and height are used by the
+-    /// display, while size is useful for hypervisor mapping.
+     pub fn new(
+         resource_id: u32,
+         width: u32,
+@@ -181,6 +233,10 @@ impl VirtioGpuResource {
+             format,
+             shmem_offset: None,
+             rutabaga_external_mapping: false,
++            transfer_damage: None,
++            dirty_since_present: false,
++            presented_config: None,
++            last_present_seq: 0,
+         }
+     }
+ }
+@@ -189,9 +245,11 @@ pub struct VirtioGpuScanout {
+     resource_id: u32,
+     width: u32,
+     height: u32,
+-    /// Set when the scanout holds a blob resource, so a later RESOURCE_FLUSH
+-    /// can be presented through the renderer instead of the 2D read path.
++    format: Option<ResourceFormat>,
+     blob: Option<BlobScanout>,
++    present_seq: u64,
++    last_flip_transfer_damage: Option<(u64, Rect)>,
++    last_present_was_initial_full: bool,
+ }
+ 
+ /// Geometry of a blob resource being put on a scanout.
+@@ -259,6 +317,7 @@ pub struct VirtioGpu {
+     scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS as usize],
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackendInstance,
++    damage_stats: VirtioGpuDamageStats,
+ }
+ 
+ impl VirtioGpu {
+@@ -711,11 +770,16 @@ impl VirtioGpu {
+             scanouts: Default::default(),
+             displays,
+             display_backend,
++            damage_stats: Default::default(),
+             #[cfg(target_os = "macos")]
+             map_sender,
+         }
+     }
+ 
++    pub fn damage_stats(&self) -> VirtioGpuDamageStats {
++        self.damage_stats
++    }
++
+     pub fn snapshot_2d(&self) -> std::result::Result<Gpu2DState, String> {
+         let mut rutabaga = Vec::new();
+         self.rutabaga
+@@ -790,6 +854,10 @@ impl VirtioGpu {
+                 size: saved.size,
+                 shmem_offset: saved.shmem_offset,
+                 rutabaga_external_mapping: saved.rutabaga_external_mapping,
++                transfer_damage: None,
++                dirty_since_present: false,
++                presented_config: None,
++                last_present_seq: 0,
+             };
+             self.resources.insert(saved.id, resource);
+             if saved.backings.is_empty() {
+@@ -844,7 +912,11 @@ impl VirtioGpu {
+                 resource_id: saved.resource_id,
+                 width: saved.width,
+                 height: saved.height,
++                format: Some(format),
+                 blob: None,
++                present_seq: 1,
++                last_flip_transfer_damage: None,
++                last_present_was_initial_full: true,
+             });
+             let (frame_id, buffer) = self
+                 .display_backend
+@@ -855,6 +927,15 @@ impl VirtioGpu {
+             self.display_backend
+                 .present_frame(scanout_id, frame_id, None)
+                 .map_err(|error| format!("present restored scanout {index}: {error}"))?;
++            if let Some(res_mut) = self.resources.get_mut(&saved.resource_id) {
++                res_mut.presented_config = Some(ScanoutConfig {
++                    scanout_id,
++                    width: saved.width,
++                    height: saved.height,
++                    format,
++                });
++                res_mut.last_present_seq = 1;
++            }
+         }
+         Ok(())
+     }
+@@ -999,6 +1080,15 @@ impl VirtioGpu {
+         Ok(OkNoData)
+     }
+ 
++    fn invalidate_scanout_resources(&mut self, scanout_id: u32) {
++        for resource in self.resources.values_mut() {
++            if resource.presented_config.is_some_and(|c| c.scanout_id == scanout_id) {
++                resource.presented_config = None;
++                resource.last_present_seq = 0;
++            }
++        }
++    }
++
+     pub fn set_scanout(
+         &mut self,
+         scanout_id: u32,
+@@ -1006,31 +1096,29 @@ impl VirtioGpu {
+         width: u32,
+         height: u32,
+     ) -> VirtioGpuResult {
+-        let scanout = self
+-            .scanouts
+-            .get_mut(scanout_id as usize)
+-            .ok_or(ErrInvalidScanoutId)?;
++        if scanout_id as usize >= self.scanouts.len() {
++            return Err(ErrInvalidScanoutId);
++        }
+ 
+-        // If a resource is already associated with this scanout, make sure to disable
+-        // this scanout for that resource
+-        if let Some(resource_id) = scanout.as_ref().map(|scanout| scanout.resource_id) {
++        if let Some(prev_resource_id) = self.scanouts[scanout_id as usize]
++            .as_ref()
++            .map(|scanout| scanout.resource_id)
++        {
+             let resource = self
+                 .resources
+-                .get_mut(&resource_id)
++                .get_mut(&prev_resource_id)
+                 .ok_or(ErrInvalidResourceId)?;
+-
+             resource.scanouts.disable(scanout_id);
+         }
+ 
+-        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+         if resource_id == 0 {
+             debug!("Disabling scanout {scanout_id:?}");
+-            *scanout = None;
++            self.scanouts[scanout_id as usize] = None;
++            self.invalidate_scanout_resources(scanout_id);
+             self.display_backend.disable_scanout(scanout_id)?;
+             return Ok(OkNoData);
+         }
+ 
+-        // Enable the scanout
+         let resource = self
+             .resources
+             .get_mut(&resource_id)
+@@ -1056,41 +1144,39 @@ impl VirtioGpu {
+             format,
+         )?;
+ 
+-        *scanout = Some(VirtioGpuScanout {
++        let preserve_history = self.scanouts[scanout_id as usize].as_ref().is_some_and(|s| {
++            s.blob.is_none()
++                && s.width == width
++                && s.height == height
++                && s.format == Some(format)
++        });
++        let (present_seq, last_flip_transfer_damage, last_present_was_initial_full) =
++            if preserve_history {
++                let prev = self.scanouts[scanout_id as usize].as_ref().unwrap();
++                (
++                    prev.present_seq,
++                    prev.last_flip_transfer_damage,
++                    prev.last_present_was_initial_full,
++                )
++            } else {
++                self.invalidate_scanout_resources(scanout_id);
++                (0, None, false)
++            };
++
++        self.scanouts[scanout_id as usize] = Some(VirtioGpuScanout {
+             resource_id,
+             width,
+             height,
++            format: Some(format),
+             blob: None,
++            present_seq,
++            last_flip_transfer_damage,
++            last_present_was_initial_full,
+         });
+ 
+-        // Present the newly scanned-out buffer. A page-flipping compositor
+-        // changes the scanout resource every frame and may never send a
+-        // RESOURCE_FLUSH for it; the flip itself means "this buffer is now on
+-        // screen", so a frame must reach the display backend here or such
+-        // compositors are invisible.
+-        let resource = *self
+-            .resources
+-            .get(&resource_id)
+-            .ok_or(ErrInvalidResourceId)?;
+-        let (frame_id, buffer) = self.display_backend.alloc_frame(scanout_id)?;
+-        if let Err(e) = Self::read_2d_resource(&mut self.rutabaga, resource, buffer, width, height)
+-        {
+-            log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
+-            return Err(ErrUnspec);
+-        }
+-        self.display_backend
+-            .present_frame(scanout_id, frame_id, None)?;
+-
+-        Ok(OkNoData)
++        self.present_2d_scanout(scanout_id, resource_id, None, true)
+     }
+ 
+-    /// Puts a blob resource on a scanout.
+-    ///
+-    /// A compositor that renders on the GPU allocates its output as a blob, so
+-    /// this is the path every accelerated desktop takes; without it the guest
+-    /// draws frames that never reach the display. Unlike a classic 2D resource
+-    /// a blob carries no format or geometry of its own, so the command supplies
+-    /// them.
+     pub fn set_scanout_blob(&mut self, scanout_id: u32, blob: BlobScanout) -> VirtioGpuResult {
+         let scanout = self
+             .scanouts
+@@ -1107,6 +1193,7 @@ impl VirtioGpu {
+ 
+         if blob.resource_id == 0 {
+             *scanout = None;
++            self.invalidate_scanout_resources(scanout_id);
+             self.display_backend.disable_scanout(scanout_id)?;
+             return Ok(OkNoData);
+         }
+@@ -1139,11 +1226,16 @@ impl VirtioGpu {
+             format,
+         )?;
+ 
+-        *scanout = Some(VirtioGpuScanout {
++        self.invalidate_scanout_resources(scanout_id);
++        self.scanouts[scanout_id as usize] = Some(VirtioGpuScanout {
+             resource_id: blob.resource_id,
+             width: blob.width,
+             height: blob.height,
++            format: Some(format),
+             blob: Some(blob),
++            present_seq: 0,
++            last_flip_transfer_damage: None,
++            last_present_was_initial_full: false,
+         });
+ 
+         self.present_scanout_blob(scanout_id, &blob)
+@@ -1262,19 +1354,37 @@ impl VirtioGpu {
+         width: u32,
+         height: u32,
+     ) -> VirtioGpuResult {
+-        // The scanout resource may be larger than the display: allocators pad
+-        // buffers to tiling alignment (e.g. llvmpipe pads 1440x900 to
+-        // 1472x960). Read only the configured crop, tightly packed into the
+-        // destination, or the copy overruns the frame buffer.
+-        let transfer = Transfer3D {
++        let rect = Rect {
+             x: 0,
+             y: 0,
++            width: width.min(resource.width),
++            height: height.min(resource.height),
++        };
++        Self::read_2d_resource_rect(rutabaga, resource, output, width, height, rect)
++    }
++
++    fn read_2d_resource_rect(
++        rutabaga: &mut Rutabaga,
++        resource: VirtioGpuResource,
++        output: &mut [u8],
++        width: u32,
++        height: u32,
++        rect: Rect,
++    ) -> VirtioGpuResult {
++        let crop_w = width.min(resource.width);
++        let crop_h = height.min(resource.height);
++        let Some(clipped) = rect_clipped(rect, crop_w, crop_h) else {
++            return Ok(OkNoData);
++        };
++        let transfer = Transfer3D {
++            x: clipped.x,
++            y: clipped.y,
+             z: 0,
+-            w: width.min(resource.width),
+-            h: height.min(resource.height),
++            w: clipped.width,
++            h: clipped.height,
+             d: 1,
+             level: 0,
+-            stride: width.min(resource.width) * ResourceFormat::BYTES_PER_PIXEL as u32,
++            stride: crop_w * ResourceFormat::BYTES_PER_PIXEL as u32,
+             layer_stride: 0,
+             offset: 0,
+         };
+@@ -1292,6 +1402,135 @@ impl VirtioGpu {
+         Ok(OkNoData)
+     }
+ 
++    fn present_2d_scanout(
++        &mut self,
++        scanout_id: u32,
++        resource_id: u32,
++        flush_rect: Option<Rect>,
++        from_set_scanout: bool,
++    ) -> VirtioGpuResult {
++        let resource = *self
++            .resources
++            .get(&resource_id)
++            .ok_or(ErrInvalidResourceId)?;
++        let Some(scanout_state) = self.scanouts.get(scanout_id as usize).and_then(|s| s.as_ref())
++        else {
++            return Err(ErrInvalidScanoutId);
++        };
++        let scanout_width = scanout_state.width;
++        let scanout_height = scanout_state.height;
++        let Some(scanout_format) = scanout_state.format.or(resource.format) else {
++            return Err(ErrUnspec);
++        };
++        let present_seq = scanout_state.present_seq;
++        let last_flip_transfer_damage = scanout_state.last_flip_transfer_damage;
++        let last_present_was_initial_full = scanout_state.last_present_was_initial_full;
++
++        let crop_w = scanout_width.min(resource.width);
++        let crop_h = scanout_height.min(resource.height);
++
++        if !from_set_scanout && !resource.dirty_since_present && present_seq > 0 {
++            if let Some(clipped) = flush_rect
++                .and_then(|r| rect_clipped(r, crop_w, crop_h))
++                .filter(|&r| !rect_is_full(r, crop_w, crop_h))
++                && let Some(Some(scanout_mut)) = self.scanouts.get_mut(scanout_id as usize)
++                && (scanout_mut.last_present_was_initial_full
++                    || scanout_mut.last_flip_transfer_damage.is_none())
++            {
++                scanout_mut.last_flip_transfer_damage = Some((present_seq, clipped));
++            }
++            return Ok(OkNoData);
++        }
++
++        let config = ScanoutConfig {
++            scanout_id,
++            width: scanout_width,
++            height: scanout_height,
++            format: scanout_format,
++        };
++        let own_damage = match (resource.transfer_damage, flush_rect) {
++            (Some(t), Some(f)) => rect_clipped(rect_union(t, f), crop_w, crop_h),
++            (Some(t), None) => rect_clipped(t, crop_w, crop_h),
++            (None, Some(f)) => rect_clipped(f, crop_w, crop_h),
++            (None, None) => None,
++        };
++
++        let was_warmed = resource.presented_config == Some(config);
++        let partial_rect = if self.display_backend.supports_partial_frames()
++            && present_seq > 0
++            && was_warmed
++        {
++            let combined = if resource.last_present_seq == present_seq {
++                own_damage
++            } else if resource.last_present_seq.saturating_add(1) == present_seq {
++                match last_flip_transfer_damage {
++                    Some((seq, prev_dmg)) if seq == present_seq => {
++                        own_damage.map(|d| rect_union(d, prev_dmg))
++                    }
++                    _ if last_present_was_initial_full => own_damage,
++                    _ => None,
++                }
++            } else {
++                None
++            };
++            combined
++                .and_then(|d| rect_clipped(d, crop_w, crop_h))
++                .filter(|&d| !rect_is_full(d, crop_w, crop_h))
++        } else {
++            None
++        };
++
++        let (frame_id, buffer) = self.display_backend.alloc_frame(scanout_id)?;
++        let read_rect = partial_rect.unwrap_or(Rect {
++            x: 0,
++            y: 0,
++            width: crop_w,
++            height: crop_h,
++        });
++        if let Err(e) = Self::read_2d_resource_rect(
++            &mut self.rutabaga,
++            resource,
++            buffer,
++            scanout_width,
++            scanout_height,
++            read_rect,
++        ) {
++            log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
++            return Err(ErrUnspec);
++        }
++
++        if let Some(rect) = partial_rect {
++            self.damage_stats.partial_reads += 1;
++            self.damage_stats.bytes_read += rect_bytes(rect);
++            self.damage_stats.scanouts_presented += 1;
++            self.display_backend
++                .present_frame(scanout_id, frame_id, Some(&rect))?;
++        } else {
++            self.damage_stats.full_reads += 1;
++            self.damage_stats.bytes_read += rect_bytes(read_rect);
++            self.damage_stats.scanouts_presented += 1;
++            self.display_backend
++                .present_frame(scanout_id, frame_id, None)?;
++        }
++
++        let next_seq = present_seq.saturating_add(1);
++        if let Some(Some(scanout_mut)) = self.scanouts.get_mut(scanout_id as usize) {
++            scanout_mut.present_seq = next_seq;
++            scanout_mut.last_flip_transfer_damage = own_damage
++                .filter(|&d| !rect_is_full(d, crop_w, crop_h))
++                .map(|d| (next_seq, d));
++            scanout_mut.last_present_was_initial_full = !was_warmed && partial_rect.is_none();
++        }
++        if let Some(res_mut) = self.resources.get_mut(&resource_id) {
++            res_mut.presented_config = Some(config);
++            res_mut.last_present_seq = next_seq;
++            res_mut.transfer_damage = None;
++            res_mut.dirty_since_present = false;
++        }
++
++        Ok(OkNoData)
++    }
++
+     /// The guest replaced its pointer image. The image lives in a small 2D
+     /// resource backed by guest pages, so it is read straight from there;
+     /// resource 0 hides the pointer. A backend without pointer support just
+@@ -1413,7 +1652,6 @@ impl VirtioGpu {
+         }
+     }
+ 
+-    /// If the resource is the scanout resource, flush it to the display.
+     pub fn flush_resource(&mut self, resource_id: u32, rect: Rect) -> VirtioGpuResult {
+         if resource_id == 0 {
+             return Ok(OkNoData);
+@@ -1425,8 +1663,6 @@ impl VirtioGpu {
+             .ok_or(ErrInvalidResourceId)?;
+ 
+         for scanout_id in resource.scanouts.iter_enabled() {
+-            // A blob scanout has no 2D backing to read; present it the same
+-            // way SET_SCANOUT_BLOB did, or every damage-only frame fails.
+             let blob = self
+                 .scanouts
+                 .get(scanout_id as usize)
+@@ -1437,21 +1673,7 @@ impl VirtioGpu {
+                 self.present_scanout_blob(scanout_id, &blob)?;
+                 continue;
+             }
+-            let (crop_w, crop_h) = self
+-                .scanouts
+-                .get(scanout_id as usize)
+-                .and_then(|s| s.as_ref())
+-                .map(|s| (s.width, s.height))
+-                .unwrap_or((resource.width, resource.height));
+-            let (frame_id, buffer) = self.display_backend.alloc_frame(scanout_id)?;
+-            if let Err(e) =
+-                Self::read_2d_resource(&mut self.rutabaga, resource, buffer, crop_w, crop_h)
+-            {
+-                log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
+-                return Err(ErrUnspec);
+-            }
+-            self.display_backend
+-                .present_frame(scanout_id, frame_id, Some(&rect))?
++            self.present_2d_scanout(scanout_id, resource_id, Some(rect), false)?;
+         }
+ 
+         #[cfg(windows)]
+@@ -1483,7 +1705,6 @@ impl VirtioGpu {
+         Ok(OkEdid(display.edid_bytes()))
+     }
+ 
+-    /// Copies data to host resource from the attached iovecs. Can also be used to flush caches.
+     pub fn transfer_write(
+         &mut self,
+         ctx_id: u32,
+@@ -1492,6 +1713,25 @@ impl VirtioGpu {
+     ) -> VirtioGpuResult {
+         self.rutabaga
+             .transfer_write(ctx_id, resource_id, transfer)?;
++        if !transfer.is_empty() {
++            let rect = Rect {
++                x: transfer.x,
++                y: transfer.y,
++                width: transfer.w,
++                height: transfer.h,
++            };
++            self.damage_stats.transfer_writes += 1;
++            self.damage_stats.transfer_write_bytes += rect_bytes(rect);
++            if let Some(resource) = self.resources.get_mut(&resource_id) {
++                let clipped = rect_clipped(rect, resource.width, resource.height);
++                resource.transfer_damage = match (resource.transfer_damage, clipped) {
++                    (Some(old), Some(new)) => Some(rect_union(old, new)),
++                    (None, new) => new,
++                    (old, None) => old,
++                };
++                resource.dirty_since_present = true;
++            }
++        }
+         Ok(OkNoData)
+     }
+ 
+@@ -2046,4 +2286,409 @@ mod test {
+             .for_each(|scanout| scanouts.disable(scanout));
+         assert!(!scanouts.has_any_enabled());
+     }
++
++    use super::*;
++    use krun_display::{DisplayBackendNew, IntoDisplayBackend};
++    use rutabaga_gfx::RutabagaComponentType;
++    use vm_memory::Bytes;
++
++    #[derive(Default)]
++    struct MockDisplayState {
++        width: u32,
++        height: u32,
++        format: Option<ResourceFormat>,
++        staging: Vec<u8>,
++        front: Vec<u8>,
++        presents: Vec<Option<(u32, u32, u32, u32)>>,
++        zero_on_alloc: bool,
++    }
++
++    struct ParticipatingMockBackend {
++        state: Arc<Mutex<MockDisplayState>>,
++        frame_buf: Vec<u8>,
++    }
++
++    impl DisplayBackendNew<Arc<Mutex<MockDisplayState>>> for ParticipatingMockBackend {
++        fn new(userdata: Option<&Arc<Mutex<MockDisplayState>>>) -> Self {
++            Self {
++                state: Arc::clone(userdata.unwrap()),
++                frame_buf: Vec::new(),
++            }
++        }
++    }
++
++    impl DisplayBackendBasicFramebuffer for ParticipatingMockBackend {
++        const SUPPORTS_PARTIAL_FRAMES: bool = true;
++
++        fn configure_scanout(
++            &mut self,
++            _scanout_id: u32,
++            _display_width: u32,
++            _display_height: u32,
++            width: u32,
++            height: u32,
++            format: ResourceFormat,
++        ) -> std::result::Result<(), DisplayBackendError> {
++            let mut st = self.state.lock().unwrap();
++            let len = (width * height * 4) as usize;
++            if st.width != width || st.height != height || st.format != Some(format) {
++                st.width = width;
++                st.height = height;
++                st.format = Some(format);
++                st.staging = vec![0; len];
++                st.front = vec![0; len];
++                self.frame_buf = vec![0; len];
++            }
++            Ok(())
++        }
++
++        fn disable_scanout(&mut self, _scanout_id: u32) -> std::result::Result<(), DisplayBackendError> {
++            let mut st = self.state.lock().unwrap();
++            st.width = 0;
++            st.height = 0;
++            st.format = None;
++            st.staging.clear();
++            st.front.clear();
++            self.frame_buf.clear();
++            Ok(())
++        }
++
++        fn alloc_frame(
++            &mut self,
++            _scanout_id: u32,
++        ) -> std::result::Result<(u32, &mut [u8]), DisplayBackendError> {
++            let st = self.state.lock().unwrap();
++            if st.zero_on_alloc {
++                self.frame_buf.fill(0);
++            }
++            Ok((0, &mut self.frame_buf[..]))
++        }
++
++        fn present_frame(
++            &mut self,
++            _scanout_id: u32,
++            _frame_id: u32,
++            rect: Option<&Rect>,
++        ) -> std::result::Result<(), DisplayBackendError> {
++            let mut st = self.state.lock().unwrap();
++            st.staging.copy_from_slice(&self.frame_buf);
++            let stride = (st.width * 4) as usize;
++            match rect {
++                Some(r) => {
++                    for row in r.y..r.y + r.height {
++                        let start = row as usize * stride + (r.x * 4) as usize;
++                        let end = start + (r.width * 4) as usize;
++                        st.front[start..end].copy_from_slice(&self.frame_buf[start..end]);
++                    }
++                    st.presents.push(Some((r.x, r.y, r.width, r.height)));
++                }
++                None => {
++                    st.front.copy_from_slice(&self.frame_buf);
++                    st.presents.push(None);
++                }
++            }
++            Ok(())
++        }
++    }
++
++    struct NonParticipatingMockBackend(ParticipatingMockBackend);
++
++    impl DisplayBackendNew<Arc<Mutex<MockDisplayState>>> for NonParticipatingMockBackend {
++        fn new(userdata: Option<&Arc<Mutex<MockDisplayState>>>) -> Self {
++            Self(ParticipatingMockBackend::new(userdata))
++        }
++    }
++
++    impl DisplayBackendBasicFramebuffer for NonParticipatingMockBackend {
++        const SUPPORTS_PARTIAL_FRAMES: bool = false;
++
++        fn configure_scanout(
++            &mut self,
++            scanout_id: u32,
++            display_width: u32,
++            display_height: u32,
++            width: u32,
++            height: u32,
++            format: ResourceFormat,
++        ) -> std::result::Result<(), DisplayBackendError> {
++            self.0.configure_scanout(
++                scanout_id,
++                display_width,
++                display_height,
++                width,
++                height,
++                format,
++            )
++        }
++
++        fn disable_scanout(&mut self, scanout_id: u32) -> std::result::Result<(), DisplayBackendError> {
++            self.0.disable_scanout(scanout_id)
++        }
++
++        fn alloc_frame(
++            &mut self,
++            scanout_id: u32,
++        ) -> std::result::Result<(u32, &mut [u8]), DisplayBackendError> {
++            self.0.alloc_frame(scanout_id)
++        }
++
++        fn present_frame(
++            &mut self,
++            scanout_id: u32,
++            frame_id: u32,
++            rect: Option<&Rect>,
++        ) -> std::result::Result<(), DisplayBackendError> {
++            self.0.present_frame(scanout_id, frame_id, rect)
++        }
++    }
++
++    fn make_2d_test_gpu(display_backend: DisplayBackend<'_>, width: u32, height: u32) -> VirtioGpu {
++        let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0, 0)
++            .build(RutabagaFenceHandler::new(|_| {}), None)
++            .unwrap();
++        let display_backend = display_backend.create_instance().unwrap();
++        #[cfg(target_os = "macos")]
++        let (map_sender, _map_rx) = unbounded();
++        VirtioGpu {
++            rutabaga,
++            represent_until: None,
++            last_represent: None,
++            resources: Default::default(),
++            backings: Default::default(),
++            fence_state: Arc::new(Mutex::new(Default::default())),
++            #[cfg(target_os = "macos")]
++            map_sender,
++            scanouts: Default::default(),
++            displays: vec![DisplayInfo::new(width, height)].into_boxed_slice(),
++            display_backend,
++            damage_stats: Default::default(),
++        }
++    }
++
++    fn create_2d_resource(
++        gpu: &mut VirtioGpu,
++        mem: &GuestMemoryMmap,
++        resource_id: u32,
++        gpa: u64,
++        width: u32,
++        height: u32,
++    ) {
++        let info = ResourceCreate3D {
++            target: 2,
++            format: 2,
++            bind: 0,
++            width,
++            height,
++            depth: 1,
++            array_size: 1,
++            last_level: 0,
++            nr_samples: 0,
++            flags: 0,
++        };
++        gpu.resource_create_2d(resource_id, info).unwrap();
++        gpu.attach_backing(
++            resource_id,
++            mem,
++            vec![(GuestAddress(gpa), (width * height * 4) as usize)],
++        )
++        .unwrap();
++    }
++
++    fn paint_rect(
++        buf: &mut [u8],
++        mem: &GuestMemoryMmap,
++        gpa: u64,
++        width: u32,
++        rect: Rect,
++        pixel: [u8; 4],
++    ) {
++        let stride = (width * 4) as usize;
++        for y in rect.y..rect.y + rect.height {
++            for x in rect.x..rect.x + rect.width {
++                let off = y as usize * stride + (x * 4) as usize;
++                buf[off..off + 4].copy_from_slice(&pixel);
++            }
++        }
++        mem.write_slice(buf, GuestAddress(gpa)).unwrap();
++    }
++
++    #[test]
++    fn alternating_two_buffer_scanout_reads_and_presents_bounded_damage() {
++        let (w, h) = (16u32, 16u32);
++        let len = (w * h * 4) as usize;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x20000)]).unwrap();
++        let state = Arc::new(Mutex::new(MockDisplayState::default()));
++        let mut gpu = make_2d_test_gpu(
++            ParticipatingMockBackend::into_display_backend(Some(&state)),
++            w,
++            h,
++        );
++
++        let gpa1 = 0x1000u64;
++        let gpa2 = 0x5000u64;
++        create_2d_resource(&mut gpu, &mem, 1, gpa1, w, h);
++        create_2d_resource(&mut gpu, &mem, 2, gpa2, w, h);
++
++        let full = Rect { x: 0, y: 0, width: w, height: h };
++        let mut buf1 = vec![0u8; len];
++        let mut buf2 = vec![0u8; len];
++        let mut expected = vec![0u8; len];
++
++        paint_rect(&mut buf1, &mem, gpa1, w, full, [10, 20, 30, 255]);
++        expected.copy_from_slice(&buf1);
++        gpu.transfer_write(0, 1, Transfer3D::new_2d(0, 0, w, h)).unwrap();
++        gpu.set_scanout(0, 1, w, h).unwrap();
++        gpu.flush_resource(1, full).unwrap();
++        assert_eq!(gpu.damage_stats().full_reads, 1);
++        assert_eq!(gpu.damage_stats().partial_reads, 0);
++        assert_eq!(gpu.damage_stats().scanouts_presented, 1);
++        assert_eq!(state.lock().unwrap().front, expected);
++
++        buf2.copy_from_slice(&buf1);
++        let rect_a = Rect { x: 2, y: 2, width: 4, height: 4 };
++        paint_rect(&mut buf2, &mem, gpa2, w, full, [10, 20, 30, 255]);
++        paint_rect(&mut buf2, &mem, gpa2, w, rect_a, [40, 50, 60, 255]);
++        expected.copy_from_slice(&buf2);
++        gpu.transfer_write(0, 2, Transfer3D::new_2d(0, 0, w, h)).unwrap();
++        gpu.set_scanout(0, 2, w, h).unwrap();
++        gpu.flush_resource(2, rect_a).unwrap();
++        assert_eq!(gpu.damage_stats().full_reads, 2);
++        assert_eq!(gpu.damage_stats().partial_reads, 0);
++        assert_eq!(gpu.damage_stats().scanouts_presented, 2);
++        assert_eq!(state.lock().unwrap().front, expected);
++
++        let rect_b = Rect { x: 8, y: 6, width: 3, height: 5 };
++        paint_rect(&mut buf1, &mem, gpa1, w, rect_a, [40, 50, 60, 255]);
++        paint_rect(&mut buf1, &mem, gpa1, w, rect_b, [70, 80, 90, 255]);
++        expected.copy_from_slice(&buf1);
++        let union_ab = rect_union(rect_a, rect_b);
++        gpu.transfer_write(
++            0,
++            1,
++            Transfer3D::new_2d(union_ab.x, union_ab.y, union_ab.width, union_ab.height),
++        )
++        .unwrap();
++        gpu.set_scanout(0, 1, w, h).unwrap();
++        gpu.flush_resource(1, rect_b).unwrap();
++        assert_eq!(gpu.damage_stats().full_reads, 2);
++        assert_eq!(gpu.damage_stats().partial_reads, 1);
++        assert_eq!(gpu.damage_stats().scanouts_presented, 3);
++        assert_eq!(
++            state.lock().unwrap().presents.last(),
++            Some(&Some((union_ab.x, union_ab.y, union_ab.width, union_ab.height)))
++        );
++        assert_eq!(state.lock().unwrap().front, expected);
++
++        let rect_c = Rect { x: 12, y: 12, width: 2, height: 2 };
++        paint_rect(&mut buf2, &mem, gpa2, w, rect_b, [70, 80, 90, 255]);
++        paint_rect(&mut buf2, &mem, gpa2, w, rect_c, [100, 110, 120, 255]);
++        expected.copy_from_slice(&buf2);
++        gpu.transfer_write(
++            0,
++            2,
++            Transfer3D::new_2d(rect_b.x, rect_b.y, rect_b.width, rect_b.height),
++        )
++        .unwrap();
++        gpu.transfer_write(
++            0,
++            2,
++            Transfer3D::new_2d(rect_c.x, rect_c.y, rect_c.width, rect_c.height),
++        )
++        .unwrap();
++        gpu.set_scanout(0, 2, w, h).unwrap();
++        gpu.flush_resource(2, rect_c).unwrap();
++        assert_eq!(gpu.damage_stats().full_reads, 2);
++        assert_eq!(gpu.damage_stats().partial_reads, 2);
++        assert_eq!(gpu.damage_stats().scanouts_presented, 4);
++        assert_eq!(state.lock().unwrap().front, expected);
++
++        let rect_d = Rect { x: 13, y: 13, width: 2, height: 2 };
++        paint_rect(&mut buf1, &mem, gpa1, w, rect_c, [100, 110, 120, 255]);
++        paint_rect(&mut buf1, &mem, gpa1, w, rect_d, [200, 210, 220, 255]);
++        expected.copy_from_slice(&buf1);
++        gpu.transfer_write(
++            0,
++            1,
++            Transfer3D::new_2d(rect_c.x, rect_c.y, rect_c.width, rect_c.height),
++        )
++        .unwrap();
++        gpu.transfer_write(
++            0,
++            1,
++            Transfer3D::new_2d(rect_d.x, rect_d.y, rect_d.width, rect_d.height),
++        )
++        .unwrap();
++        gpu.set_scanout(0, 1, w, h).unwrap();
++        gpu.flush_resource(1, rect_d).unwrap();
++        let last_rect = state.lock().unwrap().presents.last().copied().flatten().unwrap();
++        assert!(last_rect.0 >= 8 && last_rect.1 >= 6);
++        assert_eq!(state.lock().unwrap().front, expected);
++    }
++
++    #[test]
++    fn non_participating_backend_falls_back_to_full_reads() {
++        let (w, h) = (8u32, 8u32);
++        let len = (w * h * 4) as usize;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
++        let state = Arc::new(Mutex::new(MockDisplayState {
++            zero_on_alloc: true,
++            ..Default::default()
++        }));
++        let mut gpu = make_2d_test_gpu(
++            NonParticipatingMockBackend::into_display_backend(Some(&state)),
++            w,
++            h,
++        );
++        create_2d_resource(&mut gpu, &mem, 1, 0x1000, w, h);
++
++        let full = Rect { x: 0, y: 0, width: w, height: h };
++        let mut buf = vec![0u8; len];
++        paint_rect(&mut buf, &mem, 0x1000, w, full, [1, 2, 3, 255]);
++        gpu.transfer_write(0, 1, Transfer3D::new_2d(0, 0, w, h)).unwrap();
++        gpu.set_scanout(0, 1, w, h).unwrap();
++        gpu.flush_resource(1, full).unwrap();
++
++        let sub = Rect { x: 2, y: 2, width: 2, height: 2 };
++        paint_rect(&mut buf, &mem, 0x1000, w, sub, [9, 8, 7, 255]);
++        gpu.transfer_write(0, 1, Transfer3D::new_2d(2, 2, 2, 2)).unwrap();
++        gpu.flush_resource(1, sub).unwrap();
++
++        assert_eq!(gpu.damage_stats().full_reads, 2);
++        assert_eq!(gpu.damage_stats().partial_reads, 0);
++        assert_eq!(state.lock().unwrap().presents, vec![None, None]);
++        assert_eq!(state.lock().unwrap().front, buf);
++    }
++
++    #[test]
++    fn disable_scanout_resets_partial_history() {
++        let (w, h) = (8u32, 8u32);
++        let len = (w * h * 4) as usize;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
++        let state = Arc::new(Mutex::new(MockDisplayState::default()));
++        let mut gpu = make_2d_test_gpu(
++            ParticipatingMockBackend::into_display_backend(Some(&state)),
++            w,
++            h,
++        );
++        create_2d_resource(&mut gpu, &mem, 1, 0x1000, w, h);
++
++        let full = Rect { x: 0, y: 0, width: w, height: h };
++        let sub = Rect { x: 1, y: 1, width: 2, height: 2 };
++        let mut buf = vec![0u8; len];
++        paint_rect(&mut buf, &mem, 0x1000, w, full, [11, 22, 33, 255]);
++        gpu.transfer_write(0, 1, Transfer3D::new_2d(0, 0, w, h)).unwrap();
++        gpu.set_scanout(0, 1, w, h).unwrap();
++
++        paint_rect(&mut buf, &mem, 0x1000, w, sub, [44, 55, 66, 255]);
++        gpu.transfer_write(0, 1, Transfer3D::new_2d(1, 1, 2, 2)).unwrap();
++        gpu.flush_resource(1, sub).unwrap();
++        assert_eq!(gpu.damage_stats().partial_reads, 1);
++
++        gpu.set_scanout(0, 0, 0, 0).unwrap();
++        gpu.transfer_write(0, 1, Transfer3D::new_2d(1, 1, 2, 2)).unwrap();
++        gpu.set_scanout(0, 1, w, h).unwrap();
++        assert_eq!(gpu.damage_stats().full_reads, 2);
++        assert_eq!(state.lock().unwrap().presents.last(), Some(&None));
++        assert_eq!(state.lock().unwrap().front, buf);
++    }
+ }
+diff --git a/src/display/libkrun_display.h b/src/display/libkrun_display.h
+index 21d3e054..4fa5d4b5 100644
+--- a/src/display/libkrun_display.h
++++ b/src/display/libkrun_display.h
+@@ -41,6 +41,7 @@ extern "C" {
+ /* The backend shows the guest's pointer itself: the guest hands over the pointer image and its
+  * position instead of drawing a software pointer into every frame. */
+ #define KRUN_DISPLAY_FEATURE_CURSOR 2
++#define KRUN_DISPLAY_FEATURE_PARTIAL_FRAMEBUFFER 4
+ 
+ /**
+  * Called to create a display instance.
+diff --git a/src/display/src/c_to_rust.rs b/src/display/src/c_to_rust.rs
+index 2202eb3a..878773a4 100644
+--- a/src/display/src/c_to_rust.rs
++++ b/src/display/src/c_to_rust.rs
+@@ -46,6 +46,7 @@ pub struct DisplayBackendInstance {
+     instance: *mut c_void,
+     vtable: DisplayBasicFramebufferVtable,
+     cursor: DisplayCursorVtable,
++    partial_framebuffer: bool,
+ }
+ 
+ impl DisplayBackendInstance {
+@@ -107,6 +108,8 @@ impl Drop for DisplayBackendInstance {
+ }
+ 
+ impl DisplayBackendBasicFramebuffer for DisplayBackendInstance {
++    fn supports_partial_frames(&self) -> bool { self.partial_framebuffer }
++
+     fn configure_scanout(
+         &mut self,
+         scanout_id: u32,
+@@ -201,6 +204,7 @@ impl DisplayBackend<'_> {
+ 
+         Ok(DisplayBackendInstance {
+             instance,
++            partial_framebuffer: DisplayFeatures::from_bits_retain(self.features).contains(DisplayFeatures::PARTIAL_FRAMEBUFFER),
+             // SAFETY: we have checked the feature flags, so basic_framebuffer should be populated
+             vtable: unsafe { self.vtable.basic_framebuffer },
+             cursor: if DisplayFeatures::from_bits_retain(self.features)
+@@ -244,7 +248,11 @@ impl DisplayBackend<'_> {
+             {
+                 error!("Missing required methods for CURSOR");
+                 return false;
+-            } else {
++            } else if !feature.intersects(
++                DisplayFeatures::BASIC_FRAMEBUFFER
++                    | DisplayFeatures::CURSOR
++                    | DisplayFeatures::PARTIAL_FRAMEBUFFER,
++            ) {
+                 warn!("Unknown display features ({feature:x}) will be ignored")
+             }
+         }
+diff --git a/src/display/src/lib.rs b/src/display/src/lib.rs
+index 87ad1f2e..07789ff3 100644
+--- a/src/display/src/lib.rs
++++ b/src/display/src/lib.rs
+@@ -21,6 +21,7 @@ bitflags! {
+     pub struct DisplayFeatures: u64 {
+         const BASIC_FRAMEBUFFER = header::KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER as u64;
+         const CURSOR = header::KRUN_DISPLAY_FEATURE_CURSOR as u64;
++        const PARTIAL_FRAMEBUFFER = header::KRUN_DISPLAY_FEATURE_PARTIAL_FRAMEBUFFER as u64;
+     }
+ }
+ 
+diff --git a/src/display/src/rust_to_c.rs b/src/display/src/rust_to_c.rs
+index 2cd69f16..8488c7a5 100644
+--- a/src/display/src/rust_to_c.rs
++++ b/src/display/src/rust_to_c.rs
+@@ -13,6 +13,12 @@ pub trait DisplayBackendNew<T: Sync> {
+ }
+ 
+ pub trait DisplayBackendBasicFramebuffer {
++    const SUPPORTS_PARTIAL_FRAMES: bool = false;
++
++    fn supports_partial_frames(&self) -> bool {
++        Self::SUPPORTS_PARTIAL_FRAMES
++    }
++
+     fn configure_scanout(
+         &mut self,
+         scanout_id: u32,
+@@ -132,10 +138,14 @@ impl<T: Sync, I: DisplayBackendBasicFramebuffer + DisplayBackendNew<T>> IntoDisp
+             from_rust_result(cast_instance::<I>(instance).present_frame(scanout_id, frame_id, rect))
+         }
+ 
++        let mut features = DisplayFeatures::BASIC_FRAMEBUFFER;
++        if I::SUPPORTS_PARTIAL_FRAMES {
++            features |= DisplayFeatures::PARTIAL_FRAMEBUFFER;
++        }
+         DisplayBackend {
+             create_userdata: userdata.map_or(null(), |t| ptr::from_ref(t) as *const c_void),
+             create_userdata_lifetime: PhantomData,
+-            features: DisplayFeatures::BASIC_FRAMEBUFFER.bits(),
++            features: features.bits(),
+             create_fn: Some(create_fn::<T, I>),
+             vtable: DisplayVtable {
+                 basic_framebuffer: DisplayBasicFramebufferVtable {

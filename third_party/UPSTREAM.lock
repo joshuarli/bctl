@@ -1,9 +1,9 @@
 [import]
 format = 1
 target = "main@59bdcf62d769f6491a6fc49f63f8cd8320f7ac58"
-source_identity = "sha256:1bc1ed5357a14b6ca2f987d379b90fbb937184866e97775f0cac0204e3b5cc61"
+source_identity = "sha256:147b5e4d79f8bcfcf69c5c28833ff65e385d3fdf9a8c7092d155d8855599b721"
 components = "smolvm,libkrun,libkrunfw,linux-6.18.60"
-patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "libkrun-0002-gpu-2d-snapshot.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch", "libkrun-0008-vsock-close.patch", "libkrun-0009-balloon-optional-queues.patch", "smolvm-0001-graviola-only-crypto.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "smolvm-0004-linux-mounts-override-stat.patch", "smolvm-0005-no-dad-on-guest-nic.patch"]
+patches = ["libkrun-0001-rutabaga-2d-beside-3d.patch", "libkrun-0002-gpu-2d-snapshot.patch", "libkrun-0003-arm-mmio-interrupts.patch", "libkrun-0004-arm-efi-acpi.patch", "libkrun-0005-vsock-release.patch", "libkrun-0006-vsock-rx-header.patch", "libkrun-0007-vsock-shutdown.patch", "libkrun-0008-vsock-close.patch", "libkrun-0009-balloon-optional-queues.patch", "libkrun-0010-display-partial-framebuffer.patch", "smolvm-0001-graviola-only-crypto.patch", "smolvm-0002-pause-2d-sessions.patch", "smolvm-0003-vnc-shifted-keysyms.patch", "smolvm-0004-linux-mounts-override-stat.patch", "smolvm-0005-no-dad-on-guest-nic.patch", "smolvm-0006-display-vnc-damage.patch"]
 
 [smolvm]
 url = "https://github.com/smol-machines/smolvm.git"
@@ -76,6 +76,11 @@ tree = "libkrun"
 sha256 = "e06f56548087ce1929325b5eff1d89cc6c1c9d6ff51e18fc47289fb466e7fad6"
 
 [[patch]]
+path = "libkrun-0010-display-partial-framebuffer.patch"
+tree = "libkrun"
+sha256 = "260a54cf7932e1ba8d3e9b02095c0d6092a80de68c643b752b0d3a98ea7590e6"
+
+[[patch]]
 path = "smolvm-0001-graviola-only-crypto.patch"
 tree = "."
 sha256 = "d303ebbec19013fbc639c9eb0b7d441702963568e86cee627aaecae0bb24bc06"
@@ -99,3 +104,8 @@ sha256 = "942cc8ffe53a0c51b7805377b0b27f99349903016dbf6b8921f647dd22980759"
 path = "smolvm-0005-no-dad-on-guest-nic.patch"
 tree = "."
 sha256 = "596f04bd4f9d0badd522c2daa853f9348354c03aea9795d6a760ce3308db1d27"
+
+[[patch]]
+path = "smolvm-0006-display-vnc-damage.patch"
+tree = "."
+sha256 = "7000a32f8667c5392e0d17f00a96217061e1c0cf769e576455a97a00d63e6c9b"

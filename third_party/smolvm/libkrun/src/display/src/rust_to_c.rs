@@ -13,6 +13,12 @@ pub trait DisplayBackendNew<T: Sync> {
 }
 
 pub trait DisplayBackendBasicFramebuffer {
+    const SUPPORTS_PARTIAL_FRAMES: bool = false;
+
+    fn supports_partial_frames(&self) -> bool {
+        Self::SUPPORTS_PARTIAL_FRAMES
+    }
+
     fn configure_scanout(
         &mut self,
         scanout_id: u32,
@@ -132,10 +138,14 @@ impl<T: Sync, I: DisplayBackendBasicFramebuffer + DisplayBackendNew<T>> IntoDisp
             from_rust_result(cast_instance::<I>(instance).present_frame(scanout_id, frame_id, rect))
         }
 
+        let mut features = DisplayFeatures::BASIC_FRAMEBUFFER;
+        if I::SUPPORTS_PARTIAL_FRAMES {
+            features |= DisplayFeatures::PARTIAL_FRAMEBUFFER;
+        }
         DisplayBackend {
             create_userdata: userdata.map_or(null(), |t| ptr::from_ref(t) as *const c_void),
             create_userdata_lifetime: PhantomData,
-            features: DisplayFeatures::BASIC_FRAMEBUFFER.bits(),
+            features: features.bits(),
             create_fn: Some(create_fn::<T, I>),
             vtable: DisplayVtable {
                 basic_framebuffer: DisplayBasicFramebufferVtable {

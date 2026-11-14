@@ -46,6 +46,7 @@ pub struct DisplayBackendInstance {
     instance: *mut c_void,
     vtable: DisplayBasicFramebufferVtable,
     cursor: DisplayCursorVtable,
+    partial_framebuffer: bool,
 }
 
 impl DisplayBackendInstance {
@@ -107,6 +108,8 @@ impl Drop for DisplayBackendInstance {
 }
 
 impl DisplayBackendBasicFramebuffer for DisplayBackendInstance {
+    fn supports_partial_frames(&self) -> bool { self.partial_framebuffer }
+
     fn configure_scanout(
         &mut self,
         scanout_id: u32,
@@ -201,6 +204,7 @@ impl DisplayBackend<'_> {
 
         Ok(DisplayBackendInstance {
             instance,
+            partial_framebuffer: DisplayFeatures::from_bits_retain(self.features).contains(DisplayFeatures::PARTIAL_FRAMEBUFFER),
             // SAFETY: we have checked the feature flags, so basic_framebuffer should be populated
             vtable: unsafe { self.vtable.basic_framebuffer },
             cursor: if DisplayFeatures::from_bits_retain(self.features)
@@ -244,7 +248,11 @@ impl DisplayBackend<'_> {
             {
                 error!("Missing required methods for CURSOR");
                 return false;
-            } else {
+            } else if !feature.intersects(
+                DisplayFeatures::BASIC_FRAMEBUFFER
+                    | DisplayFeatures::CURSOR
+                    | DisplayFeatures::PARTIAL_FRAMEBUFFER,
+            ) {
                 warn!("Unknown display features ({feature:x}) will be ignored")
             }
         }
