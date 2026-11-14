@@ -9,6 +9,21 @@ Sources: [draft](https://webmachinelearning.github.io/webmcp/),
 [Chrome guide](https://developer.chrome.com/docs/modern-web-guidance/guides/webmcp/agentic-javascript-tools),
 [UI SDK agent bridge](https://ui-sdk.dev/docs/agents).
 
+## agent-browser v0.43.0 as the compatibility oracle
+
+The upstream agent-browser release already implements browser-native WebMCP
+over its experimental **CDP WebMCP domain**, with registration events,
+bounded catalog summaries, per-frame identities, structured invoke/result/
+cancel operations and documented unsupported-browser errors. Its commands
+are `agent-browser webmcp list [TOOL] [--frame ID] --json` and
+`agent-browser webmcp invoke TOOL --params JSON [--frame ID]`.
+
+Contrast this with bctl's separate page-main-world adapter, which assumes
+`document.modelContext.getTools` and `executeTool` methods. **Those assumptions
+have not been validated against the actual Chromium interface in Helium.**
+Do not claim equivalence or runtime compatibility until BCTL-23's cross-
+runtime differential tests pass. The native agent-browser implementation
+and [provider integration](agent-browser.md) form the reference path.
 ## UI SDK bridge
 
 The November 2026 UI SDK agent bridge registers three browser tools using

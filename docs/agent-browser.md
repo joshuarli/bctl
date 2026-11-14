@@ -5,6 +5,47 @@
 from a bctl session instead of launching Chrome. Plain `--cdp` attachment
 with a URL from `bctl cdp-url` works without it.
 
+## agent-browser 0.43 baseline
+
+`tests/interop/run.sh` pins upstream **v0.43.0** at commit
+`1cc19526f3641c8543d55aa6700e7c55b37ac356` and downloads the
+host-specific native binary using the release's SHA-256. The installed
+`usr` binary comes from `sh sync tools agent-browser`, which also installs
+the matching upstream `skill-data` resources and verifies `skills get core`.
+These are separate locations: the interop harness tests a pinned binary;
+the host's `usr` installer follows the latest verified release (minimum 0.43).
+
+The 0.43 release adds hints for otherwise ambiguous snapshot controls,
+faster large-page snapshots, immediate errors after a tab closes,
+high-density recording repair, and a `modern-web-guidance` skill. Their
+availability in the CLI does not prove VM-specific behavior until the
+interop suite is rerun on that host/runtime.
+
+## Native WebMCP integration
+
+agent-browser 0.43 already implements **CDP WebMCP** discovery and
+invocation. With the bctl provider configured as below, these operate in
+the browser attached through bctl:
+
+```sh
+agent-browser --provider bctl open https://example.com
+agent-browser webmcp list --json
+agent-browser webmcp list TOOL --frame FRAME_ID --json
+agent-browser webmcp invoke TOOL --frame FRAME_ID --params '{"query":"example"}'
+```
+
+The example tool and arguments are placeholders; fetch actual page schemas
+before invoking. `agent-browser skills get webmcp-gen` provides a browser
+tool-generation/evaluation workflow. Chrome WebMCP is experimental;
+**bctl's current Helium images have not been qualified for the CDP WebMCP
+domain**. An attached browser may return `webmcp_unsupported`. Do not
+globally enable Chromium experiments or weaken the VM sandbox as a shortcut.
+The existing `bctl webmcp` JavaScript adapter is independent and likewise
+unqualified; [BCTL-23](../TODO.md) tracks the compatibility comparison.
+
+Use one agent-browser controller for a given bctl session, and close it
+before a competing client attaches. Follow the caller's confirmation policy
+for mutating/consequential site tools regardless of page-provided annotations.
 ## Configure it
 
 agent-browser runs plugins it is told about and installs nothing. Add bctl to

@@ -13,11 +13,14 @@ passed it. Anything not listed is unverified.
 | linux-nanos | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | Nanos on QEMU 11.1.2 with KVM, vhost-device-vsock 0.3.0, virtiofsd 1.14.0, Hydrogen `44f4b61f` | `nanos-helium` sha256:9113ccc3… | 113 of 113 in 2 of 2 runs; see [intermittent failures](#known-failing-or-unsupported-cases) |
 | linux-smolvm | Alpine Linux edge (7.2.9), AMD Ryzen 9 9950X (x86_64) | smolvm 1.34.1 (upstream `59bdcf62`, 13 patches) with KVM, headed 2D display, the default runtime | `helium` sha256:c21aaf05… (tinyland `5c5da46`) | 113 of 113 in 2 of 2 runs at bctl `9ead6b5` |
 
-Every tuple uses Helium 0.20.3.1 and these client pins:
-
-- browser-use 1.0.0 (`070be98`), with browser-harness 0.1.13
-- agent-browser 0.43.0 (`1cc1952`), the upstream release binary, on mac-nanos;
-  agent-browser 0.42.0 (`e751995`), built from source, on the other tuples
+Every tuple uses Helium 0.20.3.1. **The current interop runner pins**
+`agent-browser` **0.43.0** (`1cc1952`) as a checksum-verified native
+release on all supported hosts, alongside browser-use 1.0.0 (`070be98`)
+and browser-harness 0.1.13. **Historical receipts are not rewritten:**
+mac-nanos passed with agent-browser 0.43.0, while mac-smolvm, linux-nanos,
+and linux-smolvm were qualified with the source-built 0.42.0 (`e751995`).
+Rerun the suite on those three tuples to qualify 0.43.0; the pin alone
+is not an interoperability result.
 
 The linux-nanos receipts are from bctl `3b134a4` with the Hydrogen pin
 above. The last three runs also include this row's daemon restart fix.
