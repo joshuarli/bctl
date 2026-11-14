@@ -1673,3 +1673,8 @@ Shadowdriver), and a general-purpose guest agent or init system. From the
 agent-browser comparison: feature parity, annotated screenshots, HAR
 recording, network interception, agent chat, cloud browser providers, mobile
 emulation, and a JavaScript execution server (`page eval` is enough).
+
+
+## Parallel graphics performance follow-up (BCTL-21 / BCTL-22)
+
+The dedicated [graphics performance campaign](CAMPAIGN-GRAPHICS-PERFORMANCE.md) is the execution source for headless warm-operation attribution and the independent SmolVM host/VNC damage path. Upstream [tinyland TINY-14](https://github.com/laputa-systems/tinyland/blob/main/docs/CAMPAIGN-DAMAGE.md) owns compositor and DRM damage correctness. Headless work remains first priority; headed damage optimization proceeds in parallel, with one integration owner. Hardware GPU acceleration is a later evidence-gated experiment, not an assumed fix for the headless native gap.
