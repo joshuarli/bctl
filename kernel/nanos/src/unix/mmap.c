@@ -420,6 +420,20 @@ static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm,
         kvirt = pagecache_get_page_if_filled(pn, node_offset, private_page);
         if (range_span(kvirt) != 0)
             return mmap_filebacked_page(p, vm, page_addr, flags, kvirt, private_page);
+        u64 dax_phys = INVALID_PHYSICAL;
+        if (!private_page && !(vm->flags & VMAP_FLAG_TAIL_BSS) &&
+            (!shared || !(vm->allowed_flags & VMAP_FLAG_WRITABLE)) &&
+            pagecache_get_dax_page(pn, node_offset, &dax_phys)) {
+            pagetable_lock();
+            boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
+            boolean dax_active = pagecache_node_dax_active(pn);
+            if (do_map && dax_active)
+                address_space_map_locked(p->vm->as, page_addr, dax_phys, PAGESIZE,
+                                         pageflags_readonly(flags));
+            pagetable_unlock();
+            if (!do_map || dax_active)
+                return STATUS_OK;
+        }
         pending_fault new_pf = new_pending_fault_locked(p, ctx, vaddr);
         if (new_pf != INVALID_ADDRESS) {
             pagecache_node_ref(pn);
@@ -1976,6 +1990,8 @@ static enum fork_page_action fork_page_action(vmap vm, u64 vaddr, physical phys)
         return FORK_PAGE_REFAULT;
     if (vmap_is_static_program(vm))
         return (vm->flags & VMAP_FLAG_WRITABLE) ? FORK_PAGE_COPY : FORK_PAGE_SHARE;
+    if (phys_is_dax(phys))
+        return FORK_PAGE_REFAULT;
     if (vm->cache_node) {
         u64 node_offset = vm->node_offset + (vaddr - vm->node.r.start);
         if (pagecache_node_page_is_cached(vm->cache_node, node_offset, phys))

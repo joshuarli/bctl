@@ -2237,8 +2237,9 @@ closure_function(6, 3, boolean, pagecache_unmap_page_nodelocked,
         } else {
             e->pte_ptr = entry;
         }
-        pagecache_page pp = page_lookup_nodelocked(bound(pn), pi);
-        if ((pp == INVALID_ADDRESS) || (page_state(pp) == PAGECACHE_PAGESTATE_FREE))
+        pagecache_page pp = phys_is_dax(page_from_pte(old_entry)) ? 0
+                                : page_lookup_nodelocked(bound(pn), pi);
+        if (pp && ((pp == INVALID_ADDRESS) || (page_state(pp) == PAGECACHE_PAGESTATE_FREE)))
             pp = 0;
         e->pp = pp;
         e->npages = size >> PAGELOG;
@@ -2305,7 +2306,7 @@ closure_function(5, 0, void, pagecache_node_unmap_pages_complete,
             pagecache_unlock_state(pc);
             if (e->npages > 1)
                 pagecache_unlock_node(pn);
-        } else {
+        } else if (!phys_is_dax(phys)) {
             /* private copy: free physical page */
             page_free_phys(phys);
         }
@@ -2626,12 +2627,39 @@ closure_func_basic(thunk, void, pagecache_node_queue_free)
 
 void pagecache_deallocate_node(pagecache_node pn)
 {
+    pagecache_node_set_dax(pn, 0, 0);
     /* fs_reserve may be embedded in the caller's file, which is freed before the node. */
     if (pn->fs_reserve) {
         deallocate_closure(pn->fs_reserve);
         pn->fs_reserve = 0;
     }
     refcount_release(&pn->refcount);
+}
+
+void pagecache_node_set_dax(pagecache_node pn, pagecache_dax_fn fn, void *priv)
+{
+    pagecache_lock_node(pn);
+    __atomic_store_n(&pn->dax_get_page, fn, __ATOMIC_RELEASE);
+    pn->dax_priv = priv;
+    pagecache_unlock_node(pn);
+}
+
+boolean pagecache_node_dax_active(pagecache_node pn)
+{
+    return __atomic_load_n(&pn->dax_get_page, __ATOMIC_ACQUIRE) != 0;
+}
+
+boolean pagecache_get_dax_page(pagecache_node pn, u64 offset, u64 *phys)
+{
+    pagecache_lock_node(pn);
+    pagecache_dax_fn fn = __atomic_load_n(&pn->dax_get_page, __ATOMIC_RELAXED);
+    void *priv = pn->dax_priv;
+    pagecache_page pp = fn ? page_lookup_nodelocked(pn, offset >> pn->pv->pc->page_order)
+                           : INVALID_ADDRESS;
+    pagecache_unlock_node(pn);
+    if (!fn || (pp != INVALID_ADDRESS))
+        return false;
+    return fn(priv, offset, phys);
 }
 
 sg_io pagecache_node_get_reader(pagecache_node pn)
@@ -2664,6 +2692,8 @@ pagecache_node pagecache_allocate_node(pagecache_volume pv, sg_io fs_read, sg_io
     pn->fs_read = fs_read;
     pn->fs_write = fs_write;
     pn->fs_reserve = fs_reserve;
+    pn->dax_get_page = 0;
+    pn->dax_priv = 0;
     list_init(&pn->ops);
     init_closure_func(&pn->free, thunk, pagecache_node_free);
     init_refcount(&pn->refcount, 1,

@@ -55,8 +55,21 @@ static struct {
     u64 pages;
 } shared_pages;
 
+u64 dax_phys_start = INVALID_PHYSICAL;
+u64 dax_phys_end = 0;
+u64 dax_kvirt_start = 0;
+
+void page_register_dax(physical phys, u64 size, u64 kvirt)
+{
+    dax_phys_start = phys;
+    dax_phys_end = phys + size;
+    dax_kvirt_start = kvirt;
+}
+
 boolean page_share(physical phys)
 {
+    if (phys_is_dax(phys))
+        return true;
     u64 n = phys >> PAGELOG;
     if (n >= shared_pages.pages)
         return false;
@@ -66,12 +79,16 @@ boolean page_share(physical phys)
 
 boolean page_is_shared(physical phys)
 {
+    if (phys_is_dax(phys))
+        return true;
     u64 n = phys >> PAGELOG;
     return (n < shared_pages.pages) && (*(volatile u32 *)&shared_pages.extra_mappings[n] != 0);
 }
 
 boolean page_unshare(physical phys)
 {
+    if (phys_is_dax(phys))
+        return false;
     u64 n = phys >> PAGELOG;
     if (n >= shared_pages.pages)
         return true;

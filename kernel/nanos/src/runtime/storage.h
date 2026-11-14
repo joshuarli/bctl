@@ -77,6 +77,13 @@ enum storage_op {
     STORAGE_OP_READSG,
     STORAGE_OP_WRITESG,
     STORAGE_OP_FLUSH,
+    STORAGE_OP_GET_DAX,
+};
+
+struct storage_dax_info {
+    u64 phys;
+    void *kvirt;
+    u64 size;
 };
 
 typedef struct storage_req {

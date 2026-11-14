@@ -87,12 +87,13 @@ static inline extent allocate_extent(heap h, range file_blocks, range storage_bl
     return e;
 }
 
-closure_function(2, 1, boolean, tfs_storage_alloc,
-                 u64, nblocks, u64 *, start_block,
+closure_function(3, 1, boolean, tfs_storage_alloc,
+                 u64, nblocks, u64, align, u64 *, start_block,
                  range r)
 {
-    if (range_span(r) >= bound(nblocks)) {
-        *bound(start_block) = r.start;
+    u64 start = pad(r.start, bound(align));
+    if ((start >= r.start) && (r.end > start) && (r.end - start >= bound(nblocks))) {
+        *bound(start_block) = start;
         return false;
     }
     return true;
@@ -102,11 +103,18 @@ u64 filesystem_allocate_storage(tfs fs, u64 nblocks)
 {
     if (fs->storage) {
         tfs_storage_lock(fs);
-        u64 start_block;
+        u64 start_block = INVALID_PHYSICAL;
+        u64 bpp = MAX(1, PAGESIZE >> fs->fs.blocksize_order);
+        u64 align = (nblocks >= bpp) ? bpp : 1;
         int result = rangemap_range_find_gaps(fs->storage,
                                               irange(0, fs->fs.size >> fs->fs.blocksize_order),
                                               stack_closure(tfs_storage_alloc,
-                                                            nblocks, &start_block));
+                                                            nblocks, align, &start_block));
+        if ((result != RM_ABORT) && (align > 1))
+            result = rangemap_range_find_gaps(fs->storage,
+                                              irange(0, fs->fs.size >> fs->fs.blocksize_order),
+                                              stack_closure(tfs_storage_alloc,
+                                                            nblocks, 1, &start_block));
         boolean success = (result == RM_ABORT) &&
                           rangemap_insert_range(fs->storage, irangel(start_block, nblocks));
         tfs_storage_unlock(fs);
@@ -176,6 +184,55 @@ closure_function(1, 2, boolean, tfs_ingest_extent,
     return true;
 }
 
+#ifdef KERNEL
+static void tfs_invalidate_dax(tfsfile f, boolean unmap)
+{
+    u64 irqflags = spin_lock_irq(&f->dax_lock);
+    f->dax_eligible = false;
+    boolean was_mapped = f->dax_mapped;
+    f->dax_mapped = false;
+    spin_unlock_irq(&f->dax_lock, irqflags);
+    if (unmap && f->f.cache_node) {
+        pagecache_node_set_dax(f->f.cache_node, 0, 0);
+        pagetable_lock();
+        pagetable_unlock();
+        if (was_mapped)
+            pagecache_node_unmap_range(f->f.cache_node, irange(0, infinity));
+    }
+}
+
+static boolean tfs_get_dax_page(void *priv, u64 offset, u64 *phys)
+{
+    tfsfile f = priv;
+    tfs fs = tfs_from_file(f);
+    if (!fs->dax_len || !__atomic_load_n(&f->dax_eligible, __ATOMIC_ACQUIRE) ||
+        (offset & PAGEMASK))
+        return false;
+    u64 blocks_per_page = PAGESIZE >> fs->fs.blocksize_order;
+    u64 block = offset >> fs->fs.blocksize_order;
+    boolean ok = false;
+    u64 irqflags = spin_lock_irq(&f->dax_lock);
+    if (f->dax_eligible && (offset + PAGESIZE <= fsfile_get_length(&f->f))) {
+        extent ex = (extent)rangemap_lookup(f->extentmap, block);
+        if (ex != INVALID_ADDRESS) {
+            u64 e_offset = block - ex->node.r.start;
+            u64 start_block = ex->start_block + e_offset;
+            if ((!ex->uninited || ((ex->uninited != INVALID_ADDRESS) && ex->uninited->initialized)) &&
+                (block >= ex->node.r.start) &&
+                (e_offset + blocks_per_page <= range_span(ex->node.r)) &&
+                ((start_block & (blocks_per_page - 1)) == 0) &&
+                (((start_block + blocks_per_page) << fs->fs.blocksize_order) <= fs->dax_len)) {
+                *phys = fs->dax_phys + (start_block << fs->fs.blocksize_order);
+                f->dax_mapped = true;
+                ok = true;
+            }
+        }
+    }
+    spin_unlock_irq(&f->dax_lock, irqflags);
+    return ok;
+}
+#endif
+
 static boolean enumerate_dir_entries(tfs fs, tuple t);
 
 closure_function(1, 2, boolean, enumerate_dir_entries_each,
@@ -202,7 +259,16 @@ static boolean enumerate_dir_entries(tfs fs, tuple t)
         u64 len;
         if (filelength && u64_from_value(filelength, &len))
             fsfile_set_length(&f->f, len);
-        return iterate(extents, stack_closure(tfs_ingest_extent, f));
+        boolean ok = iterate(extents, stack_closure(tfs_ingest_extent, f));
+#ifdef KERNEL
+        if (ok && fs->dax_len) {
+            u64 irqflags = spin_lock_irq(&f->dax_lock);
+            f->dax_eligible = true;
+            spin_unlock_irq(&f->dax_lock, irqflags);
+            pagecache_node_set_dax(fsfile_get_cachenode(&f->f), tfs_get_dax_page, f);
+        }
+#endif
+        return ok;
     }
     table_set(fs->files, t, INVALID_ADDRESS);
     tuple c = children(t);
@@ -366,6 +432,9 @@ int filesystem_write_eav(tfs fs, tuple t, symbol a, value v, boolean cleanup)
 
 static int tfs_truncate(filesystem fs, fsfile f, u64 len)
 {
+#ifdef KERNEL
+    tfs_invalidate_dax((tfsfile)f, true);
+#endif
     if (f->md) {
         value v = value_from_u64(len);
         if (v == INVALID_ADDRESS)
@@ -793,6 +862,9 @@ static void tfs_write(fsfile fsf,
     merge m = allocate_merge(fs->fs.h, complete);
     status_handler sh = apply_merge(m);
 
+#ifdef KERNEL
+    tfs_invalidate_dax(f, true);
+#endif
     filesystem_lock(&fs->fs);
     status s = extents_range_handler(fs, f, q, sg, m);
     filesystem_unlock(&fs->fs);
@@ -852,6 +924,7 @@ closure_function(2, 1, status, filesystem_check_or_reserve_extent,
         status s = timm("result", "read-only filesystem");
         return timm_append(s, "fsstatus", "%d", -EROFS);
     }
+    tfs_invalidate_dax(f, true);
     filesystem_lock(&fs->fs);
     status s = extents_range_handler(fs, f, q, 0, 0);
     filesystem_unlock(&fs->fs);
@@ -921,6 +994,7 @@ static void tfs_alloc(filesystem fs, fsfile f, long offset, long len,
 
     tfsfile fsf = (tfsfile)f;
     tfs tfs = (struct tfs *)fs;
+    tfs_invalidate_dax(fsf, true);
     filesystem_lock(fs);
     u64 lastedge = blocks.start;
     rmnode curr = rangemap_first_node(fsf->extentmap);
@@ -1114,6 +1188,11 @@ tfsfile allocate_fsfile(tfs fs, tuple md);
 
 static void deallocate_fsfile(tfs fs, tfsfile f, rmnode_handler extent_destructor)
 {
+#ifdef KERNEL
+    tfs_invalidate_dax(f, false);
+    if (f->f.cache_node)
+        pagecache_node_set_dax(f->f.cache_node, 0, 0);
+#endif
     deallocate_rangemap(f->extentmap, extent_destructor);
 #ifdef KERNEL
     pagecache_deallocate_node(f->f.cache_node);
@@ -1305,6 +1384,11 @@ tfsfile allocate_fsfile(tfs fs, tuple md)
         return INVALID_ADDRESS;
     }
     f->extentmap = allocate_rangemap(h);
+#ifdef KERNEL
+    spin_lock_init(&f->dax_lock);
+#endif
+    f->dax_eligible = false;
+    f->dax_mapped = false;
     fsf->get_blocks = tfsfile_get_blocks;
     if (md)
         table_set(fs->files, md, f);
@@ -1441,6 +1525,21 @@ void create_filesystem(heap h,
 #endif
     fs->next_extend_log_offset = INVALID_PHYSICAL;
     fs->next_new_log_offset = INVALID_PHYSICAL;
+    fs->dax_phys = 0;
+    fs->dax_len = 0;
+#ifdef KERNEL
+    struct storage_dax_info dax = {0};
+    struct storage_req dax_req = {
+        .op = STORAGE_OP_GET_DAX,
+        .blocks = irange(0, 0),
+        .data = &dax,
+    };
+    apply(req_handler, &dax_req);
+    if (dax.size && !(dax.phys & PAGEMASK)) {
+        fs->dax_phys = dax.phys;
+        fs->dax_len = dax.size;
+    }
+#endif
     fs->tl = log_create(h, fs, !sstring_is_null(label), closure(h, log_complete, complete, fs));
 }
 

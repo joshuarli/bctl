@@ -78,6 +78,8 @@ typedef struct pagecache_node {
     sg_io fs_read;
     sg_io fs_write;
     pagecache_node_reserve fs_reserve;
+    pagecache_dax_fn dax_get_page;
+    void *dax_priv;
     closure_struct(thunk, free);
     closure_struct(thunk, queue_free);
     struct refcount refcount;   /* count dirty pages before freeing node */

@@ -172,6 +172,21 @@ boolean attach_vtmmio(heap h, backed_heap page_allocator, vtmmio d, u64 feature_
     return true;
 }
 
+boolean vtmmio_get_shm_region(vtmmio dev, u32 id, u64 *base, u64 *len)
+{
+    if (dev->memsize < VTMMIO_OFFSET_CONFIG)
+        return false;
+    vtmmio_set_u32(dev, VTMMIO_OFFSET_SHMSEL, id);
+    u64 shm_len = vtmmio_get_u32(dev, VTMMIO_OFFSET_SHMLENLOW) |
+                  ((u64)vtmmio_get_u32(dev, VTMMIO_OFFSET_SHMLENHIGH) << 32);
+    if ((s64)shm_len <= 0)
+        return false;
+    *len = shm_len;
+    *base = vtmmio_get_u32(dev, VTMMIO_OFFSET_SHMBASELOW) |
+            ((u64)vtmmio_get_u32(dev, VTMMIO_OFFSET_SHMBASEHIGH) << 32);
+    return true;
+}
+
 closure_func_basic(thunk, void, vtmmio_irq)
 {
     vtmmio dev = struct_from_closure(vtmmio, irq_handler);

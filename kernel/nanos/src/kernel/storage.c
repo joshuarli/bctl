@@ -244,6 +244,10 @@ define_closure_function(2, 1, void, storage_simple_req_handler,
     case STORAGE_OP_WRITE:
         apply(bound(write), req->data, req->blocks, req->completion);
         break;
+    case STORAGE_OP_GET_DAX:
+        if (req->completion)
+            apply(req->completion, timm("result", "unsupported"));
+        break;
     }
 }
 

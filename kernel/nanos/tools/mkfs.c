@@ -517,7 +517,7 @@ static void write_mbr(descriptor f, boolean uefi)
     partition_write(&e[part_num++], true, 0x83, fs_offset, fs_size);
 
     /* Root filesystem */
-    fs_offset += fs_size;
+    fs_offset = pad(fs_offset + fs_size, PAGESIZE);
     assert(total_size > fs_offset);
     partition_write(&e[part_num++], true, 0x83, fs_offset,
                     total_size - fs_offset);
@@ -784,7 +784,7 @@ int main(int argc, char **argv)
         if (boot) {
             create_filesystem(h, SECTOR_SIZE, BOOTFS_SIZE, closure(h, bwrite, out, offset), false,
                               sstring_empty(), closure(h, fsc, h, out, boot, target_root));
-            offset += BOOTFS_SIZE;
+            offset = pad(offset + BOOTFS_SIZE, PAGESIZE);
 
             /* Remove tuple from root, so it doesn't end up in the root FS. */
             set(root, sym(boot), 0);

@@ -102,6 +102,9 @@ typedef struct storage {
     u64 capacity;
     u64 block_size;
     u32 seg_max;
+    u64 dax_phys;
+    void *dax_kvirt;
+    u64 dax_len;
 } *storage;
 
 static virtio_blk_req allocate_virtio_blk_req(storage st, u32 type, u64 sector, u64 *phys)
@@ -279,6 +282,22 @@ closure_func_basic(storage_req_handler, void, virtio_storage_req_handler,
     case STORAGE_OP_WRITE:
         storage_rw_internal(st, true, req->data, req->blocks, req->completion);
         break;
+    case STORAGE_OP_GET_DAX: {
+        struct storage_dax_info *info = req->data;
+        u64 off = req->blocks.start << SECTOR_OFFSET;
+        if (st->dax_len > off && !(off & PAGEMASK)) {
+            info->phys = st->dax_phys + off;
+            info->kvirt = (u8 *)st->dax_kvirt + off;
+            info->size = st->dax_len - off;
+        } else {
+            info->phys = 0;
+            info->kvirt = 0;
+            info->size = 0;
+        }
+        if (req->completion)
+            apply(req->completion, STATUS_OK);
+        break;
+    }
     }
 }
 
@@ -287,6 +306,25 @@ static void virtio_blk_attach(heap general, storage_attach a, vtdev v)
     storage s = allocate(general, sizeof(struct storage));
     assert(s != INVALID_ADDRESS);
     s->v = v;
+    s->dax_phys = 0;
+    s->dax_kvirt = 0;
+    s->dax_len = 0;
+
+    if (v->transport == VTIO_TRANSPORT_MMIO) {
+        u64 shm_base, shm_len;
+        if (vtmmio_get_shm_region((vtmmio)v, 0, &shm_base, &shm_len) &&
+            shm_len >= PAGESIZE && !(shm_base & PAGEMASK) && !(shm_len & PAGEMASK)) {
+            u64 kvirt = allocate_u64((heap)heap_virtual_huge(get_kernel_heaps()),
+                                     pad(shm_len, PAGESIZE));
+            if (kvirt != INVALID_PHYSICAL) {
+                map(kvirt, shm_base, shm_len, pageflags_readonly(pageflags_memory()));
+                page_register_dax(shm_base, shm_len, kvirt);
+                s->dax_phys = shm_base;
+                s->dax_kvirt = pointer_from_u64(kvirt);
+                s->dax_len = shm_len;
+            }
+        }
+    }
 
     s->block_size = (v->features & VIRTIO_BLK_F_BLK_SIZE) ?
             vtdev_cfg_read_4(v, VIRTIO_BLK_R_BLOCK_SIZE) : SECTOR_SIZE;

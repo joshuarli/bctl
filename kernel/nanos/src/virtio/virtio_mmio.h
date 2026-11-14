@@ -19,6 +19,11 @@
 #define VTMMIO_OFFSET_QUEUEAVAILHIGH    0x094
 #define VTMMIO_OFFSET_QUEUEUSEDLOW      0x0A0
 #define VTMMIO_OFFSET_QUEUEUSEDHIGH     0x0A4
+#define VTMMIO_OFFSET_SHMSEL            0x0AC
+#define VTMMIO_OFFSET_SHMLENLOW         0x0B0
+#define VTMMIO_OFFSET_SHMLENHIGH        0x0B4
+#define VTMMIO_OFFSET_SHMBASELOW        0x0B8
+#define VTMMIO_OFFSET_SHMBASEHIGH       0x0BC
 #define VTMMIO_OFFSET_CONFIG            0x100
 
 typedef struct vtmmio_dev {
@@ -66,6 +71,7 @@ closure_type(vtmmio_probe, void, vtmmio dev);
 void vtmmio_probe_devs(vtmmio_probe probe);
 void vtmmio_set_status(vtmmio dev, u8 status);
 boolean attach_vtmmio(heap h, backed_heap page_allocator, vtmmio d, u64 feature_mask);
+boolean vtmmio_get_shm_region(vtmmio dev, u32 id, u64 *base, u64 *len);
 status vtmmio_alloc_virtqueue(vtmmio dev, sstring name, int idx, range cpu_affinity,
                               struct virtqueue **result);
 status vtmmio_register_config_change_handler(vtmmio dev, thunk handler);

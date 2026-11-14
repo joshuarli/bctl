@@ -444,6 +444,10 @@ closure_func_basic(storage_req_handler, void, virtio_scsi_req_handler,
     case STORAGE_OP_WRITE:
         virtio_scsi_io(d, SCSI_CMD_WRITE_16, req->data, req->blocks, req->completion);
         break;
+    case STORAGE_OP_GET_DAX:
+        if (req->completion)
+            apply(req->completion, timm("result", "unsupported"));
+        break;
     }
 }
 

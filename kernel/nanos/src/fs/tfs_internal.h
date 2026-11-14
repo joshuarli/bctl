@@ -29,11 +29,18 @@ typedef struct tfs {
     log temp_log;
     u64 next_extend_log_offset;
     u64 next_new_log_offset;
+    u64 dax_phys;
+    u64 dax_len;
 } *tfs;
 
 typedef struct tfsfile {
     struct fsfile f;    /* must be first */
     rangemap extentmap;
+#ifdef KERNEL
+    struct spinlock dax_lock;
+#endif
+    boolean dax_eligible;
+    boolean dax_mapped;
 } *tfsfile;
 
 declare_closure_struct(2, 0, void, free_uninited,

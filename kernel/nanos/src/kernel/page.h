@@ -114,4 +114,19 @@ void init_shared_pages(heap h);
 boolean page_share(physical phys);
 boolean page_is_shared(physical phys);
 boolean page_unshare(physical phys);
+void page_register_dax(physical phys, u64 size, u64 kvirt);
+
+extern u64 dax_phys_start;
+extern u64 dax_phys_end;
+extern u64 dax_kvirt_start;
+
+static inline boolean phys_is_dax(physical phys)
+{
+    return (phys >= dax_phys_start) && (phys < dax_phys_end);
+}
+
+static inline u64 dax_virt_from_phys(physical phys)
+{
+    return dax_kvirt_start + (phys - dax_phys_start);
+}
 #endif

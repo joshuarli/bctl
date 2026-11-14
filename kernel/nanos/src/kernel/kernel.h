@@ -709,7 +709,7 @@ static inline boolean is_linear_backed_address(u64 address)
 
 static inline u64 virt_from_linear_backed_phys(u64 address)
 {
-    return address + kvmem.linear.start;
+    return phys_is_dax(address) ? dax_virt_from_phys(address) : (address + kvmem.linear.start);
 }
 
 static inline u64 phys_from_linear_backed_virt(u64 virt)
