@@ -384,6 +384,11 @@ static int run(const char *name, int (*check)(void), int *total)
 int main(void)
 {
     alarm(60);
+    if (geteuid() != 0) {
+        printf("MINI_CHROMIUM_TEST name=ns_isolation_root status=FAIL detail=requires_root_to_write_uid_maps\n");
+        printf("MINI_CHROMIUM_RESULT status=FAIL passed=0 failed=1\n");
+        return 1;
+    }
     int total = 0;
     int failed = run("ns_kill_user_ns_scope", kill_user_ns_scope, &total);
     failed += run("ns_owner_requires_ancestry", owner_needs_ancestry, &total);
