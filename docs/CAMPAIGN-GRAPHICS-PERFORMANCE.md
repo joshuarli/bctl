@@ -1,0 +1,37 @@
+# Graphics performance campaign: headless first, headed in parallel
+
+Status: planned. Performance targets and workstreams are not completed. Coordinate with docs/macos-workflows.md, docs/optimizations.md, BCTL-21, BCTL-22, and upstream laputa-systems/tinyland TINY-14.
+
+## Decision
+Prioritize the measurable Nanos headless-versus-native browser automation gap; independently optimize tinyland software damage and the SmolVM host/viewer pipeline in parallel. Do not treat GPU passthrough as the explanation for the current headless gap. Nanos uses HVF/libkrun CPU virtualization with Chromium headless software rendering; headed SmolVM uses a CPU 2D virtio-gpu path and tinyland, not a Metal accelerated browser/compositor. Tinyland is absent from the headless benchmark. Native Chromium with --disable-gpu remains fast, and the tested guest compute, memory-touch and canvas workloads approximately match native. Different browser builds and host scheduling remain comparison confounders.
+
+## Workstream H: BCTL-21 — headless critical path
+**H0 baseline:** reproduce warm CDP screenshot, click, navigation, form and crawl on a quiet Apple Silicon host; record host model, browser build/flags, actual renderer backend, vCPU, image/kernel revision, load, sample distributions and paired native-default/native-software/Nanos results. Keep correctness and output equivalence gates. Preserve existing goals: >=20% faster workflows, >=50% lower physical footprint, stretch 1.5x warm agent steps and 2x crawl throughput/GiB.
+
+**H1 trace:** BCTL_TRACE_CHROMIUM=1 currently captures only approximately two seconds at startup and is NOT sufficient to attribute warm actions. Add bounded operation-scoped Chromium tracing with a reliable begin/end marker for one warmed screenshot and one warmed click/navigation step on each side. Correlate CDP request/response, renderer/compositor/main-thread work, copy-output/readback, encode, IPC, thread wakeups and guest/host scheduling where observable. Record missing trace visibility explicitly; do not label an unmeasured interval as GPU, kernel or renderer cost.
+
+**H2 experiments:** choose the largest attributable stage; run one-variable A/B experiments using the existing kernel experiment harness, repeated interleaved medians and host-load gates. Inspect screenshot image format, encoding and copies; Chromium process IPC and synchronization; guest thread scheduling; CDP gateway overhead. Do not reopen ruled-out generic CPU-feature or GPU theories without new contrary evidence. Correctness, stability and no regression on other workflows are required.
+
+**H3 density:** separately profile physical resident and shareable file-backed browser pages across 1/2/4+ VMs, startup/reclaim, RSS/PSS/host footprint and throughput per GiB. Consider read-only page sharing only with measurable isolation and memory wins. Never sum guest RSS and host VMM RSS as though independent.
+
+**Exit:** paired traces and bottleneck attribution checked in, at least one measured actionable experiment or explicit negative result, benchmark report with honest pass/fail against targets. No closing on anecdotal speedup.
+
+## Workstream G: upstream TINY-14
+Tinyland currently discards Wayland Damage and DamageBuffer, full-copies SHM snapshots, recomposes full output and copies full DRM scanout. Upstream campaign docs/CAMPAIGN-DAMAGE.md owns protocol pending/committed region semantics, synchronized subsurfaces, old/new cursor/popup extents, alpha/occlusion, persistent composition and per-scanout generation repair. Its first real pilot is a 16x16 change on two alternating buffers. Do not duplicate its work in the bctl fork.
+
+## Workstream V: BCTL-22 — host display and viewer
+**V0 instrument:** measure exact bytes copied/read and allocations at virtio-gpu transfer/flush, resource switch, staging/front publication, VNC frame conversion, tile compare and wire delivery. Include per-frame CPU, latency, memory, generation and dirty-region counters; distinguish network payload savings from upstream work eliminated.
+
+**V1 libkrun/rutabaga:** preserve validated resource-transfer/flush damage and visible scanout damage across resource switches. The existing full read on scanout change and the display callback's ignored _damage need an explicit repair. Distinguish resource upload damage, guest back-buffer repair, visible-scene damage and viewer-missed damage. On unknown resource age/resize/reset, force a correct full refresh and then recover sparse updates. Do not assume that a new scanout resource has a valid previous full image.
+
+**V2 publication:** avoid full staging->front copying and repeated framebuffer clones. Use immutable/versioned frame publication, dirty-region copy-on-write or bounded shared buffer ownership, and per-consumer generation leases. Keep the producer independent of slow/disconnected viewers; bound memory/backlog. Respect alloc_frame's current writable-storage contract: partial-write preservation requires an explicit negotiated capability, and nonparticipating backends keep full-frame fills.
+
+**V3 VNC:** propagate cumulative damage across missed generations instead of full-frame tile scanning where trustworthy; preserve full-refresh and compare fallback when damage history is invalid. Raw RFB partial framebuffer requests must not discard changes outside the requested rectangle; retain them until requested or force a refresh. Handle multiple viewers, slow clients, reconnect, resize, suspend/resume and dropped frames. Verify exact pixels, not merely low bandwidth.
+
+**V4 integration:** exercise the actual pinned tinyland two-buffer scanout through candidate libkrun, SmolVM host display, VNC and dashboard. A single-buffer synthetic test cannot close this ticket. Record guest/host CPU separately without double-counting, per-stage copied bytes, complete host-process-tree CPU, end-to-end input-to-pixel latency, payload, memory and fullscreen throughput. Proposed sparse targets: >=90% fewer bytes in affected copy/compose/compare stages, >=50% less complete host-process-tree CPU per verified frame, <=5% sustained fullscreen regression. Treat thresholds as acceptance goals, not achieved results. Include fault injection, exact-pixel oracle, reconnect and recovery-to-sparse.
+
+## GPU decision gate (later, separate)
+Only prototype guest Mesa/Venus + host virglrenderer/MoltenVK/Metal if a representative workload (WebGL/WebGPU, animation, high-resolution interactive viewing) demonstrates a GPU-sensitive bottleneck after damage fixes. Benchmark against software 2D with the same pages, exact output, CPU/GPU/memory/latency and stability. Do not simply flip --gpu-mode 2d and claim hardware acceleration. Keep Nanos headless optimization independent.
+
+## Execution and ownership
+Parallel tracks: H tracing/experiments, G upstream compositor, V host instrumentation/implementation, Q independent correctness/perf fixtures. Agree on region/generation/invalidation contracts before parallel code merges. One owner integrates pinned tinyland, libkrun and viewer changes and runs cross-layer qualification. Preserve existing kernel Rust-adoption work and unrelated backlog; no duplicate campaigns. Each slice should land with reproducible receipts, failure-mode tests, a small reviewable diff and explicit gates. Keep fallback full redraw until exact correctness is demonstrated.
