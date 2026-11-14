@@ -248,6 +248,7 @@ boolean gic_int_is_pending(int irq);
 u64 gic_dispatch_int(void);
 void gic_eoi(int irq);
 int init_gic(void);
+void gic_set_fdt_bases(u64 dist_phys, u64 redist_phys);
 void gic_percpu_init(void);
 
 #define _GIC_SET_INTFIELD(name, type) void gic_set_int_##name(int irq, u32 v);

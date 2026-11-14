@@ -35,8 +35,15 @@
 #endif
 
 static RO_AFTER_INIT u8 gpio_key_power = -1;
+static BSS_RO_AFTER_INIT u64 fdt_uart_base;
+static BSS_RO_AFTER_INIT u64 fdt_dtb_base;
 
 BSS_RO_AFTER_INIT struct uefi_boot_params boot_params;
+
+static inline u64 devicetree_blob_addr(void)
+{
+    return fdt_dtb_base ? fdt_dtb_base : (DEVICETREE_BLOB_BASE + kernel_phys_offset);
+}
 
 u64 machine_random_seed(void)
 {
@@ -173,8 +180,8 @@ void init_physical_heap(void)
         add_heap_range_internal(remainder, 0);
         unmap(map_base, map_size);
     } else {
-        u64 base = PHYSMEM_BASE + INIT_IDENTITY_SIZE;
-        u64 end = PHYSMEM_BASE + get_memory_size(pointer_from_u64(DEVICETREE_BLOB_BASE));
+        u64 base = PHYSMEM_BASE + kernel_phys_offset + INIT_IDENTITY_SIZE;
+        u64 end = PHYSMEM_BASE + kernel_phys_offset + get_memory_size(pointer_from_u64(devicetree_blob_addr()));
         map(kvmem.r.start, base, BOOTSTRAP_SIZE, pageflags_writable(pageflags_memory()));
         base += BOOTSTRAP_SIZE;
         init_debug("\nfree base ");
@@ -304,9 +311,41 @@ static void __attribute__((noinline)) init_service_new_stack(void)
     while(1);
 }
 
+static boolean fdt_read_reg_range(struct fdt fdt, u32 acells, u32 scells, range *r1, range *r2);
+
+static void platform_dtb_early_devices(void)
+{
+    struct fdt fdt;
+    if (!dtb_parse_init(pointer_from_u64(devicetree_blob_addr()), &fdt))
+        return;
+    dt_node root = fdt_get_node(&fdt);
+    if (!root)
+        return;
+    u32 root_acells, root_scells;
+    fdt_get_cells(&fdt, &root_acells, &root_scells);
+    fdt_foreach_node(&fdt, node) {
+        struct fdt cfdt = fdt;
+        dt_prop compat = fdt_get_prop(&cfdt, ss("compatible"));
+        if (compat == INVALID_ADDRESS)
+            continue;
+        range r;
+        if (dt_prop_contains_string(compat, ss("arm,pl011"))) {
+            if (fdt_read_reg_range(fdt, root_acells, root_scells, &r, 0)) {
+                serial_set_base(r.start);
+                fdt_uart_base = DEVICE_BASE + (r.start & (DEV_MAP_SIZE - 1));
+            }
+        } else if (dt_prop_contains_string(compat, ss("arm,pl031"))) {
+            if (fdt_read_reg_range(fdt, root_acells, root_scells, &r, 0))
+                rtc_set_base(r.start);
+        }
+    }
+}
+
 static void init_setup_stack(void)
 {
     serial_set_devbase(DEVICE_BASE);
+    if (!boot_params.mem_map.map && fdt_dtb_base)
+        platform_dtb_early_devices();
 #if 0
     devicetree_dump(pointer_from_u64(DEVICETREE_BLOB_BASE));
 #endif
@@ -364,6 +403,8 @@ void __attribute__((noreturn)) start(u64 x0, u64 x1)
             }
         }
         runtime_memcpy(&boot_params, params, sizeof(boot_params));
+    } else if (x0) {
+        fdt_dtb_base = x0;
     }
 
     init_debug("calling init_mmu\n");
@@ -378,10 +419,22 @@ closure_func_basic(thunk, void, gpio_key_handler)
     gpio_irq_clear(U64_FROM_BIT(gpio_key_power));
 }
 
-static void platform_dtb_parse(kernel_heaps kh, vector cpu_ids)
+static boolean fdt_read_reg_range(struct fdt fdt, u32 acells, u32 scells, range *r1, range *r2)
+{
+    dt_reg_iterator iter;
+    if (!fdt_get_reg(&fdt, acells, scells, &iter) || !dtb_reg_iterate(&iter, r1))
+        return false;
+    if (r2) {
+        if (!dtb_reg_iterate(&iter, r2))
+            *r2 = irange(0, 0);
+    }
+    return true;
+}
+
+static void platform_dtb_parse(kernel_heaps kh, vector cpu_ids, boolean acpi)
 {
     struct fdt fdt;
-    if (!dtb_parse_init(pointer_from_u64(DEVICETREE_BLOB_BASE + kernel_phys_offset), &fdt))
+    if (!dtb_parse_init(pointer_from_u64(devicetree_blob_addr()), &fdt))
         return;
     dt_node root = fdt_get_node(&fdt);
     if (!root)
@@ -435,6 +488,38 @@ static void platform_dtb_parse(kernel_heaps kh, vector cpu_ids)
                         gpio_key_power = dt_prop_get_cell(gpio_prop, 1);
                 }
             }
+        } else if (!acpi) {
+            struct fdt cfdt = fdt;
+            dt_prop compat = fdt_get_prop(&cfdt, ss("compatible"));
+            if (compat == INVALID_ADDRESS)
+                continue;
+            range r1, r2;
+            if (dt_prop_contains_string(compat, ss("arm,gic-v3"))) {
+                if (fdt_read_reg_range(fdt, root_acells, root_scells, &r1, &r2) && range_span(r2))
+                    gic_set_fdt_bases(r1.start, r2.start);
+            } else if (dt_prop_contains_string(compat, ss("arm,cortex-a15-gic"))) {
+                if (fdt_read_reg_range(fdt, root_acells, root_scells, &r1, 0))
+                    gic_set_fdt_bases(r1.start, 0);
+            } else if (dt_prop_contains_string(compat, ss("arm,pl011"))) {
+                if (fdt_read_reg_range(fdt, root_acells, root_scells, &r1, 0))
+                    fdt_uart_base = DEVICE_BASE + (r1.start & (DEV_MAP_SIZE - 1));
+            } else if (dt_prop_contains_string(compat, ss("arm,pl031"))) {
+                if (fdt_read_reg_range(fdt, root_acells, root_scells, &r1, 0))
+                    rtc_set_base(r1.start);
+            } else if (dt_prop_contains_string(compat, ss("arm,pl061"))) {
+                if (fdt_read_reg_range(fdt, root_acells, root_scells, &r1, 0))
+                    gpio_set_base(r1.start);
+            } else if (dt_prop_contains_string(compat, ss("virtio,mmio"))) {
+                if (fdt_read_reg_range(fdt, root_acells, root_scells, &r1, 0)) {
+                    struct fdt ifdt = fdt;
+                    dt_prop intr = fdt_get_prop(&ifdt, ss("interrupts"));
+                    if ((intr != INVALID_ADDRESS) && (dt_prop_cell_count(intr) >= 3) &&
+                        (dt_prop_get_cell(intr, 0) == 0)) {
+                        u64 irq = GIC_SPI_INTS_START + dt_prop_get_cell(intr, 1);
+                        virtio_mmio_add_dev(kh, r1.start, range_span(r1), irq);
+                    }
+                }
+            }
         }
     }
 }
@@ -460,14 +545,17 @@ closure_function(2, 2, void, plat_spcr_handler,
 void init_platform_devices(kernel_heaps kh)
 {
     vector cpu_ids = cpus_init_ids(heap_general(kh));
+    boolean acpi = init_acpi_tables(kh);
     /* Prefer retrieving CPU ID info from ACPI if present, because DT CPU nodes might have incorrect
      * info (as seen on AWS c6g.8xlarge instances). */
-    platform_dtb_parse(kh, init_acpi_tables(kh) ? 0 : cpu_ids);
+    platform_dtb_parse(kh, acpi ? 0 : cpu_ids, acpi);
     /* the device tree blob is never accessed from now on: reclaim the memory where it is located */
     pageheap_add_range(DEVICETREE_BLOB_BASE + kernel_phys_offset,
                       INIT_PAGEMEM - DEVICETREE_BLOB_BASE);
     struct console_driver *console_driver = 0;
     acpi_parse_spcr(stack_closure(plat_spcr_handler, kh, &console_driver));
+    if (!console_driver && fdt_uart_base)
+        console_driver = pl011_console_init(kh, pointer_from_u64(fdt_uart_base));
     if (!console_driver) {
         console_driver = allocate_zero(heap_general(kh), sizeof(*console_driver));
         console_driver->name = ss("serial");

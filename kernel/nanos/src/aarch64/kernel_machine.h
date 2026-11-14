@@ -637,6 +637,7 @@ void psci_shutdown(void);
 void psci_reset(void);
 
 void kaslr_fixup_rtc(void);
+void rtc_set_base(u64 phys_addr);
 
 void pci_platform_set_ecam(u64 ecam_base);
 

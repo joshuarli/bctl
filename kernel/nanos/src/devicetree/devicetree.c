@@ -98,6 +98,18 @@ u32 dt_prop_get_cell(dt_prop prop, unsigned int index)
     return dt_u32(*((u32 *)ptr));
 }
 
+boolean dt_prop_contains_string(dt_prop prop, sstring str)
+{
+    u32 len = dt_u32(prop->data_length);
+    for (u32 off = 0; off < len; ) {
+        sstring cur = sstring_from_cstring((char *)prop->data + off, len - off);
+        if (!runtime_strcmp(cur, str))
+            return true;
+        off += cur.len + 1;
+    }
+    return false;
+}
+
 sstring dtb_string(void *dtb, u64 off)
 {
     dt_header fdt = dtb;

@@ -30,6 +30,13 @@ void serial_set_devbase(u64 devbase)
     UART0_FR = ((void*)UART0_FR) + devbase;
 }
 
+void serial_set_base(u64 phys_addr)
+{
+    u64 base = DEVICE_BASE + (phys_addr & (DEV_MAP_SIZE - 1));
+    UART0_DR = (volatile u32 *)base;
+    UART0_FR = (volatile u32 *)(base + 0x18);
+}
+
 static void pl011_write(void *d, const char *s, bytes count)
 {
     pl011_console console = d;

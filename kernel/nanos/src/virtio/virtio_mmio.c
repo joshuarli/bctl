@@ -26,17 +26,14 @@ RO_AFTER_INIT static struct list vtmmio_devices = {
         &vtmmio_devices, &vtmmio_devices
 };
 
-closure_function(1, 1, void, vtmmio_new_dev,
-                 kernel_heaps, kh,
-                 acpi_mmio_dev adev)
+void virtio_mmio_add_dev(kernel_heaps kh, u64 membase, u64 memsize, u64 irq)
 {
     virtio_mmio_debug("new device");
-    kernel_heaps kh = bound(kh);
     heap h = heap_locked(kh);
     vtmmio dev = mem_alloc(h, sizeof(*dev), MEM_NOWAIT | MEM_NOFAIL);
-    dev->membase = adev->membase;
-    dev->memsize = adev->memsize;
-    dev->irq = adev->irq;
+    dev->membase = membase;
+    dev->memsize = memsize;
+    dev->irq = irq;
     u64 page_offset = dev->membase & PAGEMASK;
     dev->vbase = mem_alloc((heap)heap_virtual_huge(kh), page_offset + dev->memsize,
                            MEM_NOWAIT | MEM_NOFAIL);
@@ -49,6 +46,13 @@ closure_function(1, 1, void, vtmmio_new_dev,
     assert(dev->vq_handlers != INVALID_ADDRESS);
     vtmmio_set_status(dev, VIRTIO_CONFIG_STATUS_RESET);
     list_push_back(&vtmmio_devices, &dev->l);
+}
+
+closure_function(1, 1, void, vtmmio_new_dev,
+                 kernel_heaps, kh,
+                 acpi_mmio_dev adev)
+{
+    virtio_mmio_add_dev(bound(kh), adev->membase, adev->memsize, adev->irq);
 }
 
 closure_function(1, 2, void, vtmmio_cmdline_parse,
@@ -83,12 +87,7 @@ closure_function(1, 2, void, vtmmio_cmdline_parse,
                 !parse_int(b, 16, &membase) || (pop_u8(b) != ':') ||
                 !parse_int(b, 10, &irq))
             return;
-        struct acpi_mmio_dev adev = {
-            .membase = membase,
-            .memsize = memsize,
-            .irq = irq,
-        };
-        apply(stack_closure(vtmmio_new_dev, bound(kh)), &adev);
+        virtio_mmio_add_dev(bound(kh), membase, memsize, irq);
     }
 }
 

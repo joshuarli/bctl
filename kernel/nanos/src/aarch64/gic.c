@@ -511,6 +511,15 @@ static void init_gits(kernel_heaps kh)
 
 BSS_RO_AFTER_INIT u16 gic_msi_vector_base;
 BSS_RO_AFTER_INIT u16 gic_msi_vector_num;
+static BSS_RO_AFTER_INIT u64 fdt_dist_base;
+static BSS_RO_AFTER_INIT u64 fdt_redist_base;
+
+void gic_set_fdt_bases(u64 dist_phys, u64 redist_phys)
+{
+    fdt_dist_base = DEVICE_BASE + (dist_phys & (DEV_MAP_SIZE - 1));
+    if (redist_phys)
+        fdt_redist_base = DEVICE_BASE + (redist_phys & (DEV_MAP_SIZE - 1));
+}
 
 closure_func_basic(madt_handler, void, gic_madt_handler,
                    u8 type, void *p)
@@ -533,8 +542,10 @@ int init_gic(void)
 {
     boolean madt_redist = false;
     if (!acpi_walk_madt(stack_closure_func(madt_handler, gic_madt_handler))) {
-        gic.dist_base = mmio_base_addr(GIC_DIST);
-        gic.redist.base = mmio_base_addr(GIC_REDIST);
+        gic.dist_base = fdt_dist_base ? fdt_dist_base : mmio_base_addr(GIC_DIST);
+        gic.redist.base = fdt_redist_base ? fdt_redist_base : mmio_base_addr(GIC_REDIST);
+        if (fdt_redist_base)
+            madt_redist = true;
     } else if (gic.redist.base) {
         madt_redist = true;
     }

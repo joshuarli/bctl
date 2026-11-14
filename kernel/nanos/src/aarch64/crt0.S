@@ -74,18 +74,18 @@
 .globl aarch64_cpu_init
 aarch64_cpu_init:
         // allow debug and serror interrupts, disable irq and firq
-        mov     x0, #0xc0
-        msr     daif, x0
+        mov     x9, #0xc0
+        msr     daif, x9
 
         // no trap on simd       
-        mrs     x0, cpacr_el1
-        orr     x0, x0, (CPACR_EL1_FPEN_NO_TRAP << CPACR_EL1_FPEN_SHIFT)
-        msr     cpacr_el1, x0
+        mrs     x9, cpacr_el1
+        orr     x9, x9, (CPACR_EL1_FPEN_NO_TRAP << CPACR_EL1_FPEN_SHIFT)
+        msr     cpacr_el1, x9
 
         // temporary stack
-        adr     x0, #0
-        and     x0, x0, ~PHYSMEM_BASE_MASK
-        add     sp, x0, INIT_IDENTITY_SIZE
+        adr     x9, #0
+        and     x9, x9, ~PHYSMEM_BASE_MASK
+        add     sp, x9, INIT_IDENTITY_SIZE
 
         ret
 

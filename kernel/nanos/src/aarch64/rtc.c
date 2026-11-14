@@ -10,8 +10,11 @@
 #define rtc_debug(x, ...)
 #endif
 
-#define rtc_reg(offset) (*(volatile u32 *)pointer_from_u64(mmio_base_addr(RTC) + offset))
-#define rtc_reg8(offset)    (*(volatile u8 *)pointer_from_u64(mmio_base_addr(RTC) + offset))
+static BSS_RO_AFTER_INIT u64 rtc_base;
+
+#define rtc_reg_base        (rtc_base ? rtc_base : mmio_base_addr(RTC))
+#define rtc_reg(offset) (*(volatile u32 *)pointer_from_u64(rtc_reg_base + offset))
+#define rtc_reg8(offset)    (*(volatile u8 *)pointer_from_u64(rtc_reg_base + offset))
 #define RTCDR           rtc_reg(0x000) /* data */
 #define RTCMR           rtc_reg(0x004) /* match */
 #define RTCLR           rtc_reg(0x008) /* load */
@@ -45,6 +48,14 @@ static BSS_RO_AFTER_INIT struct {
     boolean (*set_seconds)(u64 secs);
     boolean probed;
 } rtc;
+
+void rtc_set_base(u64 phys_addr)
+{
+    rtc_base = DEVICE_BASE + (phys_addr & (DEV_MAP_SIZE - 1));
+    rtc.probed = false;
+    rtc.get_seconds = 0;
+    rtc.set_seconds = 0;
+}
 
 static u64 pl031_get_seconds(void)
 {

@@ -44,6 +44,7 @@ closure_type(dt_node_handler, boolean, dt_node n, sstring name);
 
 unsigned int dt_prop_cell_count(dt_prop prop);
 u32 dt_prop_get_cell(dt_prop prop, unsigned int index);
+boolean dt_prop_contains_string(dt_prop prop, sstring str);
 
 typedef struct fdt {
     void *ptr, *end;
