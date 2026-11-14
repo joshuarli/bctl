@@ -1,5 +1,5 @@
 Prefix: BCTL
-Next: 22
+Next: 23
 
 ### BCTL-15 · P2 · A run queue can hold a null scheduler task
 
@@ -42,7 +42,16 @@ Next: 22
 - **Area:** Performance
 - **Where:** `docs/macos-workflows.md`
 - **Problem:** Against native Chromium, Nanos is slower on every measured workflow and uses more memory on Shadowdriver and in four-tab crawls, so neither the acceptance targets (20% faster, 50% less memory) nor the stretch targets (1.5× warm agent-browser steps, 2× crawl throughput per GiB) are met.
-- **Recommendation:** Cross-process wakeups and address-space switches are fixed (ASIDs and idle polling; see docs/macos-workflows.md, "Wakeups and address-space switches"). In-page compute, allocation and canvas raster match native, and native software rendering is no slower than native GPU, so the remaining 2-4x gaps on screenshots, clicks and navigation are in the browser pipeline. Next, capture a Chromium trace of one screenshot and one click step on each side with BCTL_TRACE_CHROMIUM=1 and compare where the time goes. For density, measure how much of each VM's memory is shareable file-backed pages.
+- **Recommendation:** Cross-process wakeups and address-space switches are fixed (ASIDs and idle polling; see docs/macos-workflows.md, "Wakeups and address-space switches"). In-page compute, allocation and canvas raster match native, and native software rendering is no slower than native GPU, so the remaining 2-4x gaps on screenshots, clicks and navigation are in the browser pipeline. Next, implement bounded operation-scoped warm Chromium traces of screenshots, clicks and navigation on native-default, native-software and Nanos: BCTL_TRACE_CHROMIUM=1 currently captures startup only and cannot attribute warm operations. Separate renderer/copy-output/readback/encoding/IPC/scheduling, then run one-variable gated A/B experiments. See docs/CAMPAIGN-GRAPHICS-PERFORMANCE.md. For density, measure how much of each VM's memory is shareable file-backed pages.
+- **Fix with:** `make-it-fast`
+- **Effort:** L
+
+### BCTL-22 · P2 · Headed host display discards damage and recopies full frames
+
+- **Area:** Performance
+- **Where:** `third_party/smolvm/libkrun/src/devices/src/virtio/gpu/`, `third_party/smolvm/src/agent/display.rs`, `third_party/smolvm/src/agent/vnc.rs`
+- **Problem:** The virtio-gpu resource-switch path can read whole frames; the host display callback ignores supplied damage and copies full staging to front; VNC clones and compares full images to rediscover sparse changes. Small RFB payloads do not prove efficient upstream processing. Buffer generations, partial RFB requests and slow viewers complicate correctness.
+- **Recommendation:** Execute [the graphics campaign](docs/CAMPAIGN-GRAPHICS-PERFORMANCE.md) alongside upstream tinyland TINY-14 and BCTL-21. Instrument every copy/compare, preserve resource and visible-scene damage, introduce bounded immutable frame generations and cumulative viewer damage, and retain full-refresh fallbacks. Test real alternating scanout resources, partial requests, slow/reconnecting viewers, resize/restore and recovery to sparse frames with an exact-pixel oracle. Gate CPU, copied bytes, latency, memory and fullscreen regressions; only consider GPU virtualization after measured need.
 - **Fix with:** `make-it-fast`
 - **Effort:** L
 
