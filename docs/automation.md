@@ -267,6 +267,12 @@ the owner and the program a client of its socket protocol, which is what the
 CLI already is. The capability is still the gateway's: `bctl cdp-revoke` or
 `bctl down` closes the connection.
 
+## WebMCP
+
+When a page exposes document.modelContext, the optional `bctl webmcp`
+commands reuse this page-eval path, selected target, and control lease.
+They do not create another CDP connection or an MCP server. See
+[WebMCP](webmcp.md) for feature availability and explicit write opt-in.
 ## Known limits
 
 - A popup an action opens is not reported; `bctl tab list` shows it.

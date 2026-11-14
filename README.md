@@ -81,6 +81,19 @@ enabled when bctl's tracked native commands finish. "Resume automation"
 hands control back and resumes a run waiting for interaction. See
 [authority](docs/automation.md#authority) for external-controller behavior.
 
+## WebMCP (experimental)
+
+If the browser and visited page enable WebMCP, bctl can list and invoke
+same-origin, in-page tools over the existing native CDP connection:
+
+```sh
+bctl webmcp list research
+bctl webmcp call research searchProducts '{"query":"paper"}'
+bctl webmcp call research updateItem '{"id":"42"}' --allow-write
+```
+
+This does not create an MCP server or replace ordinary page automation.
+See [WebMCP](docs/webmcp.md) for feature availability and safety gates.
 ## Kernel
 
 `kernel/` holds Hydrogen, bctl's fork of [Nanos](https://github.com/nanovms/nanos),

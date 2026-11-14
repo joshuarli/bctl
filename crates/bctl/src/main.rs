@@ -9,6 +9,7 @@ mod protocol;
 mod runs;
 mod runtime;
 mod tabs;
+mod webmcp;
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -64,6 +65,9 @@ const USAGE: &str = "usage:
   bctl page get SESSION text [ELEMENT] | title | url | attribute NAME ELEMENT | value ELEMENT
   bctl page screenshot SESSION PATH                  write the viewport as a PNG
   bctl page eval SESSION EXPRESSION                  run JavaScript in the page and print its JSON value
+  bctl webmcp list SESSION                           list same-origin tools from the selected page (JSON)
+  bctl webmcp call SESSION TOOL [JSON_OBJECT] [--allow-write] [--allow-consequential]
+                                                      execute a registered tool with explicit opt-ins
   bctl page dialog SESSION accept [--text T] | dismiss
                                                      answer the dialog the page shows
   bctl page batch SESSION FILE|-                     run a JSON list of page actions in order, stopping at the first failure
@@ -84,6 +88,7 @@ enum Cli {
     ImagePull { image: Option<String> },
     ProfileLogin { profile: String, image: Option<String> },
     AgentBrowserPlugin(agent_browser::Lease),
+    WebMcp(webmcp::Command),
     Daemon,
 }
 
@@ -124,6 +129,7 @@ fn parse() -> Result<Cli, lexopt::Error> {
         "grab" | "run" | "runs" | "logs" | "pause" | "resume" | "cancel" => return parse_run_command(&command, parser),
         "tab" => return parse_tab_command(parser),
         "page" => return parse_page_command(parser),
+        "webmcp" => return Ok(Cli::WebMcp(webmcp::parse(parser)?)),
         "agent-browser-plugin" => return parse_agent_browser_plugin(parser),
         "image" => return parse_image_command(parser),
         "doctor" | "daemon" => (Op::Ping, false),
@@ -498,6 +504,7 @@ fn main() -> ExitCode {
         Cli::ImagePull { image } => image_pull(&paths, image),
         Cli::ProfileLogin { profile, image } => profile_login(&paths, profile, image),
         Cli::AgentBrowserPlugin(lease) => agent_browser::run(&paths, &lease),
+        Cli::WebMcp(command) => webmcp::run(&paths, &command),
         Cli::Request { op, request, json, open } => match call(&paths, &request) {
             Ok(response) => {
                 let code = render(op, &response, json, request.run.is_some());

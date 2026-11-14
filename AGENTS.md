@@ -33,6 +33,13 @@ ones that are rejected, inconclusive, or rule out a suspected cause.
 
 Do not run formatters or change pinned Rust toolchains.
 
+## Experimental WebMCP
+
+The optional bctl WebMCP commands use the existing native page-eval transport
+and authority model. See [docs/webmcp.md](docs/webmcp.md). Keep same-origin
+filtering, write/impact opt-ins, and unsupported-browser behavior. Do not
+enable experimental browser flags for all sessions or claim runtime support
+before recording VM-backed qualification.
 ## Graphics performance execution
 
 For headless performance attribution and parallel headed damage work, follow [the graphics campaign](docs/CAMPAIGN-GRAPHICS-PERFORMANCE.md), BCTL-21/BCTL-22 in [TODO.md](TODO.md), and upstream tinyland TINY-14. The existing two-second startup trace is not a warm-operation trace. Preserve existing kernel campaigns and avoid duplicating tinyland compositor ownership in bctl.
