@@ -1,0 +1,399 @@
+diff --git a/include/libkrun.h b/include/libkrun.h
+index ae1dec28..20856453 100644
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -140,6 +140,8 @@ int32_t krun_set_cpu_template(uint32_t ctx_id, uint32_t cpu_template);
+  */
+ int32_t krun_add_disk(uint32_t ctx_id, const char *block_id, const char *disk_path, bool read_only);
+ 
++int32_t krun_add_disk_dax(uint32_t ctx_id, const char *block_id, const char *disk_path, bool read_only);
++
+ /* Supported disk image formats */
+ #define KRUN_DISK_FORMAT_RAW 0
+ #define KRUN_DISK_FORMAT_QCOW2 1
+diff --git a/src/devices/src/virtio/block/device.rs b/src/devices/src/virtio/block/device.rs
+index 087c8118..08954ce3 100644
+--- a/src/devices/src/virtio/block/device.rs
++++ b/src/devices/src/virtio/block/device.rs
+@@ -50,7 +50,7 @@ use super::worker::{AsyncIo, BlockWorker, PreparedAsyncIo, take_prepared_async_i
+ use super::{
+     super::{
+         ActivateResult, DeviceQueue, DeviceState, QueueConfig, TYPE_BLOCK, VirtioDevice,
+-        VmmExitObserver,
++        VirtioShmRegion, VmmExitObserver,
+     },
+     Error, NUM_QUEUES, QUEUE_CONFIG, SECTOR_SHIFT, SECTOR_SIZE,
+ };
+@@ -393,6 +393,20 @@ struct VirtioBlkConfig {
+ unsafe impl ByteValued for VirtioBlkConfig {}
+ 
+ /// Virtio device for exposing block level read/write operations on a host file.
++struct DaxMapping {
++    host_addr: usize,
++    len: usize,
++}
++
++impl Drop for DaxMapping {
++    fn drop(&mut self) {
++        // SAFETY: host_addr and len originate from a successful libc::mmap owned by DaxMapping.
++        unsafe {
++            libc::munmap(self.host_addr as *mut libc::c_void, self.len);
++        }
++    }
++}
++
+ pub struct Block {
+     // Host file and properties.
+     disk: Option<DiskProperties>,
+@@ -402,6 +416,9 @@ pub struct Block {
+     direct_io: bool,
+     sync_mode: SyncMode,
+     io_engine: BlockIoEngine,
++    dax_backing_path: Option<String>,
++    shm_region: Option<VirtioShmRegion>,
++    dax_mapping: Option<DaxMapping>,
+     worker_thread: Option<JoinHandle<BlockWorker>>,
+     worker_stopfd: EventFd,
+     /// A worker reclaimed by [`Self::quiesce_for_snapshot`] (stopped, drained):
+@@ -665,6 +682,9 @@ impl Block {
+             direct_io,
+             sync_mode,
+             io_engine,
++            dax_backing_path: None,
++            shm_region: None,
++            dax_mapping: None,
+             avail_features,
+             acked_features: 0u64,
+             device_state: DeviceState::Inactive,
+@@ -675,6 +695,19 @@ impl Block {
+         })
+     }
+ 
++    pub fn set_dax_backing(&mut self, path: String) {
++        self.dax_backing_path = Some(path);
++    }
++
++    pub fn dax_backing_path(&self) -> Option<&str> {
++        self.dax_backing_path.as_deref()
++    }
++
++    pub fn set_dax_mapping(&mut self, host_addr: usize, len: usize, region: VirtioShmRegion) {
++        self.dax_mapping = Some(DaxMapping { host_addr, len });
++        self.shm_region = Some(region);
++    }
++
+     /// Provides the ID of this block device.
+     pub fn id(&self) -> &String {
+         &self.id
+@@ -1040,6 +1073,10 @@ impl VirtioDevice for Block {
+     fn rearm_after_snapshot(&mut self) {
+         self.rearm_worker();
+     }
++
++    fn shm_region(&self) -> Option<&VirtioShmRegion> {
++        self.shm_region.as_ref()
++    }
+ }
+ 
+ /// The VMM ends with `_exit`, which skips `DiskProperties::drop`. The image
+diff --git a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+index ba55f64a..c8dc59cc 100644
+--- a/src/hvf/src/lib.rs
++++ b/src/hvf/src/lib.rs
+@@ -867,6 +867,27 @@ impl HvfVm {
+         }
+     }
+ 
++    pub fn map_memory_ro(
++        &self,
++        host_start_addr: u64,
++        guest_start_addr: u64,
++        size: u64,
++    ) -> Result<(), Error> {
++        let ret = unsafe {
++            hv_vm_map(
++                host_start_addr as *mut core::ffi::c_void,
++                guest_start_addr,
++                size.try_into().unwrap(),
++                (HV_MEMORY_READ | HV_MEMORY_EXEC).into(),
++            )
++        };
++        if ret != HV_SUCCESS {
++            Err(Error::MemoryMap)
++        } else {
++            Ok(())
++        }
++    }
++
+     pub fn unmap_memory(&self, guest_start_addr: u64, size: u64) -> Result<(), Error> {
+         let ret = unsafe { hv_vm_unmap(guest_start_addr, size.try_into().unwrap()) };
+         if ret != HV_SUCCESS {
+diff --git a/src/libkrun/src/lib.rs b/src/libkrun/src/lib.rs
+index 5f796568..624a12ab 100644
+--- a/src/libkrun/src/lib.rs
++++ b/src/libkrun/src/lib.rs
+@@ -2922,13 +2922,13 @@ pub unsafe extern "C" fn krun_add_virtiofs4(
+ }
+ 
+ #[allow(clippy::missing_safety_doc)]
+-#[unsafe(no_mangle)]
+ #[cfg(feature = "blk")]
+-pub unsafe extern "C" fn krun_add_disk(
++unsafe fn add_raw_disk(
+     ctx_id: u32,
+     c_block_id: *const c_char,
+     c_disk_path: *const c_char,
+     read_only: bool,
++    dax: bool,
+ ) -> i32 {
+     unsafe {
+         let disk_path = match CStr::from_ptr(c_disk_path).to_str() {
+@@ -2957,6 +2957,7 @@ pub unsafe extern "C" fn krun_add_disk(
+                     sync_mode: SyncMode::Relaxed,
+                     io_engine: devices::virtio::block::BlockIoEngine::Sync,
+                     prepared_async: None,
++                    dax,
+                 };
+                 cfg.add_block_cfg(block_device_config);
+             }
+@@ -2967,6 +2968,38 @@ pub unsafe extern "C" fn krun_add_disk(
+     }
+ }
+ 
++#[allow(clippy::missing_safety_doc)]
++#[unsafe(no_mangle)]
++#[cfg(feature = "blk")]
++pub unsafe extern "C" fn krun_add_disk(
++    ctx_id: u32,
++    c_block_id: *const c_char,
++    c_disk_path: *const c_char,
++    read_only: bool,
++) -> i32 {
++    unsafe { add_raw_disk(ctx_id, c_block_id, c_disk_path, read_only, false) }
++}
++
++#[allow(clippy::missing_safety_doc)]
++#[unsafe(no_mangle)]
++#[cfg(feature = "blk")]
++pub unsafe extern "C" fn krun_add_disk_dax(
++    ctx_id: u32,
++    c_block_id: *const c_char,
++    c_disk_path: *const c_char,
++    read_only: bool,
++) -> i32 {
++    #[cfg(not(target_os = "macos"))]
++    {
++        let _ = (ctx_id, c_block_id, c_disk_path, read_only);
++        return -libc::ENOTSUP;
++    }
++    #[cfg(target_os = "macos")]
++    unsafe {
++        add_raw_disk(ctx_id, c_block_id, c_disk_path, read_only, true)
++    }
++}
++
+ #[allow(clippy::missing_safety_doc)]
+ #[unsafe(no_mangle)]
+ #[cfg(feature = "blk")]
+@@ -3009,6 +3042,7 @@ pub unsafe extern "C" fn krun_add_disk2(
+                     sync_mode: SyncMode::Relaxed,
+                     io_engine: devices::virtio::block::BlockIoEngine::Sync,
+                     prepared_async: None,
++                    dax: false,
+                 };
+                 cfg.add_block_cfg(block_device_config);
+             }
+@@ -3105,6 +3139,7 @@ pub unsafe extern "C" fn krun_add_disk3(
+                     sync_mode,
+                     io_engine: devices::virtio::block::BlockIoEngine::Sync,
+                     prepared_async: None,
++                    dax: false,
+                 };
+                 cfg.add_block_cfg(block_device_config);
+             }
+@@ -3192,6 +3227,7 @@ pub unsafe extern "C" fn krun_add_disk4(
+                     sync_mode,
+                     io_engine,
+                     prepared_async,
++                    dax: false,
+                 });
+             }
+             Entry::Vacant(_) => {
+diff --git a/src/vmm/src/builder.rs b/src/vmm/src/builder.rs
+index b4f0238a..c169cea9 100644
+--- a/src/vmm/src/builder.rs
++++ b/src/vmm/src/builder.rs
+@@ -1649,7 +1649,7 @@ pub fn build_microvm(
+         _sender.clone(),
+     )?;
+     #[cfg(feature = "blk")]
+-    attach_block_devices(&mut vmm, &vm_resources.block, intc.clone())?;
++    attach_block_devices(&mut vmm, &vm_resources.block, &mut _shm_manager, intc.clone())?;
+ 
+     if let Some(vsock) = vm_resources.vsock.get() {
+         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc.clone())?;
+@@ -4029,16 +4029,105 @@ fn attach_balloon_device(
+     Ok(())
+ }
+ 
++#[cfg(all(feature = "blk", target_os = "macos"))]
++fn map_block_dax(
++    vmm: &Vmm,
++    block: &mut devices::virtio::Block,
++    shm_manager: &mut ShmManager,
++) -> std::result::Result<(), StartMicrovmError> {
++    use devices::virtio::VirtioShmRegion;
++    use std::fs::File;
++    use std::os::fd::AsRawFd;
++
++    let Some(path) = block.dax_backing_path() else {
++        return Ok(());
++    };
++    if vmm.prototype_memory.is_some() {
++        return Err(StartMicrovmError::AttachBlockDevice(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "DAX block devices cannot be combined with memory growth",
++        )));
++    }
++    let file = File::open(path).map_err(StartMicrovmError::AttachBlockDevice)?;
++    let file_len = file
++        .metadata()
++        .map_err(StartMicrovmError::AttachBlockDevice)?
++        .len();
++    let shm_len = (file_len & !4095) as usize;
++    if shm_len < 4096 {
++        return Ok(());
++    }
++    // SAFETY: sysconf(_SC_PAGESIZE) has no preconditions and returns the host page size.
++    let host_page_size = (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize).max(16384);
++    let len_ceil = (file_len as usize)
++        .checked_add(host_page_size - 1)
++        .map(|v| v & !(host_page_size - 1))
++        .ok_or_else(|| {
++            StartMicrovmError::AttachBlockDevice(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "DAX image size overflow",
++            ))
++        })?;
++    // SAFETY: Read-only private file mapping for an open descriptor; bounds are len_ceil bytes.
++    let host_addr = unsafe {
++        libc::mmap(
++            std::ptr::null_mut(),
++            len_ceil,
++            libc::PROT_READ,
++            libc::MAP_PRIVATE,
++            file.as_raw_fd(),
++            0,
++        )
++    };
++    if host_addr == libc::MAP_FAILED {
++        return Err(StartMicrovmError::AttachBlockDevice(
++            io::Error::last_os_error(),
++        ));
++    }
++    let guest_addr = match shm_manager.alloc_external_region(len_ceil, 2 << 20) {
++        Ok(addr) => addr,
++        Err(err) => {
++            // SAFETY: host_addr/len_ceil came from the successful libc::mmap call above.
++            unsafe { libc::munmap(host_addr, len_ceil) };
++            return Err(StartMicrovmError::ShmCreate(err));
++        }
++    };
++    let region = VirtioShmRegion {
++        host_addr: host_addr as u64,
++        guest_addr: guest_addr.raw_value(),
++        size: shm_len,
++    };
++    if let Err(err) = vmm
++        .vm
++        .hvf_vm()
++        .map_memory_ro(region.host_addr, region.guest_addr, len_ceil as u64)
++    {
++        // SAFETY: host_addr/len_ceil came from the successful libc::mmap call above.
++        unsafe { libc::munmap(host_addr, len_ceil) };
++        return Err(StartMicrovmError::AttachBlockDevice(io::Error::other(
++            format!("HVF map_memory_ro failed: {err:?}"),
++        )));
++    }
++    block.set_dax_mapping(host_addr as usize, len_ceil, region);
++    Ok(())
++}
++
+ #[cfg(feature = "blk")]
+ fn attach_block_devices(
+     vmm: &mut Vmm,
+     block_devs: &BlockBuilder,
++    #[allow(unused_variables)] shm_manager: &mut ShmManager,
+     intc: IrqChip,
+ ) -> std::result::Result<(), StartMicrovmError> {
+     use self::StartMicrovmError::*;
+ 
+     for block in block_devs.list.iter() {
+-        let id = String::from(block.lock().unwrap().id());
++        let id = {
++            let mut guard = block.lock().unwrap();
++            #[cfg(target_os = "macos")]
++            map_block_dax(vmm, &mut guard, shm_manager)?;
++            String::from(guard.id())
++        };
+ 
+         // The device mutex mustn't be locked here otherwise it will deadlock.
+         attach_mmio_device(vmm, id, intc.clone(), block.clone()).map_err(RegisterBlockDevice)?;
+diff --git a/src/vmm/src/device_manager/shm.rs b/src/vmm/src/device_manager/shm.rs
+index e3c3b9bf..a9801271 100644
+--- a/src/vmm/src/device_manager/shm.rs
++++ b/src/vmm/src/device_manager/shm.rs
+@@ -88,4 +88,18 @@ impl ShmManager {
+         self.fs_regions.insert(index, region);
+         Ok(())
+     }
++
++    pub fn alloc_external_region(&mut self, size: usize, align: u64) -> Result<GuestAddress, Error> {
++        let align = align.max(self.page_size as u64);
++        let mask = align - 1;
++        let start = self
++            .next_guest_addr
++            .checked_add(mask)
++            .map(|addr| addr & !mask)
++            .ok_or(Error::OutOfSpace)?;
++        let size = align_upwards!(size, self.page_size);
++        let end = start.checked_add(size as u64).ok_or(Error::OutOfSpace)?;
++        self.next_guest_addr = end;
++        Ok(GuestAddress(start))
++    }
+ }
+diff --git a/src/vmm/src/vmm_config/block.rs b/src/vmm/src/vmm_config/block.rs
+index 258d87b3..d96ff6c4 100644
+--- a/src/vmm/src/vmm_config/block.rs
++++ b/src/vmm/src/vmm_config/block.rs
+@@ -35,6 +35,7 @@ pub struct BlockDeviceConfig {
+     pub sync_mode: SyncMode,
+     pub io_engine: BlockIoEngine,
+     pub prepared_async: Option<PreparedAsyncIo>,
++    pub dax: bool,
+ }
+ 
+ #[derive(Clone, Debug, Eq, PartialEq)]
+@@ -63,7 +64,9 @@ impl BlockBuilder {
+     }
+ 
+     pub fn create_block(config: BlockDeviceConfig) -> Result<Block> {
+-        devices::virtio::Block::new(
++        let dax = config.dax;
++        let path = config.disk_image_path.clone();
++        let mut block = devices::virtio::Block::new(
+             config.block_id,
+             None,
+             config.cache_type,
+@@ -75,6 +78,10 @@ impl BlockBuilder {
+             config.io_engine,
+             config.prepared_async,
+         )
+-        .map_err(BlockConfigError::CreateBlockDevice)
++        .map_err(BlockConfigError::CreateBlockDevice)?;
++        if dax {
++            block.set_dax_backing(path);
++        }
++        Ok(block)
+     }
+ }

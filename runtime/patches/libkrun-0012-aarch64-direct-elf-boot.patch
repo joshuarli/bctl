@@ -1,0 +1,165 @@
+diff --git a/src/arch/src/aarch64/mod.rs b/src/arch/src/aarch64/mod.rs
+index f4c705c8..06111ec2 100644
+--- a/src/arch/src/aarch64/mod.rs
++++ b/src/arch/src/aarch64/mod.rs
+@@ -43,12 +43,13 @@ pub const MMIO_MEM_START: u64 = layout::MAPPED_IO_START;
+ 
+ /// Returns a Vec of the valid memory addresses for aarch64.
+ /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
+-pub fn arch_memory_regions(
++fn build_memory_regions(
+     size: usize,
+     initrd_size: u64,
+     firmware_size: Option<usize>,
++    start_at_efi_base: bool,
+ ) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
+-    let ram_start_addr = if firmware_size.is_some() {
++    let ram_start_addr = if start_at_efi_base {
+         DRAM_MEM_START_EFI
+     } else {
+         DRAM_MEM_START_KERNEL
+@@ -60,7 +61,7 @@ pub fn arch_memory_regions(
+     }
+     let ram_last_addr = ram_start_addr + (dram_size as u64);
+     let shm_start_addr = ((ram_last_addr / 0x4000_0000) + 1) * 0x4000_0000;
+-    let fdt_addr = if firmware_size.is_some() {
++    let fdt_addr = if start_at_efi_base {
+         DRAM_MEM_START_EFI
+     } else {
+         ram_last_addr - layout::FDT_MAX_SIZE as u64
+@@ -88,6 +89,21 @@ pub fn arch_memory_regions(
+     (info, regions)
+ }
+ 
++pub fn arch_memory_regions(
++    size: usize,
++    initrd_size: u64,
++    firmware_size: Option<usize>,
++) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
++    build_memory_regions(size, initrd_size, firmware_size, firmware_size.is_some())
++}
++
++pub fn arch_memory_regions_for_elf(
++    size: usize,
++    initrd_size: u64,
++) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
++    build_memory_regions(size, initrd_size, None, true)
++}
++
+ /// Configures the system and should be called once per vm before starting vcpu threads.
+ /// For aarch64, we only setup SMBIOS.
+ #[allow(clippy::too_many_arguments)]
+@@ -131,4 +147,14 @@ mod tests {
+         );
+         assert_eq!(super::layout::DRAM_MEM_MAX_SIZE, regions[0].1 as u64);
+     }
++
++    #[test]
++    fn test_elf_regions_start_at_efi_base_without_firmware_slot() {
++        let (mem_info, regions) = arch_memory_regions_for_elf(1usize << 29, 0);
++        assert_eq!(super::layout::DRAM_MEM_START_EFI, mem_info.ram_start_addr);
++        assert_eq!(super::layout::DRAM_MEM_START_EFI, mem_info.fdt_addr);
++        assert_eq!(1, regions.len());
++        assert_eq!(GuestAddress(super::layout::DRAM_MEM_START_EFI), regions[0].0);
++        assert_eq!(1usize << 29, regions[0].1);
++    }
+ }
+diff --git a/src/vmm/src/builder.rs b/src/vmm/src/builder.rs
+index c169cea9..a2cc2a06 100644
+--- a/src/vmm/src/builder.rs
++++ b/src/vmm/src/builder.rs
+@@ -1827,6 +1827,72 @@ pub fn build_microvm(
+     Ok(vmm)
+ }
+ 
++#[cfg(target_arch = "aarch64")]
++fn load_aarch64_elf(
++    guest_mem: &GuestMemoryMmap,
++    path: &std::path::Path,
++) -> std::result::Result<GuestAddress, StartMicrovmError> {
++    let data = std::fs::read(path).map_err(StartMicrovmError::ElfOpenKernel)?;
++    let invalid = |msg: &str| {
++        StartMicrovmError::ElfOpenKernel(io::Error::new(io::ErrorKind::InvalidData, msg))
++    };
++    if data.len() < 64 || &data[0..4] != b"\x7fELF" || data[4] != 2 || data[5] != 1 {
++        return Err(invalid("expected little-endian ELF64 kernel image"));
++    }
++    let e_machine = u16::from_le_bytes([data[18], data[19]]);
++    if e_machine != 183 {
++        return Err(invalid("expected AArch64 ELF kernel image"));
++    }
++    let e_entry = u64::from_le_bytes(data[24..32].try_into().unwrap());
++    let e_phoff = usize::try_from(u64::from_le_bytes(data[32..40].try_into().unwrap()))
++        .map_err(|_| invalid("ELF phoff overflow"))?;
++    let e_phentsize = usize::from(u16::from_le_bytes([data[54], data[55]]));
++    let e_phnum = usize::from(u16::from_le_bytes([data[56], data[57]]));
++    if e_phentsize < 56 {
++        return Err(invalid("ELF phentsize too small"));
++    }
++    for i in 0..e_phnum {
++        let ph_start = e_phoff
++            .checked_add(i * e_phentsize)
++            .ok_or_else(|| invalid("ELF phdr offset overflow"))?;
++        let ph = data
++            .get(ph_start..ph_start + 56)
++            .ok_or_else(|| invalid("ELF phdr out of bounds"))?;
++        let p_type = u32::from_le_bytes(ph[0..4].try_into().unwrap());
++        if p_type != 1 {
++            continue;
++        }
++        let p_offset = usize::try_from(u64::from_le_bytes(ph[8..16].try_into().unwrap()))
++            .map_err(|_| invalid("ELF segment offset overflow"))?;
++        let p_paddr = u64::from_le_bytes(ph[24..32].try_into().unwrap());
++        let p_filesz = usize::try_from(u64::from_le_bytes(ph[32..40].try_into().unwrap()))
++            .map_err(|_| invalid("ELF filesz overflow"))?;
++        let p_memsz = usize::try_from(u64::from_le_bytes(ph[40..48].try_into().unwrap()))
++            .map_err(|_| invalid("ELF memsz overflow"))?;
++        if p_filesz > 0 {
++            let end = p_offset
++                .checked_add(p_filesz)
++                .ok_or_else(|| invalid("ELF segment bounds overflow"))?;
++            let seg = data
++                .get(p_offset..end)
++                .ok_or_else(|| invalid("ELF segment truncated"))?;
++            guest_mem
++                .write_slice(seg, GuestAddress(p_paddr))
++                .map_err(StartMicrovmError::FirmwareInvalidAddress)?;
++        }
++        if p_memsz > p_filesz {
++            let bss_addr = p_paddr
++                .checked_add(p_filesz as u64)
++                .ok_or_else(|| invalid("ELF bss address overflow"))?;
++            let zeros = vec![0u8; p_memsz - p_filesz];
++            guest_mem
++                .write_slice(&zeros, GuestAddress(bss_addr))
++                .map_err(StartMicrovmError::FirmwareInvalidAddress)?;
++        }
++    }
++    Ok(GuestAddress(e_entry))
++}
++
+ fn load_external_kernel(
+     guest_mem: &GuestMemoryMmap,
+     arch_mem_info: &ArchMemoryInfo,
+@@ -1876,6 +1942,8 @@ fn load_external_kernel(
+                 _ => load_result.kernel_load,
+             }
+         }
++        #[cfg(target_arch = "aarch64")]
++        KernelFormat::Elf => load_aarch64_elf(guest_mem, &external_kernel.path)?,
+         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+         KernelFormat::PeGz => {
+             let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
+@@ -2664,6 +2732,12 @@ pub fn create_guest_memory(
+     };
+     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+     let (arch_mem_info, mut arch_mem_regions) = match payload {
++        #[cfg(target_arch = "aarch64")]
++        Payload::ExternalKernel(external_kernel)
++            if matches!(external_kernel.format, KernelFormat::Elf) =>
++        {
++            arch::aarch64::arch_memory_regions_for_elf(mem_size, external_kernel.initramfs_size)
++        }
+         Payload::ExternalKernel(external_kernel) => {
+             arch::arch_memory_regions(mem_size, external_kernel.initramfs_size, None)
+         }
