@@ -420,19 +420,50 @@ static status demand_filebacked_page(process p, context ctx, u64 vaddr, vmap vm,
         kvirt = pagecache_get_page_if_filled(pn, node_offset, private_page);
         if (range_span(kvirt) != 0)
             return mmap_filebacked_page(p, vm, page_addr, flags, kvirt, private_page);
-        u64 dax_phys = INVALID_PHYSICAL;
         if (!private_page && !(vm->flags & VMAP_FLAG_TAIL_BSS) &&
-            (!shared || !(vm->allowed_flags & VMAP_FLAG_WRITABLE)) &&
-            pagecache_get_dax_page(pn, node_offset, &dax_phys)) {
-            pagetable_lock();
-            boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
-            boolean dax_active = pagecache_node_dax_active(pn);
-            if (do_map && dax_active)
-                address_space_map_locked(p->vm->as, page_addr, dax_phys, PAGESIZE,
-                                         pageflags_readonly(flags));
-            pagetable_unlock();
-            if (!do_map || dax_active)
-                return STATUS_OK;
+            (!shared || !(vm->allowed_flags & VMAP_FLAG_WRITABLE))) {
+            u64 dax_phys = INVALID_PHYSICAL;
+            u64 dax_off = 0, dax_len = 0;
+            if (!shared && (vm->flags & VMAP_FLAG_WRITABLE) && is_write_fault(ctx->frame)) {
+                if (pagecache_get_dax_extent(pn, irangel(node_offset, PAGESIZE), node_offset,
+                                             &dax_off, &dax_phys, &dax_len)) {
+                    void *copy = allocate(mmap_info.virtual_backed, PAGESIZE);
+                    if (copy == INVALID_ADDRESS)
+                        return timm_oom;
+                    runtime_memcpy(copy, pointer_from_u64(dax_virt_from_phys(dax_phys)), PAGESIZE);
+                    physical copy_phys = physical_from_virtual(copy);
+                    pagetable_lock();
+                    boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
+                    boolean dax_active = pagecache_node_dax_active(pn);
+                    if (do_map && dax_active)
+                        address_space_map_locked(p->vm->as, page_addr, copy_phys, PAGESIZE,
+                                                 pageflags_from_vmflags(vm->flags));
+                    pagetable_unlock();
+                    if (!do_map || !dax_active)
+                        page_free_phys(copy_phys);
+                    if (!do_map || dax_active)
+                        return STATUS_OK;
+                }
+            } else {
+                u64 win_size = U64_FROM_BIT(19);
+                u64 win_mask = win_size - 1;
+                u64 win_start = MAX(vm->node.r.start, page_addr & ~win_mask);
+                u64 win_end = MIN(vm->node.r.end, (page_addr & ~win_mask) + win_size);
+                range req = irange(vm->node_offset + (win_start - vm->node.r.start),
+                                   vm->node_offset + (win_end - vm->node.r.start));
+                if (pagecache_get_dax_extent(pn, req, node_offset, &dax_off, &dax_phys, &dax_len)) {
+                    u64 map_va = vm->node.r.start + (dax_off - vm->node_offset);
+                    pagetable_lock();
+                    boolean do_map = (address_space_physical_locked(p->vm->as, page_addr) == INVALID_PHYSICAL);
+                    boolean dax_active = pagecache_node_dax_active(pn);
+                    if (do_map && dax_active)
+                        address_space_map_absent_locked(p->vm->as, map_va, dax_phys, dax_len,
+                                                        pageflags_readonly(flags));
+                    pagetable_unlock();
+                    if (!do_map || dax_active)
+                        return STATUS_OK;
+                }
+            }
         }
         pending_fault new_pf = new_pending_fault_locked(p, ctx, vaddr);
         if (new_pf != INVALID_ADDRESS) {

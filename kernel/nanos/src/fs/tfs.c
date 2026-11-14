@@ -201,18 +201,21 @@ static void tfs_invalidate_dax(tfsfile f, boolean unmap)
     }
 }
 
-static boolean tfs_get_dax_page(void *priv, u64 offset, u64 *phys)
+static boolean tfs_get_dax_extent(void *priv, range req, u64 offset,
+                                  u64 *out_offset, u64 *out_phys, u64 *out_len)
 {
     tfsfile f = priv;
     tfs fs = tfs_from_file(f);
     if (!fs->dax_len || !__atomic_load_n(&f->dax_eligible, __ATOMIC_ACQUIRE) ||
-        (offset & PAGEMASK))
+        (offset & PAGEMASK) || (req.start & PAGEMASK) || (req.end & PAGEMASK))
         return false;
-    u64 blocks_per_page = PAGESIZE >> fs->fs.blocksize_order;
-    u64 block = offset >> fs->fs.blocksize_order;
+    int s_order = fs->fs.blocksize_order;
+    u64 blocks_per_page = PAGESIZE >> s_order;
+    u64 block = offset >> s_order;
     boolean ok = false;
     u64 irqflags = spin_lock_irq(&f->dax_lock);
-    if (f->dax_eligible && (offset + PAGESIZE <= fsfile_get_length(&f->f))) {
+    u64 file_full_end = fsfile_get_length(&f->f) & ~PAGEMASK;
+    if (f->dax_eligible && (offset + PAGESIZE <= file_full_end)) {
         extent ex = (extent)rangemap_lookup(f->extentmap, block);
         if (ex != INVALID_ADDRESS) {
             u64 e_offset = block - ex->node.r.start;
@@ -221,8 +224,16 @@ static boolean tfs_get_dax_page(void *priv, u64 offset, u64 *phys)
                 (block >= ex->node.r.start) &&
                 (e_offset + blocks_per_page <= range_span(ex->node.r)) &&
                 ((start_block & (blocks_per_page - 1)) == 0) &&
-                (((start_block + blocks_per_page) << fs->fs.blocksize_order) <= fs->dax_len)) {
-                *phys = fs->dax_phys + (start_block << fs->fs.blocksize_order);
+                (((start_block + blocks_per_page) << s_order) <= fs->dax_len)) {
+                u64 req_end = MIN(req.end, file_full_end);
+                u64 back_bytes = (e_offset << s_order) & ~PAGEMASK;
+                u64 map_start = offset - MIN(offset - req.start, back_bytes);
+                u64 ext_fwd_bytes = ((range_span(ex->node.r) - e_offset) << s_order) & ~PAGEMASK;
+                u64 dax_fwd_bytes = (fs->dax_len - (start_block << s_order)) & ~PAGEMASK;
+                u64 map_end = MIN(req_end, offset + MIN(ext_fwd_bytes, dax_fwd_bytes));
+                *out_offset = map_start;
+                *out_phys = fs->dax_phys + (start_block << s_order) - (offset - map_start);
+                *out_len = map_end - map_start;
                 f->dax_mapped = true;
                 ok = true;
             }
@@ -265,7 +276,7 @@ static boolean enumerate_dir_entries(tfs fs, tuple t)
             u64 irqflags = spin_lock_irq(&f->dax_lock);
             f->dax_eligible = true;
             spin_unlock_irq(&f->dax_lock, irqflags);
-            pagecache_node_set_dax(fsfile_get_cachenode(&f->f), tfs_get_dax_page, f);
+            pagecache_node_set_dax(fsfile_get_cachenode(&f->f), tfs_get_dax_extent, f);
         }
 #endif
         return ok;

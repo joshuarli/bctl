@@ -103,6 +103,7 @@ boolean address_space_traverse_ptes(address_space as, u64 v, u64 length, entry_h
 physical address_space_physical(address_space as, u64 v);
 physical address_space_physical_locked(address_space as, u64 v);
 void address_space_map_locked(address_space as, u64 v, physical p, u64 length, pageflags flags);
+void address_space_map_absent_locked(address_space as, u64 v, physical p, u64 length, pageflags flags);
 void arch_load_address_space(u64 root, u16 asid);
 u16 arch_asid_allocate(void);
 void arch_asid_release(u16 asid);

@@ -423,6 +423,8 @@ boolean split_mapping(pteptr entry)
 }
 
 static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, flush_entry fe);
+static boolean map_level_opts(u64 *table_ptr, int level, range v, u64 *p, u64 flags, flush_entry fe,
+                              boolean overwrite);
 
 /* called with lock held */
 closure_function(5, 3, boolean, remap_entry,
@@ -584,7 +586,8 @@ void unmap(u64 virtual, u64 length)
 #define INDEX_MASK (PAGEMASK >> 3)
 /* The virtual address range is remapped, i.e. any existing mapping is overwritten (and the
  * overwritten pages are added to the flush entry to be subsequently invalidated. */
-static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, flush_entry fe)
+static boolean map_level_opts(u64 *table_ptr, int level, range v, u64 *p, u64 flags, flush_entry fe,
+                              boolean overwrite)
 {
     int shift = pt_level_shift(level);
     u64 mask = MASK(shift);
@@ -655,8 +658,12 @@ static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, 
                 page_init_debug(", len ");
                 page_init_debug_u64(len);
                 page_init_debug("\n");
-                if (!map_level(tp, level + 1, irangel(v.start | vmask, len), p, flags, fe))
+                if (!map_level_opts(tp, level + 1, irangel(v.start | vmask, len), p, flags, fe,
+                                    overwrite))
                     return false;
+#ifdef KERNEL
+                smp_write_barrier();
+#endif
             }
             page_init_debug("      pte @ ");
             page_init_debug_u64(u64_from_pointer(&table_ptr[i]));
@@ -669,6 +676,10 @@ static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, 
             u64 end = vlbase | (((u64)(i + 1)) << shift);
             u64 len = MIN(range_span(v), end - v.start);
             if (pte_is_mapping(level, pte)) {
+                if (!overwrite) {
+                    *p += len;
+                    continue;
+                }
                 page_debug("would overwrite entry: level %d, v %R, pa 0x%lx, "
                            "flags 0x%lx, index %d, entry 0x%lx\n", level, v, *p, flags, i, pte);
                 if (pte_map_size(level, pte) <= len) {
@@ -687,11 +698,17 @@ static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, 
             }
             u64 nexttable = page_from_pte(pte);
             u64 *nexttable_ptr = pointer_from_pteaddr(nexttable);
-            if (!map_level(nexttable_ptr, level + 1, irangel(v.start | vmask, len), p, flags, fe))
+            if (!map_level_opts(nexttable_ptr, level + 1, irangel(v.start | vmask, len), p, flags, fe,
+                                overwrite))
                 return false;
         }
     }
     return true;
+}
+
+static boolean map_level(u64 *table_ptr, int level, range v, u64 *p, u64 flags, flush_entry fe)
+{
+    return map_level_opts(table_ptr, level, v, p, flags, fe, true);
 }
 
 static void map_root(u64 root, u64 v, physical p, u64 length, pageflags flags)
@@ -1068,6 +1085,17 @@ void address_space_map_locked(address_space as, u64 v, physical p, u64 length, p
 {
     assert_user_range(v, length);
     map_root_nolock(as->root, v, p, length, flags);
+}
+
+void address_space_map_absent_locked(address_space as, u64 v, physical p, u64 length, pageflags flags)
+{
+    assert_user_range(v, length);
+    assert((v & PAGEMASK) == 0);
+    assert((p & PAGEMASK) == 0);
+    range r = irangel(v, pad(length, PAGESIZE));
+    u64 *table_ptr = pointer_from_pteaddr(as->root);
+    if (!map_level_opts(table_ptr, PT_FIRST_LEVEL, r, &p, flags.w, 0, false))
+        halt("%s: map failed for v 0x%lx, p 0x%lx, len 0x%lx\n", func_ss, v, p, length);
 }
 
 void address_space_unmap(address_space as, u64 v, u64 length)

@@ -2649,17 +2649,46 @@ boolean pagecache_node_dax_active(pagecache_node pn)
     return __atomic_load_n(&pn->dax_get_page, __ATOMIC_ACQUIRE) != 0;
 }
 
-boolean pagecache_get_dax_page(pagecache_node pn, u64 offset, u64 *phys)
+boolean pagecache_get_dax_extent(pagecache_node pn, range req, u64 offset,
+                                 u64 *out_offset, u64 *out_phys, u64 *out_len)
 {
+    assert(range_span(req) >= PAGESIZE);
+    assert((req.start <= offset) && (offset + PAGESIZE <= req.end));
     pagecache_lock_node(pn);
     pagecache_dax_fn fn = __atomic_load_n(&pn->dax_get_page, __ATOMIC_RELAXED);
     void *priv = pn->dax_priv;
-    pagecache_page pp = fn ? page_lookup_nodelocked(pn, offset >> pn->pv->pc->page_order)
-                           : INVALID_ADDRESS;
-    pagecache_unlock_node(pn);
-    if (!fn || (pp != INVALID_ADDRESS))
+    if (!fn) {
+        pagecache_unlock_node(pn);
         return false;
-    return fn(priv, offset, phys);
+    }
+    int page_order = pn->pv->pc->page_order;
+    u64 fault_n = offset >> page_order;
+    struct pagecache_page k;
+    k.state_offset = fault_n;
+    pagecache_page pp = (pagecache_page)rbtree_lookup_max_lte(&pn->pages, &k.rbnode);
+    pagecache_page next_pp;
+    if (pp != INVALID_ADDRESS) {
+        u64 pp_n = page_offset(pp);
+        if (pp_n == fault_n) {
+            pagecache_unlock_node(pn);
+            return false;
+        }
+        u64 min_off = (pp_n + 1) << page_order;
+        if (min_off > req.start)
+            req.start = min_off;
+        next_pp = (pagecache_page)rbnode_get_next(&pp->rbnode);
+    } else {
+        next_pp = (pagecache_page)rbtree_find_first(&pn->pages);
+    }
+    if (next_pp != INVALID_ADDRESS) {
+        u64 next_off = page_offset(next_pp) << page_order;
+        if (next_off < req.end)
+            req.end = next_off;
+    }
+    pagecache_unlock_node(pn);
+    if (req.start >= req.end)
+        return false;
+    return fn(priv, req, offset, out_offset, out_phys, out_len);
 }
 
 sg_io pagecache_node_get_reader(pagecache_node pn)

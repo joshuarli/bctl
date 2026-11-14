@@ -78,9 +78,11 @@ pagecache_volume pagecache_allocate_volume(u64 length, int block_order);
 void pagecache_set_volume_huge(pagecache_volume pv);
 void pagecache_dealloc_volume(pagecache_volume pv);
 
-typedef boolean (*pagecache_dax_fn)(void *priv, u64 offset, u64 *phys);
+typedef boolean (*pagecache_dax_fn)(void *priv, range req, u64 fault_offset,
+                                    u64 *out_offset, u64 *out_phys, u64 *out_len);
 void pagecache_node_set_dax(pagecache_node pn, pagecache_dax_fn fn, void *priv);
 boolean pagecache_node_dax_active(pagecache_node pn);
-boolean pagecache_get_dax_page(pagecache_node pn, u64 offset, u64 *phys);
+boolean pagecache_get_dax_extent(pagecache_node pn, range req, u64 offset,
+                                 u64 *out_offset, u64 *out_phys, u64 *out_len);
 
 void init_pagecache(heap general, heap contiguous, u64 pagesize);

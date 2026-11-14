@@ -216,20 +216,39 @@ static void flush_entry_post(flush_entry f, thunk completion, boolean rendezvous
     irq_restore(flags);
 }
 
+static void flush_finish_local(flush_entry f, thunk completion, boolean rendezvous)
+{
+    assert(enqueue(free_flush_entries, f));
+    if (completion) {
+        if (rendezvous)
+            apply(completion);
+        else
+            async_apply(completion);
+    }
+}
+
 void page_invalidate_sync(flush_entry f, thunk completion, boolean rendezvous)
 {
     if (initialized) {
         if (f->npages == 0) {
-            assert(enqueue(free_flush_entries, f));
-            if (completion) {
-                if (rendezvous)
-                    apply(completion);
-                else
-                    async_apply(completion);
-            }
+            flush_finish_local(f, completion, rendezvous);
             return;
         }
+#ifdef __aarch64__
+        flush_profile_add(posts, 1);
+        flush_profile_add(pages, f->npages);
+        if (f->flush) {
+            flush_profile_add(full, 1);
+            flush_tlb(true);
+        } else {
+            for (int i = 0; i < f->npages; i++)
+                invalidate(f->pages[i]);
+            flush_tlb(false);
+        }
+        flush_finish_local(f, completion, rendezvous);
+#else
         flush_entry_post(f, completion, rendezvous);
+#endif
     } else {
         flush_tlb(false);
         if (completion)
