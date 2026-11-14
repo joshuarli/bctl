@@ -825,3 +825,8 @@ navigation is consistently 7–9% faster. The remaining gaps are form screenshot
 news navigation (about 1.5×). These are browser pipeline steps across
 processes, and BCTL-21 tracks tracing them next. Interop passes 113 of 113 on
 the new kernel.
+
+
+## Operation-scoped trace handoff (BCTL-21)
+
+The existing `BCTL_TRACE_CHROMIUM=1` startup trace is short and cannot attribute warmed screenshots, clicks or navigation. Implement bounded per-operation trace capture with CDP request/response markers and paired native-default, native-software and Nanos receipts. Record renderer/main-thread, frame synchronization, copy-output/readback, encode, IPC and scheduling intervals where observable; label unknown intervals rather than guessing. Keep traces separate from uninstrumented performance comparisons. See [graphics performance campaign](CAMPAIGN-GRAPHICS-PERFORMANCE.md) for A/B gates, density and integration ownership.
