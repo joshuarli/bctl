@@ -100,7 +100,8 @@ fn expression(command: &Command) -> String {
   if (tool.annotations?.consequentialHint === true && !{allow_consequential}) {{
     throw new Error("WEBMCP_CONSEQUENTIAL_OPT_IN_REQUIRED: pass --allow-consequential after authorizing the operation");
   }}
-  const raw = await context.executeTool(tool, {input});
+  const input = JSON.parse({input});
+  const raw = await context.executeTool(tool, input);
   let result = raw;
   if (typeof raw === "string") {{
     try {{ result = JSON.parse(raw); }} catch (_) {{}}
@@ -108,7 +109,7 @@ fn expression(command: &Command) -> String {
   return {{ name: tool.name, origin: tool.origin, result }};
 }})()"#,
             name = json::to_string(&json::Value::String(name.clone())),
-            input = json::to_string(input),
+            input = json::to_string(&json::Value::String(json::to_string(input))),
             allow_write = allow_write,
             allow_consequential = allow_consequential,
         ),
@@ -171,7 +172,7 @@ mod tests {
         };
         let source = expression(&command);
         assert!(source.contains(&format!("tool.name === {}", json::to_string(&json::Value::String(name)))));
-        assert!(source.contains(r#""query":"\"; alert(1); //""#));
+        assert!(source.contains(r#"JSON.parse("{\"query\":\"\\\"; alert(1); //\"}")"#));
         assert!(source.contains("readOnlyHint !== true && !false"));
         assert!(source.contains("consequentialHint === true && !false"));
     }

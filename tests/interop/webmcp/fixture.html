@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebMCP qualification</title>
+<output id="result">idle</output>
+<script>
+globalThis.fixtureCalls = { snapshot: 0, query: 0, act: 0, submit: 0 };
+globalThis.fixtureReady = false;
+globalThis.fixtureError = null;
+globalThis.registerFixtureTool = async (name, annotations, execute) => {
+  await document.modelContext.registerTool({
+    name, description: `Qualification ${name}`, annotations,
+    inputSchema: { type: "object", properties: { text: { type: "string" } } },
+    execute: async (input) => {
+      fixtureCalls[name] = (fixtureCalls[name] ?? 0) + 1;
+      return execute(input);
+    }
+  });
+};
+(async () => {
+  if (location.pathname === "/frame") {
+    const name = new URLSearchParams(location.search).get("name") ?? "foreign";
+    await registerFixtureTool(name, { readOnlyHint: true }, () => ({ origin: location.origin }));
+    parent.postMessage("foreign-ready", "*");
+  } else {
+    await registerFixtureTool("snapshot", { readOnlyHint: true }, () => ({ text: document.getElementById("result").textContent }));
+    await registerFixtureTool("query", { readOnlyHint: true }, (input) => input);
+    await registerFixtureTool("act", { readOnlyHint: false }, ({ text }) => {
+      document.getElementById("result").textContent = text;
+      return { text };
+    });
+    await registerFixtureTool("submit", { readOnlyHint: false, consequentialHint: true }, () => ({ submitted: true }));
+    globalThis.foreignReady = false;
+    const cross = new URLSearchParams(location.search).get("cross");
+    if (cross) {
+      const childOrigin = new URL(cross).origin;
+      addEventListener("message", (event) => {
+        if (event.origin === childOrigin && event.data === "foreign-ready") foreignReady = true;
+      });
+      const frame = document.createElement("iframe");
+      frame.allow = "tools";
+      frame.src = cross;
+      document.body.append(frame);
+    }
+  }
+  fixtureReady = true;
+})().catch((error) => { fixtureError = String(error); });
+</script>
