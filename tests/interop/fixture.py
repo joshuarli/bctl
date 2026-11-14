@@ -101,7 +101,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 		pass
 
 
-server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+class Server(http.server.ThreadingHTTPServer):
+	request_queue_size = 128
+
+
+server = Server(('127.0.0.1', 0), Handler)
 print(server.server_port, flush=True)
 sys.stdout.close()
 server.serve_forever()

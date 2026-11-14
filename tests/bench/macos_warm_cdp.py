@@ -75,7 +75,9 @@ class Sites:
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_):
                 pass
-        self.news_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(
+        class Server(http.server.ThreadingHTTPServer):
+            request_queue_size = 128
+        self.news_server = Server(('127.0.0.1', 0), functools.partial(
             Handler, directory=ROOT / '.work/dl/speedometer/src/resources/newssite/news-next/dist'))
         threading.Thread(target=self.news_server.serve_forever, daemon=True).start()
         self.news = f'http://127.0.0.1:{self.news_server.server_port}'
