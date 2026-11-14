@@ -35,11 +35,11 @@ case_verdict() {
 
 # The guest checks the share from inside; the host then checks what the guest left behind.
 case_virtiofs_files() {
-	smp=$1 share=$WORK/tmp/virtiofs-share-$1
+	smp=$1 share=$WORK/tmp/virtiofs-share-$1 name=${2:-virtiofs_files}
 	rm -rf "$share"
 	mkdir -p "$share/host_dir"
 	printf 'hello from the host\n' >"$share/from_host"
-	case_virtiofs=shared:$share case_verdict virtiofs_files "$smp" 60 PASS '' --mount shared:/shared "$FIXTURES/virtiofs_files"
+	case_virtiofs=shared:$share case_verdict "$name" "$smp" 60 PASS '' --mount shared:/shared "$FIXTURES/virtiofs_files"
 	# BSD wc pads the count; GNU wc does not.
 	bytes=$(wc -c <"$share/from_guest" 2>/dev/null | tr -d '[:space:]')
 	if [ "$bytes" != 1000 ] || [ -e "$share/gdir" ]; then
@@ -405,7 +405,8 @@ for suite in "$@"; do
 			for smp in 1 2; do case_virtiofs_files "$smp"; done
 			[ "$failures" -eq 0 ] || break
 			iteration=$((iteration + 1))
-		done ;;
+		done
+		case_virtiofs_files 1 virtiofs_long_run_label_exercises_unix_socket_address_limit ;;
 	9p)
 		[ "$(uname -s)/$ARCH" = Linux/x86_64 ] || die "9p suite requires Linux x86_64"
 		linux make -s -C "$ROOT/tests/mini_chromium" "$FIXTURES/p9_close"
