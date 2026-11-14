@@ -571,6 +571,7 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
     };
     let mut deadline = None;
     let mut spawned = false;
+    let mut pause = Duration::from_millis(1);
     let ping = Request { op: Op::Ping.as_str().into(), ..Request::empty() };
     loop {
         let error = match send(paths, &ping) {
@@ -590,7 +591,8 @@ fn call(paths: &Paths, request: &Request) -> Result<Response, Box<ErrorBody>> {
             spawn_daemon(paths).map_err(unreachable)?;
             spawned = true;
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(10));
     }
 }
 

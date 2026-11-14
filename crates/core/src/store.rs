@@ -149,6 +149,7 @@ impl Store {
 
     fn init(db: Connection) -> Result<Store, StoreError> {
         db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
         db.pragma_update(None, "foreign_keys", true)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         migrate(&db)?;
@@ -520,6 +521,9 @@ impl Store {
 
     /// Applies the record-keeping half of a reconciliation plan. Stopping stale machines is the caller's effect.
     pub fn apply(&mut self, actions: &[Action], now_ms: i64) -> Result<(), StoreError> {
+        if actions.is_empty() {
+            return Ok(());
+        }
         let tx = self.db.transaction()?;
         for action in actions {
             match action {

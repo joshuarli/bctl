@@ -105,7 +105,6 @@ pub fn run(paths: Paths) -> Result<(), String> {
             missing.display()
         ),
     }
-    daemon.collect_garbage();
     let watcher = Arc::clone(&daemon);
     thread::spawn(move || watcher.watch_health());
 

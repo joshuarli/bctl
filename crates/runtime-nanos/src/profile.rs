@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -24,9 +24,7 @@ pub fn prepare_profile(dir: &Path, template: &Path, initialize: impl FnOnce(&Pat
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
     let scratch = dir.join(format!("{INIT_PREFIX}{}-{nonce}", std::process::id()));
     let result = initialize(template, &scratch)
-        .and_then(|()| File::open(&scratch)?.sync_all())
-        .and_then(|()| fs::hard_link(&scratch, &disk))
-        .and_then(|()| File::open(dir)?.sync_all());
+        .and_then(|()| fs::hard_link(&scratch, &disk));
     let _ = fs::remove_file(&scratch);
     result.map_err(|e| format!("initialize {} from {}: {e}", disk.display(), template.display()))?;
     Ok(disk)

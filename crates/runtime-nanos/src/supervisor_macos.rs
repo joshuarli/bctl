@@ -18,7 +18,7 @@ use crate::{CONSOLE_LOG, CONTROL_SOCKET, GUEST_CDP_PORT, GUEST_CHECK_PORT, GUEST
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
-const READY_POLL: Duration = Duration::from_millis(2);
+const READY_POLL: Duration = Duration::from_micros(500);
 
 struct Config {
     dir: PathBuf,
