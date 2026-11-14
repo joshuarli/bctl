@@ -158,7 +158,7 @@ impl Runtime {
                 let dir = paths.nanos_runtime();
                 let supervisor = std::env::current_exe().map_err(|e| format!("cannot find the bctl executable: {e}"))?;
                 #[cfg(target_os = "macos")]
-                let backend = Backend::Libkrun { runner: dir.join("nanos-krun"), firmware: dir.join("firmware.fd") };
+                let backend = Backend::Libkrun { runner: dir.join("nanos-krun"), kernel: dir.join("kernel.img") };
                 #[cfg(not(target_os = "macos"))]
                 let backend = Backend::Qemu {
                     qemu: on_path("qemu-system-x86_64"), qemu_img: on_path("qemu-img"), vsock_backend: dir.join("vhost-device-vsock"),
@@ -188,7 +188,7 @@ impl Runtime {
         let (needed, hint): (Vec<PathBuf>, &'static str) = match self {
             Runtime::SmolVm(_) => (vec![paths.runtime()], "build it with `runtime/build.sh` and copy .work/runtime/smolvm there"),
             Runtime::Nanos(_) if cfg!(target_os = "macos") => (
-                vec![paths.nanos_runtime().join("nanos-krun"), paths.nanos_runtime().join("firmware.fd"), paths.nanos_runtime().join("lib/libkrun.dylib")],
+                vec![paths.nanos_runtime().join("nanos-krun"), paths.nanos_runtime().join("kernel.img"), paths.nanos_runtime().join("lib/libkrun.dylib")],
                 "build it with `runtime/build-nanos-krun.sh` and copy .work/runtime/nanos-krun there",
             ),
             Runtime::Nanos(_) => (

@@ -75,7 +75,7 @@ pub enum Backend {
     #[cfg(not(target_os = "macos"))]
     Qemu { qemu: PathBuf, qemu_img: PathBuf, vsock_backend: PathBuf, virtiofsd: PathBuf },
     #[cfg(target_os = "macos")]
-    Libkrun { runner: PathBuf, firmware: PathBuf },
+    Libkrun { runner: PathBuf, kernel: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -263,8 +263,8 @@ impl Nanos {
                     .arg("--virtiofsd").arg(virtiofsd);
             }
             #[cfg(target_os = "macos")]
-            Backend::Libkrun { runner, firmware } => {
-                command.arg("--runner").arg(runner).arg("--firmware").arg(firmware);
+            Backend::Libkrun { runner, kernel } => {
+                command.arg("--runner").arg(runner).arg("--kernel").arg(kernel);
             }
         }
         let output = command.args(spec.allow_private.iter().flat_map(|range| ["--allow-private", range.as_str()])).output();
@@ -437,7 +437,7 @@ mod tests {
         let runtime = Nanos::new(dir.join("machines"), Toolchain {
             supervisor: PathBuf::new(), supervisor_args: Vec::new(),
             #[cfg(target_os = "macos")]
-            backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
+            backend: Backend::Libkrun { runner: PathBuf::new(), kernel: PathBuf::new() },
             #[cfg(not(target_os = "macos"))]
             backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new(), virtiofsd: PathBuf::new() },
         });
@@ -467,7 +467,7 @@ mod tests {
         let runtime = Nanos::new(dir.join("machines"), Toolchain {
             supervisor: PathBuf::new(), supervisor_args: Vec::new(),
             #[cfg(target_os = "macos")]
-            backend: Backend::Libkrun { runner: PathBuf::new(), firmware: PathBuf::new() },
+            backend: Backend::Libkrun { runner: PathBuf::new(), kernel: PathBuf::new() },
             #[cfg(not(target_os = "macos"))]
             backend: Backend::Qemu { qemu: PathBuf::new(), qemu_img: PathBuf::new(), vsock_backend: PathBuf::new(), virtiofsd: PathBuf::new() },
         });

@@ -43,12 +43,13 @@ pub const MMIO_MEM_START: u64 = layout::MAPPED_IO_START;
 
 /// Returns a Vec of the valid memory addresses for aarch64.
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
-pub fn arch_memory_regions(
+fn build_memory_regions(
     size: usize,
     initrd_size: u64,
     firmware_size: Option<usize>,
+    start_at_efi_base: bool,
 ) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
-    let ram_start_addr = if firmware_size.is_some() {
+    let ram_start_addr = if start_at_efi_base {
         DRAM_MEM_START_EFI
     } else {
         DRAM_MEM_START_KERNEL
@@ -60,7 +61,7 @@ pub fn arch_memory_regions(
     }
     let ram_last_addr = ram_start_addr + (dram_size as u64);
     let shm_start_addr = ((ram_last_addr / 0x4000_0000) + 1) * 0x4000_0000;
-    let fdt_addr = if firmware_size.is_some() {
+    let fdt_addr = if start_at_efi_base {
         DRAM_MEM_START_EFI
     } else {
         ram_last_addr - layout::FDT_MAX_SIZE as u64
@@ -86,6 +87,21 @@ pub fn arch_memory_regions(
     };
 
     (info, regions)
+}
+
+pub fn arch_memory_regions(
+    size: usize,
+    initrd_size: u64,
+    firmware_size: Option<usize>,
+) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
+    build_memory_regions(size, initrd_size, firmware_size, firmware_size.is_some())
+}
+
+pub fn arch_memory_regions_for_elf(
+    size: usize,
+    initrd_size: u64,
+) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
+    build_memory_regions(size, initrd_size, None, true)
 }
 
 /// Configures the system and should be called once per vm before starting vcpu threads.
@@ -130,5 +146,15 @@ mod tests {
             regions[0].0
         );
         assert_eq!(super::layout::DRAM_MEM_MAX_SIZE, regions[0].1 as u64);
+    }
+
+    #[test]
+    fn test_elf_regions_start_at_efi_base_without_firmware_slot() {
+        let (mem_info, regions) = arch_memory_regions_for_elf(1usize << 29, 0);
+        assert_eq!(super::layout::DRAM_MEM_START_EFI, mem_info.ram_start_addr);
+        assert_eq!(super::layout::DRAM_MEM_START_EFI, mem_info.fdt_addr);
+        assert_eq!(1, regions.len());
+        assert_eq!(GuestAddress(super::layout::DRAM_MEM_START_EFI), regions[0].0);
+        assert_eq!(1usize << 29, regions[0].1);
     }
 }

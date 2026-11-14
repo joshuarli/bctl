@@ -20,7 +20,7 @@ fn which(name: &str) -> PathBuf {
 fn nanos(root: &Path) -> Nanos {
     let runtime = repo().join(if cfg!(target_os = "macos") { ".work/runtime/nanos-krun" } else { ".work/runtime/nanos" });
     #[cfg(target_os = "macos")]
-    let backend = Backend::Libkrun { runner: runtime.join("nanos-krun"), firmware: runtime.join("firmware.fd") };
+    let backend = Backend::Libkrun { runner: runtime.join("nanos-krun"), kernel: runtime.join("kernel.img") };
     #[cfg(not(target_os = "macos"))]
     let backend = Backend::Qemu {
         qemu: which("qemu-system-x86_64"), qemu_img: which("qemu-img"), vsock_backend: runtime.join("bin/vhost-device-vsock"),
@@ -140,7 +140,7 @@ fn completed_cdp_connections_do_not_exhaust_the_vmm_descriptors() {
     fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
     let runtime = Nanos::new(dir.join("machines"), Toolchain {
         supervisor: PathBuf::from(env!("CARGO_BIN_EXE_bctl-nanos-vm")), supervisor_args: Vec::new(),
-        backend: Backend::Libkrun { runner, firmware: bundle.join("firmware.fd") },
+        backend: Backend::Libkrun { runner, kernel: bundle.join("kernel.img") },
     });
     let cdp_socket = dir.join("cdp/s");
     let spec = LaunchSpec {

@@ -30,7 +30,7 @@ struct Config {
     memory_mib: u32,
     cpus: u8,
     runner: PathBuf,
-    firmware: PathBuf,
+    kernel: PathBuf,
     allow_private: Vec<String>,
     start_timeout: Duration,
 }
@@ -71,7 +71,7 @@ impl Config {
             memory_mib: value("--memory-mib")?.parse().map_err(|_| "--memory-mib is not a number")?,
             cpus: value("--cpus")?.parse().map_err(|_| "--cpus is not a number")?,
             runner: path("--runner")?,
-            firmware: path("--firmware")?,
+            kernel: path("--kernel")?,
             allow_private: args.windows(2).filter(|pair| pair[0] == "--allow-private").map(|pair| pair[1].clone()).collect(),
             start_timeout: match args.iter().position(|arg| arg == "--start-timeout-ms") {
                 None => START_TIMEOUT,
@@ -87,7 +87,7 @@ pub fn main(prefix: &[&str], args: &[String]) -> ExitCode {
     let result = match args.split_first() {
         Some((command, rest)) if command == "launch" => Config::parse(rest).map_err(Failure::from).and_then(|config| launch(prefix, &config, rest)),
         Some((command, rest)) if command == "serve" => Config::parse(rest).and_then(|config| serve(&config)).map_err(Failure::from),
-        _ => Err(Failure::from("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --profile-dir DIR --files-dir DIR --cdp-socket PATH --memory-mib N --cpus N --runner PATH --firmware PATH [--allow-private CIDR]... [--start-timeout-ms N]".to_string())),
+        _ => Err(Failure::from("usage: bctl-nanos-vm launch|serve --dir DIR --socket-dir DIR --image IMAGE --profile-dir DIR --files-dir DIR --cdp-socket PATH --memory-mib N --cpus N --runner PATH --kernel PATH [--allow-private CIDR]... [--start-timeout-ms N]".to_string())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -196,7 +196,7 @@ fn serve(config: &Config) -> Result<(), String> {
         }
     }
     startup.mark("runner_spawn_begin");
-    let mut child = Vm(Command::new(&config.runner).arg(&disk).arg(&config.firmware)
+    let mut child = Vm(Command::new(&config.runner).arg(&disk).arg(&config.kernel)
         .arg(socket(&config.socket_dir, GUEST_CDP_PORT)).arg(socket(&config.socket_dir, GUEST_CHECK_PORT))
         .arg(socket(&config.socket_dir, GUEST_EGRESS_PORT)).arg(config.cpus.to_string()).arg(config.memory_mib.to_string())
         .arg(&profile).arg(socket(&config.socket_dir, GUEST_STOP_PORT)).arg(&config.files_dir)
@@ -344,7 +344,7 @@ mod tests {
         let listener = UnixListener::bind(&cdp_socket).unwrap();
         let config = Config {
             dir: dir.clone(), socket_dir: dir.clone(), image, profile_dir: dir.join("profile"), files_dir: dir.join("files"), cdp_socket: cdp_socket.clone(), memory_mib: 1024, cpus: 1,
-            runner: dir.join("runner"), firmware: dir.join("firmware"), allow_private: Vec::new(),
+            runner: dir.join("runner"), kernel: dir.join("kernel"), allow_private: Vec::new(),
             start_timeout: START_TIMEOUT,
         };
         assert!(serve(&config).is_err());

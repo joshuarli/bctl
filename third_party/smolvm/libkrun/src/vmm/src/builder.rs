@@ -1827,6 +1827,72 @@ pub fn build_microvm(
     Ok(vmm)
 }
 
+#[cfg(target_arch = "aarch64")]
+fn load_aarch64_elf(
+    guest_mem: &GuestMemoryMmap,
+    path: &std::path::Path,
+) -> std::result::Result<GuestAddress, StartMicrovmError> {
+    let data = std::fs::read(path).map_err(StartMicrovmError::ElfOpenKernel)?;
+    let invalid = |msg: &str| {
+        StartMicrovmError::ElfOpenKernel(io::Error::new(io::ErrorKind::InvalidData, msg))
+    };
+    if data.len() < 64 || &data[0..4] != b"\x7fELF" || data[4] != 2 || data[5] != 1 {
+        return Err(invalid("expected little-endian ELF64 kernel image"));
+    }
+    let e_machine = u16::from_le_bytes([data[18], data[19]]);
+    if e_machine != 183 {
+        return Err(invalid("expected AArch64 ELF kernel image"));
+    }
+    let e_entry = u64::from_le_bytes(data[24..32].try_into().unwrap());
+    let e_phoff = usize::try_from(u64::from_le_bytes(data[32..40].try_into().unwrap()))
+        .map_err(|_| invalid("ELF phoff overflow"))?;
+    let e_phentsize = usize::from(u16::from_le_bytes([data[54], data[55]]));
+    let e_phnum = usize::from(u16::from_le_bytes([data[56], data[57]]));
+    if e_phentsize < 56 {
+        return Err(invalid("ELF phentsize too small"));
+    }
+    for i in 0..e_phnum {
+        let ph_start = e_phoff
+            .checked_add(i * e_phentsize)
+            .ok_or_else(|| invalid("ELF phdr offset overflow"))?;
+        let ph = data
+            .get(ph_start..ph_start + 56)
+            .ok_or_else(|| invalid("ELF phdr out of bounds"))?;
+        let p_type = u32::from_le_bytes(ph[0..4].try_into().unwrap());
+        if p_type != 1 {
+            continue;
+        }
+        let p_offset = usize::try_from(u64::from_le_bytes(ph[8..16].try_into().unwrap()))
+            .map_err(|_| invalid("ELF segment offset overflow"))?;
+        let p_paddr = u64::from_le_bytes(ph[24..32].try_into().unwrap());
+        let p_filesz = usize::try_from(u64::from_le_bytes(ph[32..40].try_into().unwrap()))
+            .map_err(|_| invalid("ELF filesz overflow"))?;
+        let p_memsz = usize::try_from(u64::from_le_bytes(ph[40..48].try_into().unwrap()))
+            .map_err(|_| invalid("ELF memsz overflow"))?;
+        if p_filesz > 0 {
+            let end = p_offset
+                .checked_add(p_filesz)
+                .ok_or_else(|| invalid("ELF segment bounds overflow"))?;
+            let seg = data
+                .get(p_offset..end)
+                .ok_or_else(|| invalid("ELF segment truncated"))?;
+            guest_mem
+                .write_slice(seg, GuestAddress(p_paddr))
+                .map_err(StartMicrovmError::FirmwareInvalidAddress)?;
+        }
+        if p_memsz > p_filesz {
+            let bss_addr = p_paddr
+                .checked_add(p_filesz as u64)
+                .ok_or_else(|| invalid("ELF bss address overflow"))?;
+            let zeros = vec![0u8; p_memsz - p_filesz];
+            guest_mem
+                .write_slice(&zeros, GuestAddress(bss_addr))
+                .map_err(StartMicrovmError::FirmwareInvalidAddress)?;
+        }
+    }
+    Ok(GuestAddress(e_entry))
+}
+
 fn load_external_kernel(
     guest_mem: &GuestMemoryMmap,
     arch_mem_info: &ArchMemoryInfo,
@@ -1876,6 +1942,8 @@ fn load_external_kernel(
                 _ => load_result.kernel_load,
             }
         }
+        #[cfg(target_arch = "aarch64")]
+        KernelFormat::Elf => load_aarch64_elf(guest_mem, &external_kernel.path)?,
         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         KernelFormat::PeGz => {
             let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
@@ -2664,6 +2732,12 @@ pub fn create_guest_memory(
     };
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     let (arch_mem_info, mut arch_mem_regions) = match payload {
+        #[cfg(target_arch = "aarch64")]
+        Payload::ExternalKernel(external_kernel)
+            if matches!(external_kernel.format, KernelFormat::Elf) =>
+        {
+            arch::aarch64::arch_memory_regions_for_elf(mem_size, external_kernel.initramfs_size)
+        }
         Payload::ExternalKernel(external_kernel) => {
             arch::arch_memory_regions(mem_size, external_kernel.initramfs_size, None)
         }

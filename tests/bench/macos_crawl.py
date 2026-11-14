@@ -51,14 +51,16 @@ def main():
     inputs = [Path(__file__), Path(__file__).with_name('macos_crawl_worker.py'), Path(__file__).with_name('crawl_site.py'),
               Path(workflows.__file__), workflows.BCTL, args.bctl_image.resolve(),
               args.bctl_runtime_dir.resolve() / 'nanos-krun', args.bctl_runtime_dir.resolve() / 'lib/libkrun.dylib',
-              args.bctl_runtime_dir.resolve() / 'firmware.fd', args.bctl_image.resolve().with_suffix('.profile.img'),
+              args.bctl_runtime_dir.resolve() / 'kernel.img', args.bctl_image.resolve().with_suffix('.profile.img'),
               workflows.ROOT.parent / 'shadowdriver/py/python/shadowdriver/_native.abi3.so',
               workflows.ROOT.parent / 'shadowdriver/grab/src/grab/cli.py', workflows.ROOT.parent / 'shadowdriver/grab/src/grab/verify.py',
               Path('/Applications/Chromium.app/Contents/MacOS/Chromium')]
     if args.cpu_rounds:
         inputs.append(Path(__file__).with_name('macos_cpu.py'))
     if args.baseline_runtime_dir:
-        inputs += [args.baseline_runtime_dir.resolve() / name for name in ('nanos-krun', 'lib/libkrun.dylib', 'firmware.fd')]
+        baseline = args.baseline_runtime_dir.resolve()
+        boot = next((baseline / name for name in ('kernel.img', 'firmware.fd') if (baseline / name).exists()), baseline / 'kernel.img')
+        inputs += [baseline / 'nanos-krun', baseline / 'lib/libkrun.dylib', boot]
     receipt = {'completed': False, 'configuration': vars(args) | {'out': str(args.out), 'bctl_image': str(args.bctl_image.resolve()),
         'bctl_runtime_dir': str(args.bctl_runtime_dir.resolve()),
         'baseline_runtime_dir': str(args.baseline_runtime_dir.resolve()) if args.baseline_runtime_dir else None},

@@ -35,7 +35,7 @@ def main():
     home = Path(tempfile.mkdtemp(prefix='startup-', dir=workflows.SCRATCH))
     inputs = [Path(__file__), Path(workflows.__file__), workflows.BCTL, workflows.ROOT / '.work/runtime/nanos-krun/nanos-krun',
               workflows.ROOT / '.work/runtime/nanos-krun/lib/libkrun.dylib',
-              workflows.ROOT / '.work/runtime/nanos-krun/firmware.fd',
+              workflows.ROOT / '.work/runtime/nanos-krun/kernel.img',
               args.image.resolve(), args.image.resolve().with_suffix('.profile.img')]
     def digest(path):
         with path.open('rb') as stream:
@@ -61,7 +61,7 @@ def main():
                             observed_logs[path.name] = text
                             if path.name != 'console.log':
                                 continue
-                            for marker in ['UEFI firmware', 'BdsDxe: loading', 'BdsDxe: starting', 'NET:', 'bctl-guest: ready']:
+                            for marker in ['NET:', 'bctl-guest: ready']:
                                 if marker in text and marker not in seen:
                                     seen.add(marker)
                                     attempt['console_observations'].append({'marker': marker, 'epoch_us': time.time_ns() // 1000})

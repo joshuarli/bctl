@@ -8,7 +8,7 @@ import threading
 root = pathlib.Path(__file__).resolve().parents[2]
 tree = root / '.work/runtime/nanos-arm64/hydrogen'
 runner = root / '.work/runtime/nanos-krun/nanos-krun'
-firmware = runner.with_name('firmware.fd')
+kernel = runner.with_name('kernel.img')
 tmp = root / '.work/tmp'
 tmp.mkdir(parents=True, exist_ok=True)
 
@@ -58,7 +58,7 @@ def run(fixture, name, close_first, guest_args=()):
         thread.start()
         try:
             command = ['sh', '-c', 'set -e; ulimit -n 128; exec "$@"', 'vsock-test', str(runner),
-                       str(work / 'disk.img'), str(firmware), str(work / 'cdp'),
+                       str(work / 'disk.img'), str(kernel), str(work / 'cdp'),
                        str(work / 'check'), str(work / 'egress'), '2', '1024']
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, timeout=90, check=True)

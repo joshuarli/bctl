@@ -37,7 +37,7 @@ impl Harness {
         fs::write(image.with_extension("profile.img"), b"profile").unwrap();
         let runtime = Nanos::new(dir.join("machines"), Toolchain {
             supervisor, supervisor_args: Vec::new(),
-            backend: Backend::Libkrun { runner: runner_path, firmware: dir.join("firmware") },
+            backend: Backend::Libkrun { runner: runner_path, kernel: dir.join("kernel") },
         });
         let spec = LaunchSpec {
             machine: "m".into(), image, profile_dir: dir.join("profile"), files_dir: dir.join("files"),

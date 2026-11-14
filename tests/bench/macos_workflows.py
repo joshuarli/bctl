@@ -427,7 +427,7 @@ def main():
         parser.error(f'Shadowdriver requires Node.js {requirement} on PATH')
     runtime_files = [args.bctl_image.resolve(), args.bctl_image.resolve().with_suffix('.profile.img'),
                      args.bctl_runtime_dir.resolve() / 'nanos-krun', args.bctl_runtime_dir.resolve() / 'lib/libkrun.dylib',
-                     args.bctl_runtime_dir.resolve() / 'firmware.fd']
+                     args.bctl_runtime_dir.resolve() / 'kernel.img']
     results = {'started': stamp, 'completed': False, 'runtime': args.runtime, 'native_binary': str(args.native_binary),
         'native_version': invoke([args.native_binary, '--version']).strip(), 'bctl_commit': invoke(['git', '-C', ROOT, 'rev-parse', 'HEAD']).strip(),
         'shadowdriver_commit': invoke(['git', '-C', args.shadowdriver, 'rev-parse', 'HEAD']).strip(), 'attempts': [], 'summary': {},
